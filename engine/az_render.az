@@ -1,33 +1,9 @@
-// Azora Engine — 3D renderer.
+// Azora Engine — camera.
 //
-// Thin typed layer over the native GPU runtime: meshes are integer handles,
-// transforms are Mat4 (az_math.az), and the camera is applied once per frame
-// before mesh draws.
+// A first-person fly camera. Movement/look read input from the [App]; the
+// view-projection matrix is computed in Azora (az_math.az) and uploaded with
+// `app.applyCamera(cam)`.
 
-/// Creates a cube mesh with the given edge length. Returns a mesh handle.
-func meshCube(size: Real): Int {
-    return az_mesh_cube(size)
-}
-
-/// Creates a flat grid in the XZ plane (`extent` half-size, `divisions` cells per side).
-func meshGrid(extent: Real, divisions: Int): Int {
-    return az_mesh_grid(extent, divisions)
-}
-
-/// Draws a mesh with a model transform and base color (0..1 components).
-func meshDraw(mesh: Int, model: Mat4, r: Real, g: Real, b: Real) {
-    az_mesh_draw(mesh, model, r, g, b)
-}
-
-/// Uploads a view-projection matrix for subsequent meshDraw calls.
-func cameraApplyMatrix(viewProj: Mat4) {
-    az_camera_set(viewProj)
-}
-
-// ── Camera ──────────────────────────────────────────────────────────────
-
-/// A first-person fly camera: position + yaw (radians, around Y) +
-/// pitch (radians, around X) + vertical field of view (degrees).
 pack Camera {
     var pos: Vec3
     var yaw: Real
@@ -60,34 +36,24 @@ impl Camera {
         return mat4Mul(proj, viewM)
     }
 
-    /// Uploads this camera for the current window size.
-    func apply() {
-        var aspect = 1.0
-        fin h = windowHeight()
-        if h > 0 {
-            aspect = (windowWidth() as Real) / (h as Real)
-        }
-        az_camera_set(self.viewProj(aspect))
-    }
-
     /// Standard fly controls: WASD moves in the yaw plane, Q/E (or
     /// Space/Shift) moves down/up, arrow keys look around.
-    func update(dt: Real, moveSpeed: Real, lookSpeed: Real) {
+    func update(app: App, dt: Real, moveSpeed: Real, lookSpeed: Real) {
         var move = vec3Zero()
-        if keyDown(KEY_W) { move = move + self.forward() }
-        if keyDown(KEY_S) { move = move - self.forward() }
-        if keyDown(KEY_D) { move = move + self.right() }
-        if keyDown(KEY_A) { move = move - self.right() }
-        if (keyDown(KEY_E) || keyDown(KEY_SPACE)) { move = move + Vec3(0.0, 1.0, 0.0) }
-        if (keyDown(KEY_Q) || keyDown(KEY_SHIFT)) { move = move - Vec3(0.0, 1.0, 0.0) }
+        if app.keyDown(KEY_W) { move = move + self.forward() }
+        if app.keyDown(KEY_S) { move = move - self.forward() }
+        if app.keyDown(KEY_D) { move = move + self.right() }
+        if app.keyDown(KEY_A) { move = move - self.right() }
+        if (app.keyDown(KEY_E) || app.keyDown(KEY_SPACE)) { move = move + Vec3(0.0, 1.0, 0.0) }
+        if (app.keyDown(KEY_Q) || app.keyDown(KEY_SHIFT)) { move = move - Vec3(0.0, 1.0, 0.0) }
 
         fin step = move.normalized().scale(moveSpeed * dt)
         self.pos = self.pos + step
 
-        if keyDown(KEY_LEFT) { self.yaw = self.yaw + lookSpeed * dt }
-        if keyDown(KEY_RIGHT) { self.yaw = self.yaw - lookSpeed * dt }
-        if keyDown(KEY_UP) { self.pitch = self.pitch + lookSpeed * dt }
-        if keyDown(KEY_DOWN) { self.pitch = self.pitch - lookSpeed * dt }
+        if app.keyDown(KEY_LEFT) { self.yaw = self.yaw + lookSpeed * dt }
+        if app.keyDown(KEY_RIGHT) { self.yaw = self.yaw - lookSpeed * dt }
+        if app.keyDown(KEY_UP) { self.pitch = self.pitch + lookSpeed * dt }
+        if app.keyDown(KEY_DOWN) { self.pitch = self.pitch - lookSpeed * dt }
 
         // Clamp pitch to avoid flipping over the poles.
         if self.pitch > 1.5 { self.pitch = 1.5 }

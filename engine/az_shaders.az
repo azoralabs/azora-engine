@@ -1,0 +1,53 @@
+// Azora Engine — Metal shader source (MSL), compiled at startup by az_gpu.az.
+//
+// 3D: interleaved position+normal vertices, per-draw viewProj/model/color
+//     uniforms, simple directional lambert shading.
+// 2D: position+uv+color vertices in physical pixels mapped to NDC, optional
+//     texture (text quads) modulated by the vertex color.
+
+func shaderSource(): String {
+    return (""
+        + "#include <metal_stdlib>\n"
+        + "using namespace metal;\n"
+        + "struct V3Out { float4 pos [[position]]; float3 normal; };\n"
+        + "struct U3 { float4x4 viewProj; float4x4 model; float4 color; };\n"
+        + "vertex V3Out v3_main(uint vid [[vertex_id]],\n"
+        + "                     const device float* verts [[buffer(0)]],\n"
+        + "                     constant U3& u [[buffer(1)]]) {\n"
+        + "    V3Out out;\n"
+        + "    float3 p = float3(verts[vid*6+0], verts[vid*6+1], verts[vid*6+2]);\n"
+        + "    float3 n = float3(verts[vid*6+3], verts[vid*6+4], verts[vid*6+5]);\n"
+        + "    out.pos = u.viewProj * u.model * float4(p, 1.0);\n"
+        + "    out.normal = (u.model * float4(n, 0.0)).xyz;\n"
+        + "    return out;\n"
+        + "}\n"
+        + "fragment float4 f3_main(V3Out in [[stage_in]], constant U3& u [[buffer(1)]]) {\n"
+        + "    float3 l = normalize(float3(0.5, 0.8, 0.3));\n"
+        + "    float d = max(dot(normalize(in.normal), l), 0.0);\n"
+        + "    float i = 0.35 + 0.65 * d;\n"
+        + "    return float4(u.color.rgb * i, u.color.a);\n"
+        + "}\n"
+        + "struct V2Out { float4 pos [[position]]; float2 uv; float4 color; };\n"
+        + "struct U2 { float2 viewport; float useTex; float pad; };\n"
+        + "vertex V2Out v2_main(uint vid [[vertex_id]],\n"
+        + "                     const device float* verts [[buffer(0)]],\n"
+        + "                     constant U2& u [[buffer(1)]]) {\n"
+        + "    V2Out out;\n"
+        + "    float2 p = float2(verts[vid*8+0], verts[vid*8+1]);\n"
+        + "    out.pos = float4(p.x / u.viewport.x * 2.0 - 1.0,\n"
+        + "                     1.0 - p.y / u.viewport.y * 2.0, 0.0, 1.0);\n"
+        + "    out.uv = float2(verts[vid*8+2], verts[vid*8+3]);\n"
+        + "    out.color = float4(verts[vid*8+4], verts[vid*8+5], verts[vid*8+6], verts[vid*8+7]);\n"
+        + "    return out;\n"
+        + "}\n"
+        + "fragment float4 f2_main(V2Out in [[stage_in]], constant U2& u [[buffer(1)]],\n"
+        + "                        texture2d<float> tex [[texture(0)]],\n"
+        + "                        sampler smp [[sampler(0)]]) {\n"
+        + "    if (u.useTex > 0.5) {\n"
+        + "        float4 t = tex.sample(smp, in.uv);\n"
+        + "        return float4(in.color.rgb, in.color.a * t.a);\n"
+        + "    }\n"
+        + "    return in.color;\n"
+        + "}\n"
+    )
+}

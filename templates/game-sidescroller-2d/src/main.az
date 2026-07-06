@@ -1,0 +1,194 @@
+// __AZORA_PROJECT_NAME__ — a 2D side scroller, built on the Azora Engine.
+//
+//   A / D or LEFT / RIGHT   run
+//   SPACE or UP             jump
+//   ENTER                   restart after falling
+//   ESC                     quit
+//
+// Hop across procedurally generated platforms and get as far as you can.
+// Everything is 2D rectangles drawn with the engine's immediate-mode UI;
+// the "camera" is just a scroll offset subtracted from world positions.
+
+bridge C {
+    func arc4random_uniform(bound: Int): Int
+}
+
+fin PLATFORM_COUNT = 12
+fin PLAYER_SIZE = 34.0
+
+/// Re-seeds platform [i] to start after [prevEnd], stepping from [prevY].
+func regenPlatform(px: [Real], py: [Real], pw: [Real], i: Int, prevEnd: Real, prevY: Real) {
+    fin gap = 50.0 + (arc4random_uniform(70) as Real)
+    fin w = 130.0 + (arc4random_uniform(150) as Real)
+    var y = prevY + (arc4random_uniform(170) as Real) - 85.0
+    if y < 240.0 {
+        y = 240.0
+    }
+    if y > 500.0 {
+        y = 500.0
+    }
+    px[i] = prevEnd + gap
+    py[i] = y
+    pw[i] = w
+}
+
+func resetLevel(px: [Real], py: [Real], pw: [Real]) {
+    // A wide, safe starting platform, then a procedural chain.
+    px[0] = -100.0
+    py[0] = 440.0
+    pw[0] = 480.0
+    var i = 1
+    while i < PLATFORM_COUNT {
+        regenPlatform(px, py, pw, i, px[i - 1] + pw[i - 1], py[i - 1])
+        i = i + 1
+    }
+}
+
+func main() {
+    var app = appInit("__AZORA_PROJECT_NAME__ — Side Scroller", 1100, 640)
+    if !app.ok {
+        return
+    }
+    app.setClearColor(0.36, 0.56, 0.78) // sky
+
+    var px = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var py = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var pw = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    resetLevel(px, py, pw)
+
+    var playerX = 60.0
+    var playerY = 300.0
+    var velX = 0.0
+    var velY = 0.0
+    var best = 0
+    var alive = true
+
+    while app.frame() {
+        fin dt = app.deltaTime()
+        fin w = app.width() as Real
+        fin h = app.height() as Real
+
+        if alive {
+            // ── Controls ──
+            var target = 0.0
+            if app.keyDown(KEY_D) || app.keyDown(KEY_RIGHT) {
+                target = 250.0
+            }
+            if app.keyDown(KEY_A) || app.keyDown(KEY_LEFT) {
+                target = -180.0
+            }
+            velX = velX + (target - velX) * 10.0 * dt
+
+            // ── Physics ──
+            velY = velY + 1500.0 * dt
+            playerX = playerX + velX * dt
+            playerY = playerY + velY * dt
+
+            // Land on platforms (only while falling).
+            var grounded = false
+            var i = 0
+            while i < PLATFORM_COUNT {
+                fin bottom = playerY + PLAYER_SIZE
+                if velY >= 0.0 && bottom >= py[i] - 2.0 && bottom <= py[i] + 16.0 {
+                    if playerX + PLAYER_SIZE > px[i] && playerX < px[i] + pw[i] {
+                        playerY = py[i] - PLAYER_SIZE
+                        velY = 0.0
+                        grounded = true
+                    }
+                }
+                i = i + 1
+            }
+
+            if grounded && (app.keyPressed(KEY_SPACE) || app.keyPressed(KEY_UP)) {
+                velY = -620.0
+            }
+
+            // Fell off the world.
+            if playerY > h + 80.0 {
+                alive = false
+            }
+
+            // ── Recycle platforms that scrolled far behind ──
+            fin camLeft = playerX - 260.0
+            var rightmost = 0.0
+            var j = 0
+            while j < PLATFORM_COUNT {
+                if px[j] + pw[j] > rightmost {
+                    rightmost = px[j] + pw[j]
+                }
+                j = j + 1
+            }
+            var k = 0
+            while k < PLATFORM_COUNT {
+                if px[k] + pw[k] < camLeft - 80.0 {
+                    regenPlatform(px, py, pw, k, rightmost, py[k])
+                    rightmost = px[k] + pw[k]
+                }
+                k = k + 1
+            }
+
+            fin dist = (playerX / 10.0) as Int
+            if dist > best {
+                best = dist
+            }
+        } else {
+            if app.keyPressed(KEY_ENTER) {
+                resetLevel(px, py, pw)
+                playerX = 60.0
+                playerY = 300.0
+                velX = 0.0
+                velY = 0.0
+                best = 0
+                alive = true
+            }
+        }
+
+        // ── Draw (world → screen: subtract the camera scroll) ──
+        fin camX = playerX - 260.0
+
+        // Parallax clouds.
+        var c = 0
+        while c < 4 {
+            fin span = w + 320.0
+            var cx = (c as Real) * 330.0 + 60.0 - camX * 0.35
+            cx = cx - (((cx / span) as Int) as Real) * span
+            if cx < 0.0 {
+                cx = cx + span
+            }
+            fin cy = 60.0 + (c as Real) * 42.0
+            app.uiRect(cx - 160.0, cy, 120.0, 26.0, 1.0, 1.0, 1.0, 0.55)
+            app.uiRect(cx - 130.0, cy - 14.0, 60.0, 20.0, 1.0, 1.0, 1.0, 0.45)
+            c = c + 1
+        }
+
+        // Platforms: grass top + earth body.
+        var d = 0
+        while d < PLATFORM_COUNT {
+            fin sx = px[d] - camX
+            if sx < w && sx + pw[d] > 0.0 {
+                app.uiRect(sx, py[d], pw[d], 14.0, 0.30, 0.72, 0.35, 1.0)
+                app.uiRect(sx, py[d] + 14.0, pw[d], h - py[d], 0.42, 0.30, 0.22, 1.0)
+            }
+            d = d + 1
+        }
+
+        // Player.
+        app.uiRect(playerX - camX, playerY, PLAYER_SIZE, PLAYER_SIZE, 0.95, 0.55, 0.15, 1.0)
+        app.uiRect(playerX - camX + 20.0, playerY + 8.0, 7.0, 7.0, 0.1, 0.1, 0.1, 1.0) // eye
+
+        // ── HUD ──
+        app.uiText("Distance ${best}", 16.0, 14.0, 17.0)
+        if alive {
+            app.uiText("A/D run   SPACE jump   ESC quit", 16.0, 40.0, 12.0)
+        } else {
+            app.uiTitle("YOU FELL — press ENTER to try again", h * 0.42, 24.0)
+        }
+
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
+        }
+        app.present()
+    }
+
+    app.shutdown()
+}

@@ -1,0 +1,403 @@
+// Azora Engine — platform layer (macOS), written entirely in Azora.
+//
+// The window, event pump, input state and frame lifecycle are implemented
+// here by talking to Cocoa directly through the Objective-C runtime
+// (az_objc.az). No platform logic lives in native code — only the msgSend
+// trampolines in runtime/src/ffi/az_ffi.c.
+//
+// Application shape:
+//
+//     func main() {
+//         var app = appInit("My App", 1280, 720)
+//         if !app.ok {
+//             return
+//         }
+//         while app.frame() {
+//             // update + draw via app.*
+//             app.present()
+//         }
+//         app.shutdown()
+//     }
+
+bridge C {
+    func CACurrentMediaTime(): Real
+}
+
+// ── State ───────────────────────────────────────────────────────────────
+
+pack AzWindow {
+    var handle: Long
+    var content: Long
+    var layer: Long
+    var scale: Real
+}
+
+pack AzInput {
+    // Raw state block: key down [0..2047], key pressed [2048..4095],
+    // mouse down [4096..4098], mouse clicked [4100..4102].
+    var state: Long
+}
+
+pack AzTime {
+    var start: Real
+    var last: Real
+    var delta: Real
+}
+
+/// The engine application: window + GPU + input + timing. Created by
+/// [appInit]; all engine functionality hangs off this as methods.
+pack App {
+    var ok: Bool
+    var win: AzWindow
+    var gpu: AzGpu
+    var inp: AzInput
+    var clk: AzTime
+    var clearR: Real
+    var clearG: Real
+    var clearB: Real
+    var pool: Long
+    var closing: Bool
+    var everVisible: Bool
+}
+
+// ── Lifecycle ───────────────────────────────────────────────────────────
+
+/// Creates the window and GPU renderer. Check `.ok` before entering the loop.
+func appInit(title: String, width: Int, height: Int): App {
+    fin pool = objc_autoreleasePoolPush()
+
+    // NSApplication as a regular, activatable app.
+    fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
+    send1(nsapp, sel("setActivationPolicy:"), 0L)
+
+    // Window: titled | closable | miniaturizable | resizable, buffered.
+    fin winAlloc = send0(cls("NSWindow"), sel("alloc"))
+    fin window = az_send_quad_i3(
+        winAlloc, sel("initWithContentRect:styleMask:backing:defer:"),
+        0.0, 0.0, width as Real, height as Real,
+        15L, 2L, 0L
+    )
+    if window == 0L {
+        return appFailed()
+    }
+    send1(window, sel("setTitle:"), nsString(title))
+    send1(window, sel("setReleasedWhenClosed:"), 0L)
+    send0(window, sel("center"))
+
+    fin scale = az_send_d0(window, sel("backingScaleFactor"))
+    fin contentV = send0(window, sel("contentView"))
+
+    // GPU device + CAMetalLayer backing the content view.
+    fin gpu = gpuInit(scale)
+    if !gpu.ok {
+        return appFailed()
+    }
+    send1(contentV, sel("setWantsLayer:"), 1L)
+    send1(contentV, sel("setLayer:"), gpu.layer)
+
+    fin win = AzWindow(window, contentV, gpu.layer, scale)
+
+    send1(window, sel("makeKeyAndOrderFront:"), 0L)
+    send1(nsapp, sel("activateIgnoringOtherApps:"), 1L)
+    send0(nsapp, sel("finishLaunching"))
+
+    fin now = CACurrentMediaTime()
+    var app = App(
+        true,
+        win,
+        gpu,
+        AzInput(az_alloc(4112L)),
+        AzTime(now, now, 1.0 / 60.0),
+        0.10, 0.10, 0.12,
+        pool,
+        false,
+        false
+    )
+    return app
+}
+
+/// A dead App value returned when initialization fails.
+func appFailed(): App {
+    fin gpu = gpuFailed()
+    return App(
+        false,
+        AzWindow(0L, 0L, 0L, 1.0),
+        gpu,
+        AzInput(0L),
+        AzTime(0.0, 0.0, 0.0),
+        0.0, 0.0, 0.0,
+        0L,
+        true,
+        false
+    )
+}
+
+impl App {
+
+    /// Starts a frame: pumps events, updates timing/input and begins the
+    /// render pass. Returns false once the window closed or quit() was called.
+    func frame(): Bool {
+        if !self.ok {
+            return false
+        }
+
+        // Recycle the per-frame autorelease pool (releases last frame's
+        // drawable/event objects).
+        objc_autoreleasePoolPop(self.pool)
+        self.pool = objc_autoreleasePoolPush()
+
+        self.pumpEvents()
+        if self.closing {
+            return false
+        }
+        // The window server may map the window a few frames late; only treat
+        // "not visible" as closed once it has been visible.
+        if send0(self.win.handle, sel("isVisible")) != 0L {
+            self.everVisible = true
+        } else {
+            if self.everVisible {
+                return false
+            }
+        }
+
+        fin now = CACurrentMediaTime()
+        var dt = now - self.clk.last
+        if dt > 0.25 {
+            dt = 0.25
+        }
+        self.clk.delta = dt
+        self.clk.last = now
+
+        gpuBeginFrame(self)
+        return true
+    }
+
+    /// Finishes the frame and presents it.
+    func present() {
+        gpuEndFrame(self)
+    }
+
+    /// Requests exit: the next frame() returns false.
+    func quit() {
+        self.closing = true
+    }
+
+    /// Closes the window and releases resources.
+    func shutdown() {
+        if !self.ok {
+            return
+        }
+        // Discard an in-flight frame (loop exited between frame() and present()).
+        if self.gpu.hasEncoder {
+            send0(self.gpu.enc, sel("endEncoding"))
+            send0(self.gpu.cmd, sel("commit"))
+            self.gpu.hasEncoder = false
+        }
+        send0(self.win.handle, sel("close"))
+        objc_autoreleasePoolPop(self.pool)
+        az_free(self.inp.state)
+        self.ok = false
+    }
+
+    // ── Timing / window ─────────────────────────────────────────────────
+
+    /// Seconds since appInit.
+    func timeNow(): Real {
+        return CACurrentMediaTime() - self.clk.start
+    }
+
+    /// Seconds between the two most recent frames.
+    func deltaTime(): Real {
+        return self.clk.delta
+    }
+
+    /// Window content width in points.
+    func width(): Int {
+        return self.boundsSize(2L) as Int
+    }
+
+    /// Window content height in points.
+    func height(): Int {
+        return self.boundsSize(3L) as Int
+    }
+
+    /// Content bounds component (2 = width, 3 = height) in points.
+    func boundsSize(index: Long): Real {
+        az_send_out_quad(self.win.content, sel("bounds"), self.gpu.scratch)
+        return az_peek_f64(self.gpu.scratch, index * 8L)
+    }
+
+    /// Background clear color for subsequent frames (components 0..1).
+    func setClearColor(r: Real, g: Real, b: Real) {
+        self.clearR = r
+        self.clearG = g
+        self.clearB = b
+    }
+
+    // ── Input ───────────────────────────────────────────────────────────
+
+    /// True while the key is held down (uppercase ASCII or KEY_* constants).
+    func keyDown(key: Int): Bool {
+        if key < 0 || key >= 2048 {
+            return false
+        }
+        return az_peek8(self.inp.state, key as Long) != 0
+    }
+
+    /// True only on the frame the key went down.
+    func keyPressed(key: Int): Bool {
+        if key < 0 || key >= 2048 {
+            return false
+        }
+        return az_peek8(self.inp.state, 2048L + key as Long) != 0
+    }
+
+    /// Mouse position in window points, origin top-left.
+    func mouseX(): Real {
+        az_send_out_pair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
+        return az_peek_f64(self.gpu.scratch, 0L)
+    }
+
+    func mouseY(): Real {
+        az_send_out_pair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
+        fin y = az_peek_f64(self.gpu.scratch, 8L)
+        return self.boundsSize(3L) - y
+    }
+
+    /// True while the mouse button is held (0 = left, 1 = right).
+    func mouseDown(button: Int): Bool {
+        if button < 0 || button > 2 {
+            return false
+        }
+        return az_peek8(self.inp.state, 4096L + button as Long) != 0
+    }
+
+    /// True only on the frame the button went down.
+    func mouseClicked(button: Int): Bool {
+        if button < 0 || button > 2 {
+            return false
+        }
+        return az_peek8(self.inp.state, 4100L + button as Long) != 0
+    }
+
+    // ── Event pump (internal) ───────────────────────────────────────────
+
+    func pumpEvents() {
+        // Clear per-frame edges (pressed keys / clicked buttons).
+        var i = 0
+        while i < 2048 {
+            az_poke8(self.inp.state, 2048L + i as Long, 0)
+            i = i + 1
+        }
+        az_poke8(self.inp.state, 4100L, 0)
+        az_poke8(self.inp.state, 4101L, 0)
+        az_poke8(self.inp.state, 4102L, 0)
+
+        fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
+        fin distantPast = send0(cls("NSDate"), sel("distantPast"))
+        fin mode = globalObject("NSDefaultRunLoopMode")
+        fin maskAny = 0L - 1L
+
+        loop {
+            fin ev = send4(nsapp, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), maskAny, distantPast, mode, 1L)
+            if ev == 0L {
+                break
+            }
+            fin evType = send0(ev, sel("type"))
+
+            if evType == 10L {
+                // keyDown — swallowed (avoids the system beep for unhandled keys)
+                if send0(ev, sel("isARepeat")) == 0L {
+                    self.setKey(self.mapKey(ev), 1)
+                }
+                continue
+            }
+            if evType == 11L {
+                // keyUp — swallowed
+                self.setKey(self.mapKey(ev), 0)
+                continue
+            }
+            if evType == 12L {
+                // flagsChanged: track shift (NSEventModifierFlagShift = 1 << 17)
+                fin flags = send0(ev, sel("modifierFlags"))
+                var shiftDown = 0
+                if (flags & 131072L) != 0L {
+                    shiftDown = 1
+                }
+                self.setKey(KEY_SHIFT, shiftDown)
+            }
+            if evType == 1L {
+                self.setMouse(0, 1)
+            }
+            if evType == 2L {
+                self.setMouse(0, 0)
+            }
+            if evType == 3L {
+                self.setMouse(1, 1)
+            }
+            if evType == 4L {
+                self.setMouse(1, 0)
+            }
+
+            send1(nsapp, sel("sendEvent:"), ev)
+        }
+    }
+
+    func setKey(key: Int, down: Int) {
+        if key < 0 || key >= 2048 {
+            return
+        }
+        if down != 0 {
+            if az_peek8(self.inp.state, key as Long) == 0 {
+                az_poke8(self.inp.state, 2048L + key as Long, 1)
+            }
+            az_poke8(self.inp.state, key as Long, 1)
+        } else {
+            az_poke8(self.inp.state, key as Long, 0)
+        }
+    }
+
+    func setMouse(button: Int, down: Int) {
+        if down != 0 {
+            if az_peek8(self.inp.state, 4096L + button as Long) == 0 {
+                az_poke8(self.inp.state, 4100L + button as Long, 1)
+            }
+            az_poke8(self.inp.state, 4096L + button as Long, 1)
+        } else {
+            az_poke8(self.inp.state, 4096L + button as Long, 0)
+        }
+    }
+
+    /// Maps an NSEvent to the engine key code (uppercase ASCII / KEY_*).
+    func mapKey(ev: Long): Int {
+        fin code = send0(ev, sel("keyCode"))
+        if code == 53L { return KEY_ESCAPE }
+        if code == 36L { return KEY_ENTER }
+        if code == 48L { return KEY_TAB }
+        if code == 49L { return KEY_SPACE }
+        if code == 123L { return KEY_LEFT }
+        if code == 124L { return KEY_RIGHT }
+        if code == 126L { return KEY_UP }
+        if code == 125L { return KEY_DOWN }
+
+        fin chars = send0(ev, sel("charactersIgnoringModifiers"))
+        if chars == 0L {
+            return -1
+        }
+        if send0(chars, sel("length")) == 0L {
+            return -1
+        }
+        fin cstr = send0(chars, sel("UTF8String"))
+        if cstr == 0L {
+            return -1
+        }
+        var c = az_peek8(cstr, 0L)
+        if c >= 97 && c <= 122 {
+            c = c - 32
+        }
+        if c < 128 {
+            return c
+        }
+        return -1
+    }
+}

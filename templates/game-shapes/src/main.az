@@ -1,0 +1,89 @@
+// __AZORA_PROJECT_NAME__ — Azora Engine basics with colored shapes.
+//
+// A guided tour of the engine API: 2D rectangles, buttons and text, plus 3D
+// cubes with transforms and an orbiting camera. Read the comments and tweak
+// values — press Run in Azora Studio to see the result.
+
+func main() {
+    // 1. A window + renderer. Everything hangs off `app`.
+    var app = appInit("__AZORA_PROJECT_NAME__ — Shapes", 1100, 700)
+    if !app.ok {
+        return
+    }
+    app.setClearColor(0.07, 0.08, 0.11)
+
+    // 2. Meshes are created once, drawn many times.
+    fin cube = app.meshCube(1.0)
+    fin ground = app.meshGrid(8.0, 8)
+
+    var cam = cameraDefault()
+    var paused = false
+
+    while app.frame() {
+        fin t = app.timeNow()
+        var spin = t
+        if paused {
+            spin = 0.0
+        }
+
+        // 3. The camera slowly orbits the scene (a Camera is just data —
+        //    position, yaw, pitch — and the engine computes the matrices).
+        cam.pos = Vec3(sin(t * 0.3) * 9.0, 3.5, cos(t * 0.3) * 9.0)
+        cam.yaw = t * 0.3
+        cam.pitch = -0.32
+        app.applyCamera(cam)
+
+        // 4. 3D shapes: model matrix = translation × rotation × scale.
+        app.drawMesh(ground, mat4Identity(), 0.18, 0.22, 0.28)
+
+        // A red cube spinning in place…
+        fin red = mat4Mul(mat4Translation(-2.5, 0.75, 0.0), mat4RotationY(spin))
+        app.drawMesh(cube, red, 0.90, 0.30, 0.30)
+
+        // …a green one bouncing…
+        var bounce = sin(t * 3.0)
+        if bounce < 0.0 {
+            bounce = 0.0 - bounce
+        }
+        fin green = mat4Translation(0.0, 0.5 + bounce * 1.5, 0.0)
+        app.drawMesh(cube, green, 0.35, 0.85, 0.45)
+
+        // …a blue one breathing (scaled)…
+        fin pulse = 0.8 + 0.3 * sin(t * 2.0)
+        fin blue = mat4Mul(mat4Translation(2.5, 0.75, 0.0), mat4Scale(pulse, pulse, pulse))
+        app.drawMesh(cube, blue, 0.35, 0.55, 0.95)
+
+        // …and a small moon orbiting the green cube.
+        fin moon = mat4Mul(
+            mat4Translation(sin(t * 1.7) * 2.0, 1.2, cos(t * 1.7) * 2.0),
+            mat4Scale(0.35, 0.35, 0.35)
+        )
+        app.drawMesh(cube, moon, 0.95, 0.85, 0.40)
+
+        // 5. 2D shapes live in window points, origin top-left.
+        fin w = app.width() as Real
+        app.uiRect(16.0, 60.0, 180.0, 8.0, 0.90, 0.30, 0.30, 1.0)
+        app.uiRect(16.0, 74.0, 120.0 + 60.0 * sin(t * 2.0), 8.0, 0.35, 0.85, 0.45, 1.0)
+        app.uiRect(16.0, 88.0, 180.0, 8.0, 0.35, 0.55, 0.95, 0.5)
+
+        // A square that follows the mouse.
+        app.uiRect(app.mouseX() - 10.0, app.mouseY() - 10.0, 20.0, 20.0, 0.95, 0.85, 0.40, 0.6)
+
+        // 6. Text + buttons (immediate mode: they draw and report clicks).
+        app.uiTitle("Azora Engine — shapes & transforms", 16.0, 22.0)
+        var label = "Pause spin"
+        if paused {
+            label = "Resume spin"
+        }
+        if app.button(label, w - 140.0, 16.0, 124.0, 34.0) {
+            paused = !paused
+        }
+
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
+        }
+        app.present()
+    }
+
+    app.shutdown()
+}

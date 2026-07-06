@@ -6,38 +6,40 @@
 //   arrow keys  look around
 //   ESC         quit
 //
-// Runs natively (compiled via LLVM) with the engine's own renderer.
+// Runs natively (compiled via LLVM); the engine — including its Metal
+// renderer — is written in the Azora language.
 
 func main() {
-    if !appInit("__AZORA_PROJECT_NAME__", 1280, 720) {
+    var app = appInit("__AZORA_PROJECT_NAME__", 1280, 720)
+    if !app.ok {
         return
     }
-    setClearColor(0.06, 0.07, 0.09)
+    app.setClearColor(0.06, 0.07, 0.09)
 
-    fin cube = meshCube(1.0)
-    fin ground = meshGrid(10.0, 10)
+    fin cube = app.meshCube(1.0)
+    fin ground = app.meshGrid(10.0, 10)
     var cam = cameraDefault()
 
-    while appFrame() {
-        fin dt = deltaTime()
+    while app.frame() {
+        fin dt = app.deltaTime()
 
         // Camera: WASD + QE movement, arrow-key look.
-        cam.update(dt, 5.0, 1.8)
-        cam.apply()
+        cam.update(app, dt, 5.0, 1.8)
+        app.applyCamera(cam)
 
         // A cube slowly spinning above the ground.
-        fin spin = mat4Mul(mat4Translation(0.0, 0.75, 0.0), mat4RotationY(timeNow() * 0.8))
-        meshDraw(cube, spin, 0.92, 0.47, 0.20)
-        meshDraw(ground, mat4Identity(), 0.20, 0.24, 0.30)
+        fin spin = mat4Mul(mat4Translation(0.0, 0.75, 0.0), mat4RotationY(app.timeNow() * 0.8))
+        app.drawMesh(cube, spin, 0.92, 0.47, 0.20)
+        app.drawMesh(ground, mat4Identity(), 0.20, 0.24, 0.30)
 
-        uiText("WASD move   Q/E up-down   arrows look   ESC quit", 16.0, 16.0, 13.0)
+        app.uiText("WASD move   Q/E up-down   arrows look   ESC quit", 16.0, 16.0, 13.0)
 
-        if keyPressed(KEY_ESCAPE) {
-            appQuit()
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
         }
 
-        appPresent()
+        app.present()
     }
 
-    appShutdown()
+    app.shutdown()
 }

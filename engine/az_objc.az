@@ -1,0 +1,102 @@
+// Azora Engine — Objective-C runtime & FFI plumbing bridge.
+//
+// This is the foundation that lets the entire platform layer be written in
+// the Azora language: Cocoa/Metal objects are `Long` handles and messages are
+// sent straight through `objc_msgSend`. Only signatures that involve doubles
+// or by-value structs go through the tiny trampoline shim (az_ffi.c), because
+// those need an exact C function type on arm64.
+//
+// C frameworks (Metal, CoreText, CoreGraphics, QuartzCore) export plain C
+// functions — those are bridged directly by name in az_gpu.az / az_platform.az.
+
+bridge C {
+    // Objective-C runtime
+    func objc_getClass(name: String): Long
+    func sel_registerName(name: String): Long
+    func objc_msgSend(target: Long, selector: Long, a: Long, b: Long, c: Long, d: Long, e: Long, f: Long, g: Long, h: Long): Long
+    func objc_autoreleasePoolPush(): Long
+    func objc_autoreleasePoolPop(pool: Long)
+
+    // msgSend trampolines for double / by-value-struct signatures (az_ffi.c)
+    func az_send_d0(target: Long, selector: Long): Real
+    func az_send_f1(target: Long, selector: Long, a: Real): Long
+    func az_send_f2(target: Long, selector: Long, a: Real, b: Real): Long
+    func az_send_quad(target: Long, selector: Long, a: Real, b: Real, c: Real, d: Real): Long
+    func az_send_quad_i3(target: Long, selector: Long, a: Real, b: Real, c: Real, d: Real, i1: Long, i2: Long, i3: Long): Long
+    func az_send_pair(target: Long, selector: Long, x: Real, y: Real): Long
+    func az_send_out_quad(target: Long, selector: Long, out4: Long)
+    func az_send_out_pair(target: Long, selector: Long, out2: Long)
+    func az_send_region(target: Long, selector: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long, bytes: Long, bytesPerRow: Long): Long
+    func az_get_region(target: Long, selector: Long, bytes: Long, bytesPerRow: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long)
+
+    // Raw memory (az_ffi.c)
+    func az_alloc(n: Long): Long
+    func az_free(p: Long)
+    func az_copy(dst: Long, src: Long, n: Long)
+    func az_peek64(p: Long, off: Long): Long
+    func az_peek32(p: Long, off: Long): Int
+    func az_peek8(p: Long, off: Long): Int
+    func az_peek_f64(p: Long, off: Long): Real
+    func az_poke64(p: Long, off: Long, v: Long)
+    func az_poke32(p: Long, off: Long, v: Int)
+    func az_poke8(p: Long, off: Long, v: Int)
+    func az_poke_f32(p: Long, off: Long, v: Real)
+    func az_poke_f64(p: Long, off: Long, v: Real)
+
+    // Exported symbols/constants (dlsym)
+    func az_sym(name: String): Long
+}
+
+// ── Message-send helpers ────────────────────────────────────────────────
+
+func cls(name: String): Long {
+    return objc_getClass(name)
+}
+
+func sel(name: String): Long {
+    return sel_registerName(name)
+}
+
+func send0(o: Long, s: Long): Long {
+    return objc_msgSend(o, s, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
+}
+
+func send1(o: Long, s: Long, a: Long): Long {
+    return objc_msgSend(o, s, a, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
+}
+
+func send2(o: Long, s: Long, a: Long, b: Long): Long {
+    return objc_msgSend(o, s, a, b, 0L, 0L, 0L, 0L, 0L, 0L)
+}
+
+func send3(o: Long, s: Long, a: Long, b: Long, c: Long): Long {
+    return objc_msgSend(o, s, a, b, c, 0L, 0L, 0L, 0L, 0L)
+}
+
+func send4(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long): Long {
+    return objc_msgSend(o, s, a, b, c, d, 0L, 0L, 0L, 0L)
+}
+
+/// `[[Cls alloc] init]`
+func newObject(className: String): Long {
+    return send0(send0(cls(className), sel("alloc")), sel("init"))
+}
+
+/// An NSString from an Azora string (autoreleased).
+func nsString(text: String): Long {
+    return send1(cls("NSString"), sel("stringWithUTF8String:"), text as Long)
+}
+
+/// The UTF-8 contents of an NSString as an Azora string.
+func nsStringText(nsStr: Long): String {
+    return send0(nsStr, sel("UTF8String")) as String
+}
+
+/// Reads an exported object constant (e.g. NSDefaultRunLoopMode).
+func globalObject(symbolName: String): Long {
+    fin addr = az_sym(symbolName)
+    if addr == 0L {
+        return 0L
+    }
+    return az_peek64(addr, 0L)
+}

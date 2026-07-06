@@ -102,10 +102,19 @@ if [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
 fi
 
 # ── LLVM IR → native executable ──────────────────────────────────────────
+# The platform layer is Azora code calling the OS directly, so the final link
+# pulls in the system frameworks it uses (Cocoa/Metal/CoreText/…) plus the
+# engine's small FFI shim (libazora_runtime).
 OS="$(uname -s)"
 case "$OS" in
-    Darwin) NATIVE_DIR="$LIB_DIR/native/macos" ;;
-    *)      NATIVE_DIR="$LIB_DIR/native/linux" ;;
+    Darwin)
+        NATIVE_DIR="$LIB_DIR/native/macos"
+        PLATFORM_LIBS="-lobjc -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework CoreFoundation"
+        ;;
+    *)
+        echo "error: only macOS is supported right now (Vulkan backend planned)." >&2
+        exit 1
+        ;;
 esac
 
 if [ ! -d "$NATIVE_DIR" ]; then
@@ -117,6 +126,7 @@ echo "azora-engine: linking"
 "$CLANG_BIN" "$BUILD_DIR/$APP_NAME.ll" \
     -L "$NATIVE_DIR" -lazora_runtime \
     -Wl,-rpath,"$NATIVE_DIR" \
+    $PLATFORM_LIBS \
     -Wno-override-module \
     -o "$BUILD_DIR/$APP_NAME"
 

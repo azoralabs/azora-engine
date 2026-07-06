@@ -62,9 +62,15 @@ cp "$ROOT_DIR/library.json" "$DIST/"
 cp "$ROOT_DIR/engine/"*.az "$DIST/engine/"
 cp "$ROOT_DIR/runtime/include/azora_runtime.h" "$DIST/runtime/include/"
 cp "$ROOT_DIR/tools/build.sh" "$DIST/tools/"
-cp "$AZORAC_LIB/"*.jar "$DIST/tools/azorac/lib/"
-cp -R "$ROOT_DIR/templates/app" "$DIST/templates/app"
-cp -R "$ROOT_DIR/templates/game" "$DIST/templates/game"
+# The compiler's LLVM backend is pure text generation (clang assembles the IR),
+# so the huge llvm/javacpp binding jars are not needed at runtime.
+for jar in "$AZORAC_LIB/"*.jar; do
+    case "$(basename "$jar")" in
+        llvm-*|javacpp-*) ;;
+        *) cp "$jar" "$DIST/tools/azorac/lib/" ;;
+    esac
+done
+cp -R "$ROOT_DIR/templates/." "$DIST/templates/"
 
 case "$(uname -s)" in
     Darwin) cp "$ROOT_DIR/runtime/build/libazora_runtime.dylib" "$DIST/native/macos/" ;;

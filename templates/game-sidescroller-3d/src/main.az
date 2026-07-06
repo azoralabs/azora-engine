@@ -1,0 +1,196 @@
+// __AZORA_PROJECT_NAME__ — a 3D side scroller, built on the Azora Engine.
+//
+//   A / D or LEFT / RIGHT   run
+//   SPACE or UP             jump
+//   ENTER                   restart after falling
+//   ESC                     quit
+//
+// The same side-scrolling platformer idea in 3D: the world is boxes, the
+// camera tracks the player from the side, and perspective gives the
+// background pillars natural parallax.
+
+bridge C {
+    func arc4random_uniform(bound: Int): Int
+}
+
+fin PLATFORM_COUNT = 10
+
+/// Re-seeds platform [i] to start after [prevEnd], stepping from [prevY].
+func regenPlatform(px: [Real], py: [Real], pw: [Real], i: Int, prevEnd: Real, prevY: Real) {
+    fin gap = 1.2 + (arc4random_uniform(20) as Real) * 0.1
+    fin w = 3.0 + (arc4random_uniform(40) as Real) * 0.1
+    var y = prevY + (arc4random_uniform(30) as Real) * 0.1 - 1.5
+    if y < -1.5 {
+        y = -1.5
+    }
+    if y > 3.5 {
+        y = 3.5
+    }
+    px[i] = prevEnd + gap
+    py[i] = y
+    pw[i] = w
+}
+
+func resetLevel(px: [Real], py: [Real], pw: [Real]) {
+    // A long, safe starting platform, then a procedural chain.
+    px[0] = -6.0
+    py[0] = 0.0
+    pw[0] = 14.0
+    var i = 1
+    while i < PLATFORM_COUNT {
+        regenPlatform(px, py, pw, i, px[i - 1] + pw[i - 1], py[i - 1])
+        i = i + 1
+    }
+}
+
+func main() {
+    var app = appInit("__AZORA_PROJECT_NAME__ — 3D Side Scroller", 1280, 720)
+    if !app.ok {
+        return
+    }
+    app.setClearColor(0.10, 0.12, 0.20)
+
+    fin cube = app.meshCube(1.0)
+
+    var px = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var py = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var pw = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    resetLevel(px, py, pw)
+
+    // Player position is the cube's FEET (bottom face).
+    var playerX = 0.0
+    var playerY = 2.0
+    var velX = 0.0
+    var velY = 0.0
+    var best = 0
+    var alive = true
+
+    var cam = cameraDefault()
+    cam.yaw = 0.0
+    cam.pitch = -0.10
+    cam.fovDeg = 55.0
+
+    while app.frame() {
+        fin dt = app.deltaTime()
+
+        if alive {
+            // ── Controls ──
+            var target = 0.0
+            if app.keyDown(KEY_D) || app.keyDown(KEY_RIGHT) {
+                target = 6.5
+            }
+            if app.keyDown(KEY_A) || app.keyDown(KEY_LEFT) {
+                target = -4.5
+            }
+            velX = velX + (target - velX) * 10.0 * dt
+
+            // ── Physics (y up) ──
+            velY = velY - 26.0 * dt
+            playerX = playerX + velX * dt
+            playerY = playerY + velY * dt
+
+            // Land on platforms (only while falling).
+            var grounded = false
+            var i = 0
+            while i < PLATFORM_COUNT {
+                if velY <= 0.0 && playerY <= py[i] + 0.08 && playerY >= py[i] - 0.55 {
+                    if playerX + 0.4 > px[i] && playerX - 0.4 < px[i] + pw[i] {
+                        playerY = py[i]
+                        velY = 0.0
+                        grounded = true
+                    }
+                }
+                i = i + 1
+            }
+
+            if grounded && (app.keyPressed(KEY_SPACE) || app.keyPressed(KEY_UP)) {
+                velY = 11.0
+            }
+
+            // Fell off the world.
+            if playerY < -9.0 {
+                alive = false
+            }
+
+            // ── Recycle platforms far behind the camera ──
+            var rightmost = 0.0
+            var j = 0
+            while j < PLATFORM_COUNT {
+                if px[j] + pw[j] > rightmost {
+                    rightmost = px[j] + pw[j]
+                }
+                j = j + 1
+            }
+            var k = 0
+            while k < PLATFORM_COUNT {
+                if px[k] + pw[k] < playerX - 14.0 {
+                    regenPlatform(px, py, pw, k, rightmost, py[k])
+                    rightmost = px[k] + pw[k]
+                }
+                k = k + 1
+            }
+
+            fin dist = playerX as Int
+            if dist > best {
+                best = dist
+            }
+        } else {
+            if app.keyPressed(KEY_ENTER) {
+                resetLevel(px, py, pw)
+                playerX = 0.0
+                playerY = 2.0
+                velX = 0.0
+                velY = 0.0
+                best = 0
+                alive = true
+            }
+        }
+
+        // ── Camera: side view tracking the player ──
+        cam.pos = Vec3(playerX + 2.5, playerY * 0.4 + 2.6, 11.0)
+        app.applyCamera(cam)
+
+        // ── Draw ──
+        // Background pillars (fixed world positions near the player; the
+        // perspective projection provides the parallax).
+        fin anchor = (((playerX / 6.0) as Int) as Real) * 6.0 - 30.0
+        var b = 0
+        while b < 12 {
+            fin bx = anchor + (b as Real) * 6.0
+            fin pillar = mat4Mul(mat4Translation(bx, 1.0, -8.0), mat4Scale(0.7, 9.0, 0.7))
+            app.drawMesh(cube, pillar, 0.16, 0.19, 0.30)
+            b = b + 1
+        }
+
+        // Platforms.
+        var d = 0
+        while d < PLATFORM_COUNT {
+            fin block = mat4Mul(
+                mat4Translation(px[d] + pw[d] * 0.5, py[d] - 0.5, 0.0),
+                mat4Scale(pw[d], 1.0, 2.4)
+            )
+            app.drawMesh(cube, block, 0.30, 0.62, 0.42)
+            d = d + 1
+        }
+
+        // Player: a cube standing on its feet, leaning into its run.
+        fin lean = mat4Mul(mat4RotationZ(0.0 - velX * 0.03), mat4Scale(0.8, 0.8, 0.8))
+        fin body = mat4Mul(mat4Translation(playerX, playerY + 0.4, 0.0), lean)
+        app.drawMesh(cube, body, 0.95, 0.55, 0.18)
+
+        // ── HUD ──
+        app.uiText("Distance ${best}", 16.0, 14.0, 17.0)
+        if alive {
+            app.uiText("A/D run   SPACE jump   ESC quit", 16.0, 40.0, 12.0)
+        } else {
+            app.uiTitle("YOU FELL — press ENTER to try again", 300.0, 24.0)
+        }
+
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
+        }
+        app.present()
+    }
+
+    app.shutdown()
+}

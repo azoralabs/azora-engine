@@ -1,0 +1,566 @@
+// Azora Engine — GPU renderer (Metal), written entirely in Azora.
+//
+// Talks to Metal through the Objective-C runtime (az_objc.az) and to
+// CoreText/CoreGraphics through their plain C APIs for text rasterization.
+// Shaders are compiled from MSL source at startup.
+
+bridge C {
+    // Metal / QuartzCore C entry points
+    func MTLCreateSystemDefaultDevice(): Long
+
+    // CoreFoundation / CoreText / CoreGraphics (text rasterization)
+    func CFStringCreateWithCString(allocator: Long, str: String, encoding: Int): Long
+    func CFRelease(cf: Long)
+    func CFDictionaryCreate(allocator: Long, keys: Long, values: Long, numValues: Long, keyCallBacks: Long, valueCallBacks: Long): Long
+    func CFAttributedStringCreate(allocator: Long, str: Long, attributes: Long): Long
+    func CTFontCreateWithName(name: Long, size: Real, matrix: Long): Long
+    func CTLineCreateWithAttributedString(attrString: Long): Long
+    func CTLineGetTypographicBounds(line: Long, ascent: Long, descent: Long, leading: Long): Real
+    func CTLineDraw(line: Long, context: Long)
+    func CGColorSpaceCreateDeviceRGB(): Long
+    func CGColorSpaceRelease(space: Long)
+    func CGColorCreateGenericRGB(r: Real, g: Real, b: Real, a: Real): Long
+    func CGColorRelease(color: Long)
+    func CGBitmapContextCreate(data: Long, width: Long, height: Long, bitsPerComponent: Long, bytesPerRow: Long, space: Long, bitmapInfo: Int): Long
+    func CGBitmapContextGetData(context: Long): Long
+    func CGContextRelease(context: Long)
+    func CGContextScaleCTM(context: Long, sx: Real, sy: Real)
+    func CGContextSetTextPosition(context: Long, x: Real, y: Real)
+}
+
+// ── State ───────────────────────────────────────────────────────────────
+
+pack AzGpu {
+    var ok: Bool
+    var device: Long
+    var queue: Long
+    var layer: Long
+    var pipe3d: Long
+    var pipe2d: Long
+    var depthOn: Long
+    var depthOff: Long
+    var sampler: Long
+    var depthTex: Long
+    var depthW: Long
+    var depthH: Long
+    var drawable: Long
+    var cmd: Long
+    var enc: Long
+    var hasEncoder: Bool
+    var mode: Int
+    var viewProj: Long
+    var scratch: Long
+    var scale: Real
+}
+
+/// A GPU mesh: vertex buffer handle + vertex count (interleaved pos+normal).
+pack Mesh {
+    var buffer: Long
+    var count: Int
+}
+
+// ── Setup ───────────────────────────────────────────────────────────────
+
+func gpuFailed(): AzGpu {
+    return AzGpu(false, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, false, -1, 0L, 0L, 1.0)
+}
+
+func gpuInit(scale: Real): AzGpu {
+    fin device = MTLCreateSystemDefaultDevice()
+    if device == 0L {
+        println("azora-engine: no Metal device")
+        return gpuFailed()
+    }
+    fin queue = send0(device, sel("newCommandQueue"))
+
+    // CAMetalLayer (attached to the window's content view by the platform layer).
+    fin layer = send0(cls("CAMetalLayer"), sel("layer"))
+    send1(layer, sel("setDevice:"), device)
+    send1(layer, sel("setPixelFormat:"), 80L)
+    fin unused0 = az_send_f1(layer, sel("setContentsScale:"), scale)
+
+    // Shader library from MSL source.
+    fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), 0L, 0L)
+    if lib == 0L {
+        println("azora-engine: shader compilation failed")
+        return gpuFailed()
+    }
+
+    // 3D pipeline: BGRA8 color + Depth32 depth.
+    fin d3 = newObject("MTLRenderPipelineDescriptor")
+    send1(d3, sel("setVertexFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("v3_main")))
+    send1(d3, sel("setFragmentFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("f3_main")))
+    fin ca3 = send1(send0(d3, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
+    send1(ca3, sel("setPixelFormat:"), 80L)
+    send1(d3, sel("setDepthAttachmentPixelFormat:"), 252L)
+    fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, 0L)
+    if pipe3d == 0L {
+        println("azora-engine: 3D pipeline failed")
+        return gpuFailed()
+    }
+
+    // 2D pipeline: alpha blending for UI rects and text quads.
+    fin d2 = newObject("MTLRenderPipelineDescriptor")
+    send1(d2, sel("setVertexFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("v2_main")))
+    send1(d2, sel("setFragmentFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("f2_main")))
+    fin ca2 = send1(send0(d2, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
+    send1(ca2, sel("setPixelFormat:"), 80L)
+    send1(ca2, sel("setBlendingEnabled:"), 1L)
+    send1(ca2, sel("setSourceRGBBlendFactor:"), 4L)
+    send1(ca2, sel("setDestinationRGBBlendFactor:"), 5L)
+    send1(ca2, sel("setSourceAlphaBlendFactor:"), 4L)
+    send1(ca2, sel("setDestinationAlphaBlendFactor:"), 5L)
+    send1(d2, sel("setDepthAttachmentPixelFormat:"), 252L)
+    fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, 0L)
+    if pipe2d == 0L {
+        println("azora-engine: 2D pipeline failed")
+        return gpuFailed()
+    }
+
+    // Depth-stencil states: compare Less + write for 3D, Always for UI.
+    fin dsOn = newObject("MTLDepthStencilDescriptor")
+    send1(dsOn, sel("setDepthCompareFunction:"), 1L)
+    send1(dsOn, sel("setDepthWriteEnabled:"), 1L)
+    fin depthOn = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOn)
+
+    fin dsOff = newObject("MTLDepthStencilDescriptor")
+    send1(dsOff, sel("setDepthCompareFunction:"), 7L)
+    send1(dsOff, sel("setDepthWriteEnabled:"), 0L)
+    fin depthOff = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOff)
+
+    // Linear sampler for text textures.
+    fin sd = newObject("MTLSamplerDescriptor")
+    send1(sd, sel("setMinFilter:"), 1L)
+    send1(sd, sel("setMagFilter:"), 1L)
+    fin sampler = send1(device, sel("newSamplerStateWithDescriptor:"), sd)
+
+    var gpu = AzGpu(
+        true, device, queue, layer,
+        pipe3d, pipe2d, depthOn, depthOff, sampler,
+        0L, 0L, 0L,
+        0L, 0L, 0L, false, -1,
+        az_alloc(64L),
+        az_alloc(4096L),
+        scale
+    )
+    // Identity view-projection until a camera is applied.
+    pokeIdentity(gpu.viewProj)
+    return gpu
+}
+
+func pokeIdentity(buf: Long) {
+    var i = 0
+    while i < 16 {
+        var v = 0.0
+        if i == 0 || i == 5 || i == 10 || i == 15 {
+            v = 1.0
+        }
+        az_poke_f32(buf, (i * 4) as Long, v)
+        i = i + 1
+    }
+}
+
+/// Writes a row-major Mat4 into [buf] as column-major float16 (GPU layout).
+func pokeMat4(buf: Long, offset: Long, m: Mat4) {
+    az_poke_f32(buf, offset, m.m00)
+    az_poke_f32(buf, offset + 4L, m.m10)
+    az_poke_f32(buf, offset + 8L, m.m20)
+    az_poke_f32(buf, offset + 12L, m.m30)
+    az_poke_f32(buf, offset + 16L, m.m01)
+    az_poke_f32(buf, offset + 20L, m.m11)
+    az_poke_f32(buf, offset + 24L, m.m21)
+    az_poke_f32(buf, offset + 28L, m.m31)
+    az_poke_f32(buf, offset + 32L, m.m02)
+    az_poke_f32(buf, offset + 36L, m.m12)
+    az_poke_f32(buf, offset + 40L, m.m22)
+    az_poke_f32(buf, offset + 44L, m.m32)
+    az_poke_f32(buf, offset + 48L, m.m03)
+    az_poke_f32(buf, offset + 52L, m.m13)
+    az_poke_f32(buf, offset + 56L, m.m23)
+    az_poke_f32(buf, offset + 60L, m.m33)
+}
+
+// ── Frame ───────────────────────────────────────────────────────────────
+
+func gpuBeginFrame(app: App) {
+    var gpu = app.gpu
+
+    // Match the drawable to the current view size.
+    az_send_out_quad(app.win.content, sel("bounds"), gpu.scratch)
+    fin wPts = az_peek_f64(gpu.scratch, 16L)
+    fin hPts = az_peek_f64(gpu.scratch, 24L)
+    fin pw = (wPts * gpu.scale) as Long
+    fin ph = (hPts * gpu.scale) as Long
+    if pw < 1L || ph < 1L {
+        gpu.hasEncoder = false
+        return
+    }
+    fin unused0 = az_send_pair(gpu.layer, sel("setDrawableSize:"), pw as Real, ph as Real)
+
+    // (Re)create the depth texture on resize.
+    if gpu.depthTex == 0L || gpu.depthW != pw || gpu.depthH != ph {
+        fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 252L, pw, ph, 0L)
+        send1(td, sel("setUsage:"), 4L)
+        send1(td, sel("setStorageMode:"), 2L)
+        gpu.depthTex = send1(gpu.device, sel("newTextureWithDescriptor:"), td)
+        gpu.depthW = pw
+        gpu.depthH = ph
+    }
+
+    gpu.drawable = send0(gpu.layer, sel("nextDrawable"))
+    if gpu.drawable == 0L {
+        gpu.hasEncoder = false
+        return
+    }
+
+    gpu.cmd = send0(gpu.queue, sel("commandBuffer"))
+    fin rp = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+
+    fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
+    send1(ca, sel("setTexture:"), send0(gpu.drawable, sel("texture")))
+    send1(ca, sel("setLoadAction:"), 2L)
+    send1(ca, sel("setStoreAction:"), 1L)
+    fin unused1 = az_send_quad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
+
+    fin da = send0(rp, sel("depthAttachment"))
+    send1(da, sel("setTexture:"), gpu.depthTex)
+    send1(da, sel("setLoadAction:"), 2L)
+    send1(da, sel("setStoreAction:"), 0L)
+    fin unused2 = az_send_f1(da, sel("setClearDepth:"), 1.0)
+
+    gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
+    gpu.hasEncoder = true
+    gpu.mode = -1
+}
+
+func gpuEndFrame(app: App) {
+    var gpu = app.gpu
+    if !gpu.hasEncoder {
+        return
+    }
+    send0(gpu.enc, sel("endEncoding"))
+    send1(gpu.cmd, sel("presentDrawable:"), gpu.drawable)
+    send0(gpu.cmd, sel("commit"))
+    gpu.enc = 0L
+    gpu.cmd = 0L
+    gpu.drawable = 0L
+    gpu.hasEncoder = false
+}
+
+// ── Meshes & 3D drawing ─────────────────────────────────────────────────
+
+impl App {
+
+    /// Creates a cube mesh with the given edge length.
+    func meshCube(size: Real): Mesh {
+        fin h = size * 0.5
+        // Per-face normals; tangent/bitangent derived per face.
+        fin nx = [0.0, 0.0, -1.0, 1.0, 0.0, 0.0]
+        fin ny = [0.0, 0.0, 0.0, 0.0, 1.0, -1.0]
+        fin nz = [1.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+        // Two CCW triangles per face in (tangent, bitangent) space.
+        fin cu = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+        fin cv = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+
+        fin bytes = az_alloc(864L) // 36 verts × 6 floats × 4 bytes
+        var off = 0L
+        var face = 0
+        while face < 6 {
+            fin fnx = nx[face]
+            fin fny = ny[face]
+            fin fnz = nz[face]
+            // tangent: any axis not parallel to the normal
+            var tx = 0.0
+            var ty = 1.0
+            var tz = 0.0
+            if fny > 0.5 || fny < -0.5 {
+                tx = 1.0
+                ty = 0.0
+            }
+            // bitangent = n × t, tangent = b × n (orthonormal basis)
+            fin bvx = fny * tz - fnz * ty
+            fin bvy = fnz * tx - fnx * tz
+            fin bvz = fnx * ty - fny * tx
+            fin ttx = bvy * fnz - bvz * fny
+            fin tty = bvz * fnx - bvx * fnz
+            fin ttz = bvx * fny - bvy * fnx
+
+            var c = 0
+            while c < 6 {
+                fin u = cu[c]
+                fin v = cv[c]
+                az_poke_f32(bytes, off, (fnx + ttx * u + bvx * v) * h)
+                az_poke_f32(bytes, off + 4L, (fny + tty * u + bvy * v) * h)
+                az_poke_f32(bytes, off + 8L, (fnz + ttz * u + bvz * v) * h)
+                az_poke_f32(bytes, off + 12L, fnx)
+                az_poke_f32(bytes, off + 16L, fny)
+                az_poke_f32(bytes, off + 20L, fnz)
+                off = off + 24L
+                c = c + 1
+            }
+            face = face + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, 864L, 0L)
+        az_free(bytes)
+        return Mesh(buffer, 36)
+    }
+
+    /// Creates a flat grid mesh in the XZ plane (`extent` half-size, `divisions` cells per side).
+    func meshGrid(extent: Real, divisions: Int): Mesh {
+        var divs = divisions
+        if divs < 1 {
+            divs = 1
+        }
+        if divs > 64 {
+            divs = 64
+        }
+        fin vertCount = divs * divs * 6
+        fin total = (vertCount * 24) as Long
+        fin bytes = az_alloc(total)
+        fin step = 2.0 * extent / (divs as Real)
+        fin origin = 0.0 - extent
+
+        // Quad corners in cell space.
+        fin qu = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
+        fin qv = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+
+        var off = 0L
+        var i = 0
+        while i < divs {
+            var j = 0
+            while j < divs {
+                fin x0 = origin + (i as Real) * step
+                fin z0 = origin + (j as Real) * step
+                var c = 0
+                while c < 6 {
+                    az_poke_f32(bytes, off, x0 + qu[c] * step)
+                    az_poke_f32(bytes, off + 4L, 0.0)
+                    az_poke_f32(bytes, off + 8L, z0 + qv[c] * step)
+                    az_poke_f32(bytes, off + 12L, 0.0)
+                    az_poke_f32(bytes, off + 16L, 1.0)
+                    az_poke_f32(bytes, off + 20L, 0.0)
+                    off = off + 24L
+                    c = c + 1
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, 0L)
+        az_free(bytes)
+        return Mesh(buffer, vertCount)
+    }
+
+    /// Uploads a camera's view-projection matrix for subsequent drawMesh calls.
+    func applyCamera(cam: Camera) {
+        var aspect = 1.0
+        fin h = self.height()
+        if h > 0 {
+            aspect = (self.width() as Real) / (h as Real)
+        }
+        pokeMat4(self.gpu.viewProj, 0L, cam.viewProj(aspect))
+    }
+
+    /// Draws a mesh with a model transform and base color (simple lambert shading).
+    func drawMesh(mesh: Mesh, model: Mat4, r: Real, g: Real, b: Real) {
+        var gpu = self.gpu
+        if !gpu.hasEncoder || mesh.buffer == 0L {
+            return
+        }
+        if gpu.mode != 0 {
+            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe3d)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+            gpu.mode = 0
+        }
+
+        // Uniforms: viewProj (64) + model (64) + color (16) = 144 bytes.
+        az_copy(gpu.scratch, gpu.viewProj, 64L)
+        pokeMat4(gpu.scratch, 64L, model)
+        az_poke_f32(gpu.scratch, 128L, r)
+        az_poke_f32(gpu.scratch, 132L, g)
+        az_poke_f32(gpu.scratch, 136L, b)
+        az_poke_f32(gpu.scratch, 140L, 1.0)
+
+        send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0L, 0L)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 144L, 1L)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 144L, 1L)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, mesh.count as Long)
+    }
+
+    // ── 2D drawing (window points, origin top-left) ─────────────────────
+
+    /// Filled rectangle (components 0..1).
+    func uiRect(x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real, a: Real) {
+        self.drawQuad2d(x, y, w, h, 0.0, 0.0, 1.0, 1.0, r, g, b, a, 0L)
+    }
+
+    func drawQuad2d(x: Real, y: Real, w: Real, h: Real, u0: Real, v0: Real, u1: Real, v1: Real, r: Real, g: Real, b: Real, a: Real, tex: Long) {
+        var gpu = self.gpu
+        if !gpu.hasEncoder {
+            return
+        }
+        if gpu.mode != 1 {
+            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe2d)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
+            gpu.mode = 1
+        }
+
+        fin s = gpu.scale
+        fin x0 = x * s
+        fin y0 = y * s
+        fin x1 = (x + w) * s
+        fin y1 = (y + h) * s
+
+        // 6 vertices × (pos2, uv2, rgba4) into scratch.
+        fin p = gpu.scratch
+        pokeVert2d(p, 0L, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 32L, x1, y0, u1, v0, r, g, b, a)
+        pokeVert2d(p, 64L, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 96L, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 128L, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 160L, x0, y1, u0, v1, r, g, b, a)
+
+        // U2 uniforms: viewport (2 floats) + useTex + pad.
+        az_poke_f32(p, 192L, gpu.depthW as Real)
+        az_poke_f32(p, 196L, gpu.depthH as Real)
+        var useTex = 0.0
+        if tex != 0L {
+            useTex = 1.0
+        }
+        az_poke_f32(p, 200L, useTex)
+        az_poke_f32(p, 204L, 0.0)
+
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, 192L, 0L)
+        fin up = p + 192L
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, 16L, 1L)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, 16L, 1L)
+        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, 0L)
+        if tex != 0L {
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), tex, 0L)
+        }
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, 6L)
+    }
+
+    // ── Text (CoreText rasterization → textured quad) ───────────────────
+
+    /// Text at (x, y) with an explicit color.
+    func uiTextColored(text: String, x: Real, y: Real, size: Real, r: Real, g: Real, b: Real) {
+        if !self.gpu.hasEncoder {
+            return
+        }
+        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        if line == 0L {
+            return
+        }
+        fin widthPts = az_peek_f64(self.gpu.scratch, 3840L)
+        fin ascent = az_peek_f64(self.gpu.scratch, 3848L)
+        fin descent = az_peek_f64(self.gpu.scratch, 3856L)
+        fin heightPts = ascent + descent
+        if widthPts < 0.5 || heightPts < 0.5 {
+            CFRelease(line)
+            return
+        }
+
+        fin s = self.gpu.scale
+        fin pw = (widthPts * s) as Long + 1L
+        fin ph = (heightPts * s) as Long + 1L
+
+        // Rasterize white text into an RGBA bitmap (tinted by the quad color).
+        fin space = CGColorSpaceCreateDeviceRGB()
+        fin ctx = CGBitmapContextCreate(0L, pw, ph, 8L, pw * 4L, space, 1)
+        if ctx != 0L {
+            CGContextScaleCTM(ctx, s, s)
+            CGContextSetTextPosition(ctx, 0.0, descent)
+            CTLineDraw(line, ctx)
+
+            fin data = CGBitmapContextGetData(ctx)
+            fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 70L, pw, ph, 0L)
+            var tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), td)
+            if tex != 0L {
+                fin unused0 = az_send_region(tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0L, 0L, 0L, pw, ph, 1L, 0L, data, pw * 4L)
+                // The encoder retains the texture; autorelease frees it after present.
+                tex = send0(tex, sel("autorelease"))
+                // Bitmap rows are top-first, matching top-left-origin UVs.
+                self.drawQuad2d(x, y, widthPts, heightPts, 0.0, 0.0, 1.0, 1.0, r, g, b, 1.0, tex)
+            }
+            CGContextRelease(ctx)
+        }
+        CGColorSpaceRelease(space)
+        CFRelease(line)
+    }
+
+    /// Measured width in points of `text` at font `size`.
+    func uiTextWidth(text: String, size: Real): Real {
+        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        if line == 0L {
+            return 0.0
+        }
+        fin w = az_peek_f64(self.gpu.scratch, 3840L)
+        CFRelease(line)
+        return w
+    }
+
+    /// Measured line height in points of font `size`.
+    func uiTextHeight(size: Real): Real {
+        fin line = ctLineCreate("Ag", size, self.gpu.scratch)
+        if line == 0L {
+            return size
+        }
+        fin h = az_peek_f64(self.gpu.scratch, 3848L) + az_peek_f64(self.gpu.scratch, 3856L)
+        CFRelease(line)
+        return h
+    }
+}
+
+/// Writes one 2D vertex (pos2, uv2, rgba4 — 8 floats) at [off].
+func pokeVert2d(p: Long, off: Long, x: Real, y: Real, u: Real, v: Real, r: Real, g: Real, b: Real, a: Real) {
+    az_poke_f32(p, off, x)
+    az_poke_f32(p, off + 4L, y)
+    az_poke_f32(p, off + 8L, u)
+    az_poke_f32(p, off + 12L, v)
+    az_poke_f32(p, off + 16L, r)
+    az_poke_f32(p, off + 20L, g)
+    az_poke_f32(p, off + 24L, b)
+    az_poke_f32(p, off + 28L, a)
+}
+
+/// Builds a CTLine for [text] at [size] (system font, white). Writes width /
+/// ascent / descent as doubles at scratch offsets 3840/3848/3856.
+/// Caller releases the returned line with CFRelease.
+func ctLineCreate(text: String, size: Real, scratch: Long): Long {
+    fin utf8 = 134217984 // kCFStringEncodingUTF8
+    fin cfText = CFStringCreateWithCString(0L, text, utf8)
+    if cfText == 0L {
+        return 0L
+    }
+    fin fontName = CFStringCreateWithCString(0L, "Helvetica", utf8)
+    fin font = CTFontCreateWithName(fontName, size, 0L)
+    fin white = CGColorCreateGenericRGB(1.0, 1.0, 1.0, 1.0)
+
+    // Attributes: { kCTFontAttributeName: font, kCTForegroundColorAttributeName: white }
+    az_poke64(scratch, 3872L, globalObject("kCTFontAttributeName"))
+    az_poke64(scratch, 3880L, globalObject("kCTForegroundColorAttributeName"))
+    az_poke64(scratch, 3888L, font)
+    az_poke64(scratch, 3896L, white)
+    fin attrs = CFDictionaryCreate(
+        0L, scratch + 3872L, scratch + 3888L, 2L,
+        az_sym("kCFTypeDictionaryKeyCallBacks"),
+        az_sym("kCFTypeDictionaryValueCallBacks")
+    )
+
+    fin attrText = CFAttributedStringCreate(0L, cfText, attrs)
+    fin line = CTLineCreateWithAttributedString(attrText)
+
+    fin w = CTLineGetTypographicBounds(line, scratch + 3848L, scratch + 3856L, scratch + 3864L)
+    az_poke_f64(scratch, 3840L, w)
+
+    CFRelease(attrText)
+    CFRelease(attrs)
+    CGColorRelease(white)
+    CFRelease(font)
+    CFRelease(fontName)
+    CFRelease(cfText)
+    return line
+}

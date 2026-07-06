@@ -1,0 +1,174 @@
+// __AZORA_PROJECT_NAME__ — an endless runner (3D), built on the Azora Engine.
+//
+//   A / D or LEFT / RIGHT   switch lane
+//   SPACE                   jump
+//   ENTER                   restart after a crash
+//   ESC                     quit
+//
+// Dodge the red blocks for as long as you can — the track speeds up as your
+// score grows. Everything is Azora code: the player, obstacles and track are
+// cubes with computed transforms.
+
+bridge C {
+    func arc4random_uniform(bound: Int): Int
+}
+
+fin LANE_WIDTH = 2.2
+fin OBSTACLE_COUNT = 10
+
+func laneX(lane: Int): Real {
+    return ((lane - 1) as Real) * LANE_WIDTH
+}
+
+func main() {
+    var app = appInit("__AZORA_PROJECT_NAME__ — Runner", 1280, 720)
+    if !app.ok {
+        return
+    }
+    app.setClearColor(0.05, 0.06, 0.10)
+
+    fin cube = app.meshCube(1.0)
+    fin ground = app.meshGrid(40.0, 40)
+
+    // Obstacles: parallel arrays of lane + distance ahead (negative z).
+    var obsLane = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+    var obsZ = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var i = 0
+    while i < OBSTACLE_COUNT {
+        obsLane[i] = arc4random_uniform(3)
+        obsZ[i] = -20.0 - (i as Real) * 9.0
+        i = i + 1
+    }
+
+    var lane = 1
+    var playerX = 0.0
+    var playerY = 0.5
+    var velY = 0.0
+    var speed = 10.0
+    var distance = 0.0
+    var alive = true
+
+    var cam = cameraDefault()
+    cam.pos = Vec3(0.0, 3.2, 7.5)
+    cam.pitch = -0.28
+    cam.fovDeg = 65.0
+
+    while app.frame() {
+        fin dt = app.deltaTime()
+
+        if alive {
+            // ── Controls ──
+            if app.keyPressed(KEY_A) || app.keyPressed(KEY_LEFT) {
+                if lane > 0 {
+                    lane = lane - 1
+                }
+            }
+            if app.keyPressed(KEY_D) || app.keyPressed(KEY_RIGHT) {
+                if lane < 2 {
+                    lane = lane + 1
+                }
+            }
+            if app.keyPressed(KEY_SPACE) && playerY <= 0.51 {
+                velY = 8.5
+            }
+
+            // ── Physics ──
+            playerX = playerX + (laneX(lane) - playerX) * 12.0 * dt
+            velY = velY - 24.0 * dt
+            playerY = playerY + velY * dt
+            if playerY < 0.5 {
+                playerY = 0.5
+                velY = 0.0
+            }
+
+            speed = 10.0 + distance * 0.02
+            if speed > 28.0 {
+                speed = 28.0
+            }
+            distance = distance + speed * dt
+
+            // ── Obstacles: approach the player, recycle behind the camera ──
+            var o = 0
+            while o < OBSTACLE_COUNT {
+                obsZ[o] = obsZ[o] + speed * dt
+                if obsZ[o] > 6.0 {
+                    obsZ[o] = -70.0 - (arc4random_uniform(30) as Real)
+                    obsLane[o] = arc4random_uniform(3)
+                }
+                // Collision: same lane, close in z, and not jumped over.
+                fin dx = laneX(obsLane[o]) - playerX
+                fin dz = obsZ[o]
+                if dz > -0.9 && dz < 0.9 {
+                    if (dx > -1.0 && dx < 1.0) && playerY < 1.4 {
+                        alive = false
+                    }
+                }
+                o = o + 1
+            }
+        } else {
+            if app.keyPressed(KEY_ENTER) {
+                var o2 = 0
+                while o2 < OBSTACLE_COUNT {
+                    obsLane[o2] = arc4random_uniform(3)
+                    obsZ[o2] = -20.0 - (o2 as Real) * 9.0
+                    o2 = o2 + 1
+                }
+                lane = 1
+                playerX = 0.0
+                playerY = 0.5
+                velY = 0.0
+                distance = 0.0
+                alive = true
+            }
+        }
+
+        // ── Camera follows the player's lane ──
+        cam.pos = Vec3(playerX * 0.5, 3.2, 7.5)
+        app.applyCamera(cam)
+
+        // ── Draw ──
+        // Track: a dark strip per lane, scrolling markers for motion cue.
+        var l = 0
+        while l < 3 {
+            fin strip = mat4Mul(mat4Translation(laneX(l), -0.05, -30.0), mat4Scale(LANE_WIDTH - 0.15, 0.1, 80.0))
+            app.drawMesh(cube, strip, 0.13, 0.14, 0.18)
+            l = l + 1
+        }
+        var m = 0
+        while m < 8 {
+            fin mz = 0.0 - ((distance * 1.0 + (m as Real) * 10.0) - ((((distance + (m as Real) * 10.0) / 80.0) as Int) as Real) * 80.0)
+            fin marker = mat4Mul(mat4Translation(0.0, 0.02, mz), mat4Scale(0.2, 0.02, 2.0))
+            app.drawMesh(cube, marker, 0.85, 0.85, 0.55)
+            m = m + 1
+        }
+        app.drawMesh(ground, mat4Translation(0.0, -0.12, 0.0), 0.09, 0.10, 0.13)
+
+        // Player.
+        fin bob = mat4Mul(mat4Translation(playerX, playerY, 0.0), mat4RotationY(distance * 0.15))
+        app.drawMesh(cube, bob, 0.25, 0.75, 0.95)
+
+        // Obstacles.
+        var o3 = 0
+        while o3 < OBSTACLE_COUNT {
+            fin t = mat4Mul(mat4Translation(laneX(obsLane[o3]), 0.55, obsZ[o3]), mat4Scale(1.4, 1.1, 1.0))
+            app.drawMesh(cube, t, 0.90, 0.25, 0.25)
+            o3 = o3 + 1
+        }
+
+        // ── HUD ──
+        fin score = distance as Int
+        app.uiText("Score ${score}", 16.0, 14.0, 17.0)
+        if !alive {
+            app.uiTitle("CRASHED — press ENTER to run again", 300.0, 24.0)
+        } else {
+            app.uiText("A/D switch lane   SPACE jump   ESC quit", 16.0, 40.0, 12.0)
+        }
+
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
+        }
+        app.present()
+    }
+
+    app.shutdown()
+}
