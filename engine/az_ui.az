@@ -1,0 +1,81 @@
+// Azora Engine — immediate-mode UI.
+//
+// Widgets are drawn every frame and report interaction directly:
+//
+//     if uiButton("Play", 40.0, 40.0, 160.0, 44.0) {
+//         // clicked this frame
+//     }
+//
+// Coordinates are window points, origin top-left.
+
+/// Filled rectangle (components 0..1).
+func uiRect(x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real, a: Real) {
+    az_ui_rect(x, y, w, h, r, g, b, a)
+}
+
+/// Text at (x, y) with the default UI foreground color.
+func uiText(text: String, x: Real, y: Real, size: Real) {
+    az_ui_text(text, x, y, size, 0.92, 0.94, 0.96)
+}
+
+/// Text with an explicit color.
+func uiTextColored(text: String, x: Real, y: Real, size: Real, r: Real, g: Real, b: Real) {
+    az_ui_text(text, x, y, size, r, g, b)
+}
+
+func uiTextWidth(text: String, size: Real): Real {
+    return az_ui_text_width(text, size)
+}
+
+/// True while the mouse is inside the rectangle.
+func uiHovered(x: Real, y: Real, w: Real, h: Real): Bool {
+    fin mx = mouseX()
+    fin my = mouseY()
+    return mx >= x && mx <= x + w && my >= y && my <= y + h
+}
+
+/// A button with the engine's default style. Returns true on the frame it
+/// is clicked.
+func uiButton(label: String, x: Real, y: Real, w: Real, h: Real): Bool {
+    return uiButtonColored(label, x, y, w, h, 0.23, 0.51, 0.96)
+}
+
+/// A button with a custom accent color. Returns true on the frame it is clicked.
+func uiButtonColored(label: String, x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real): Bool {
+    fin hovered = uiHovered(x, y, w, h)
+    fin pressed = hovered && mouseDown(MOUSE_LEFT)
+
+    var cr = r
+    var cg = g
+    var cb = b
+    if pressed {
+        cr = r * 0.75
+        cg = g * 0.75
+        cb = b * 0.75
+    } else {
+        if hovered {
+            cr = r * 1.12
+            cg = g * 1.12
+            cb = b * 1.12
+        }
+    }
+
+    // Soft shadow, then the button face.
+    az_ui_rect(x + 1.0, y + 2.0, w, h, 0.0, 0.0, 0.0, 0.18)
+    az_ui_rect(x, y, w, h, cr, cg, cb, 1.0)
+
+    // Centered label.
+    fin size = 15.0
+    fin tw = az_ui_text_width(label, size)
+    fin th = az_ui_text_height(size)
+    az_ui_text(label, x + (w - tw) * 0.5, y + (h - th) * 0.5, size, 1.0, 1.0, 1.0)
+
+    return hovered && mouseClicked(MOUSE_LEFT)
+}
+
+/// A text label centered horizontally at the given y.
+func uiTitle(text: String, y: Real, size: Real) {
+    fin w = windowWidth() as Real
+    fin tw = az_ui_text_width(text, size)
+    az_ui_text(text, (w - tw) * 0.5, y, size, 0.95, 0.96, 0.98)
+}

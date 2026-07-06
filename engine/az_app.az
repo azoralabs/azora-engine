@@ -1,0 +1,62 @@
+// Azora Engine — application framework.
+//
+// The canonical application shape:
+//
+//     func main() {
+//         if !appInit("My App", 1280, 720) { return }
+//         while appFrame() {
+//             // update + draw
+//             appPresent()
+//         }
+//         appShutdown()
+//     }
+
+/// Creates the window and renderer. Returns false when the platform has no
+/// native backend (see runtime/src for supported platforms).
+func appInit(title: String, width: Int, height: Int): Bool {
+    return az_init(title, width, height) == 0
+}
+
+/// Starts a frame (pumps events, begins rendering).
+/// Returns false once the window is closed or appQuit() was requested.
+func appFrame(): Bool {
+    return az_frame_begin() != 0
+}
+
+/// Finishes the frame and presents it.
+func appPresent() {
+    az_frame_end()
+}
+
+/// Requests exit: the next appFrame() returns false.
+func appQuit() {
+    az_request_close()
+}
+
+/// Releases the window and GPU resources.
+func appShutdown() {
+    az_shutdown()
+}
+
+/// Seconds since appInit.
+func timeNow(): Real {
+    return az_time()
+}
+
+/// Seconds between the two most recent frames.
+func deltaTime(): Real {
+    return az_delta()
+}
+
+func windowWidth(): Int {
+    return az_window_width()
+}
+
+func windowHeight(): Int {
+    return az_window_height()
+}
+
+/// Background color for subsequent frames (components 0..1).
+func setClearColor(r: Real, g: Real, b: Real) {
+    az_set_clear_color(r, g, b)
+}

@@ -1,0 +1,176 @@
+// Azora Engine — 3D math library.
+//
+// Vec3 and Mat4 are value types in spirit: every operation returns a new
+// instance (packs are reference types at runtime, so shared mutation is
+// avoided by convention here).
+//
+// Mat4 is row-major with translation in m03/m13/m23; the native runtime
+// converts to the GPU layout when a matrix crosses the FFI boundary.
+
+fin PI = 3.14159265358979
+
+func radians(degrees: Real): Real {
+    return degrees * PI / 180.0
+}
+
+// ── Vec3 ────────────────────────────────────────────────────────────────
+
+pack Vec3 {
+    var x: Real
+    var y: Real
+    var z: Real
+}
+
+impl Vec3 {
+    func plus(o: Vec3): Vec3 {
+        return Vec3(self.x + o.x, self.y + o.y, self.z + o.z)
+    }
+    func minus(o: Vec3): Vec3 {
+        return Vec3(self.x - o.x, self.y - o.y, self.z - o.z)
+    }
+    func scale(k: Real): Vec3 {
+        return Vec3(self.x * k, self.y * k, self.z * k)
+    }
+    func dot(o: Vec3): Real {
+        return self.x * o.x + self.y * o.y + self.z * o.z
+    }
+    func cross(o: Vec3): Vec3 {
+        return Vec3(
+            self.y * o.z - self.z * o.y,
+            self.z * o.x - self.x * o.z,
+            self.x * o.y - self.y * o.x
+        )
+    }
+    func length(): Real {
+        return sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    }
+    func normalized(): Vec3 {
+        fin len = self.length()
+        if len < 0.000001 {
+            return Vec3(0.0, 0.0, 0.0)
+        }
+        return self.scale(1.0 / len)
+    }
+}
+
+func vec3Zero(): Vec3 {
+    return Vec3(0.0, 0.0, 0.0)
+}
+
+// ── Mat4 (row-major) ────────────────────────────────────────────────────
+
+pack Mat4 {
+    var m00: Real
+    var m01: Real
+    var m02: Real
+    var m03: Real
+    var m10: Real
+    var m11: Real
+    var m12: Real
+    var m13: Real
+    var m20: Real
+    var m21: Real
+    var m22: Real
+    var m23: Real
+    var m30: Real
+    var m31: Real
+    var m32: Real
+    var m33: Real
+}
+
+func mat4Identity(): Mat4 {
+    return Mat4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+/// a × b (row-major: applies b first, then a).
+func mat4Mul(a: Mat4, b: Mat4): Mat4 {
+    return Mat4(
+        a.m00 * b.m00 + a.m01 * b.m10 + a.m02 * b.m20 + a.m03 * b.m30,
+        a.m00 * b.m01 + a.m01 * b.m11 + a.m02 * b.m21 + a.m03 * b.m31,
+        a.m00 * b.m02 + a.m01 * b.m12 + a.m02 * b.m22 + a.m03 * b.m32,
+        a.m00 * b.m03 + a.m01 * b.m13 + a.m02 * b.m23 + a.m03 * b.m33,
+
+        a.m10 * b.m00 + a.m11 * b.m10 + a.m12 * b.m20 + a.m13 * b.m30,
+        a.m10 * b.m01 + a.m11 * b.m11 + a.m12 * b.m21 + a.m13 * b.m31,
+        a.m10 * b.m02 + a.m11 * b.m12 + a.m12 * b.m22 + a.m13 * b.m32,
+        a.m10 * b.m03 + a.m11 * b.m13 + a.m12 * b.m23 + a.m13 * b.m33,
+
+        a.m20 * b.m00 + a.m21 * b.m10 + a.m22 * b.m20 + a.m23 * b.m30,
+        a.m20 * b.m01 + a.m21 * b.m11 + a.m22 * b.m21 + a.m23 * b.m31,
+        a.m20 * b.m02 + a.m21 * b.m12 + a.m22 * b.m22 + a.m23 * b.m32,
+        a.m20 * b.m03 + a.m21 * b.m13 + a.m22 * b.m23 + a.m23 * b.m33,
+
+        a.m30 * b.m00 + a.m31 * b.m10 + a.m32 * b.m20 + a.m33 * b.m30,
+        a.m30 * b.m01 + a.m31 * b.m11 + a.m32 * b.m21 + a.m33 * b.m31,
+        a.m30 * b.m02 + a.m31 * b.m12 + a.m32 * b.m22 + a.m33 * b.m32,
+        a.m30 * b.m03 + a.m31 * b.m13 + a.m32 * b.m23 + a.m33 * b.m33
+    )
+}
+
+func mat4Translation(x: Real, y: Real, z: Real): Mat4 {
+    return Mat4(
+        1.0, 0.0, 0.0, x,
+        0.0, 1.0, 0.0, y,
+        0.0, 0.0, 1.0, z,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4Scale(x: Real, y: Real, z: Real): Mat4 {
+    return Mat4(
+        x, 0.0, 0.0, 0.0,
+        0.0, y, 0.0, 0.0,
+        0.0, 0.0, z, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationX(rad: Real): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, c, 0.0 - s, 0.0,
+        0.0, s, c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationY(rad: Real): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        c, 0.0, s, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0 - s, 0.0, c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationZ(rad: Real): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        c, 0.0 - s, 0.0, 0.0,
+        s, c, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+/// Right-handed perspective projection (depth 0..1, Metal/Vulkan convention).
+func mat4Perspective(fovYDeg: Real, aspect: Real, zNear: Real, zFar: Real): Mat4 {
+    fin f = 1.0 / tan(radians(fovYDeg) * 0.5)
+    fin range = zNear - zFar
+    return Mat4(
+        f / aspect, 0.0, 0.0, 0.0,
+        0.0, f, 0.0, 0.0,
+        0.0, 0.0, zFar / range, zNear * zFar / range,
+        0.0, 0.0, 0.0 - 1.0, 0.0
+    )
+}

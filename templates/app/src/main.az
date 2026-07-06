@@ -1,0 +1,41 @@
+// __AZORA_PROJECT_NAME__ — an Azora Engine app.
+//
+// Runs natively (compiled via LLVM) with the engine's own renderer.
+// Edit this file and press Run in Azora Studio to see your changes.
+
+func main() {
+    if !appInit("__AZORA_PROJECT_NAME__", 900, 620) {
+        return
+    }
+    setClearColor(0.11, 0.12, 0.14)
+
+    var clicks = 0
+    var message = "Welcome to __AZORA_PROJECT_NAME__"
+
+    while appFrame() {
+        fin w = windowWidth() as Real
+        fin h = windowHeight() as Real
+
+        uiTitle("__AZORA_PROJECT_NAME__", 72.0, 28.0)
+
+        fin msgWidth = uiTextWidth(message, 16.0)
+        uiText(message, (w - msgWidth) * 0.5, 132.0, 16.0)
+
+        fin bw = 200.0
+        fin bh = 46.0
+        fin bx = (w - bw) * 0.5
+
+        if uiButton("Say hello", bx, h * 0.5 - 28.0, bw, bh) {
+            clicks = clicks + 1
+            message = "Hello from Azora! (${clicks})"
+        }
+
+        if uiButtonColored("Quit", bx, h * 0.5 + 40.0, bw, bh, 0.86, 0.27, 0.27) {
+            appQuit()
+        }
+
+        appPresent()
+    }
+
+    appShutdown()
+}
