@@ -8,10 +8,11 @@ driven directly from Azora via the Objective-C runtime and C framework APIs.
 ```
 ┌──────────────────────────────────────────────────┐
 │  your project (src/*.az)                         │
-│  engine core (engine/*.az)                       │   Azora language
-│   ├─ az_platform.az   Cocoa window, events, input│   (all of it)
-│   ├─ az_gpu.az        Metal pipelines, CoreText  │
-│   ├─ az_objc.az       objc_msgSend FFI bridge    │
+│  engine modules (engine/<module>/*.az)           │   Azora language
+│   ├─ core/ecs/jobs    decorators, ECS, async jobs│   (all of it)
+│   ├─ platform/        Cocoa window, events, input│
+│   ├─ gpu/             Metal pipelines, CoreText  │
+│   ├─ objc/            objc_msgSend FFI bridge    │
 │   └─ az_math/ui/render/shaders/input             │
 ├──────────────────────────────────────────────────┤
 │  azora compiler → LLVM IR → clang → binary       │
@@ -33,13 +34,14 @@ bind the same way for Windows/Linux.
 
 | Path                | Contents                                                         |
 |---------------------|------------------------------------------------------------------|
-| `engine/`           | Engine in Azora: platform, GPU, math, camera, input, UI, shaders |
+| `engine/`           | Engine in Azora: modular core/ECS/jobs plus platform, GPU, math, camera, input, UI and shaders |
 | `runtime/`          | FFI plumbing shim (`src/ffi/az_ffi.c`)                           |
 | `templates/app`     | "App" template — window + two buttons                            |
 | `templates/game`    | "Game · Empty" — cube scene with WASD fly camera                 |
 | `templates/game-tetris` | "Game · Tetris (2D)" — complete falling-blocks game          |
 | `templates/game-runner` | "Game · Temple Run (3D)" — three-lane endless runner         |
 | `templates/game-shapes` | "Game · Shape Examples" — guided API tour with colored shapes|
+| `templates/game-ecs` | "Game · ECS + Decorators" — @Component/@System/@Query scene with jobs and render queues |
 | `tools/build.sh`    | Compiles+links an engine project to a native executable          |
 | `tools/package.sh`  | Assembles the installable library bundle (`dist/*.azlib`)        |
 | `library.json`      | Library manifest read by Azora Studio (templates + variants)     |
@@ -65,6 +67,41 @@ func main() {
         app.present()
     }
     app.shutdown()
+}
+```
+
+## Modular imports
+
+`use engine` remains the compatibility import and includes every engine module
+folder. New projects can opt into narrower modules:
+
+```azora
+use engine.ui      // window, input, 2D UI/text
+use engine.render  // UI + camera, meshes, materials, render queues
+use engine.ecs     // @Component/@System/@Query, World, Storage<T>, events
+use engine.jobs    // Azora task helpers for background work
+```
+
+The build tool resolves dependencies between those modules, so a simulation-only
+utility can use `engine.ecs` without linking the renderer.
+
+Systems can describe Bevy-style query parameters by decorating a parameter type.
+The query shape is a real Azora tuple type; component access uses `ref` and
+`mut ref`, not `&` notation. The parameter erases to a `QueryCursor` value at
+runtime today:
+
+```azora
+@System("Update")
+func moveSystem(
+    world: ref World,
+    q: @Query (mut ref Transform, ref Velocity, Without<Sleeping>),
+    dt: Real
+) {
+    q.reset()
+    while q.hasNext() {
+        fin entity = q.next()
+        // Fetch concrete component data from your stores here.
+    }
 }
 ```
 

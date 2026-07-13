@@ -51,6 +51,10 @@ pack AzGpu {
     var viewProj: Long
     var scratch: Long
     var scale: Real
+    var lightX: Real
+    var lightY: Real
+    var lightZ: Real
+    var ambient: Real
 }
 
 /// A GPU mesh: vertex buffer handle + vertex count (interleaved pos+normal).
@@ -62,7 +66,7 @@ pack Mesh {
 // ── Setup ───────────────────────────────────────────────────────────────
 
 func gpuFailed(): AzGpu {
-    return AzGpu(false, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, false, -1, 0L, 0L, 1.0)
+    return AzGpu(false, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, false, -1, 0L, 0L, 1.0, 0.5, 0.8, 0.3, 0.35)
 }
 
 func gpuInit(scale: Real): AzGpu {
@@ -141,7 +145,8 @@ func gpuInit(scale: Real): AzGpu {
         0L, 0L, 0L, false, -1,
         az_alloc(64L),
         az_alloc(4096L),
-        scale
+        scale,
+        0.5, 0.8, 0.3, 0.35
     )
     // Identity view-projection until a camera is applied.
     pokeIdentity(gpu.viewProj)
@@ -353,16 +358,6 @@ impl App {
         return Mesh(buffer, vertCount)
     }
 
-    /// Uploads a camera's view-projection matrix for subsequent drawMesh calls.
-    func applyCamera(cam: Camera) {
-        var aspect = 1.0
-        fin h = self.height()
-        if h > 0 {
-            aspect = (self.width() as Real) / (h as Real)
-        }
-        pokeMat4(self.gpu.viewProj, 0L, cam.viewProj(aspect))
-    }
-
     /// Draws a mesh with a model transform and base color (simple lambert shading).
     func drawMesh(mesh: Mesh, model: Mat4, r: Real, g: Real, b: Real) {
         var gpu = self.gpu
@@ -375,18 +370,44 @@ impl App {
             gpu.mode = 0
         }
 
-        // Uniforms: viewProj (64) + model (64) + color (16) = 144 bytes.
+        // Uniforms: viewProj (64) + model (64) + color (16) + light (16) = 160 bytes.
         az_copy(gpu.scratch, gpu.viewProj, 64L)
         pokeMat4(gpu.scratch, 64L, model)
         az_poke_f32(gpu.scratch, 128L, r)
         az_poke_f32(gpu.scratch, 132L, g)
         az_poke_f32(gpu.scratch, 136L, b)
         az_poke_f32(gpu.scratch, 140L, 1.0)
+        az_poke_f32(gpu.scratch, 144L, gpu.lightX)
+        az_poke_f32(gpu.scratch, 148L, gpu.lightY)
+        az_poke_f32(gpu.scratch, 152L, gpu.lightZ)
+        az_poke_f32(gpu.scratch, 156L, gpu.ambient)
 
         send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0L, 0L)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 144L, 1L)
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 144L, 1L)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
         send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, mesh.count as Long)
+    }
+
+    /// Directional light for subsequent 3D draws. Values are normalized.
+    func setLightDirection(x: Real, y: Real, z: Real) {
+        fin len = sqrt(x * x + y * y + z * z)
+        if len < 0.000001 {
+            self.gpu.lightX = 0.5
+            self.gpu.lightY = 0.8
+            self.gpu.lightZ = 0.3
+            return
+        }
+        self.gpu.lightX = x / len
+        self.gpu.lightY = y / len
+        self.gpu.lightZ = z / len
+    }
+
+    /// Ambient light amount clamped into 0..1.
+    func setAmbientLight(value: Real) {
+        var v = value
+        if v < 0.0 { v = 0.0 }
+        if v > 1.0 { v = 1.0 }
+        self.gpu.ambient = v
     }
 
     // ── 2D drawing (window points, origin top-left) ─────────────────────

@@ -10,7 +10,7 @@
 // The whole game — board, pieces, rendering — is Azora code drawing 2D
 // rectangles and text through the engine's immediate-mode UI.
 
-use engine
+use engine.ui
 
 bridge C {
     func arc4random_uniform(bound: Int): Int
@@ -22,7 +22,7 @@ fin CELL = 26.0
 
 /// The 4 rotation bitmasks of the 7 tetrominoes (4x4 grid, row-wise from the
 /// top, most significant bit = top-left).
-func pieceMasks(): [Int] {
+func pieceMasks(): Array<Int> {
     return [
         0x0F00, 0x2222, 0x00F0, 0x4444, // I
         0x8E00, 0x6440, 0x0E20, 0x44C0, // J
@@ -35,14 +35,14 @@ func pieceMasks(): [Int] {
 }
 
 /// True when cell (i, j) of the piece's 4x4 grid is occupied.
-func pieceCell(masks: [Int], p: Int, r: Int, i: Int, j: Int): Bool {
+func pieceCell(masks: Array<Int>, p: Int, r: Int, i: Int, j: Int): Bool {
     fin mask = masks[p * 4 + r]
     fin bit = (3 - j) * 4 + (3 - i)
     return ((mask >> bit) & 1) != 0
 }
 
 /// True when the piece at (x, y) would overlap the walls, floor or stack.
-func collides(board: Long, masks: [Int], p: Int, r: Int, x: Int, y: Int): Bool {
+func collides(board: Long, masks: Array<Int>, p: Int, r: Int, x: Int, y: Int): Bool {
     var j = 0
     while j < 4 {
         var i = 0
@@ -66,7 +66,7 @@ func collides(board: Long, masks: [Int], p: Int, r: Int, x: Int, y: Int): Bool {
     return false
 }
 
-func lockPiece(board: Long, masks: [Int], p: Int, r: Int, x: Int, y: Int) {
+func lockPiece(board: Long, masks: Array<Int>, p: Int, r: Int, x: Int, y: Int) {
     var j = 0
     while j < 4 {
         var i = 0
@@ -129,7 +129,7 @@ func clearBoard(board: Long) {
     }
 }
 
-func drawCell(app: App, ox: Real, oy: Real, i: Int, j: Int, colors: [Real], c: Int) {
+func drawCell(app: App, ox: Real, oy: Real, i: Int, j: Int, colors: Array<Real>, c: Int) {
     fin x = ox + (i as Real) * CELL
     fin y = oy + (j as Real) * CELL
     fin r = colors[c * 3]

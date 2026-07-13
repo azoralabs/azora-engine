@@ -1,0 +1,171 @@
+// Azora Engine — camera.
+//
+// A first-person fly camera. Movement/look read input from the [App]; the
+// view-projection matrix is computed in Azora (az_math.az) and uploaded with
+// `app.applyCamera(cam)`.
+
+pack Camera {
+    var pos: Vec3
+    var yaw: Real
+    var pitch: Real
+    var fovDeg: Real
+}
+
+pack Color {
+    var r: Real
+    var g: Real
+    var b: Real
+    var a: Real
+}
+
+pack Material {
+    var color: Color
+    var roughness: Real
+}
+
+pack Transform3d {
+    var position: Vec3
+    var rotation: Vec3
+    var scale: Vec3
+}
+
+pack RenderItem {
+    var mesh: Mesh
+    var transform: Transform3d
+    var material: Material
+}
+
+pack RenderQueue {
+    var items: Array<RenderItem>
+}
+
+func cameraDefault(): Camera {
+    return Camera(Vec3(0.0, 1.5, 5.0), 0.0, -0.15, 60.0)
+}
+
+func colorRgb(r: Real, g: Real, b: Real): Color {
+    return Color(r, g, b, 1.0)
+}
+
+func colorRgba(r: Real, g: Real, b: Real, a: Real): Color {
+    return Color(r, g, b, a)
+}
+
+func materialColor(color: Color): Material {
+    return Material(color, 0.8)
+}
+
+func transformDefault(): Transform3d {
+    return Transform3d(Vec3(0.0, 0.0, 0.0), Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
+}
+
+func transformAt(position: Vec3): Transform3d {
+    return Transform3d(position, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
+}
+
+func renderQueueInit(): RenderQueue {
+    var items = [RenderItem(Mesh(0L, 0), transformDefault(), materialColor(colorRgb(0.0, 0.0, 0.0)))]
+    return RenderQueue(items)
+}
+
+impl Camera {
+    /// The horizontal direction the camera faces (unit XZ vector).
+    func forward(): Vec3 {
+        return Vec3(0.0 - sin(self.yaw), 0.0, 0.0 - cos(self.yaw))
+    }
+
+    /// The camera's right direction (unit XZ vector).
+    func right(): Vec3 {
+        return Vec3(cos(self.yaw), 0.0, 0.0 - sin(self.yaw))
+    }
+
+    /// The view-projection matrix for this camera at the given aspect ratio.
+    func viewProj(aspect: Real): Mat4 {
+        fin rotP = mat4RotationX(0.0 - self.pitch)
+        fin rotY = mat4RotationY(0.0 - self.yaw)
+        fin trans = mat4Translation(0.0 - self.pos.x, 0.0 - self.pos.y, 0.0 - self.pos.z)
+        fin viewM = mat4Mul(rotP, mat4Mul(rotY, trans))
+        fin proj = mat4Perspective(self.fovDeg, aspect, 0.1, 200.0)
+        return mat4Mul(proj, viewM)
+    }
+
+    /// Standard fly controls: WASD moves in the yaw plane, Q/E (or
+    /// Space/Shift) moves down/up, arrow keys look around.
+    func update(app: App, dt: Real, moveSpeed: Real, lookSpeed: Real) {
+        var move = vec3Zero()
+        if app.keyDown(KEY_W) { move = move + self.forward() }
+        if app.keyDown(KEY_S) { move = move - self.forward() }
+        if app.keyDown(KEY_D) { move = move + self.right() }
+        if app.keyDown(KEY_A) { move = move - self.right() }
+        if (app.keyDown(KEY_E) || app.keyDown(KEY_SPACE)) { move = move + Vec3(0.0, 1.0, 0.0) }
+        if (app.keyDown(KEY_Q) || app.keyDown(KEY_SHIFT)) { move = move - Vec3(0.0, 1.0, 0.0) }
+
+        fin step = move.normalized().scale(moveSpeed * dt)
+        self.pos = self.pos + step
+
+        if app.keyDown(KEY_LEFT) { self.yaw = self.yaw + lookSpeed * dt }
+        if app.keyDown(KEY_RIGHT) { self.yaw = self.yaw - lookSpeed * dt }
+        if app.keyDown(KEY_UP) { self.pitch = self.pitch + lookSpeed * dt }
+        if app.keyDown(KEY_DOWN) { self.pitch = self.pitch - lookSpeed * dt }
+
+        // Clamp pitch to avoid flipping over the poles.
+        if self.pitch > 1.5 { self.pitch = 1.5 }
+        if self.pitch < -1.5 { self.pitch = -1.5 }
+    }
+}
+
+impl Transform3d {
+    func matrix(): Mat4 {
+        fin translate = mat4Translation(self.position.x, self.position.y, self.position.z)
+        fin rotateX = mat4RotationX(self.rotation.x)
+        fin rotateY = mat4RotationY(self.rotation.y)
+        fin rotateZ = mat4RotationZ(self.rotation.z)
+        fin rotate = mat4Mul(rotateZ, mat4Mul(rotateY, rotateX))
+        fin scaleM = mat4Scale(self.scale.x, self.scale.y, self.scale.z)
+        return mat4Mul(translate, mat4Mul(rotate, scaleM))
+    }
+}
+
+impl RenderQueue {
+    func add(mesh: Mesh, transform: Transform3d, material: Material) {
+        self.items.add(RenderItem(mesh, transform, material))
+    }
+
+    func clear() {
+        var items = [RenderItem(Mesh(0L, 0), transformDefault(), materialColor(colorRgb(0.0, 0.0, 0.0)))]
+        self.items = items
+    }
+
+    func count(): Int {
+        return self.items.length - 1
+    }
+}
+
+impl App {
+    /// Uploads a camera's view-projection matrix for subsequent drawMesh calls.
+    func applyCamera(cam: Camera) {
+        var aspect = 1.0
+        fin h = self.height()
+        if h > 0 {
+            aspect = (self.width() as Real) / (h as Real)
+        }
+        pokeMat4(self.gpu.viewProj, 0L, cam.viewProj(aspect))
+    }
+
+    func drawMeshMaterial(mesh: Mesh, model: Mat4, material: Material) {
+        fin color = material.color
+        self.drawMesh(mesh, model, color.r, color.g, color.b)
+    }
+
+    func drawRenderItem(item: RenderItem) {
+        self.drawMeshMaterial(item.mesh, item.transform.matrix(), item.material)
+    }
+
+    func drawRenderQueue(queue: RenderQueue) {
+        var i = 1
+        while i < queue.items.length {
+            self.drawRenderItem(queue.items[i])
+            i = i + 1
+        }
+    }
+}

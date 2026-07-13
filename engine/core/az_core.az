@@ -1,0 +1,63 @@
+// Azora Engine — modular core.
+//
+// Small opt-in primitives shared by higher-level engine modules. Decorators
+// are parsed and stored by azora-lang, so engine code can mark components and
+// systems without requiring runtime reflection.
+
+deco Component {}
+deco System {
+    var phase: String
+}
+deco Query {}
+deco Resource {}
+
+fin AZ_PHASE_STARTUP = 0
+fin AZ_PHASE_PRE_UPDATE = 10
+fin AZ_PHASE_UPDATE = 20
+fin AZ_PHASE_POST_UPDATE = 30
+fin AZ_PHASE_FIXED_UPDATE = 40
+fin AZ_PHASE_RENDER = 50
+fin AZ_PHASE_LAST = 60
+
+pack Signal<T> {
+    var value: T
+    var revision: Int
+}
+
+func<T> signalInit(value: T): Signal<T> {
+    return Signal<T>(value, 0)
+}
+
+func<T> signalGet(signal: Signal<T>): T {
+    return signal.value
+}
+
+func<T> signalSet(signal: Signal<T>, value: T) {
+    signal.value = value
+    signal.revision = signal.revision + 1
+}
+
+func<T> signalVersion(signal: Signal<T>): Int {
+    return signal.revision
+}
+
+func<T> signalChangedSince(signal: Signal<T>, version: Int): Bool {
+    return signal.revision != version
+}
+
+solo EngineRegistry {
+    var loadedModules: Int = 0
+    var frameIndex: Int = 0
+
+    func markModuleLoaded() {
+        self.loadedModules = self.loadedModules + 1
+    }
+
+    func nextFrame() {
+        self.frameIndex = self.frameIndex + 1
+    }
+}
+
+wrap AzEngine {
+    solo EngineRegistry
+}

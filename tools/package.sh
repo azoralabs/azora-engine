@@ -6,7 +6,7 @@
 #
 #   dist/azora-engine-<version>/
 #     library.json                       manifest (id, version, templates)
-#     engine/*.az                        engine core, Azora language
+#     engine/<module>/*.az               engine modules, Azora language
 #     runtime/include/azora_runtime.h    native ABI reference
 #     native/macos/libazora_runtime.dylib
 #     tools/build.sh                     project build tool
@@ -59,7 +59,7 @@ mkdir -p "$DIST/engine" "$DIST/native/macos" "$DIST/tools/azorac/lib" \
          "$DIST/runtime/include" "$DIST/templates"
 
 cp "$ROOT_DIR/library.json" "$DIST/"
-cp "$ROOT_DIR/engine/"*.az "$DIST/engine/"
+cp -R "$ROOT_DIR/engine/." "$DIST/engine/"
 cp "$ROOT_DIR/runtime/include/azora_runtime.h" "$DIST/runtime/include/"
 cp "$ROOT_DIR/tools/build.sh" "$DIST/tools/"
 # The compiler's LLVM backend is pure text generation (clang assembles the IR),
@@ -71,6 +71,7 @@ for jar in "$AZORAC_LIB/"*.jar; do
     esac
 done
 cp -R "$ROOT_DIR/templates/." "$DIST/templates/"
+find "$DIST/templates" -name .azora-build -type d -prune -exec rm -rf {} +
 
 case "$(uname -s)" in
     Darwin) cp "$ROOT_DIR/runtime/build/libazora_runtime.dylib" "$DIST/native/macos/" ;;

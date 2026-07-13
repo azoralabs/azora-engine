@@ -8,7 +8,7 @@
 # Usage: build.sh <project_dir> [build|run]
 #
 # Layout expectations (a library bundle install):
-#   <lib>/engine/*.az                    engine core (Azora language)
+#   <lib>/engine/<module>/*.az           engine modules (Azora language)
 #   <lib>/native/macos/libazora_runtime.dylib
 #   <lib>/tools/azorac/lib/*.jar         bundled Azora compiler CLI
 set -euo pipefail
@@ -62,7 +62,7 @@ if [ -z "$CLANG_BIN" ]; then
     exit 1
 fi
 
-# ── Collect sources: engine core + project src ───────────────────────────
+# ── Collect sources: selected engine modules + project src ───────────────
 if [ ! -d "$PROJECT_DIR/src" ]; then
     echo "error: no src/ directory in $PROJECT_DIR" >&2
     exit 1
@@ -70,7 +70,90 @@ fi
 
 rm -rf "$SRC_DIR"
 mkdir -p "$SRC_DIR"
-cp "$LIB_DIR/engine/"*.az "$SRC_DIR/"
+
+ENGINE_MODULES=""
+append_engine_module() {
+    local module="$1"
+    if [ ! -d "$LIB_DIR/engine/$module" ]; then
+        echo "warning: unknown engine module '$module' (ignored)" >&2
+        return
+    fi
+    case " $ENGINE_MODULES " in
+        *" $module "*) ;;
+        *) ENGINE_MODULES="$ENGINE_MODULES $module" ;;
+    esac
+}
+
+add_engine_module() {
+    local module="$1"
+    case "$module" in
+        gpu)
+            add_engine_module "objc"
+            add_engine_module "math"
+            add_engine_module "shaders"
+            append_engine_module "gpu"
+            ;;
+        platform)
+            add_engine_module "input"
+            add_engine_module "gpu"
+            append_engine_module "platform"
+            ;;
+        ui)
+            add_engine_module "platform"
+            append_engine_module "ui"
+            ;;
+        render)
+            add_engine_module "ui"
+            append_engine_module "render"
+            ;;
+        ecs)
+            add_engine_module "core"
+            append_engine_module "ecs"
+            ;;
+        jobs|concurrency)
+            add_engine_module "core"
+            append_engine_module "jobs"
+            ;;
+        engine|all)
+            for dir in "$LIB_DIR/engine/"*/; do
+                [ -d "$dir" ] || continue
+                add_engine_module "$(basename "$dir")"
+            done
+            ;;
+        *)
+            append_engine_module "$module"
+            ;;
+    esac
+}
+
+ENGINE_USES="$(
+    awk '
+        /^[[:space:]]*use[[:space:]]+engine([[:space:]]|$)/ { print "engine" }
+        /^[[:space:]]*use[[:space:]]+engine\./ {
+            line = $0
+            sub(/^[[:space:]]*use[[:space:]]+engine\./, "", line)
+            sub(/[[:space:]].*/, "", line)
+            print line
+        }
+    ' "$PROJECT_DIR"/src/*.az
+)"
+
+if [ -z "$ENGINE_USES" ]; then
+    add_engine_module "engine"
+else
+    for module in $ENGINE_USES; do
+        add_engine_module "$module"
+    done
+fi
+
+for module in $ENGINE_MODULES; do
+    mkdir -p "$SRC_DIR/engine/$module"
+    for file in "$LIB_DIR/engine/$module/"*.az; do
+        [ -f "$file" ] || continue
+        cp "$file" "$SRC_DIR/engine/$module/"
+    done
+done
+
 cp "$PROJECT_DIR/src/"*.az "$SRC_DIR/"
 
 if [ ! -f "$SRC_DIR/main.az" ]; then

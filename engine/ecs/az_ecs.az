@@ -1,0 +1,804 @@
+// Azora Engine — ECS.
+//
+// A small, data-oriented ECS layer. Storage is explicit and opt-in: create the
+// component stores a game needs, pass them to systems, and keep the renderer or
+// UI modules out of pure simulation code.
+
+pack Entity {
+    var id: Int
+    var generation: Int
+}
+
+func entityInvalid(): Entity {
+    return Entity(-1, 0)
+}
+
+impl Entity {
+    func isValid(): Bool {
+        return self.id >= 0
+    }
+}
+
+pack World {
+    var generations: Array<Int>
+    var alive: Array<Bool>
+    var names: Array<String>
+    var parents: Array<Int>
+    var childCounts: Array<Int>
+    var prefabs: Array<Bool>
+    var resources: Array<Bool>
+    var freeIds: Array<Int>
+    var entityCount: Int
+    var aliveCount: Int
+    var tick: Int
+    var totalTime: Real
+    var fixedTimestep: Real
+    var fixedAccumulator: Real
+}
+
+func worldInit(): World {
+    var generations = [0]
+    var alive = [false]
+    var names = [""]
+    var parents = [-1]
+    var childCounts = [0]
+    var prefabs = [false]
+    var resources = [false]
+    var freeIds = [-1]
+    return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0)
+}
+
+impl World {
+    func spawn(): Entity {
+        if self.freeIds.length > 1 {
+            fin last = self.freeIds.length - 1
+            fin id = self.freeIds[last]
+            self.freeIds.remove(id)
+
+            fin gen = self.generations[id] + 1
+            self.generations[id] = gen
+            self.alive[id] = true
+            self.names[id] = ""
+            self.parents[id] = -1
+            self.childCounts[id] = 0
+            self.prefabs[id] = false
+            self.resources[id] = false
+            self.aliveCount = self.aliveCount + 1
+            return Entity(id, gen)
+        }
+
+        fin id = self.entityCount
+        if id < self.generations.length {
+            self.generations[id] = 0
+            self.alive[id] = true
+            self.names[id] = ""
+            self.parents[id] = -1
+            self.childCounts[id] = 0
+            self.prefabs[id] = false
+            self.resources[id] = false
+        } else {
+            self.generations.add(0)
+            self.alive.add(true)
+            self.names.add("")
+            self.parents.add(-1)
+            self.childCounts.add(0)
+            self.prefabs.add(false)
+            self.resources.add(false)
+        }
+        self.entityCount = self.entityCount + 1
+        self.aliveCount = self.aliveCount + 1
+        return Entity(id, 0)
+    }
+
+    func spawnNamed(name: String): Entity {
+        fin entity = self.spawn()
+        self.names[entity.id] = name
+        return entity
+    }
+
+    func despawn(entity: Entity) {
+        if !self.isAlive(entity) {
+            return
+        }
+
+        self.alive[entity.id] = false
+        self.names[entity.id] = ""
+        self.aliveCount = self.aliveCount - 1
+
+        fin parentId = self.parents[entity.id]
+        if parentId >= 0 && parentId < self.entityCount {
+            self.childCounts[parentId] = self.childCounts[parentId] - 1
+        }
+        self.parents[entity.id] = -1
+        self.childCounts[entity.id] = 0
+        self.prefabs[entity.id] = false
+        self.resources[entity.id] = false
+        self.freeIds.add(entity.id)
+    }
+
+    func isAlive(entity: Entity): Bool {
+        if entity.id < 0 || entity.id >= self.entityCount {
+            return false
+        }
+        return self.alive[entity.id] && self.generations[entity.id] == entity.generation
+    }
+
+    func count(): Int {
+        return self.aliveCount
+    }
+
+    func entityAt(id: Int): Entity {
+        if id < 0 || id >= self.entityCount {
+            return entityInvalid()
+        }
+        return Entity(id, self.generations[id])
+    }
+
+    func setName(entity: Entity, name: String) {
+        if self.isAlive(entity) {
+            self.names[entity.id] = name
+        }
+    }
+
+    func getName(entity: Entity): String {
+        if !self.isAlive(entity) {
+            return ""
+        }
+        return self.names[entity.id]
+    }
+
+    func lookup(name: String): Entity {
+        var i = 0
+        while i < self.entityCount {
+            if self.alive[i] && self.names[i] == name {
+                return Entity(i, self.generations[i])
+            }
+            i = i + 1
+        }
+        return entityInvalid()
+    }
+
+    func setParent(child: Entity, parent: Entity) {
+        if !self.isAlive(child) || !self.isAlive(parent) {
+            return
+        }
+        fin oldParent = self.parents[child.id]
+        if oldParent >= 0 && oldParent < self.entityCount {
+            self.childCounts[oldParent] = self.childCounts[oldParent] - 1
+        }
+        self.parents[child.id] = parent.id
+        self.childCounts[parent.id] = self.childCounts[parent.id] + 1
+    }
+
+    func removeParent(entity: Entity) {
+        if !self.isAlive(entity) {
+            return
+        }
+        fin parentId = self.parents[entity.id]
+        if parentId >= 0 && parentId < self.entityCount {
+            self.childCounts[parentId] = self.childCounts[parentId] - 1
+        }
+        self.parents[entity.id] = -1
+    }
+
+    func getParent(entity: Entity): Entity {
+        if !self.isAlive(entity) {
+            return entityInvalid()
+        }
+        fin parentId = self.parents[entity.id]
+        if parentId < 0 || parentId >= self.entityCount {
+            return entityInvalid()
+        }
+        return Entity(parentId, self.generations[parentId])
+    }
+
+    func getChildCount(entity: Entity): Int {
+        if !self.isAlive(entity) {
+            return 0
+        }
+        return self.childCounts[entity.id]
+    }
+
+    func markPrefab(entity: Entity) {
+        if self.isAlive(entity) {
+            self.prefabs[entity.id] = true
+        }
+    }
+
+    func isPrefab(entity: Entity): Bool {
+        if !self.isAlive(entity) {
+            return false
+        }
+        return self.prefabs[entity.id]
+    }
+
+    func spawnResource(name: String): Entity {
+        fin entity = self.spawnNamed(name)
+        self.resources[entity.id] = true
+        return entity
+    }
+
+    func markResource(entity: Entity) {
+        if self.isAlive(entity) {
+            self.resources[entity.id] = true
+        }
+    }
+
+    func isResource(entity: Entity): Bool {
+        if !self.isAlive(entity) {
+            return false
+        }
+        return self.resources[entity.id]
+    }
+
+    func progress(deltaTime: Real) {
+        self.tick = self.tick + 1
+        self.totalTime = self.totalTime + deltaTime
+        self.fixedAccumulator = self.fixedAccumulator + deltaTime
+    }
+
+    func setFixedTimestep(timestep: Real) {
+        self.fixedTimestep = timestep
+    }
+
+    func consumeFixedStep(): Bool {
+        if self.fixedAccumulator >= self.fixedTimestep {
+            self.fixedAccumulator = self.fixedAccumulator - self.fixedTimestep
+            return true
+        }
+        return false
+    }
+}
+
+pack Storage<T> {
+    var entities: Array<Entity>
+    var values: Array<T>
+    var added: Array<Bool>
+    var changed: Array<Bool>
+}
+
+func<T> storageInit(defaultValue: T): Storage<T> {
+    var entities = [entityInvalid()]
+    var values = [defaultValue]
+    var added = [false]
+    var changed = [false]
+    return Storage<T>(entities, values, added, changed)
+}
+
+func<T> storageIndexOf(store: Storage<T>, entity: Entity): Int {
+    if !entity.isValid() {
+        return -1
+    }
+    var i = 0
+    while i < store.entities.length {
+        fin current = store.entities[i]
+        if current.isValid() && current.id == entity.id && current.generation == entity.generation {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func<T> storageHas(store: Storage<T>, entity: Entity): Bool {
+    return storageIndexOf<T>(store, entity) >= 0
+}
+
+func<T> storageInsert(store: Storage<T>, entity: Entity, value: T) {
+    fin index = storageIndexOf<T>(store, entity)
+    if index >= 0 {
+        store.values[index] = value
+        store.changed[index] = true
+        return
+    }
+    store.entities.add(entity)
+    store.values.add(value)
+    store.added.add(true)
+    store.changed.add(false)
+}
+
+func<T> storageGet(store: Storage<T>, entity: Entity): T {
+    fin index = storageIndexOf<T>(store, entity)
+    return store.values[index]
+}
+
+func<T> storageGetOrDefault(store: Storage<T>, entity: Entity, defaultValue: T): T {
+    fin index = storageIndexOf<T>(store, entity)
+    if index < 0 {
+        return defaultValue
+    }
+    return store.values[index]
+}
+
+func<T> storageRemove(store: Storage<T>, entity: Entity): Bool {
+    fin index = storageIndexOf<T>(store, entity)
+    if index < 0 {
+        return false
+    }
+    store.entities[index] = entityInvalid()
+    store.added[index] = false
+    store.changed[index] = false
+    return true
+}
+
+func<T> storageWasAdded(store: Storage<T>, entity: Entity): Bool {
+    fin index = storageIndexOf<T>(store, entity)
+    return index >= 0 && store.added[index]
+}
+
+func<T> storageWasChanged(store: Storage<T>, entity: Entity): Bool {
+    fin index = storageIndexOf<T>(store, entity)
+    return index >= 0 && store.changed[index]
+}
+
+func<T> storageClearTracking(store: Storage<T>) {
+    var i = 0
+    while i < store.added.length {
+        store.added[i] = false
+        store.changed[i] = false
+        i = i + 1
+    }
+}
+
+func<T> storageCount(store: Storage<T>): Int {
+    var total = 0
+    var i = 0
+    while i < store.entities.length {
+        if store.entities[i].isValid() {
+            total = total + 1
+        }
+        i = i + 1
+    }
+    return total
+}
+
+func<T> storageEntityAt(store: Storage<T>, index: Int): Entity {
+    return store.entities[index]
+}
+
+func<T> storageValueAt(store: Storage<T>, index: Int): T {
+    return store.values[index]
+}
+
+func<T> storageLength(store: Storage<T>): Int {
+    return store.entities.length
+}
+
+func<T> spawnWith(world: World, store: Storage<T>, value: T): Entity {
+    fin entity = world.spawn()
+    storageInsert<T>(store, entity, value)
+    return entity
+}
+
+func<T> copyComponent(store: Storage<T>, source: Entity, target: Entity) {
+    if storageHas<T>(store, source) {
+        storageInsert<T>(store, target, storageGet<T>(store, source))
+    }
+}
+
+func<T> spawnResourceWith(world: World, store: Storage<T>, name: String, value: T): Entity {
+    fin entity = world.spawnResource(name)
+    storageInsert<T>(store, entity, value)
+    return entity
+}
+
+pack QueryFetch {
+    var ok: Bool
+    var entity: Entity
+    var error: String
+}
+
+pack QueryCursor {
+    var entities: Array<Entity>
+    var cursor: Int
+    var ok: Bool
+    var error: String
+}
+
+func queryEmpty(): QueryCursor {
+    return QueryCursor([entityInvalid()], 1, true, "")
+}
+
+func queryError(message: String): QueryCursor {
+    return QueryCursor([entityInvalid()], 1, false, message)
+}
+
+impl QueryCursor {
+    func add(entity: Entity) {
+        if entity.isValid() {
+            self.entities.add(entity)
+        }
+    }
+
+    func reset() {
+        self.cursor = 1
+    }
+
+    func markFailed(message: String) {
+        self.ok = false
+        self.error = message
+    }
+
+    func invalidateAt(index: Int) {
+        if index > 0 && index < self.entities.length {
+            self.entities[index] = entityInvalid()
+        }
+    }
+
+    func hasNext(): Bool {
+        var i = self.cursor
+        while i < self.entities.length {
+            if self.entities[i].isValid() {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    func next(): Entity {
+        while self.cursor < self.entities.length {
+            fin entity = self.entities[self.cursor]
+            self.cursor = self.cursor + 1
+            if entity.isValid() {
+                return entity
+            }
+        }
+        return entityInvalid()
+    }
+
+    func count(): Int {
+        var total = 0
+        var i = 1
+        while i < self.entities.length {
+            if self.entities[i].isValid() {
+                total = total + 1
+            }
+            i = i + 1
+        }
+        return total
+    }
+
+    func isEmpty(): Bool {
+        return self.count() <= 0
+    }
+
+    func single(): QueryFetch {
+        var found = entityInvalid()
+        var total = 0
+        var i = 1
+        while i < self.entities.length {
+            fin entity = self.entities[i]
+            if entity.isValid() {
+                found = entity
+                total = total + 1
+            }
+            i = i + 1
+        }
+        if total == 1 {
+            return QueryFetch(true, found, "")
+        }
+        if total == 0 {
+            return QueryFetch(false, entityInvalid(), "query expected one entity, found none")
+        }
+        return QueryFetch(false, entityInvalid(), "query expected one entity, found many")
+    }
+}
+
+func queryAll(world: World, includeResources: Bool): QueryCursor {
+    var query = queryEmpty()
+    var i = 0
+    while i < world.entityCount {
+        fin entity = world.entityAt(i)
+        if world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
+            query.add(entity)
+        }
+        i = i + 1
+    }
+    return query
+}
+
+func queryBroad(world: World): QueryCursor {
+    return queryAll(world, true)
+}
+
+func queryScene(world: World): QueryCursor {
+    return queryAll(world, false)
+}
+
+func queryRetainAlive(query: QueryCursor, world: World) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && !world.isAlive(entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func queryRetainResources(query: QueryCursor, world: World) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && !world.isResource(entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func queryRetainScene(query: QueryCursor, world: World) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && world.isResource(entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func<T> queryFromStorage(world: World, store: Storage<T>, includeResources: Bool): QueryCursor {
+    var query = queryEmpty()
+    var i = 0
+    while i < store.entities.length {
+        fin entity = store.entities[i]
+        if entity.isValid() && world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
+            query.add(entity)
+        }
+        i = i + 1
+    }
+    return query
+}
+
+func<T> queryWith(query: QueryCursor, store: Storage<T>) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && !storageHas<T>(store, entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func<T> queryWithout(query: QueryCursor, store: Storage<T>) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && storageHas<T>(store, entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func<T> queryAdded(query: QueryCursor, store: Storage<T>) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && !storageWasAdded<T>(store, entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func<T> queryChanged(query: QueryCursor, store: Storage<T>) {
+    var i = 1
+    while i < query.entities.length {
+        fin entity = query.entities[i]
+        if entity.isValid() && !storageWasChanged<T>(store, entity) {
+            query.invalidateAt(i)
+        }
+        i = i + 1
+    }
+}
+
+func<T> queryResources(world: World, store: Storage<T>): QueryCursor {
+    var query = queryFromStorage<T>(world, store, true)
+    queryRetainResources(query, world)
+    return query
+}
+
+pack QueryAccess {
+    var system: String
+    var reads: Array<String>
+    var writes: Array<String>
+    var withs: Array<String>
+    var withouts: Array<String>
+    var added: Array<String>
+    var changed: Array<String>
+    var broad: Bool
+    var includeResources: Bool
+    var single: Bool
+    var valid: Bool
+    var error: String
+}
+
+func queryAccessInit(system: String): QueryAccess {
+    return QueryAccess(system, [""], [""], [""], [""], [""], [""], false, false, false, true, "")
+}
+
+func queryNameListHas(list: Array<String>, name: String): Bool {
+    var i = 1
+    while i < list.length {
+        if list[i] == name {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func queryNameListsOverlap(left: Array<String>, right: Array<String>): Bool {
+    var i = 1
+    while i < left.length {
+        if queryNameListHas(right, left[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func queryAccessRead(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.reads, component) {
+        access.reads.add(component)
+    }
+}
+
+func queryAccessWrite(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.writes, component) {
+        access.writes.add(component)
+    }
+}
+
+func queryAccessWith(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.withs, component) {
+        access.withs.add(component)
+    }
+}
+
+func queryAccessWithout(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.withouts, component) {
+        access.withouts.add(component)
+    }
+}
+
+func queryAccessAdded(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.added, component) {
+        access.added.add(component)
+    }
+}
+
+func queryAccessChanged(access: QueryAccess, component: String) {
+    if component != "" && !queryNameListHas(access.changed, component) {
+        access.changed.add(component)
+    }
+}
+
+func queryAccessBroad(access: QueryAccess, includeResources: Bool) {
+    access.broad = true
+    access.includeResources = includeResources
+}
+
+func queryAccessSingle(access: QueryAccess) {
+    access.single = true
+}
+
+func queryAccessFail(access: QueryAccess, message: String) {
+    access.valid = false
+    access.error = message
+}
+
+func queryAccessDisjoint(left: QueryAccess, right: QueryAccess): Bool {
+    return queryNameListsOverlap(left.withs, right.withouts) || queryNameListsOverlap(right.withs, left.withouts)
+}
+
+func queryAccessConflicts(left: QueryAccess, right: QueryAccess): Bool {
+    if queryAccessDisjoint(left, right) {
+        return false
+    }
+    if queryNameListsOverlap(left.writes, right.writes) {
+        return true
+    }
+    if queryNameListsOverlap(left.writes, right.reads) {
+        return true
+    }
+    if queryNameListsOverlap(right.writes, left.reads) {
+        return true
+    }
+    return false
+}
+
+pack ResourceCell<T> {
+    var hasValue: Bool
+    var value: T
+    var revision: Int
+}
+
+func<T> resourceInit(defaultValue: T): ResourceCell<T> {
+    return ResourceCell<T>(false, defaultValue, 0)
+}
+
+func<T> resourceExists(resource: ResourceCell<T>): Bool {
+    return resource.hasValue
+}
+
+func<T> resourceSet(resource: ResourceCell<T>, value: T) {
+    resource.value = value
+    resource.hasValue = true
+    resource.revision = resource.revision + 1
+}
+
+func<T> resourceGet(resource: ResourceCell<T>): T {
+    return resource.value
+}
+
+func<T> resourceGetOrDefault(resource: ResourceCell<T>, defaultValue: T): T {
+    if resource.hasValue {
+        return resource.value
+    }
+    return defaultValue
+}
+
+pack EventQueue<T> {
+    var events: Array<T>
+    var cursor: Int
+}
+
+func<T> eventQueueInit(defaultEvent: T): EventQueue<T> {
+    var events = [defaultEvent]
+    return EventQueue<T>(events, 1)
+}
+
+func<T> eventSend(queue: EventQueue<T>, event: T) {
+    queue.events.add(event)
+}
+
+func<T> eventLength(queue: EventQueue<T>): Int {
+    return queue.events.length - queue.cursor
+}
+
+func<T> eventIsEmpty(queue: EventQueue<T>): Bool {
+    return eventLength<T>(queue) <= 0
+}
+
+func<T> eventPeek(queue: EventQueue<T>, index: Int): T {
+    return queue.events[queue.cursor + index]
+}
+
+func<T> eventHasNext(queue: EventQueue<T>): Bool {
+    return queue.cursor < queue.events.length
+}
+
+func<T> eventNext(queue: EventQueue<T>): T {
+    fin event = queue.events[queue.cursor]
+    queue.cursor = queue.cursor + 1
+    return event
+}
+
+pack CommandBuffer {
+    var despawns: Array<Entity>
+    var cursor: Int
+}
+
+func commandBufferInit(): CommandBuffer {
+    var despawns = [entityInvalid()]
+    return CommandBuffer(despawns, 1)
+}
+
+impl CommandBuffer {
+    func despawn(entity: Entity) {
+        self.despawns.add(entity)
+    }
+
+    func apply(world: World) {
+        while self.cursor < self.despawns.length {
+            world.despawn(self.despawns[self.cursor])
+            self.cursor = self.cursor + 1
+        }
+    }
+}

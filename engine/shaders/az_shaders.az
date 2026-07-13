@@ -1,7 +1,7 @@
 // Azora Engine — Metal shader source (MSL), compiled at startup by az_gpu.az.
 //
-// 3D: interleaved position+normal vertices, per-draw viewProj/model/color
-//     uniforms, simple directional lambert shading.
+// 3D: interleaved position+normal vertices, per-draw viewProj/model/color/light
+//     uniforms, simple configurable directional lambert shading.
 // 2D: position+uv+color vertices in physical pixels mapped to NDC, optional
 //     texture (text quads) modulated by the vertex color.
 
@@ -10,7 +10,7 @@ func shaderSource(): String {
         + "#include <metal_stdlib>\n"
         + "using namespace metal;\n"
         + "struct V3Out { float4 pos [[position]]; float3 normal; };\n"
-        + "struct U3 { float4x4 viewProj; float4x4 model; float4 color; };\n"
+        + "struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; };\n"
         + "vertex V3Out v3_main(uint vid [[vertex_id]],\n"
         + "                     const device float* verts [[buffer(0)]],\n"
         + "                     constant U3& u [[buffer(1)]]) {\n"
@@ -22,9 +22,10 @@ func shaderSource(): String {
         + "    return out;\n"
         + "}\n"
         + "fragment float4 f3_main(V3Out in [[stage_in]], constant U3& u [[buffer(1)]]) {\n"
-        + "    float3 l = normalize(float3(0.5, 0.8, 0.3));\n"
+        + "    float3 l = normalize(u.light.xyz);\n"
         + "    float d = max(dot(normalize(in.normal), l), 0.0);\n"
-        + "    float i = 0.35 + 0.65 * d;\n"
+        + "    float ambient = clamp(u.light.w, 0.0, 1.0);\n"
+        + "    float i = ambient + (1.0 - ambient) * d;\n"
         + "    return float4(u.color.rgb * i, u.color.a);\n"
         + "}\n"
         + "struct V2Out { float4 pos [[position]]; float2 uv; float4 color; };\n"
