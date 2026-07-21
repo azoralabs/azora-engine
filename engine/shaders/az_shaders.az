@@ -1,11 +1,17 @@
-// Azora Engine — Metal shader source (MSL), compiled at startup by az_gpu.az.
+// Azora Engine — equivalent Metal, Vulkan, and WebGL shader libraries.
+//
+// Metal is compiled at startup by az_gpu.az. Vulkan consumes GLSL 4.50 and
+// WebAssembly embeds GLSL ES 3.00 in linear memory for the WebGL device backend.
 //
 // 3D: interleaved position+normal vertices, per-draw viewProj/model/color/light
 //     uniforms, simple configurable directional lambert shading.
 // 2D: position+uv+color vertices in physical pixels mapped to NDC, optional
 //     texture (text quads) modulated by the vertex color.
 
-func shaderSource(): String {
+module engine.shaders
+
+/** Complete Metal shader library containing the equivalent 3D and 2D stages. */
+func metalShaderSource(): String {
     return (""
         + "#include <metal_stdlib>\n"
         + "using namespace metal;\n"
@@ -49,6 +55,157 @@ func shaderSource(): String {
         + "        return float4(in.color.rgb, in.color.a * t.a);\n"
         + "    }\n"
         + "    return in.color;\n"
+        + "}\n"
+    )
+}
+
+/** Compatibility name used by the native Metal renderer. */
+func shaderSource(): String {
+    return metalShaderSource()
+}
+
+/** Vulkan GLSL 4.50 equivalent of Metal `v3_main`. */
+func vulkan3dVertexShaderSource(): String {
+    return (""
+        + "#version 450\n"
+        + "layout(location = 0) in vec3 inPosition;\n"
+        + "layout(location = 1) in vec3 inNormal;\n"
+        + "layout(set = 0, binding = 0) uniform U3 { mat4 viewProj; mat4 model; vec4 color; vec4 light; } u;\n"
+        + "layout(location = 0) out vec3 normal;\n"
+        + "void main() {\n"
+        + "    gl_Position = u.viewProj * u.model * vec4(inPosition, 1.0);\n"
+        + "    normal = mat3(u.model) * inNormal;\n"
+        + "}\n"
+    )
+}
+
+/** Vulkan GLSL 4.50 equivalent of Metal `f3_main`. */
+func vulkan3dFragmentShaderSource(): String {
+    return (""
+        + "#version 450\n"
+        + "layout(location = 0) in vec3 normal;\n"
+        + "layout(set = 0, binding = 0) uniform U3 { mat4 viewProj; mat4 model; vec4 color; vec4 light; } u;\n"
+        + "layout(location = 0) out vec4 outColor;\n"
+        + "void main() {\n"
+        + "    vec3 l = normalize(u.light.xyz);\n"
+        + "    float d = max(dot(normalize(normal), l), 0.0);\n"
+        + "    float ambient = clamp(u.light.w, 0.0, 1.0);\n"
+        + "    float intensity = ambient + (1.0 - ambient) * d;\n"
+        + "    outColor = vec4(u.color.rgb * intensity, u.color.a);\n"
+        + "}\n"
+    )
+}
+
+/** Vulkan GLSL 4.50 equivalent of Metal `v2_main`. */
+func vulkan2dVertexShaderSource(): String {
+    return (""
+        + "#version 450\n"
+        + "layout(location = 0) in vec2 inPosition;\n"
+        + "layout(location = 1) in vec2 inUv;\n"
+        + "layout(location = 2) in vec4 inColor;\n"
+        + "layout(set = 0, binding = 0) uniform U2 { vec2 viewport; float useTex; float pad; } u;\n"
+        + "layout(location = 0) out vec2 uv;\n"
+        + "layout(location = 1) out vec4 color;\n"
+        + "void main() {\n"
+        + "    gl_Position = vec4(inPosition.x / u.viewport.x * 2.0 - 1.0, 1.0 - inPosition.y / u.viewport.y * 2.0, 0.0, 1.0);\n"
+        + "    uv = inUv;\n"
+        + "    color = inColor;\n"
+        + "}\n"
+    )
+}
+
+/** Vulkan GLSL 4.50 equivalent of Metal `f2_main`. */
+func vulkan2dFragmentShaderSource(): String {
+    return (""
+        + "#version 450\n"
+        + "layout(location = 0) in vec2 uv;\n"
+        + "layout(location = 1) in vec4 color;\n"
+        + "layout(set = 0, binding = 0) uniform U2 { vec2 viewport; float useTex; float pad; } u;\n"
+        + "layout(set = 0, binding = 1) uniform sampler2D tex;\n"
+        + "layout(location = 0) out vec4 outColor;\n"
+        + "void main() {\n"
+        + "    if (u.useTex > 0.5) {\n"
+        + "        vec4 sampled = texture(tex, uv);\n"
+        + "        outColor = vec4(color.rgb, color.a * sampled.a);\n"
+        + "    } else {\n"
+        + "        outColor = color;\n"
+        + "    }\n"
+        + "}\n"
+    )
+}
+
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v3_main`. */
+func webgl3dVertexShaderSource(): String {
+    return (""
+        + "#version 300 es\n"
+        + "precision highp float;\n"
+        + "in vec3 position;\n"
+        + "in vec3 normal;\n"
+        + "uniform mat4 modelViewMatrix;\n"
+        + "uniform mat4 projectionMatrix;\n"
+        + "uniform mat3 normalMatrix;\n"
+        + "out vec3 vNormal;\n"
+        + "void main() {\n"
+        + "    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n"
+        + "    vNormal = normalize(normalMatrix * normal);\n"
+        + "}\n"
+    )
+}
+
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f3_main`. */
+func webgl3dFragmentShaderSource(): String {
+    return (""
+        + "#version 300 es\n"
+        + "precision highp float;\n"
+        + "in vec3 vNormal;\n"
+        + "uniform vec4 uColor;\n"
+        + "uniform vec4 uLight;\n"
+        + "out vec4 outColor;\n"
+        + "void main() {\n"
+        + "    float d = max(dot(normalize(vNormal), normalize(uLight.xyz)), 0.0);\n"
+        + "    float ambient = clamp(uLight.w, 0.0, 1.0);\n"
+        + "    float intensity = ambient + (1.0 - ambient) * d;\n"
+        + "    outColor = vec4(uColor.rgb * intensity, uColor.a);\n"
+        + "}\n"
+    )
+}
+
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v2_main`. */
+func webgl2dVertexShaderSource(): String {
+    return (""
+        + "#version 300 es\n"
+        + "precision highp float;\n"
+        + "in vec3 position;\n"
+        + "in vec2 uv;\n"
+        + "in vec4 color;\n"
+        + "uniform vec2 uViewport;\n"
+        + "out vec2 vUv;\n"
+        + "out vec4 vColor;\n"
+        + "void main() {\n"
+        + "    gl_Position = vec4(position.x / uViewport.x * 2.0 - 1.0, 1.0 - position.y / uViewport.y * 2.0, 0.0, 1.0);\n"
+        + "    vUv = uv;\n"
+        + "    vColor = color;\n"
+        + "}\n"
+    )
+}
+
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f2_main`. */
+func webgl2dFragmentShaderSource(): String {
+    return (""
+        + "#version 300 es\n"
+        + "precision highp float;\n"
+        + "in vec2 vUv;\n"
+        + "in vec4 vColor;\n"
+        + "uniform bool uUseTexture;\n"
+        + "uniform sampler2D uTexture;\n"
+        + "out vec4 outColor;\n"
+        + "void main() {\n"
+        + "    if (uUseTexture) {\n"
+        + "        vec4 sampled = texture(uTexture, vUv);\n"
+        + "        outColor = vec4(vColor.rgb, vColor.a * sampled.a);\n"
+        + "    } else {\n"
+        + "        outColor = vColor;\n"
+        + "    }\n"
         + "}\n"
     )
 }

@@ -1,0 +1,133 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+module engine.render
+
+import std.math
+import engine.shaders
+
+/**
+ * @file engine/render/az_web_render
+ *
+ * Universal immediate rendering API for Azora Engine 0.0.4.
+ *
+ * Applications import `engine.render` and contain only Azora code. The engine
+ * selects the device implementation for the compilation target: WebGL for
+ * WebAssembly, Metal on Apple native targets, and Vulkan on supported native
+ * targets. Device bridge functions below are an internal compiler/backend ABI;
+ * they are not an application-facing JavaScript API.
+ *
+ * Applications own their lifetime with `task main`, await [nextFrame] inside
+ * an ordinary Azora `loop`, record commands, and call [present]. WebAssembly
+ * JSPI suspends that task at the browser repaint boundary without moving the
+ * loop into host code. Native runners use the same lifecycle.
+ *
+ * @since 0.0.4
+ */
+
+friend zone engine {
+    /** Rendering device selected for the current compilation target. */
+    @Experimental(sinceAzora: "0.0.4")
+    enum RenderBackend {
+        Metal,
+        Vulkan,
+        WebGL
+    }
+
+    /** Dimensionality of the active rendering surface. */
+    @Experimental(sinceAzora: "0.0.4")
+    enum RenderMode {
+        TwoD,
+        ThreeD
+    }
+
+    /*
+     * Internal WebAssembly device ABI. The WebGL backend implements these as
+     * typed WASM imports; public engine behavior remains in Azora below.
+     */
+    bridge WebGL {
+        func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+        func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+        func engineWebNextFrame(): Real
+        func engineWebPresent(): Unit
+        func engineWebClear(r: Real, g: Real, b: Real): Unit
+        func engineWebRect(x: Real, y: Real, width: Real, height: Real, r: Real, g: Real, b: Real, a: Real): Unit
+        func engineWebCircle(x: Real, y: Real, radius: Real, r: Real, g: Real, b: Real, a: Real): Unit
+        func engineWebCube(size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real): Unit
+        func engineWebCamera(distance: Real, fov: Real): Unit
+        func engineWebLog(message: String): Unit
+    }
+
+    /** Returns the rendering backend used by a WebAssembly build. */
+    @Experimental(sinceAzora: "0.0.4")
+    prop renderBackend: RenderBackend = RenderBackend.WebGL
+
+    /** Opens a resolution-independent 2D surface. Call once from `main`. */
+    @Experimental(sinceAzora: "0.0.4")
+    func run2d(width: Int, height: Int) {
+        engineWebOpen2d(width, height, webgl2dVertexShaderSource(), webgl2dFragmentShaderSource())
+    }
+
+    /** Opens a hardware-accelerated 3D surface. Call once from `main`. */
+    @Experimental(sinceAzora: "0.0.4")
+    func run3d(width: Int, height: Int) {
+        engineWebOpen3d(width, height, webgl3dVertexShaderSource(), webgl3dFragmentShaderSource())
+    }
+
+    /** Suspends the current task until the display is ready for another frame. */
+    @Experimental(sinceAzora: "0.0.4")
+    task nextFrame(): Real {
+        return engineWebNextFrame()
+    }
+
+    /** Submits the commands recorded since [nextFrame] to the active device. */
+    @Experimental(sinceAzora: "0.0.4")
+    func present() {
+        engineWebPresent()
+    }
+
+    /** Clears the active frame with a linear RGB color. */
+    @Experimental(sinceAzora: "0.0.4")
+    func clear(r: Real, g: Real, b: Real) {
+        engineWebClear(r, g, b)
+    }
+
+    /** Draws a filled rectangle in logical 2D coordinates. */
+    @Experimental(sinceAzora: "0.0.4")
+    func rect(x: Real, y: Real, width: Real, height: Real, r: Real, g: Real, b: Real, a: Real = 1.0) {
+        engineWebRect(x, y, width, height, r, g, b, a)
+    }
+
+    /** Draws a filled circle in logical 2D coordinates. */
+    @Experimental(sinceAzora: "0.0.4")
+    func circle(x: Real, y: Real, radius: Real, r: Real, g: Real, b: Real, a: Real = 1.0) {
+        engineWebCircle(x, y, radius, r, g, b, a)
+    }
+
+    /** Draws or updates a lit cube. Rotation angles are radians. */
+    @Experimental(sinceAzora: "0.0.4")
+    func cube(size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real) {
+        engineWebCube(size, rotateX, rotateY, rotateZ, r, g, b)
+    }
+
+    /** Configures the perspective camera for the active 3D surface. */
+    @Experimental(sinceAzora: "0.0.4")
+    func camera(distance: Real, fov: Real = 48.0) {
+        engineWebCamera(distance, fov)
+    }
+
+    /** Returns a smooth sine wave for procedural animation. */
+    @Experimental(sinceAzora: "0.0.4")
+    func wave(time: Real, amplitude: Real = 1.0, speed: Real = 1.0): Real {
+        return std::math::sin(time * speed) * amplitude
+    }
+
+    /** Writes a message to the engine console. */
+    @Experimental(sinceAzora: "0.0.4")
+    func log(message: String) {
+        engineWebLog(message)
+    }
+}

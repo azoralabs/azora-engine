@@ -2,7 +2,8 @@
 
 A native game engine & app framework written in the **Azora language** —
 including its platform layer and Metal renderer. Engine and application code
-compile to machine code through the Azora compiler's LLVM backend; the OS is
+compile to machine code through the Azora compiler's LLVM backend; browser
+projects run task-owned loops through Engine WASM and use Azora-provided WebGL shaders. The OS is
 driven directly from Azora via the Objective-C runtime and C framework APIs.
 
 ```
@@ -35,6 +36,7 @@ bind the same way for Windows/Linux.
 | Path                | Contents                                                         |
 |---------------------|------------------------------------------------------------------|
 | `engine/`           | Engine in Azora: modular core/ECS/jobs plus platform, GPU, math, camera, input, UI and shaders |
+| `engine/browser/`   | Azora 0.0.4 browser module and Engine WASM runtime used by the playground |
 | `runtime/`          | FFI plumbing shim (`src/ffi/az_ffi.c`)                           |
 | `templates/app`     | "App" template — window + two buttons                            |
 | `templates/game`    | "Game · Empty" — cube scene with WASD fly camera                 |
@@ -76,10 +78,11 @@ func main() {
 folder. New projects can opt into narrower modules:
 
 ```azora
-use engine.ui      // window, input, 2D UI/text
-use engine.render  // UI + camera, meshes, materials, render queues
-use engine.ecs     // @Component/@System/@Query, World, Storage<T>, events
-use engine.jobs    // Azora task helpers for background work
+import engine.ui       // window, input, 2D UI/text
+import engine.render   // UI + camera, meshes, materials, render queues
+import engine.ecs      // @Component/@System/@Query, World, Storage<T>, events
+import engine.jobs     // Azora task helpers for background work
+import engine.shaders  // Equivalent Metal, Vulkan, and WebGL shader sources
 ```
 
 The build tool resolves dependencies between those modules, so a simulation-only

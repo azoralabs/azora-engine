@@ -126,22 +126,22 @@ add_engine_module() {
     esac
 }
 
-ENGINE_USES="$(
+ENGINE_IMPORTS="$(
     awk '
-        /^[[:space:]]*use[[:space:]]+engine([[:space:]]|$)/ { print "engine" }
-        /^[[:space:]]*use[[:space:]]+engine\./ {
+        /^[[:space:]]*import[[:space:]]+engine([[:space:]]|$)/ { print "engine" }
+        /^[[:space:]]*import[[:space:]]+engine\./ {
             line = $0
-            sub(/^[[:space:]]*use[[:space:]]+engine\./, "", line)
+            sub(/^[[:space:]]*import[[:space:]]+engine\./, "", line)
             sub(/[[:space:]].*/, "", line)
             print line
         }
     ' "$PROJECT_DIR"/src/*.az
 )"
 
-if [ -z "$ENGINE_USES" ]; then
+if [ -z "$ENGINE_IMPORTS" ]; then
     add_engine_module "engine"
 else
-    for module in $ENGINE_USES; do
+    for module in $ENGINE_IMPORTS; do
         add_engine_module "$module"
     done
 fi

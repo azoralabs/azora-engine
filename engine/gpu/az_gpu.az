@@ -4,6 +4,13 @@
 // CoreText/CoreGraphics through their plain C APIs for text rasterization.
 // Shaders are compiled from MSL source at startup.
 
+module engine.gpu
+
+import std.io
+import engine.objc
+import engine.math
+import engine.shaders
+
 bridge C {
     // Metal / QuartzCore C entry points
     func MTLCreateSystemDefaultDevice(): Long
@@ -72,7 +79,7 @@ func gpuFailed(): AzGpu {
 func gpuInit(scale: Real): AzGpu {
     fin device = MTLCreateSystemDefaultDevice()
     if device == 0L {
-        println("azora-engine: no Metal device")
+        std::println("azora-engine: no Metal device")
         return gpuFailed()
     }
     fin queue = send0(device, sel("newCommandQueue"))
@@ -86,7 +93,7 @@ func gpuInit(scale: Real): AzGpu {
     // Shader library from MSL source.
     fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), 0L, 0L)
     if lib == 0L {
-        println("azora-engine: shader compilation failed")
+        std::println("azora-engine: shader compilation failed")
         return gpuFailed()
     }
 
@@ -99,7 +106,7 @@ func gpuInit(scale: Real): AzGpu {
     send1(d3, sel("setDepthAttachmentPixelFormat:"), 252L)
     fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, 0L)
     if pipe3d == 0L {
-        println("azora-engine: 3D pipeline failed")
+        std::println("azora-engine: 3D pipeline failed")
         return gpuFailed()
     }
 
@@ -117,7 +124,7 @@ func gpuInit(scale: Real): AzGpu {
     send1(d2, sel("setDepthAttachmentPixelFormat:"), 252L)
     fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, 0L)
     if pipe2d == 0L {
-        println("azora-engine: 2D pipeline failed")
+        std::println("azora-engine: 2D pipeline failed")
         return gpuFailed()
     }
 
