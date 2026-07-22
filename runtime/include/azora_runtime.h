@@ -22,6 +22,8 @@ extern "C" {
 /* objc_msgSend trampolines for signatures involving doubles or by-value
  * structs (arm64 requires the exact C function type at the call site). */
 double  az_send_d0(int64_t obj, int64_t sel);
+double  az_send_float0(int64_t obj, int64_t sel);
+int64_t az_send_float1(int64_t obj, int64_t sel, double a);
 int64_t az_send_f1(int64_t obj, int64_t sel, double a);
 int64_t az_send_f2(int64_t obj, int64_t sel, double a, double b);
 int64_t az_send_quad(int64_t obj, int64_t sel, double a, double b, double c, double d);

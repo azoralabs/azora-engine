@@ -1,0 +1,185 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+module engine.audio
+
+import engine.objc
+import engine.math
+
+/**
+ * @file engine/audio/audio
+ *
+ * Lightweight native scene audio authored entirely in Azora. Waveforms are
+ * generated as PCM at startup, copied into native audio players, and then
+ * controlled through a small soundtrack/engine/effects mixer.
+ */
+
+pack AudioScene {
+    var soundtrack: Long
+    var engineLoop: Long
+    var crashEffect: Long
+    var running: Bool
+}
+
+friend zone engine::audio {
+    fin SAMPLE_RATE = 22050
+    fin SOUNDTRACK = 0
+    fin ENGINE_LOOP = 1
+    fin CRASH_EFFECT = 2
+
+    func clamp(value: Real, lo: Real, hi: Real): Real {
+        if value < lo { return lo }
+        if value > hi { return hi }
+        return value
+    }
+
+    func pokeWaveHeader(bytes: Long, dataSize: Int) {
+        az_poke8(bytes, 0L, 82)
+        az_poke8(bytes, 1L, 73)
+        az_poke8(bytes, 2L, 70)
+        az_poke8(bytes, 3L, 70)
+        az_poke32(bytes, 4L, dataSize + 36)
+        az_poke8(bytes, 8L, 87)
+        az_poke8(bytes, 9L, 65)
+        az_poke8(bytes, 10L, 86)
+        az_poke8(bytes, 11L, 69)
+        az_poke8(bytes, 12L, 102)
+        az_poke8(bytes, 13L, 109)
+        az_poke8(bytes, 14L, 116)
+        az_poke8(bytes, 15L, 32)
+        az_poke32(bytes, 16L, 16)
+        az_poke8(bytes, 20L, 1)
+        az_poke8(bytes, 21L, 0)
+        az_poke8(bytes, 22L, 1)
+        az_poke8(bytes, 23L, 0)
+        az_poke32(bytes, 24L, SAMPLE_RATE)
+        az_poke32(bytes, 28L, SAMPLE_RATE * 2)
+        az_poke8(bytes, 32L, 2)
+        az_poke8(bytes, 33L, 0)
+        az_poke8(bytes, 34L, 16)
+        az_poke8(bytes, 35L, 0)
+        az_poke8(bytes, 36L, 100)
+        az_poke8(bytes, 37L, 97)
+        az_poke8(bytes, 38L, 116)
+        az_poke8(bytes, 39L, 97)
+        az_poke32(bytes, 40L, dataSize)
+    }
+
+    func pokeSample(bytes: Long, frame: Int, value: Real) {
+        var sample = (clamp(value, -1.0, 1.0) * 28000.0) as Int
+        if sample < 0 { sample = sample + 65536 }
+        fin offset = 44L + (frame * 2) as Long
+        az_poke8(bytes, offset, sample % 256)
+        az_poke8(bytes, offset + 1L, (sample / 256) % 256)
+    }
+
+    func soundtrackSample(frame: Int): Real {
+        fin t = (frame as Real) / (SAMPLE_RATE as Real)
+        fin section = (frame / (SAMPLE_RATE * 2)) % 4
+        var root = 55.0
+        if section == 1 { root = 65.41 }
+        if section == 2 { root = 73.42 }
+        if section == 3 { root = 49.0 }
+        var chord = sin(t * PI * 2.0 * root) * 0.34
+        chord = chord + sin(t * PI * 2.0 * root * 1.5) * 0.18
+        chord = chord + sin(t * PI * 2.0 * root * 2.0) * 0.11
+        fin beatFrame = frame % (SAMPLE_RATE / 2)
+        var beat = 0.0
+        if beatFrame < 1500 {
+            fin envelope = 1.0 - (beatFrame as Real) / 1500.0
+            beat = sin(t * PI * 2.0 * 44.0) * envelope * 0.30
+        }
+        return (chord + beat) * 0.62
+    }
+
+    func engineSample(frame: Int): Real {
+        fin t = (frame as Real) / (SAMPLE_RATE as Real)
+        fin fundamental = sin(t * PI * 2.0 * 78.0) * 0.48
+        fin combustion = sin(t * PI * 2.0 * 156.0) * 0.24
+        fin mechanical = sin(t * PI * 2.0 * 312.0) * 0.10
+        return fundamental + combustion + mechanical
+    }
+
+    func crashSample(frame: Int, frameCount: Int): Real {
+        fin t = (frame as Real) / (frameCount as Real)
+        fin noise = ((((frame * 97) % 200) - 100) as Real) / 100.0
+        fin metal = sin((frame as Real) * 0.37) * 0.35
+        fin envelope = (1.0 - t) * (1.0 - t)
+        return (noise * 0.72 + metal) * envelope
+    }
+
+    func wavePlayer(kind: Int): Long {
+        var frameCount = SAMPLE_RATE
+        if kind == SOUNDTRACK { frameCount = SAMPLE_RATE * 8 }
+        if kind == CRASH_EFFECT { frameCount = (SAMPLE_RATE * 45) / 100 }
+        fin dataSize = frameCount * 2
+        fin totalSize = dataSize + 44
+        fin bytes = az_alloc(totalSize as Long)
+        pokeWaveHeader(bytes, dataSize)
+
+        var frame = 0
+        while frame < frameCount {
+            var sample = 0.0
+            if kind == SOUNDTRACK { sample = soundtrackSample(frame) }
+            if kind == ENGINE_LOOP { sample = engineSample(frame) }
+            if kind == CRASH_EFFECT { sample = crashSample(frame, frameCount) }
+            pokeSample(bytes, frame, sample)
+            frame = frame + 1
+        }
+
+        fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as Long)
+        fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, 0L)
+        az_free(bytes)
+        if player != 0L {
+            send1(player, sel("setEnableRate:"), 1L)
+            send0(player, sel("prepareToPlay"))
+        }
+        return player
+    }
+
+    func scene(): AudioScene {
+        return AudioScene(wavePlayer(SOUNDTRACK), wavePlayer(ENGINE_LOOP), wavePlayer(CRASH_EFFECT), false)
+    }
+
+    func start(scene: AudioScene) {
+        if scene.soundtrack != 0L {
+            send1(scene.soundtrack, sel("setNumberOfLoops:"), 1000000L)
+            fin volume = az_send_float1(scene.soundtrack, sel("setVolume:"), 0.20)
+            send0(scene.soundtrack, sel("play"))
+        }
+        if scene.engineLoop != 0L {
+            send1(scene.engineLoop, sel("setNumberOfLoops:"), 1000000L)
+            fin volume = az_send_float1(scene.engineLoop, sel("setVolume:"), 0.0)
+            fin rate = az_send_float1(scene.engineLoop, sel("setRate:"), 0.72)
+            send0(scene.engineLoop, sel("play"))
+        }
+        scene.running = true
+    }
+
+    func updateEngine(scene: AudioScene, speed: Real, throttle: Real, maxSpeed: Real) {
+        if !scene.running || scene.engineLoop == 0L { return }
+        fin speedRatio = clamp(speed / maxSpeed, 0.0, 1.0)
+        fin load = clamp(throttle, 0.0, 1.0)
+        fin volume = clamp(0.035 + speedRatio * 0.34 + load * 0.22, 0.0, 0.58)
+        fin rate = 0.72 + speedRatio * 1.20 + load * 0.16
+        fin unusedVolume = az_send_float1(scene.engineLoop, sel("setVolume:"), volume)
+        fin unusedRate = az_send_float1(scene.engineLoop, sel("setRate:"), rate)
+    }
+
+    func playCrash(scene: AudioScene, strength: Real) {
+        if scene.crashEffect == 0L { return }
+        fin restart = az_send_f1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
+        fin volume = az_send_float1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
+        send0(scene.crashEffect, sel("play"))
+    }
+
+    func stop(scene: AudioScene) {
+        if scene.soundtrack != 0L { send0(scene.soundtrack, sel("stop")) }
+        if scene.engineLoop != 0L { send0(scene.engineLoop, sel("stop")) }
+        if scene.crashEffect != 0L { send0(scene.crashEffect, sel("stop")) }
+        scene.running = false
+    }
+}

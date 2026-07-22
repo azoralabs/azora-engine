@@ -1,12 +1,10 @@
-// Azora Racing — a low-poly arcade racer.
+// Azora Racing - a low-poly open-city racer.
 //
-// A drivable car in a small low-poly city block grid. Steer with the arrow
-// keys or a gamepad's left stick / triggers, or with the on-screen touch
-// controls (which also work in the WebAssembly build). The camera chases the
-// car. A few AI cars drive around to keep the streets busy.
-//
-// Everything is built from scaled cubes, keeping the asset pipeline empty and
-// the whole scene a few hundred triangles.
+// A drivable car in a streamed 1000-by-1000-block city with broad streets,
+// pedestrian districts, rail infrastructure, civic landmarks, shopping and
+// waterfront destinations. AI traffic follows closed lane routes, observes
+// timed intersections, keeps following distance, and shares the same collision
+// system as the player.
 
 module game
 
@@ -17,6 +15,8 @@ import engine.ui
 import engine.render
 import engine.math
 import engine.ecs
+import engine.physics
+import engine.audio
 
 // ── Components ────────────────────────────────────────────────────────────
 
@@ -25,9 +25,14 @@ pack Car {
     var pos: Vec3
     var yaw: Real
     var speed: Real
-    var steerPhase: Real
+    var wheelSpin: Real
+    var wheelSteer: Real
     var color: Color
     var isPlayer: Bool
+    var collider: Collider
+    var routeIndex: Int
+    var waypointIndex: Int
+    var targetSpeed: Real
 }
 
 // A static piece of the city (building or road tile).
@@ -35,17 +40,43 @@ pack Prop {
     var pos: Vec3
     var scale: Vec3
     var color: Color
+    var solid: Bool
+    var collider: Collider
+}
+
+/** A closed, ordered lane path used by autonomous traffic. */
+pack TrafficRoute {
+    var points: Array<Vec3>
+}
+
+/** Shared traffic timing keeps intersections deterministic. */
+pack TrafficSimulation {
+    var elapsed: Real
+    var crashCooldown: Real
+}
+
+/** Slowly moving sky geometry shared by the presentation layer. */
+pack Cloud {
+    var pos: Vec3
+    var scale: Vec3
+    var speed: Real
 }
 
 // ── Tuning ────────────────────────────────────────────────────────────────
 
-fin MAX_SPEED = 26.0
+fin MAX_SPEED = 30.0
 fin REVERSE_SPEED = 8.0
 fin ACCEL = 20.0
 fin BRAKE = 36.0
 fin FRICTION = 7.0
 fin STEER_RATE = 2.1
-fin CITY_LIMIT = 44.0
+fin BLOCK_STEP = 24.0
+fin BLOCK_SURFACE = 15.5
+fin LANE_OFFSET = 2.2
+fin CITY_BLOCKS = 1000
+fin CITY_HALF_BLOCKS = 500
+fin CITY_LIMIT = 11990.0
+fin STREAM_RADIUS = 5
 
 func absReal(x: Real): Real {
     if x < 0.0 {
@@ -77,7 +108,19 @@ func clampReal(x: Real, lo: Real, hi: Real): Real {
 // ── Car behaviour ─────────────────────────────────────────────────────────
 
 func defaultCar(): Car {
-    return Car(Vec3(0.0, 0.35, 0.0), 0.0, 0.0, 0.0, colorRgb(0.90, 0.22, 0.26), false)
+    return Car(
+        Vec3(0.0, 0.35, 0.0),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        colorRgb(0.90, 0.22, 0.26),
+        false,
+        engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+        -1,
+        0,
+        0.0
+    )
 }
 
 impl Car {
@@ -114,20 +157,27 @@ impl Car {
         }
         self.speed = clampReal(self.speed, 0.0 - REVERSE_SPEED, MAX_SPEED)
 
-        // Steering authority grows with speed and reverses when backing up.
+        // A bicycle steering model: the front axle turns smoothly, and yaw is
+        // derived from steering angle, wheelbase, and signed road speed.
         fin grip = clampReal(absReal(self.speed) / 6.0, 0.0, 1.0)
-        self.yaw = self.yaw + steer * STEER_RATE * dt * grip * signReal(self.speed)
+        fin targetSteer = steer * 0.56
+        fin steerBlend = clampReal(dt * 8.5, 0.0, 1.0)
+        self.wheelSteer = self.wheelSteer + (targetSteer - self.wheelSteer) * steerBlend
+        self.yaw = self.yaw + tan(self.wheelSteer) * (self.speed / 2.75) * dt * grip
 
         fin step = self.forward().scale(self.speed * dt)
-        self.pos = self.pos + step
+        self.pos.x = self.pos.x + step.x
+        self.pos.y = self.pos.y + step.y
+        self.pos.z = self.pos.z + step.z
+        self.wheelSpin = self.wheelSpin + (self.speed * dt) / 0.48
 
         // Keep cars inside the city; a wall stops them dead.
         if absReal(self.pos.x) > CITY_LIMIT {
-            self.pos = Vec3(clampReal(self.pos.x, 0.0 - CITY_LIMIT, CITY_LIMIT), self.pos.y, self.pos.z)
+            self.pos.x = clampReal(self.pos.x, 0.0 - CITY_LIMIT, CITY_LIMIT)
             self.speed = 0.0
         }
         if absReal(self.pos.z) > CITY_LIMIT {
-            self.pos = Vec3(self.pos.x, self.pos.y, clampReal(self.pos.z, 0.0 - CITY_LIMIT, CITY_LIMIT))
+            self.pos.z = clampReal(self.pos.z, 0.0 - CITY_LIMIT, CITY_LIMIT)
             self.speed = 0.0
         }
     }
@@ -135,35 +185,303 @@ impl Car {
 
 // ── City construction ─────────────────────────────────────────────────────
 
-func addProp(world: World, props: Storage<Prop>, piece: Prop) {
-    spawnWith<Prop>(world, props, piece)
+func addCityPiece(world: World, props: Storage<Prop>, pos: Vec3, scale: Vec3, color: Color, solid: Bool) {
+    spawnWith<Prop>(world, props, Prop(pos, scale, color, solid, engine::physics::box(scale.scale(0.5))))
 }
 
-// A grid of building blocks separated by roads. Buildings sit on the block
-// centres; the gaps between them are the streets the cars drive on.
-func buildCity(world: World, props: Storage<Prop>) {
-    var gx = -3
-    while gx <= 3 {
-        var gz = -3
-        while gz <= 3 {
-            fin cx = (gx as Real) * 13.0
-            fin cz = (gz as Real) * 13.0
+func addTree(world: World, props: Storage<Prop>, x: Real, z: Real, height: Real) {
+    addCityPiece(world, props, Vec3(x, height * 0.28, z), Vec3(0.42, height * 0.56, 0.42), colorRgb(0.30, 0.18, 0.09), true)
+    addCityPiece(world, props, Vec3(x, height * 0.72, z), Vec3(2.2, height * 0.58, 2.2), colorRgb(0.18, 0.48, 0.22), false)
+}
 
-            // Leave the centre block open as a plaza / start area.
-            if gx != 0 || gz != 0 {
-                fin wobble = ((((gx * 7 + gz * 3) % 5) + 5) % 5) as Real
-                fin h = 3.0 + absReal((gx as Real) + (gz as Real)) * 1.6 + wobble * 1.1
-                fin shade = 0.35 + (((gx + gz + 6) % 4) as Real) * 0.12
-                addProp(world, props, Prop(
-                    Vec3(cx, h * 0.5, cz),
-                    Vec3(6.5, h, 6.5),
-                    colorRgb(shade, shade * 0.95, shade * 1.1)
-                ))
-            }
-            gz = gz + 1
+func addStreetLamp(world: World, props: Storage<Prop>, x: Real, z: Real) {
+    addCityPiece(world, props, Vec3(x, 1.55, z), Vec3(0.13, 3.1, 0.13), colorRgb(0.12, 0.13, 0.15), false)
+    addCityPiece(world, props, Vec3(x, 3.15, z), Vec3(0.48, 0.18, 0.48), colorRgb(1.0, 0.82, 0.38), false)
+}
+
+func addCrosswalk(world: World, props: Storage<Prop>, x: Real, z: Real, alongX: Bool) {
+    var stripe = -4
+    while stripe <= 4 {
+        fin offset = (stripe as Real) * 0.72
+        if alongX {
+            addCityPiece(world, props, Vec3(x + offset, 0.045, z), Vec3(0.46, 0.05, 3.8), colorRgb(0.88, 0.90, 0.92), false)
+        } else {
+            addCityPiece(world, props, Vec3(x, 0.045, z + offset), Vec3(3.8, 0.05, 0.46), colorRgb(0.88, 0.90, 0.92), false)
         }
-        gx = gx + 1
+        stripe = stripe + 1
     }
+}
+
+func buildRoadMarkings(world: World, props: Storage<Prop>) {
+    // Six broad cross-city roads, each with two lanes and a dashed centreline.
+    var road = -60.0
+    while road <= 60.0 {
+        var dash = -86.0
+        while dash <= 86.0 {
+            addCityPiece(world, props, Vec3(road, 0.035, dash), Vec3(0.16, 0.04, 3.6), colorRgb(0.95, 0.76, 0.18), false)
+            addCityPiece(world, props, Vec3(dash, 0.035, road), Vec3(3.6, 0.04, 0.16), colorRgb(0.95, 0.76, 0.18), false)
+            dash = dash + 8.0
+        }
+        road = road + BLOCK_STEP
+    }
+
+    // Crosswalks protect all four approaches to the central pedestrian plaza.
+    addCrosswalk(world, props, -12.0, -7.2, true)
+    addCrosswalk(world, props, 12.0, -7.2, true)
+    addCrosswalk(world, props, -7.2, -12.0, false)
+    addCrosswalk(world, props, -7.2, 12.0, false)
+}
+
+func buildDowntownBlock(world: World, props: Storage<Prop>, gx: Int, gz: Int) {
+    fin cx = (gx as Real) * BLOCK_STEP
+    fin cz = (gz as Real) * BLOCK_STEP
+    fin variation = ((((gx * 7 + gz * 3) % 5) + 5) % 5) as Real
+    fin h1 = 7.0 + absReal((gx as Real) + (gz as Real)) * 1.25 + variation * 1.45
+    fin h2 = 5.5 + variation * 1.10
+    fin shade = 0.31 + (((((gx + gz + 8) % 4) + 4) % 4) as Real) * 0.095
+    fin wall = colorRgb(shade * 1.08, shade, shade * 0.90)
+    fin wall2 = colorRgb(shade * 0.82, shade * 0.88, shade * 1.02)
+    fin glass = colorRgb(0.10, 0.27 + variation * 0.018, 0.38 + variation * 0.02)
+
+    // A generous pavement wraps two independent buildings on every block.
+    addCityPiece(world, props, Vec3(cx, 0.10, cz), Vec3(BLOCK_SURFACE, 0.20, BLOCK_SURFACE), colorRgb(0.49, 0.51, 0.53), false)
+    addCityPiece(world, props, Vec3(cx - 3.55, h1 * 0.5 + 0.20, cz), Vec3(6.25, h1, 11.8), wall, true)
+    addCityPiece(world, props, Vec3(cx + 3.55, h2 * 0.5 + 0.20, cz), Vec3(6.25, h2, 11.8), wall2, true)
+
+    // Window bands, shop fronts, doors and roof equipment break up the massing.
+    addCityPiece(world, props, Vec3(cx - 3.55, h1 * 0.62, cz + 5.94), Vec3(4.8, 1.25, 0.08), glass, false)
+    addCityPiece(world, props, Vec3(cx + 3.55, h2 * 0.61, cz + 5.94), Vec3(4.8, 1.05, 0.08), glass, false)
+    addCityPiece(world, props, Vec3(cx - 6.72, h1 * 0.48, cz), Vec3(0.08, 1.30, 8.5), glass, false)
+    addCityPiece(world, props, Vec3(cx + 6.72, h2 * 0.48, cz), Vec3(0.08, 1.15, 8.5), glass, false)
+    addCityPiece(world, props, Vec3(cx - 3.55, 1.15, cz - 5.95), Vec3(1.10, 2.25, 0.10), colorRgb(0.10, 0.09, 0.08), false)
+    addCityPiece(world, props, Vec3(cx + 3.55, 0.78, cz - 5.96), Vec3(4.8, 1.35, 0.10), colorRgb(0.18, 0.32, 0.36), false)
+    addCityPiece(world, props, Vec3(cx - 3.55, h1 + 0.45, cz), Vec3(2.7, 0.90, 2.4), colorRgb(shade * 0.72, shade * 0.72, shade * 0.74), false)
+
+    if ((gx + gz + 8) % 2) == 0 {
+        addStreetLamp(world, props, cx - 7.1, cz - 7.1)
+    }
+}
+
+func buildCentralPlaza(world: World, props: Storage<Prop>) {
+    addCityPiece(world, props, Vec3(0.0, 0.10, 0.0), Vec3(16.0, 0.20, 16.0), colorRgb(0.67, 0.65, 0.60), false)
+    addCityPiece(world, props, Vec3(0.0, 0.42, 0.0), Vec3(5.2, 0.65, 5.2), colorRgb(0.70, 0.72, 0.74), true)
+    addCityPiece(world, props, Vec3(0.0, 0.78, 0.0), Vec3(4.2, 0.15, 4.2), colorRgb(0.18, 0.54, 0.70), false)
+    addCityPiece(world, props, Vec3(0.0, 2.0, 0.0), Vec3(0.42, 2.5, 0.42), colorRgb(0.76, 0.73, 0.66), false)
+    addCityPiece(world, props, Vec3(-5.4, 0.45, -5.4), Vec3(3.0, 0.55, 0.55), colorRgb(0.35, 0.20, 0.11), false)
+    addCityPiece(world, props, Vec3(5.4, 0.45, 5.4), Vec3(3.0, 0.55, 0.55), colorRgb(0.35, 0.20, 0.11), false)
+    addTree(world, props, -6.1, 5.8, 3.5)
+    addTree(world, props, 6.1, -5.8, 3.5)
+    addStreetLamp(world, props, -6.5, -6.5)
+    addStreetLamp(world, props, 6.5, 6.5)
+}
+
+func buildPark(world: World, props: Storage<Prop>) {
+    fin cx = -48.0
+    fin cz = -24.0
+    addCityPiece(world, props, Vec3(cx, 0.09, cz), Vec3(39.0, 0.18, 16.0), colorRgb(0.20, 0.43, 0.22), false)
+    addCityPiece(world, props, Vec3(cx, 0.13, cz), Vec3(37.0, 0.05, 2.2), colorRgb(0.72, 0.67, 0.54), false)
+    addCityPiece(world, props, Vec3(cx - 8.0, 0.15, cz), Vec3(8.0, 0.08, 6.0), colorRgb(0.16, 0.42, 0.58), false)
+
+    var tree = -4
+    while tree <= 4 {
+        fin tx = cx + (tree as Real) * 4.0
+        addTree(world, props, tx, cz - 6.1, 3.4 + (((tree + 4) % 3) as Real) * 0.45)
+        addTree(world, props, tx, cz + 6.1, 3.7)
+        tree = tree + 1
+    }
+    addCityPiece(world, props, Vec3(cx + 9.0, 0.45, cz - 2.7), Vec3(3.2, 0.55, 0.55), colorRgb(0.34, 0.20, 0.11), false)
+    addCityPiece(world, props, Vec3(cx + 9.0, 0.45, cz + 2.7), Vec3(3.2, 0.55, 0.55), colorRgb(0.34, 0.20, 0.11), false)
+}
+
+func buildMuseum(world: World, props: Storage<Prop>) {
+    fin cx = 60.0
+    fin cz = 0.0
+    fin stone = colorRgb(0.78, 0.75, 0.67)
+    addCityPiece(world, props, Vec3(cx, 0.10, cz), Vec3(38.5, 0.20, 16.0), colorRgb(0.64, 0.62, 0.58), false)
+    addCityPiece(world, props, Vec3(cx, 0.35, cz + 4.8), Vec3(22.0, 0.40, 4.0), stone, true)
+    addCityPiece(world, props, Vec3(cx, 3.7, cz - 1.0), Vec3(25.0, 7.0, 10.5), stone, true)
+    addCityPiece(world, props, Vec3(cx, 7.45, cz - 1.0), Vec3(27.0, 0.55, 12.0), colorRgb(0.49, 0.47, 0.43), false)
+    addCityPiece(world, props, Vec3(cx, 8.15, cz - 1.0), Vec3(18.0, 0.75, 6.0), stone, false)
+
+    var column = -4
+    while column <= 4 {
+        fin x = cx + (column as Real) * 2.4
+        addCityPiece(world, props, Vec3(x, 3.0, cz + 4.75), Vec3(0.55, 5.3, 0.55), colorRgb(0.88, 0.86, 0.79), false)
+        column = column + 1
+    }
+    addCityPiece(world, props, Vec3(cx, 2.0, cz + 5.08), Vec3(3.2, 3.7, 0.12), colorRgb(0.11, 0.18, 0.21), false)
+    addStreetLamp(world, props, cx - 15.0, cz + 6.2)
+    addStreetLamp(world, props, cx + 15.0, cz + 6.2)
+}
+
+func buildSoccerGround(world: World, props: Storage<Prop>) {
+    fin cx = -48.0
+    fin cz = 48.0
+    fin white = colorRgb(0.92, 0.94, 0.91)
+    addCityPiece(world, props, Vec3(cx, 0.09, cz), Vec3(39.0, 0.18, 30.0), colorRgb(0.16, 0.45, 0.19), false)
+    addCityPiece(world, props, Vec3(cx, 0.14, cz - 13.0), Vec3(34.0, 0.05, 0.18), white, false)
+    addCityPiece(world, props, Vec3(cx, 0.14, cz + 13.0), Vec3(34.0, 0.05, 0.18), white, false)
+    addCityPiece(world, props, Vec3(cx - 17.0, 0.14, cz), Vec3(0.18, 0.05, 26.0), white, false)
+    addCityPiece(world, props, Vec3(cx + 17.0, 0.14, cz), Vec3(0.18, 0.05, 26.0), white, false)
+    addCityPiece(world, props, Vec3(cx, 0.14, cz), Vec3(0.18, 0.05, 26.0), white, false)
+    addCityPiece(world, props, Vec3(cx - 17.0, 1.2, cz), Vec3(0.18, 2.2, 7.0), white, false)
+    addCityPiece(world, props, Vec3(cx + 17.0, 1.2, cz), Vec3(0.18, 2.2, 7.0), white, false)
+    addCityPiece(world, props, Vec3(cx, 1.1, cz - 15.0), Vec3(38.0, 2.0, 2.2), colorRgb(0.25, 0.31, 0.40), true)
+    addCityPiece(world, props, Vec3(cx, 1.1, cz + 15.0), Vec3(38.0, 2.0, 2.2), colorRgb(0.25, 0.31, 0.40), true)
+}
+
+func buildRiverAndBridge(world: World, props: Storage<Prop>) {
+    fin riverZ = -48.0
+    fin stone = colorRgb(0.43, 0.45, 0.47)
+    fin bankWidth = CITY_LIMIT - 16.0
+    fin bankCenter = 16.0 + bankWidth * 0.5
+
+    // Solid embankments keep vehicles out of the water except at the bridge.
+    addCityPiece(world, props, Vec3(0.0 - bankCenter, 0.60, riverZ - 7.2), Vec3(bankWidth, 1.2, 1.1), stone, true)
+    addCityPiece(world, props, Vec3(bankCenter, 0.60, riverZ - 7.2), Vec3(bankWidth, 1.2, 1.1), stone, true)
+    addCityPiece(world, props, Vec3(0.0 - bankCenter, 0.60, riverZ + 7.2), Vec3(bankWidth, 1.2, 1.1), stone, true)
+    addCityPiece(world, props, Vec3(bankCenter, 0.60, riverZ + 7.2), Vec3(bankWidth, 1.2, 1.1), stone, true)
+
+    // The central boulevard becomes a broad drivable bridge over both lanes.
+    addCityPiece(world, props, Vec3(0.0, 0.11, riverZ), Vec3(32.0, 0.22, 17.0), colorRgb(0.24, 0.26, 0.28), false)
+    addCityPiece(world, props, Vec3(-15.7, 0.70, riverZ), Vec3(0.32, 1.2, 18.0), colorRgb(0.70, 0.72, 0.74), true)
+    addCityPiece(world, props, Vec3(15.7, 0.70, riverZ), Vec3(0.32, 1.2, 18.0), colorRgb(0.70, 0.72, 0.74), true)
+    addCityPiece(world, props, Vec3(-10.5, -0.30, riverZ), Vec3(1.2, 1.2, 2.6), stone, false)
+    addCityPiece(world, props, Vec3(10.5, -0.30, riverZ), Vec3(1.2, 1.2, 2.6), stone, false)
+    addStreetLamp(world, props, -14.4, riverZ - 6.2)
+    addStreetLamp(world, props, 14.4, riverZ - 6.2)
+    addStreetLamp(world, props, -14.4, riverZ + 6.2)
+    addStreetLamp(world, props, 14.4, riverZ + 6.2)
+}
+
+func buildTrainStation(world: World, props: Storage<Prop>) {
+    fin cx = 96.0
+    fin cz = 96.0
+    fin stone = colorRgb(0.66, 0.60, 0.52)
+    fin steel = colorRgb(0.18, 0.21, 0.25)
+    fin glass = colorRgb(0.10, 0.34, 0.46)
+
+    // A broad concourse fronts the terminal and separates pedestrians from rail.
+    addCityPiece(world, props, Vec3(cx, 0.10, cz - 8.0), Vec3(60.0, 0.20, 18.0), colorRgb(0.58, 0.57, 0.54), false)
+    addCityPiece(world, props, Vec3(cx, 4.8, cz), Vec3(52.0, 9.2, 14.0), stone, true)
+    addCityPiece(world, props, Vec3(cx, 5.0, cz - 7.05), Vec3(31.0, 6.2, 0.14), glass, false)
+    addCityPiece(world, props, Vec3(cx, 9.75, cz), Vec3(56.0, 0.65, 17.0), steel, false)
+    addCityPiece(world, props, Vec3(cx, 12.0, cz - 0.8), Vec3(4.5, 4.5, 1.0), stone, false)
+    addCityPiece(world, props, Vec3(cx, 12.1, cz - 1.35), Vec3(2.2, 2.2, 0.12), colorRgb(0.91, 0.86, 0.67), false)
+
+    // Twin platforms, four rails and repeated sleepers read clearly at speed.
+    addCityPiece(world, props, Vec3(cx, 0.30, cz + 13.0), Vec3(62.0, 0.55, 3.0), colorRgb(0.48, 0.49, 0.50), true)
+    addCityPiece(world, props, Vec3(cx, 0.30, cz + 22.0), Vec3(62.0, 0.55, 3.0), colorRgb(0.48, 0.49, 0.50), true)
+    var rail = 0
+    while rail < 4 {
+        fin rz = cz + 16.0 + (rail as Real) * 2.0
+        addCityPiece(world, props, Vec3(0.0, 0.16, rz), Vec3(720.0, 0.16, 0.13), steel, false)
+        rail = rail + 1
+    }
+    var sleeper = -30
+    while sleeper <= 30 {
+        fin sx = (sleeper as Real) * 8.0
+        addCityPiece(world, props, Vec3(sx, 0.10, cz + 19.0), Vec3(0.34, 0.12, 9.0), colorRgb(0.32, 0.22, 0.14), false)
+        sleeper = sleeper + 1
+    }
+
+    // A stopped low-poly train makes the station immediately recognisable.
+    addCityPiece(world, props, Vec3(cx - 4.0, 1.45, cz + 17.0), Vec3(34.0, 2.5, 1.65), colorRgb(0.78, 0.12, 0.10), false)
+    addCityPiece(world, props, Vec3(cx - 4.0, 2.15, cz + 16.12), Vec3(27.0, 0.72, 0.08), colorRgb(0.10, 0.22, 0.30), false)
+    addStreetLamp(world, props, cx - 24.0, cz - 14.5)
+    addStreetLamp(world, props, cx + 24.0, cz - 14.5)
+}
+
+func buildMall(world: World, props: Storage<Prop>) {
+    fin cx = -96.0
+    fin cz = 72.0
+    fin concrete = colorRgb(0.72, 0.68, 0.62)
+    fin accent = colorRgb(0.82, 0.20, 0.16)
+    fin glass = colorRgb(0.09, 0.31, 0.42)
+
+    addCityPiece(world, props, Vec3(cx, 0.09, cz), Vec3(64.0, 0.18, 44.0), colorRgb(0.38, 0.40, 0.42), false)
+    addCityPiece(world, props, Vec3(cx, 5.0, cz + 4.0), Vec3(48.0, 9.8, 29.0), concrete, true)
+    addCityPiece(world, props, Vec3(cx, 5.2, cz - 10.6), Vec3(26.0, 6.4, 0.15), glass, false)
+    addCityPiece(world, props, Vec3(cx, 10.2, cz + 4.0), Vec3(51.0, 0.65, 32.0), colorRgb(0.25, 0.27, 0.30), false)
+    addCityPiece(world, props, Vec3(cx, 7.0, cz - 11.0), Vec3(13.0, 1.5, 0.25), accent, false)
+    addCityPiece(world, props, Vec3(cx, 3.0, cz + 12.8), Vec3(44.0, 0.40, 3.2), colorRgb(0.16, 0.34, 0.19), false)
+
+    // Parking aisles and pedestrian islands organize the public frontage.
+    var bay = -6
+    while bay <= 6 {
+        fin bx = cx + (bay as Real) * 3.4
+        addCityPiece(world, props, Vec3(bx, 0.14, cz - 17.0), Vec3(0.10, 0.05, 7.0), colorRgb(0.90, 0.90, 0.84), false)
+        bay = bay + 1
+    }
+    addTree(world, props, cx - 27.0, cz - 17.0, 4.2)
+    addTree(world, props, cx + 27.0, cz - 17.0, 4.2)
+}
+
+func buildAquarium(world: World, props: Storage<Prop>) {
+    fin cx = -112.0
+    fin cz = -72.0
+    addCityPiece(world, props, Vec3(cx, 0.12, cz), Vec3(42.0, 0.24, 28.0), colorRgb(0.54, 0.58, 0.60), false)
+    addCityPiece(world, props, Vec3(cx, 4.6, cz), Vec3(34.0, 8.8, 20.0), colorRgb(0.15, 0.43, 0.54), true)
+    addCityPiece(world, props, Vec3(cx, 4.8, cz + 10.05), Vec3(24.0, 6.4, 0.12), colorRgb(0.04, 0.25, 0.40), false)
+    addCityPiece(world, props, Vec3(cx, 9.2, cz), Vec3(37.0, 0.55, 23.0), colorRgb(0.74, 0.78, 0.78), false)
+    addCityPiece(world, props, Vec3(cx, 11.0, cz), Vec3(7.0, 3.2, 7.0), colorRgb(0.10, 0.36, 0.48), false)
+    addCityPiece(world, props, Vec3(cx, 0.30, cz + 16.0), Vec3(38.0, 0.12, 6.0), colorRgb(0.13, 0.38, 0.50), false)
+}
+
+func buildCivicQuarter(world: World, props: Storage<Prop>) {
+    fin cx = 0.0
+    fin cz = 72.0
+    fin limestone = colorRgb(0.81, 0.77, 0.68)
+    addCityPiece(world, props, Vec3(cx, 0.12, cz), Vec3(44.0, 0.24, 31.0), colorRgb(0.62, 0.61, 0.57), false)
+    addCityPiece(world, props, Vec3(cx, 4.0, cz), Vec3(31.0, 7.5, 19.0), limestone, true)
+    addCityPiece(world, props, Vec3(cx, 8.1, cz), Vec3(35.0, 0.65, 22.0), colorRgb(0.48, 0.46, 0.42), false)
+    addCityPiece(world, props, Vec3(cx, 12.0, cz), Vec3(8.0, 7.5, 8.0), limestone, false)
+    addCityPiece(world, props, Vec3(cx, 16.0, cz), Vec3(1.1, 2.5, 1.1), colorRgb(0.25, 0.28, 0.32), false)
+    var column = -4
+    while column <= 4 {
+        addCityPiece(world, props, Vec3((column as Real) * 2.7, 3.0, cz - 9.6), Vec3(0.48, 5.5, 0.48), colorRgb(0.90, 0.87, 0.79), false)
+        column = column + 1
+    }
+}
+
+func buildObservationTower(world: World, props: Storage<Prop>) {
+    fin cx = 144.0
+    fin cz = 0.0
+    addCityPiece(world, props, Vec3(cx, 0.12, cz), Vec3(22.0, 0.24, 22.0), colorRgb(0.55, 0.57, 0.59), false)
+    addCityPiece(world, props, Vec3(cx, 18.0, cz), Vec3(5.0, 36.0, 5.0), colorRgb(0.60, 0.63, 0.65), true)
+    addCityPiece(world, props, Vec3(cx, 34.0, cz), Vec3(13.0, 4.0, 13.0), colorRgb(0.08, 0.28, 0.39), false)
+    addCityPiece(world, props, Vec3(cx, 39.0, cz), Vec3(7.0, 6.0, 7.0), colorRgb(0.76, 0.78, 0.77), false)
+    addCityPiece(world, props, Vec3(cx, 45.0, cz), Vec3(0.45, 8.0, 0.45), colorRgb(0.88, 0.35, 0.18), false)
+}
+
+func isLandmarkBlock(gx: Int, gz: Int): Bool {
+    if gz == -2 { return true }
+    if gx == 0 && gz == 0 { return true }
+    if (gx == -2 || gx == -1) && gz == -1 { return true }
+    if (gx == 2 || gx == 3) && gz == 0 { return true }
+    if (gx == -2 || gx == -1) && (gz == 1 || gz == 2) { return true }
+    if gx >= 3 && gx <= 5 && gz >= 3 && gz <= 5 { return true }
+    if gx >= -5 && gx <= -3 && gz >= 2 && gz <= 4 { return true }
+    if gx >= -6 && gx <= -4 && gz == -3 { return true }
+    if gx >= -1 && gx <= 1 && gz == 3 { return true }
+    if gx == 6 && gz == 0 { return true }
+    return false
+}
+
+// Persistent landmark geometry is authored once. Ordinary blocks are generated
+// deterministically around the camera by queueStreamedCity.
+func buildCity(world: World, props: Storage<Prop>) {
+    buildCentralPlaza(world, props)
+    buildPark(world, props)
+    buildMuseum(world, props)
+    buildSoccerGround(world, props)
+    buildRiverAndBridge(world, props)
+    buildTrainStation(world, props)
+    buildMall(world, props)
+    buildAquarium(world, props)
+    buildCivicQuarter(world, props)
+    buildObservationTower(world, props)
+    buildRoadMarkings(world, props)
 }
 
 // ── Input ─────────────────────────────────────────────────────────────────
@@ -197,60 +515,365 @@ func drawPad(app: App, label: String, x: Real, y: Real, w: Real, h: Real, r: Rea
     return held
 }
 
+func drawDrivePads(app: App) {
+    fin bottom = (app.height() as Real) - 96.0
+    fin rx = (app.width() as Real) - 190.0
+    drawPad(app, "<", 24.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96)
+    drawPad(app, ">", 112.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96)
+    drawPad(app, "BRAKE", rx, bottom, 78.0, 78.0, 0.90, 0.30, 0.30)
+    drawPad(app, "GAS", rx + 88.0, bottom, 78.0, 78.0, 0.30, 0.82, 0.42)
+}
+
 // Fold keyboard, gamepad and on-screen pedals into one drive command.
 func gatherInput(app: App): DriveInput {
     var throttle = 0.0
     var steer = 0.0
 
-    if app.keyDown(KEY_UP) { throttle = throttle + 1.0 }
-    if app.keyDown(KEY_DOWN) { throttle = throttle - 1.0 }
-    if app.keyDown(KEY_LEFT) { steer = steer + 1.0 }
-    if app.keyDown(KEY_RIGHT) { steer = steer - 1.0 }
+    if app.keyDown(KEY_UP) || app.keyDown(KEY_W) { throttle = throttle + 1.0 }
+    if app.keyDown(KEY_DOWN) || app.keyDown(KEY_S) { throttle = throttle - 1.0 }
+    if app.keyDown(KEY_LEFT) || app.keyDown(KEY_A) { steer = steer + 1.0 }
+    if app.keyDown(KEY_RIGHT) || app.keyDown(KEY_D) { steer = steer - 1.0 }
 
-    // Controllers are exposed as engine::input zone functions (the App only
-    // carries keyboard/mouse state).
-    if engine::input::controllerConnected(0) {
-        throttle = throttle + engine::input::controllerButtonValue(0, GAMEPAD_RIGHT_TRIGGER)
-        throttle = throttle - engine::input::controllerButtonValue(0, GAMEPAD_LEFT_TRIGGER)
-        steer = steer - engine::input::controllerAxis(0, GAMEPAD_LEFT_X)
+    if app.controllerConnected(0) {
+        throttle = throttle + app.controllerButtonValue(0, GAMEPAD_RIGHT_TRIGGER)
+        throttle = throttle - app.controllerButtonValue(0, GAMEPAD_LEFT_TRIGGER)
+        steer = steer - app.controllerAxis(0, GAMEPAD_LEFT_X)
     }
 
     fin bottom = (app.height() as Real) - 96.0
-    if drawPad(app, "<", 24.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96) { steer = steer + 1.0 }
-    if drawPad(app, ">", 112.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96) { steer = steer - 1.0 }
+    if padHeld(app, 24.0, bottom, 78.0, 78.0) { steer = steer + 1.0 }
+    if padHeld(app, 112.0, bottom, 78.0, 78.0) { steer = steer - 1.0 }
     fin rx = (app.width() as Real) - 190.0
-    if drawPad(app, "BRAKE", rx, bottom, 78.0, 78.0, 0.90, 0.30, 0.30) { throttle = throttle - 1.0 }
-    if drawPad(app, "GAS", rx + 88.0, bottom, 78.0, 78.0, 0.30, 0.82, 0.42) { throttle = throttle + 1.0 }
+    if padHeld(app, rx, bottom, 78.0, 78.0) { throttle = throttle - 1.0 }
+    if padHeld(app, rx + 88.0, bottom, 78.0, 78.0) { throttle = throttle + 1.0 }
 
     return DriveInput(clampReal(throttle, -1.0, 1.0), clampReal(steer, -1.0, 1.0))
 }
 
 // ── Systems ───────────────────────────────────────────────────────────────
 
-// Player drive + AI wander. AI cars steer along a slow sine weave and keep
-// the throttle on, bouncing off the city walls handled in `Car.drive`.
-func simulateCars(cars: Storage<Car>, input: DriveInput, dt: Real) {
+func buildTrafficRoutes(): Array<TrafficRoute> {
+    return arr![
+        TrafficRoute(arr![vec3Zero()]),
+        TrafficRoute(arr![
+            Vec3(-57.8, 0.35, -62.2),
+            Vec3(57.8, 0.35, -62.2),
+            Vec3(62.2, 0.35, -57.8),
+            Vec3(62.2, 0.35, 57.8),
+            Vec3(57.8, 0.35, 62.2),
+            Vec3(-57.8, 0.35, 62.2),
+            Vec3(-62.2, 0.35, 57.8),
+            Vec3(-62.2, 0.35, -57.8)
+        ]),
+        TrafficRoute(arr![
+            Vec3(-81.8, 0.35, -14.2),
+            Vec3(81.8, 0.35, -14.2),
+            Vec3(86.2, 0.35, -9.8),
+            Vec3(86.2, 0.35, 9.8),
+            Vec3(81.8, 0.35, 14.2),
+            Vec3(-81.8, 0.35, 14.2),
+            Vec3(-86.2, 0.35, 9.8),
+            Vec3(-86.2, 0.35, -9.8)
+        ]),
+        TrafficRoute(arr![
+            Vec3(-14.2, 0.35, 81.8),
+            Vec3(-14.2, 0.35, -81.8),
+            Vec3(-9.8, 0.35, -86.2),
+            Vec3(9.8, 0.35, -86.2),
+            Vec3(14.2, 0.35, -81.8),
+            Vec3(14.2, 0.35, 81.8),
+            Vec3(9.8, 0.35, 86.2),
+            Vec3(-9.8, 0.35, 86.2)
+        ]),
+        TrafficRoute(arr![
+            Vec3(-33.8, 0.35, -38.2),
+            Vec3(33.8, 0.35, -38.2),
+            Vec3(38.2, 0.35, -33.8),
+            Vec3(38.2, 0.35, 33.8),
+            Vec3(33.8, 0.35, 38.2),
+            Vec3(-33.8, 0.35, 38.2),
+            Vec3(-38.2, 0.35, 33.8),
+            Vec3(-38.2, 0.35, -33.8)
+        ]),
+        TrafficRoute(arr![
+            Vec3(-129.8, 0.35, 38.2),
+            Vec3(129.8, 0.35, 38.2),
+            Vec3(134.2, 0.35, 42.2),
+            Vec3(134.2, 0.35, 125.8),
+            Vec3(129.8, 0.35, 129.8),
+            Vec3(-129.8, 0.35, 129.8),
+            Vec3(-134.2, 0.35, 125.8),
+            Vec3(-134.2, 0.35, 42.2)
+        ]),
+        TrafficRoute(arr![
+            Vec3(-129.8, 0.35, -86.2),
+            Vec3(129.8, 0.35, -86.2),
+            Vec3(134.2, 0.35, -81.8),
+            Vec3(134.2, 0.35, -38.2),
+            Vec3(129.8, 0.35, -33.8),
+            Vec3(-129.8, 0.35, -33.8),
+            Vec3(-134.2, 0.35, -38.2),
+            Vec3(-134.2, 0.35, -81.8)
+        ])
+    ]
+}
+
+func flatDistance(a: Vec3, b: Vec3): Real {
+    fin dx = a.x - b.x
+    fin dz = a.z - b.z
+    return sqrt(dx * dx + dz * dz)
+}
+
+func nearestBlockCoord(value: Real): Int {
+    fin scaled = value / BLOCK_STEP
+    if scaled >= 0.0 {
+        return (scaled + 0.5) as Int
+    }
+    return (scaled - 0.5) as Int
+}
+
+func blockVariation(gx: Int, gz: Int): Real {
+    return (((((gx * 17 + gz * 29) % 7) + 7) % 7) as Real)
+}
+
+func streamedBuildingHeight(gx: Int, gz: Int, second: Bool): Real {
+    fin variation = blockVariation(gx, gz)
+    fin centerDistance = absReal(gx as Real) + absReal(gz as Real)
+    var height = 7.0 + variation * 1.65
+    if centerDistance < 12.0 {
+        height = height + (12.0 - centerDistance) * 0.72
+    }
+    if second {
+        return height * 0.68 + 2.2
+    }
+    return height
+}
+
+func carRight(car: Car): Vec3 {
+    return Vec3(cos(car.yaw), 0.0, 0.0 - sin(car.yaw))
+}
+
+func cardinalYaw(from: Vec3, to: Vec3): Real {
+    fin dx = to.x - from.x
+    fin dz = to.z - from.z
+    if absReal(dx) > absReal(dz) {
+        if dx > 0.0 { return 0.0 - PI * 0.5 }
+        return PI * 0.5
+    }
+    if dz > 0.0 { return PI }
+    return 0.0
+}
+
+func trafficHasCarAhead(car: Car, cars: Storage<Car>, selfIndex: Int): Bool {
+    var i = 1
+    while i < storageLength<Car>(cars) {
+        if i != selfIndex && storageEntityAt<Car>(cars, i).isValid() {
+            fin other: Car = storageValueAt<Car>(cars, i)
+            if other.routeIndex == car.routeIndex {
+                fin delta = other.pos - car.pos
+                fin distance = flatDistance(other.pos, car.pos)
+                if distance > 0.01 && distance < 9.0 {
+                    fin ahead = car.forward().dot(delta)
+                    fin lateral = absReal(carRight(car).dot(delta))
+                    if ahead > 0.0 && lateral < 2.8 { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func signalIsRed(car: Car, route: TrafficRoute, elapsed: Real): Bool {
+    fin target = route.points[car.waypointIndex]
+    if flatDistance(car.pos, target) > 7.0 { return false }
+    fin phase = ((elapsed / 6.0) as Int) % 2
+    return phase != (car.routeIndex % 2)
+}
+
+func driveTrafficCar(car: Car, cars: Storage<Car>, routes: Array<TrafficRoute>, selfIndex: Int, elapsed: Real, dt: Real) {
+    fin route: TrafficRoute = routes[car.routeIndex]
+    var target = route.points[car.waypointIndex]
+    if flatDistance(car.pos, target) < 3.0 {
+        car.waypointIndex = car.waypointIndex + 1
+        if car.waypointIndex >= route.points.length {
+            car.waypointIndex = 0
+        }
+        target = route.points[car.waypointIndex]
+    }
+
+    fin desired = (target - car.pos).normalized()
+    fin alignment = car.forward().dot(desired)
+    fin steering = clampReal((0.0 - carRight(car).dot(desired)) * 2.4, -1.0, 1.0)
+    fin mustStop = trafficHasCarAhead(car, cars, selfIndex) || signalIsRed(car, route, elapsed)
+
+    var throttle = 0.62
+    if car.speed >= car.targetSpeed { throttle = 0.0 }
+    if alignment < 0.45 { throttle = 0.12 }
+    if mustStop {
+        car.speed = clampReal(car.speed - BRAKE * dt, 0.0, car.targetSpeed)
+        throttle = 0.0
+    }
+    car.drive(throttle, steering, dt)
+}
+
+func streamedBuildingContact(car: Car): Contact {
+    fin gx = nearestBlockCoord(car.pos.x)
+    fin gz = nearestBlockCoord(car.pos.z)
+    if gx <= (0 - CITY_HALF_BLOCKS) || gx >= CITY_HALF_BLOCKS { return engine::physics::noContact() }
+    if gz <= (0 - CITY_HALF_BLOCKS) || gz >= CITY_HALF_BLOCKS { return engine::physics::noContact() }
+    if isLandmarkBlock(gx, gz) { return engine::physics::noContact() }
+
+    fin cx = (gx as Real) * BLOCK_STEP
+    fin cz = (gz as Real) * BLOCK_STEP
+    fin h1 = streamedBuildingHeight(gx, gz, false)
+    fin h2 = streamedBuildingHeight(gx, gz, true)
+    fin scale1 = Vec3(6.25, h1, 11.8)
+    fin scale2 = Vec3(6.25, h2, 11.8)
+    fin first = engine::physics::colliderContact(
+        car.pos,
+        car.collider,
+        Vec3(cx - 3.55, h1 * 0.5 + 0.20, cz),
+        engine::physics::box(scale1.scale(0.5))
+    )
+    if first.hit { return first }
+    return engine::physics::colliderContact(
+        car.pos,
+        car.collider,
+        Vec3(cx + 3.55, h2 * 0.5 + 0.20, cz),
+        engine::physics::box(scale2.scale(0.5))
+    )
+}
+
+func buildingContact(car: Car, props: Storage<Prop>): Contact {
+    fin streamed = streamedBuildingContact(car)
+    if streamed.hit { return streamed }
+    var i = 1
+    while i < storageLength<Prop>(props) {
+        if storageEntityAt<Prop>(props, i).isValid() {
+            fin piece: Prop = storageValueAt<Prop>(props, i)
+            if piece.solid {
+                fin contact = engine::physics::colliderContact(car.pos, car.collider, piece.pos, piece.collider)
+                if contact.hit { return contact }
+            }
+        }
+        i = i + 1
+    }
+    return engine::physics::noContact()
+}
+
+func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
+    var i = 1
+    while i < storageLength<Car>(cars) {
+        if i != selfIndex && storageEntityAt<Car>(cars, i).isValid() {
+            fin other: Car = storageValueAt<Car>(cars, i)
+            fin contact = engine::physics::colliderContact(car.pos, car.collider, other.pos, other.collider)
+            if contact.hit {
+                contact.bodyB = i
+                return contact
+            }
+        }
+        i = i + 1
+    }
+    return engine::physics::noContact()
+}
+
+func resolveCarContacts(car: Car, cars: Storage<Car>, props: Storage<Prop>, selfIndex: Int): Bool {
+    fin city = buildingContact(car, props)
+    if city.hit {
+        fin correction = city.normal.scale(city.penetration + 0.02)
+        car.pos.x = car.pos.x + correction.x
+        car.pos.y = car.pos.y + correction.y
+        car.pos.z = car.pos.z + correction.z
+        car.speed = car.speed * -0.16
+        return true
+    }
+
+    fin traffic = trafficContact(car, cars, selfIndex)
+    if traffic.hit {
+        fin correctionA = traffic.normal.scale(traffic.penetration * 0.58 + 0.01)
+        car.pos.x = car.pos.x + correctionA.x
+        car.pos.y = car.pos.y + correctionA.y
+        car.pos.z = car.pos.z + correctionA.z
+        fin other: Car = storageValueAt<Car>(cars, traffic.bodyB)
+        fin correctionB = traffic.normal.scale(traffic.penetration * 0.42 + 0.01)
+        other.pos.x = other.pos.x - correctionB.x
+        other.pos.y = other.pos.y - correctionB.y
+        other.pos.z = other.pos.z - correctionB.z
+        car.speed = car.speed * 0.28
+        other.speed = other.speed * 0.45
+        return true
+    }
+    return false
+}
+
+func advanceCars(cars: Storage<Car>, routes: Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: Real) {
+    traffic.elapsed = traffic.elapsed + dt
     var i = 1
     while i < storageLength<Car>(cars) {
         fin entity = storageEntityAt<Car>(cars, i)
         if entity.isValid() {
-            fin car = storageValueAt<Car>(cars, i)
+            fin car: Car = storageValueAt<Car>(cars, i)
             if car.isPlayer {
                 car.drive(input.throttle, input.steer, dt)
             } else {
-                car.steerPhase = car.steerPhase + dt
-                fin wander = sin(car.steerPhase * 0.7) * 0.6
-                car.drive(0.55, wander, dt)
+                driveTrafficCar(car, cars, routes, i, traffic.elapsed, dt)
             }
         }
         i = i + 1
     }
 }
 
+func solveCarContacts(cars: Storage<Car>, props: Storage<Prop>): Bool {
+    var playerCrashed = false
+    var i = 1
+    while i < storageLength<Car>(cars) {
+        if storageEntityAt<Car>(cars, i).isValid() {
+            fin car: Car = storageValueAt<Car>(cars, i)
+            fin collided = resolveCarContacts(car, cars, props, i)
+            if collided && car.isPlayer { playerCrashed = true }
+            if collided && !car.isPlayer {
+                car.speed = car.speed * 0.15
+            }
+        }
+        i = i + 1
+    }
+    return playerCrashed
+}
+
+// Movement and collision are separate deterministic simulation phases.
+func simulateCars(cars: Storage<Car>, props: Storage<Prop>, routes: Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: Real): Bool {
+    advanceCars(cars, routes, traffic, input, dt)
+    if traffic.crashCooldown > 0.0 {
+        traffic.crashCooldown = traffic.crashCooldown - dt
+    }
+    fin crashed = solveCarContacts(cars, props)
+    if crashed && traffic.crashCooldown <= 0.0 {
+        traffic.crashCooldown = 0.48
+        return true
+    }
+    return false
+}
+
+func districtName(pos: Vec3): String {
+    if pos.x > 66.0 && pos.x < 126.0 && pos.z > 78.0 && pos.z < 124.0 { return "Grand Central Station" }
+    if pos.x < -64.0 && pos.x > -128.0 && pos.z > 46.0 && pos.z < 96.0 { return "Metropolitan Mall" }
+    if pos.x < -88.0 && pos.x > -136.0 && pos.z < -54.0 && pos.z > -90.0 { return "Riverside Aquarium" }
+    if pos.x > 132.0 && pos.x < 156.0 && pos.z > -14.0 && pos.z < 14.0 { return "Skyline Observation Tower" }
+    if pos.x > -24.0 && pos.x < 24.0 && pos.z > 56.0 && pos.z < 88.0 { return "Civic Quarter" }
+    if pos.x < -27.0 && pos.x > -69.0 && pos.z > 31.0 && pos.z < 65.0 { return "City Football Ground" }
+    if pos.x < -27.0 && pos.x > -69.0 && pos.z < -15.0 && pos.z > -33.0 { return "Riverside Park" }
+    if pos.x > 40.0 && pos.z > -10.0 && pos.z < 10.0 { return "Museum Quarter" }
+    if absReal(pos.x) < 18.0 && absReal(pos.z) < 18.0 { return "Central Pedestrian Plaza" }
+    return "Downtown"
+}
+
 // Third-person chase camera: sit behind and above the player, looking forward.
 func chaseCamera(cam: Camera, car: Car) {
     fin f = car.forward()
-    cam.pos = Vec3(car.pos.x - f.x * 9.0, car.pos.y + 4.2, car.pos.z - f.z * 9.0)
+    cam.pos.x = car.pos.x - f.x * 9.0
+    cam.pos.y = car.pos.y + 4.2
+    cam.pos.z = car.pos.z - f.z * 9.0
     cam.yaw = car.yaw
     cam.pitch = -0.22
 }
@@ -259,25 +882,174 @@ func pushCube(queue: RenderQueue, cube: Mesh, pos: Vec3, rot: Vec3, scale: Vec3,
     queue.add(cube, Transform3d(pos, rot, scale), materialColor(color))
 }
 
-func renderScene(queue: RenderQueue, cube: Mesh, props: Storage<Prop>, cars: Storage<Car>) {
+func queueCity(queue: RenderQueue, cube: Mesh, props: Storage<Prop>) {
     var p = 1
     while p < storageLength<Prop>(props) {
         if storageEntityAt<Prop>(props, p).isValid() {
-            fin piece = storageValueAt<Prop>(props, p)
+            fin piece: Prop = storageValueAt<Prop>(props, p)
+            if piece.solid && piece.scale.y > 1.0 {
+                fin shadow = Vec3(
+                    piece.pos.x - piece.scale.y * 0.22,
+                    0.026,
+                    piece.pos.z + piece.scale.y * 0.14
+                )
+                pushCube(queue, cube, shadow, vec3Zero(), Vec3(piece.scale.x * 1.03, 0.025, piece.scale.z * 1.03), colorRgb(0.075, 0.08, 0.09))
+            }
             pushCube(queue, cube, piece.pos, vec3Zero(), piece.scale, piece.color)
         }
         p = p + 1
     }
+}
 
+func queueStreamedBlock(queue: RenderQueue, cube: Mesh, gx: Int, gz: Int) {
+    if isLandmarkBlock(gx, gz) { return }
+    if gx <= (0 - CITY_HALF_BLOCKS) || gx >= CITY_HALF_BLOCKS { return }
+    if gz <= (0 - CITY_HALF_BLOCKS) || gz >= CITY_HALF_BLOCKS { return }
+
+    fin cx = (gx as Real) * BLOCK_STEP
+    fin cz = (gz as Real) * BLOCK_STEP
+    fin variation = blockVariation(gx, gz)
+    fin h1 = streamedBuildingHeight(gx, gz, false)
+    fin h2 = streamedBuildingHeight(gx, gz, true)
+    fin shade = 0.30 + variation * 0.045
+    fin wall1 = colorRgb(shade * 1.08, shade, shade * 0.91)
+    fin wall2 = colorRgb(shade * 0.82, shade * 0.91, shade * 1.08)
+    fin glass = colorRgb(0.08, 0.25 + variation * 0.014, 0.36 + variation * 0.018)
+
+    pushCube(queue, cube, Vec3(cx, 0.10, cz), vec3Zero(), Vec3(BLOCK_SURFACE, 0.20, BLOCK_SURFACE), colorRgb(0.49, 0.51, 0.53))
+
+    // Cheap projected geometry gives every streamed building a stable shadow.
+    pushCube(queue, cube, Vec3(cx - 4.0, 0.026, cz + 0.8), vec3Zero(), Vec3(6.45, 0.025, 12.1), colorRgb(0.075, 0.08, 0.09))
+    pushCube(queue, cube, Vec3(cx + 3.1, 0.026, cz + 0.7), vec3Zero(), Vec3(6.45, 0.025, 12.1), colorRgb(0.075, 0.08, 0.09))
+    pushCube(queue, cube, Vec3(cx - 3.55, h1 * 0.5 + 0.20, cz), vec3Zero(), Vec3(6.25, h1, 11.8), wall1)
+    pushCube(queue, cube, Vec3(cx + 3.55, h2 * 0.5 + 0.20, cz), vec3Zero(), Vec3(6.25, h2, 11.8), wall2)
+    pushCube(queue, cube, Vec3(cx - 3.55, h1 * 0.62, cz + 5.94), vec3Zero(), Vec3(4.8, 1.25, 0.08), glass)
+    pushCube(queue, cube, Vec3(cx + 3.55, h2 * 0.61, cz + 5.94), vec3Zero(), Vec3(4.8, 1.05, 0.08), glass)
+
+    // Local centerline dashes make the million-block road grid legible without
+    // storing road entities for the whole world.
+    pushCube(queue, cube, Vec3(cx - 12.0, 0.035, cz), vec3Zero(), Vec3(0.14, 0.04, 3.8), colorRgb(0.94, 0.75, 0.18))
+    pushCube(queue, cube, Vec3(cx, 0.035, cz - 12.0), vec3Zero(), Vec3(3.8, 0.04, 0.14), colorRgb(0.94, 0.75, 0.18))
+}
+
+func queueStreamedCity(queue: RenderQueue, cube: Mesh, focus: Vec3) {
+    fin centerX = nearestBlockCoord(focus.x)
+    fin centerZ = nearestBlockCoord(focus.z)
+    var gx = centerX - STREAM_RADIUS
+    while gx <= centerX + STREAM_RADIUS {
+        var gz = centerZ - STREAM_RADIUS
+        while gz <= centerZ + STREAM_RADIUS {
+            queueStreamedBlock(queue, cube, gx, gz)
+            gz = gz + 1
+        }
+        gx = gx + 1
+    }
+}
+
+func buildClouds(): Array<Cloud> {
+    return arr![
+        Cloud(vec3Zero(), Vec3(1.0, 1.0, 1.0), 0.0),
+        Cloud(Vec3(-72.0, 30.0, -62.0), Vec3(14.0, 2.4, 6.0), 1.4),
+        Cloud(Vec3(-20.0, 35.0, -88.0), Vec3(18.0, 3.1, 7.0), 1.0),
+        Cloud(Vec3(38.0, 27.0, -45.0), Vec3(12.0, 2.2, 5.5), 1.7),
+        Cloud(Vec3(78.0, 38.0, 8.0), Vec3(20.0, 3.5, 8.0), 0.8),
+        Cloud(Vec3(-88.0, 32.0, 42.0), Vec3(15.0, 2.8, 6.5), 1.2)
+    ]
+}
+
+func updateAndRenderSky(queue: RenderQueue, cube: Mesh, sun: Mesh, clouds: Array<Cloud>, focus: Vec3, dt: Real) {
+    queue.add(
+        sun,
+        Transform3d(focus + Vec3(52.0, 48.0, -88.0), Vec3(0.0, 0.0, 0.0), Vec3(6.0, 6.0, 6.0)),
+        materialColor(colorRgb(1.0, 0.73, 0.18))
+    )
+    var i = 1
+    while i < clouds.length {
+        fin cloud: Cloud = clouds[i]
+        cloud.pos.x = cloud.pos.x + cloud.speed * dt
+        if cloud.pos.x > 110.0 {
+            cloud.pos.x = -110.0
+        }
+        fin cloudWorld = focus + cloud.pos
+        pushCube(queue, cube, cloudWorld, vec3Zero(), cloud.scale, colorRgb(0.92, 0.94, 0.96))
+        pushCube(queue, cube, cloudWorld + Vec3(cloud.scale.x * 0.22, 1.2, 0.0), vec3Zero(), cloud.scale.scale(0.62), colorRgb(0.97, 0.98, 1.0))
+        i = i + 1
+    }
+}
+
+func renderRiver(queue: RenderQueue, cube: Mesh, elapsed: Real, focus: Vec3) {
+    if absReal(focus.z + 48.0) > 180.0 { return }
+    var strip = -7
+    while strip <= 7 {
+        fin phase = elapsed * 1.8 + (strip as Real) * 0.72
+        fin wave = sin(phase) * 0.07
+        fin blue = 0.52 + sin(phase * 0.73) * 0.05
+        pushCube(
+            queue,
+            cube,
+            Vec3(focus.x, 0.04 + wave, -48.0 + (strip as Real)),
+            vec3Zero(),
+            Vec3(360.0, 0.08, 1.08),
+            colorRgb(0.08, 0.30, blue)
+        )
+        strip = strip + 1
+    }
+}
+
+func carPoint(car: Car, x: Real, y: Real, z: Real): Vec3 {
+    fin right = Vec3(cos(car.yaw), 0.0, 0.0 - sin(car.yaw))
+    return car.pos + right.scale(x) + Vec3(0.0, y, 0.0) + car.forward().scale(z)
+}
+
+func pushWheel(queue: RenderQueue, wheel: Mesh, car: Car, x: Real, z: Real, steering: Real) {
+    fin wheelPos = carPoint(car, x, -0.18, z)
+    fin wheelRot = Vec3(car.wheelSpin, car.yaw + steering, 0.0)
+    queue.add(wheel, Transform3d(wheelPos, wheelRot, Vec3(1.0, 1.0, 1.0)), materialColor(colorRgb(0.035, 0.04, 0.045)))
+    queue.add(wheel, Transform3d(wheelPos, wheelRot, Vec3(1.08, 0.52, 0.52)), materialColor(colorRgb(0.34, 0.36, 0.38)))
+}
+
+func renderCar(queue: RenderQueue, cube: Mesh, wheel: Mesh, car: Car) {
+    fin rot = Vec3(0.0, car.yaw, 0.0)
+    fin dark = colorRgb(0.055, 0.06, 0.07)
+    fin glass = colorRgb(0.08, 0.20, 0.27)
+
+    // Projected contact shadow anchors the vehicle to the road surface.
+    pushCube(queue, cube, Vec3(car.pos.x - 0.32, 0.028, car.pos.z + 0.20), rot, Vec3(2.20, 0.025, 4.05), colorRgb(0.055, 0.06, 0.07))
+
+    // Chassis, body, hood and cabin establish a recognisable low-poly car.
+    pushCube(queue, cube, carPoint(car, 0.0, -0.10, 0.0), rot, Vec3(1.92, 0.30, 3.55), dark)
+    pushCube(queue, cube, carPoint(car, 0.0, 0.12, 0.0), rot, Vec3(1.78, 0.55, 3.35), car.color)
+    pushCube(queue, cube, carPoint(car, 0.0, 0.42, 0.92), rot, Vec3(1.62, 0.25, 1.30), car.color)
+    pushCube(queue, cube, carPoint(car, 0.0, 0.62, -0.28), rot, Vec3(1.42, 0.78, 1.55), glass)
+    pushCube(queue, cube, carPoint(car, 0.0, 0.72, 0.51), rot, Vec3(1.30, 0.46, 0.10), colorRgb(0.16, 0.34, 0.42))
+
+    // Ackermann-style front steering: the inside wheel turns more sharply.
+    var leftSteer = car.wheelSteer
+    var rightSteer = car.wheelSteer
+    if car.wheelSteer > 0.0 {
+        leftSteer = car.wheelSteer * 1.16
+        rightSteer = car.wheelSteer * 0.88
+    } else {
+        leftSteer = car.wheelSteer * 0.88
+        rightSteer = car.wheelSteer * 1.16
+    }
+    pushWheel(queue, wheel, car, -1.00, 1.12, leftSteer)
+    pushWheel(queue, wheel, car, 1.00, 1.12, rightSteer)
+    pushWheel(queue, wheel, car, -1.00, -1.12, 0.0)
+    pushWheel(queue, wheel, car, 1.00, -1.12, 0.0)
+
+    // Headlights and tail-light bar communicate front and direction at speed.
+    pushCube(queue, cube, carPoint(car, -0.55, 0.14, 1.70), rot, Vec3(0.36, 0.18, 0.08), colorRgb(1.0, 0.88, 0.50))
+    pushCube(queue, cube, carPoint(car, 0.55, 0.14, 1.70), rot, Vec3(0.36, 0.18, 0.08), colorRgb(1.0, 0.88, 0.50))
+    pushCube(queue, cube, carPoint(car, 0.0, 0.14, -1.70), rot, Vec3(1.20, 0.15, 0.08), colorRgb(0.88, 0.06, 0.05))
+}
+
+func renderTraffic(queue: RenderQueue, cube: Mesh, wheel: Mesh, cars: Storage<Car>) {
     var c = 1
     while c < storageLength<Car>(cars) {
         if storageEntityAt<Car>(cars, c).isValid() {
-            fin car = storageValueAt<Car>(cars, c)
-            fin rot = Vec3(0.0, car.yaw, 0.0)
-            // Body then cabin, stacked — a readable low-poly silhouette.
-            pushCube(queue, cube, car.pos, rot, Vec3(1.7, 0.7, 3.4), car.color)
-            fin cabin = car.pos + Vec3(0.0, 0.62, -0.2)
-            pushCube(queue, cube, cabin, rot, Vec3(1.4, 0.7, 1.6), colorRgb(0.12, 0.13, 0.16))
+            fin car: Car = storageValueAt<Car>(cars, c)
+            renderCar(queue, cube, wheel, car)
         }
         c = c + 1
     }
@@ -294,59 +1066,121 @@ task main() {
     if !app.ok {
         return
     }
+    var audio = engine::audio::scene()
+    engine::audio::start(audio)
     defer {
+        engine::audio::stop(audio)
         app.shutdown()
     }
 
     app.setClearColor(0.53, 0.70, 0.92)
-    app.setLightDirection(-0.4, 0.9, 0.35)
-    app.setAmbientLight(0.42)
+    app.setLightDirection(-0.48, 0.86, 0.31)
+    app.setAmbientLight(0.34)
 
     fin cube = app.meshCube(1.0)
-    fin ground = app.meshGrid(CITY_LIMIT * 2.0, 44)
+    fin wheel = app.meshCylinder(0.48, 0.34, 14)
+    fin sun = app.meshCylinder(1.0, 0.8, 24)
+    fin ground = app.meshGrid(CITY_LIMIT, 64)
 
     var world = worldInit()
-    var props = storageInit<Prop>(Prop(vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.0, 0.0, 0.0)))
+    var props = storageInit<Prop>(Prop(
+        vec3Zero(),
+        Vec3(1.0, 1.0, 1.0),
+        colorRgb(0.0, 0.0, 0.0),
+        false,
+        engine::physics::box(Vec3(0.5, 0.5, 0.5))
+    ))
     var cars = storageInit<Car>(defaultCar())
-    var queue = renderQueueInit()
+    var staticQueue = renderQueueInit()
+    var dynamicQueue = renderQueueInit()
     var cam = cameraDefault()
+    fin routes = buildTrafficRoutes()
+    fin traffic = TrafficSimulation(0.0, 0.0)
+    fin clouds = buildClouds()
 
     buildCity(world, props)
 
     // Player is always car index 1.
-    spawnWith<Car>(world, cars, Car(Vec3(0.0, 0.35, 6.0), 0.0, 0.0, 0.0, colorRgb(0.92, 0.24, 0.28), true))
+    spawnWith<Car>(world, cars, Car(
+        Vec3(-9.8, 0.35, 4.0),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        colorRgb(0.92, 0.24, 0.28),
+        true,
+        engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+        -1,
+        0,
+        0.0
+    ))
 
     var a = 0
-    while a < 4 {
-        fin ax = ((a as Real) - 1.5) * 9.0
-        fin col = colorRgb(0.25 + (a as Real) * 0.14, 0.55, 0.95 - (a as Real) * 0.12)
-        spawnWith<Car>(world, cars, Car(Vec3(ax, 0.35, -18.0), 0.0, 4.0, (a as Real) * 1.3, col, false))
+    while a < 30 {
+        fin routeIndex = (a % 6) + 1
+        fin route: TrafficRoute = routes[routeIndex]
+        fin pointIndex = ((a / 6) * 2) % route.points.length
+        fin nextIndex = (pointIndex + 1) % route.points.length
+        fin trafficPos = route.points[pointIndex]
+        fin trafficYaw = cardinalYaw(trafficPos, route.points[nextIndex])
+        fin red = 0.25 + ((a % 5) as Real) * 0.13
+        fin green = 0.34 + (((a + 2) % 4) as Real) * 0.12
+        fin blue = 0.38 + (((a + 4) % 5) as Real) * 0.11
+        fin col = colorRgb(red, green, blue)
+        spawnWith<Car>(world, cars, Car(
+            trafficPos,
+            trafficYaw,
+            3.5 + ((a % 3) as Real),
+            0.0,
+            0.0,
+            col,
+            false,
+            engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+            routeIndex,
+            nextIndex,
+            8.0 + ((a % 4) as Real) * 0.65
+        ))
         a = a + 1
     }
 
+    // Static city geometry is queued once; only moving cars rebuild each frame.
+    pushCube(staticQueue, ground, Vec3(0.0, 0.0, 0.0), vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.16, 0.18, 0.20))
+    queueCity(staticQueue, cube, props)
+
     while app.frame() {
-        fin dt = app.deltaTime()
-        world.progress(dt)
+        zone alloc {
+            fin dt = app.deltaTime()
+            world.progress(dt)
 
-        fin input = gatherInput(app)
-        simulateCars(cars, input, dt)
+            fin input = gatherInput(app)
+            fin crashed = simulateCars(cars, props, routes, traffic, input, dt)
 
-        fin player = playerCarOf(cars)
-        chaseCamera(cam, player)
-        app.applyCamera(cam)
+            fin player = playerCarOf(cars)
+            engine::audio::updateEngine(audio, absReal(player.speed), input.throttle, MAX_SPEED)
+            if crashed {
+                engine::audio::playCrash(audio, clampReal(absReal(player.speed) / 12.0, 0.25, 1.0))
+            }
+            chaseCamera(cam, player)
+            app.applyCamera(cam)
 
-        queue.clear()
-        pushCube(queue, ground, Vec3(0.0, 0.0, 0.0), vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.22, 0.24, 0.27))
-        renderScene(queue, cube, props, cars)
-        app.drawRenderQueue(queue)
+            dynamicQueue.clear()
+            queueStreamedCity(dynamicQueue, cube, player.pos)
+            renderRiver(dynamicQueue, cube, traffic.elapsed, player.pos)
+            updateAndRenderSky(dynamicQueue, cube, sun, clouds, player.pos, dt)
+            renderTraffic(dynamicQueue, cube, wheel, cars)
+            app.drawRenderQueue(staticQueue)
+            app.drawRenderQueue(dynamicQueue)
+            drawDrivePads(app)
 
-        fin kmh = absReal(player.speed) * 3.6
-        app.uiText("Speed ${kmh as Int} km/h", 20.0, 24.0, 20.0)
-        app.uiText("Arrows / gamepad / touch pedals to drive — ESC to quit", 20.0, 52.0, 14.0)
+            fin kmh = absReal(player.speed) * 3.6
+            app.uiText("Speed ${kmh as Int} km/h", 20.0, 24.0, 20.0)
+            app.uiText(districtName(player.pos), 20.0, 52.0, 15.0)
+            app.uiText("WASD / arrows / gamepad / touch - ESC to quit", 20.0, 76.0, 13.0)
 
-        if app.keyPressed(KEY_ESCAPE) {
-            app.quit()
+            if app.keyPressed(KEY_ESCAPE) {
+                app.quit()
+            }
+            app.present()
         }
-        app.present()
     }
 }

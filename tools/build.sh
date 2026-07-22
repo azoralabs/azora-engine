@@ -110,6 +110,15 @@ add_engine_module() {
             add_engine_module "core"
             append_engine_module "ecs"
             ;;
+        physics)
+            add_engine_module "math"
+            append_engine_module "physics"
+            ;;
+        audio)
+            add_engine_module "objc"
+            add_engine_module "math"
+            append_engine_module "audio"
+            ;;
         jobs|concurrency)
             add_engine_module "core"
             append_engine_module "jobs"
@@ -192,7 +201,7 @@ OS="$(uname -s)"
 case "$OS" in
     Darwin)
         NATIVE_DIR="$LIB_DIR/native/macos"
-        PLATFORM_LIBS="-lobjc -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework CoreFoundation"
+        PLATFORM_LIBS="-lobjc -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework CoreFoundation -framework GameController -framework AVFoundation"
         ;;
     *)
         echo "error: only macOS is supported right now (Vulkan backend planned)." >&2

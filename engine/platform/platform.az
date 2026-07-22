@@ -285,6 +285,37 @@ impl App {
         return az_peek8(self.inp.state, 4100L + button as Long) != 0
     }
 
+    /// True when a standard extended game controller exists at [index].
+    func controllerConnected(index: Int): Bool {
+        return gamepadAt(index) != 0L
+    }
+
+    /// Analog value in the range 0..1 for a standard gamepad button.
+    func controllerButtonValue(index: Int, button: Int): Real {
+        fin gamepad = gamepadAt(index)
+        if gamepad == 0L {
+            return 0.0
+        }
+        fin input = gamepadButton(gamepad, button)
+        if input == 0L {
+            return 0.0
+        }
+        return az_send_float0(input, sel("value"))
+    }
+
+    /// Standard gamepad axis value in the range -1..1.
+    func controllerAxis(index: Int, axis: Int): Real {
+        fin gamepad = gamepadAt(index)
+        if gamepad == 0L {
+            return 0.0
+        }
+        fin input = gamepadAxis(gamepad, axis)
+        if input == 0L {
+            return 0.0
+        }
+        return az_send_float0(input, sel("value"))
+    }
+
     // ── Event pump (internal) ───────────────────────────────────────────
 
     func pumpEvents() {
@@ -405,4 +436,61 @@ impl App {
         }
         return -1
     }
+}
+
+// GameController framework access stays in Azora. The C shim only provides
+// the exact float-return objc_msgSend signature required by the native ABI.
+func gamepadAt(index: Int): Long {
+    if index < 0 {
+        return 0L
+    }
+    fin controllers = send0(cls("GCController"), sel("controllers"))
+    if controllers == 0L || index >= send0(controllers, sel("count")) as Int {
+        return 0L
+    }
+    fin controller = send1(controllers, sel("objectAtIndex:"), index as Long)
+    if controller == 0L {
+        return 0L
+    }
+    return send0(controller, sel("extendedGamepad"))
+}
+
+func gamepadButton(gamepad: Long, button: Int): Long {
+    if button == GAMEPAD_SOUTH { return send0(gamepad, sel("buttonA")) }
+    if button == GAMEPAD_EAST { return send0(gamepad, sel("buttonB")) }
+    if button == GAMEPAD_WEST { return send0(gamepad, sel("buttonX")) }
+    if button == GAMEPAD_NORTH { return send0(gamepad, sel("buttonY")) }
+    if button == GAMEPAD_LEFT_BUMPER { return send0(gamepad, sel("leftShoulder")) }
+    if button == GAMEPAD_RIGHT_BUMPER { return send0(gamepad, sel("rightShoulder")) }
+    if button == GAMEPAD_LEFT_TRIGGER { return send0(gamepad, sel("leftTrigger")) }
+    if button == GAMEPAD_RIGHT_TRIGGER { return send0(gamepad, sel("rightTrigger")) }
+    if button == GAMEPAD_BACK { return send0(gamepad, sel("buttonOptions")) }
+    if button == GAMEPAD_START { return send0(gamepad, sel("buttonMenu")) }
+    if button == GAMEPAD_LEFT_STICK { return send0(gamepad, sel("leftThumbstickButton")) }
+    if button == GAMEPAD_RIGHT_STICK { return send0(gamepad, sel("rightThumbstickButton")) }
+    if button == GAMEPAD_HOME { return send0(gamepad, sel("buttonHome")) }
+
+    fin dpad = send0(gamepad, sel("dpad"))
+    if dpad == 0L { return 0L }
+    if button == GAMEPAD_DPAD_UP { return send0(dpad, sel("up")) }
+    if button == GAMEPAD_DPAD_DOWN { return send0(dpad, sel("down")) }
+    if button == GAMEPAD_DPAD_LEFT { return send0(dpad, sel("left")) }
+    if button == GAMEPAD_DPAD_RIGHT { return send0(dpad, sel("right")) }
+    return 0L
+}
+
+func gamepadAxis(gamepad: Long, axis: Int): Long {
+    var stick = 0L
+    if axis == GAMEPAD_LEFT_X || axis == GAMEPAD_LEFT_Y {
+        stick = send0(gamepad, sel("leftThumbstick"))
+    } else {
+        if axis == GAMEPAD_RIGHT_X || axis == GAMEPAD_RIGHT_Y {
+            stick = send0(gamepad, sel("rightThumbstick"))
+        }
+    }
+    if stick == 0L { return 0L }
+    if axis == GAMEPAD_LEFT_X || axis == GAMEPAD_RIGHT_X {
+        return send0(stick, sel("xAxis"))
+    }
+    return send0(stick, sel("yAxis"))
 }

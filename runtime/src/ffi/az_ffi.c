@@ -41,6 +41,15 @@ double az_send_d0(int64_t obj, int64_t sel) {
     return ((double (*)(id, SEL))objc_msgSend)((id)obj, (SEL)sel);
 }
 
+double az_send_float0(int64_t obj, int64_t sel) {
+    return (double)((float (*)(id, SEL))objc_msgSend)((id)obj, (SEL)sel);
+}
+
+int64_t az_send_float1(int64_t obj, int64_t sel, double a) {
+    ((void (*)(id, SEL, float))objc_msgSend)((id)obj, (SEL)sel, (float)a);
+    return 0;
+}
+
 int64_t az_send_f1(int64_t obj, int64_t sel, double a) {
     return (int64_t)((id (*)(id, SEL, double))objc_msgSend)((id)obj, (SEL)sel, a);
 }

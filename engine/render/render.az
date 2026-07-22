@@ -44,6 +44,7 @@ pack RenderItem {
 
 pack RenderQueue {
     var items: Array<RenderItem>
+    var itemCount: Int
 }
 
 func cameraDefault(): Camera {
@@ -71,8 +72,10 @@ func transformAt(position: Vec3): Transform3d {
 }
 
 func renderQueueInit(): RenderQueue {
-    var items = arr![RenderItem(Mesh(0L, 0), transformDefault(), materialColor(colorRgb(0.0, 0.0, 0.0)))]
-    return RenderQueue(items)
+    // Enough room for a streamed city neighborhood, landmark geometry and
+    // traffic without replacing a persistent queue inside a frame arena.
+    var items: Array<RenderItem> = Array::fill<RenderItem>(2048)
+    return RenderQueue(items, 0)
 }
 
 impl Camera {
@@ -135,16 +138,25 @@ impl Transform3d {
 
 impl RenderQueue {
     func add(mesh: Mesh, transform: Transform3d, material: Material) {
-        self.items.add(RenderItem(mesh, transform, material))
+        if self.itemCount >= self.items.length {
+            var grown: Array<RenderItem> = Array::fill<RenderItem>(self.items.length * 2)
+            var i = 0
+            while i < self.itemCount {
+                grown[i] = self.items[i]
+                i = i + 1
+            }
+            self.items = grown
+        }
+        self.items[self.itemCount] = RenderItem(mesh, transform, material)
+        self.itemCount = self.itemCount + 1
     }
 
     func clear() {
-        var items = arr![RenderItem(Mesh(0L, 0), transformDefault(), materialColor(colorRgb(0.0, 0.0, 0.0)))]
-        self.items = items
+        self.itemCount = 0
     }
 
     func count(): Int {
-        return self.items.length - 1
+        return self.itemCount
     }
 }
 
@@ -169,8 +181,8 @@ impl App {
     }
 
     func drawRenderQueue(queue: RenderQueue) {
-        var i = 1
-        while i < queue.items.length {
+        var i = 0
+        while i < queue.itemCount {
             self.drawRenderItem(queue.items[i])
             i = i + 1
         }

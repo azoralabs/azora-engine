@@ -1,0 +1,451 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+module engine.physics
+
+import std.container.*
+import engine.math
+
+/**
+ * @file engine/physics/physics
+ *
+ * Deterministic, data-oriented rigid-body collision inspired by Avian's
+ * component model. Bodies own motion, colliders own geometry, materials own
+ * response, and collision layers decide which pairs may interact.
+ *
+ * The module intentionally keeps simulation state explicit. A game may use a
+ * complete [PhysicsWorld], or consume the stateless overlap/contact functions
+ * from `engine::physics` for ECS and custom kinematic controllers.
+ */
+
+enum RigidBodyKind {
+    Static,
+    Dynamic,
+    Kinematic
+}
+
+enum ColliderShape {
+    Box,
+    Sphere
+}
+
+/** Bit masks controlling broad-phase pair filtering. */
+pack CollisionLayers {
+    var memberships: Int
+    var filters: Int
+}
+
+/** Surface response shared by all contacts involving a body. */
+pack PhysicsMaterial {
+    var friction: Real
+    var restitution: Real
+}
+
+/** Box or sphere geometry attached at an offset from a body. */
+pack Collider {
+    var shape: ColliderShape
+    var halfExtents: Vec3
+    var radius: Real
+    var offset: Vec3
+    var layers: CollisionLayers
+    var sensor: Bool
+}
+
+/** Runtime body state. Static and kinematic bodies have zero inverse mass. */
+pack PhysicsBody {
+    var id: Int
+    var kind: RigidBodyKind
+    var position: Vec3
+    var velocity: Vec3
+    var force: Vec3
+    var inverseMass: Real
+    var collider: Collider
+    var material: PhysicsMaterial
+    var awake: Bool
+}
+
+/** A contact normal points in the direction that moves body A out of body B. */
+pack Contact {
+    var hit: Bool
+    var bodyA: Int
+    var bodyB: Int
+    var normal: Vec3
+    var point: Vec3
+    var penetration: Real
+    var sensor: Bool
+}
+
+/** A fixed-substep physics world with stable body identifiers. */
+pack PhysicsWorld {
+    var bodies: Array<PhysicsBody>
+    var contacts: Array<Contact>
+    var gravity: Vec3
+    var substeps: Int
+    var nextId: Int
+}
+
+friend zone engine::physics {
+    fin ALL_LAYERS = -1
+
+    func layersAll(): CollisionLayers {
+        return CollisionLayers(ALL_LAYERS, ALL_LAYERS)
+    }
+
+    func layers(memberships: Int, filters: Int): CollisionLayers {
+        return CollisionLayers(memberships, filters)
+    }
+
+    func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool {
+        return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
+    }
+
+    func material(friction: Real = 0.65, restitution: Real = 0.05): PhysicsMaterial {
+        return PhysicsMaterial(clamp(friction, 0.0, 1.0), clamp(restitution, 0.0, 1.0))
+    }
+
+    func box(halfExtents: Vec3): Collider {
+        return Collider(ColliderShape.Box, halfExtents, 0.0, vec3Zero(), layersAll(), false)
+    }
+
+    func sphere(radius: Real): Collider {
+        return Collider(ColliderShape.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), layersAll(), false)
+    }
+
+    func withOffset(collider: Collider, offset: Vec3): Collider {
+        return Collider(collider.shape, collider.halfExtents, collider.radius, offset, collider.layers, collider.sensor)
+    }
+
+    func withLayers(collider: Collider, value: CollisionLayers): Collider {
+        return Collider(collider.shape, collider.halfExtents, collider.radius, collider.offset, value, collider.sensor)
+    }
+
+    func asSensor(collider: Collider): Collider {
+        return Collider(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
+    }
+
+    func body(kind: RigidBodyKind, position: Vec3, collider: Collider, mass: Real = 1.0): PhysicsBody {
+        var inverseMass = 0.0
+        if kind == RigidBodyKind.Dynamic && mass > 0.0 {
+            inverseMass = 1.0 / mass
+        }
+        return PhysicsBody(-1, kind, position, vec3Zero(), vec3Zero(), inverseMass, collider, material(), true)
+    }
+
+    func staticBody(position: Vec3, collider: Collider): PhysicsBody {
+        return body(RigidBodyKind.Static, position, collider)
+    }
+
+    func dynamicBody(position: Vec3, collider: Collider, mass: Real = 1.0): PhysicsBody {
+        return body(RigidBodyKind.Dynamic, position, collider, mass)
+    }
+
+    func kinematicBody(position: Vec3, collider: Collider): PhysicsBody {
+        return body(RigidBodyKind.Kinematic, position, collider)
+    }
+
+    func noContact(): Contact {
+        return Contact(false, -1, -1, vec3Zero(), vec3Zero(), 0.0, false)
+    }
+
+    /** Box-box contact for axis-aligned colliders. */
+    func aabbContact(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Contact {
+        fin dx = centerA.x - centerB.x
+        fin dy = centerA.y - centerB.y
+        fin dz = centerA.z - centerB.z
+        fin overlapX = halfA.x + halfB.x - abs(dx)
+        fin overlapY = halfA.y + halfB.y - abs(dy)
+        fin overlapZ = halfA.z + halfB.z - abs(dz)
+        if overlapX <= 0.0 || overlapY <= 0.0 || overlapZ <= 0.0 {
+            return noContact()
+        }
+
+        var normal = Vec3(sign(dx), 0.0, 0.0)
+        var penetration = overlapX
+        if overlapY < penetration {
+            normal = Vec3(0.0, sign(dy), 0.0)
+            penetration = overlapY
+        }
+        if overlapZ < penetration {
+            normal = Vec3(0.0, 0.0, sign(dz))
+            penetration = overlapZ
+        }
+        return Contact(true, -1, -1, normal, centerA - normal.scale(penetration * 0.5), penetration, false)
+    }
+
+    func aabbOverlaps(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Bool {
+        return aabbContact(centerA, halfA, centerB, halfB).hit
+    }
+
+    /** Sphere-sphere contact, including coincident centers. */
+    func sphereContact(centerA: Vec3, radiusA: Real, centerB: Vec3, radiusB: Real): Contact {
+        fin delta = centerA - centerB
+        fin radius = radiusA + radiusB
+        fin distanceSquared = delta.dot(delta)
+        if distanceSquared >= radius * radius {
+            return noContact()
+        }
+        if distanceSquared < 0.0000001 {
+            return Contact(true, -1, -1, Vec3(1.0, 0.0, 0.0), centerA, radius, false)
+        }
+        fin distance = sqrt(distanceSquared)
+        fin normal = delta.scale(1.0 / distance)
+        return Contact(true, -1, -1, normal, centerA - normal.scale(radiusA), radius - distance, false)
+    }
+
+    /** Sphere-box contact. The normal moves the sphere out of the box. */
+    func sphereAabbContact(sphereCenter: Vec3, radius: Real, boxCenter: Vec3, boxHalf: Vec3): Contact {
+        fin closest = Vec3(
+            clamp(sphereCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
+            clamp(sphereCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y),
+            clamp(sphereCenter.z, boxCenter.z - boxHalf.z, boxCenter.z + boxHalf.z)
+        )
+        fin delta = sphereCenter - closest
+        fin distanceSquared = delta.dot(delta)
+        if distanceSquared >= radius * radius {
+            return noContact()
+        }
+        if distanceSquared < 0.0000001 {
+            return aabbContact(sphereCenter, Vec3(radius, radius, radius), boxCenter, boxHalf)
+        }
+        fin distance = sqrt(distanceSquared)
+        return Contact(true, -1, -1, delta.scale(1.0 / distance), closest, radius - distance, false)
+    }
+
+    func colliderContact(positionA: Vec3, colliderA: Collider, positionB: Vec3, colliderB: Collider): Contact {
+        if !layersInteract(colliderA.layers, colliderB.layers) {
+            return noContact()
+        }
+        fin centerA = positionA + colliderA.offset
+        fin centerB = positionB + colliderB.offset
+        var contact = noContact()
+        if colliderA.shape == ColliderShape.Box && colliderB.shape == ColliderShape.Box {
+            contact = aabbContact(centerA, colliderA.halfExtents, centerB, colliderB.halfExtents)
+        } else {
+            if colliderA.shape == ColliderShape.Sphere && colliderB.shape == ColliderShape.Sphere {
+                contact = sphereContact(centerA, colliderA.radius, centerB, colliderB.radius)
+            } else {
+                if colliderA.shape == ColliderShape.Sphere {
+                    contact = sphereAabbContact(centerA, colliderA.radius, centerB, colliderB.halfExtents)
+                } else {
+                    fin reverse = sphereAabbContact(centerB, colliderB.radius, centerA, colliderA.halfExtents)
+                    if reverse.hit {
+                        contact = Contact(true, -1, -1, reverse.normal.scale(-1.0), reverse.point, reverse.penetration, false)
+                    }
+                }
+            }
+        }
+        if contact.hit {
+            contact.sensor = colliderA.sensor || colliderB.sensor
+        }
+        return contact
+    }
+
+    func world(gravity: Vec3 = Vec3(0.0, -9.81, 0.0), substeps: Int = 4): PhysicsWorld {
+        var steps = substeps
+        if steps < 1 { steps = 1 }
+        if steps > 16 { steps = 16 }
+        return PhysicsWorld(
+            arr![body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
+            arr![noContact()],
+            gravity,
+            steps,
+            1
+        )
+    }
+
+    func addBody(world: PhysicsWorld, value: PhysicsBody): Int {
+        value.id = world.nextId
+        world.nextId = world.nextId + 1
+        world.bodies.add(value)
+        return value.id
+    }
+
+    func bodyById(world: PhysicsWorld, id: Int): PhysicsBody {
+        var i = 1
+        while i < world.bodies.length {
+            fin value: PhysicsBody = world.bodies[i]
+            if value.id == id { return value }
+            i = i + 1
+        }
+        return world.bodies[0]
+    }
+
+    func applyForce(body: PhysicsBody, force: Vec3) {
+        if body.kind == RigidBodyKind.Dynamic {
+            body.force = body.force + force
+            body.awake = true
+        }
+    }
+
+    func step(world: PhysicsWorld, deltaTime: Real) {
+        var dt = deltaTime
+        if dt < 0.0 { dt = 0.0 }
+        if dt > 0.1 { dt = 0.1 }
+        fin substep = dt / (world.substeps as Real)
+        var iteration = 0
+        while iteration < world.substeps {
+            integrate(world, substep)
+            collide(world)
+            iteration = iteration + 1
+        }
+    }
+
+    func integrate(world: PhysicsWorld, dt: Real) {
+        var i = 1
+        while i < world.bodies.length {
+            fin value: PhysicsBody = world.bodies[i]
+            if value.kind == RigidBodyKind.Dynamic && value.awake {
+                fin acceleration = world.gravity + value.force.scale(value.inverseMass)
+                value.velocity = value.velocity + acceleration.scale(dt)
+                value.position = value.position + value.velocity.scale(dt)
+                value.force = vec3Zero()
+            } else {
+                if value.kind == RigidBodyKind.Kinematic {
+                    value.position = value.position + value.velocity.scale(dt)
+                }
+            }
+            i = i + 1
+        }
+    }
+
+    func collide(world: PhysicsWorld) {
+        world.contacts = arr![noContact()]
+        var i = 1
+        while i < world.bodies.length {
+            var j = i + 1
+            while j < world.bodies.length {
+                fin a: PhysicsBody = world.bodies[i]
+                fin b: PhysicsBody = world.bodies[j]
+                if a.kind != RigidBodyKind.Static || b.kind != RigidBodyKind.Static {
+                    fin candidate = colliderContact(a.position, a.collider, b.position, b.collider)
+                    if candidate.hit {
+                        candidate.bodyA = a.id
+                        candidate.bodyB = b.id
+                        world.contacts.add(candidate)
+                        if !candidate.sensor {
+                            resolveContact(a, b, candidate)
+                        }
+                    }
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+    }
+
+    func resolveContact(a: PhysicsBody, b: PhysicsBody, contact: Contact) {
+        fin inverseA = a.inverseMass
+        fin inverseB = b.inverseMass
+        fin inverseTotal = inverseA + inverseB
+        if inverseTotal <= 0.0 { return }
+
+        fin correction = contact.normal.scale(contact.penetration / inverseTotal)
+        if inverseA > 0.0 { a.position = a.position + correction.scale(inverseA) }
+        if inverseB > 0.0 { b.position = b.position - correction.scale(inverseB) }
+
+        fin relative = a.velocity - b.velocity
+        fin alongNormal = relative.dot(contact.normal)
+        if alongNormal >= 0.0 { return }
+        fin restitution = min(a.material.restitution, b.material.restitution)
+        fin impulseMagnitude = (0.0 - (1.0 + restitution) * alongNormal) / inverseTotal
+        fin impulse = contact.normal.scale(impulseMagnitude)
+        if inverseA > 0.0 { a.velocity = a.velocity + impulse.scale(inverseA) }
+        if inverseB > 0.0 { b.velocity = b.velocity - impulse.scale(inverseB) }
+    }
+
+    func clamp(value: Real, lo: Real, hi: Real): Real {
+        if value < lo { return lo }
+        if value > hi { return hi }
+        return value
+    }
+
+    func abs(value: Real): Real {
+        if value < 0.0 { return 0.0 - value }
+        return value
+    }
+
+    func sign(value: Real): Real {
+        if value < 0.0 { return -1.0 }
+        return 1.0
+    }
+
+    func min(a: Real, b: Real): Real {
+        if a < b { return a }
+        return b
+    }
+}
+
+test "AABB contact chooses the shallowest separation axis" {
+    fin contact = engine::physics::aabbContact(
+        Vec3(0.0, 0.0, 0.0),
+        Vec3(1.0, 1.0, 1.0),
+        Vec3(1.5, 0.0, 0.0),
+        Vec3(1.0, 1.0, 1.0)
+    )
+    assert contact.hit { "overlapping boxes must produce a contact" }
+    assert contact.normal.x == -1.0 { "normal must move body A away from body B" }
+    assert contact.penetration == 0.5 { "penetration must equal the shallow overlap" }
+}
+
+test "AABB contact rejects separated boxes" {
+    fin contact = engine::physics::aabbContact(
+        Vec3(0.0, 0.0, 0.0),
+        Vec3(1.0, 1.0, 1.0),
+        Vec3(3.0, 0.0, 0.0),
+        Vec3(1.0, 1.0, 1.0)
+    )
+    assert !contact.hit { "separated boxes must not collide" }
+}
+
+test "collision layers require mutual membership filters" {
+    fin player = engine::physics::layers(1, 2)
+    fin world = engine::physics::layers(2, 1)
+    fin ignored = engine::physics::layers(4, 1)
+    assert engine::physics::layersInteract(player, world) { "mutually selected layers must interact" }
+    assert !engine::physics::layersInteract(player, ignored) { "one-sided filters must not interact" }
+}
+
+test "sphere contact reports coincident centers safely" {
+    fin contact = engine::physics::sphereContact(vec3Zero(), 1.0, vec3Zero(), 2.0)
+    assert contact.hit { "coincident spheres must collide" }
+    assert contact.penetration == 3.0 { "coincident penetration must include both radii" }
+    assert contact.normal.x == 1.0 { "coincident spheres need a deterministic fallback normal" }
+}
+
+test "sensor colliders report contacts without becoming solid" {
+    fin sensor = engine::physics::asSensor(engine::physics::box(Vec3(1.0, 1.0, 1.0)))
+    fin solid = engine::physics::box(Vec3(1.0, 1.0, 1.0))
+    fin contact = engine::physics::colliderContact(vec3Zero(), sensor, Vec3(1.0, 0.0, 0.0), solid)
+    assert contact.hit { "overlapping sensor must report a contact" }
+    assert contact.sensor { "contact must retain sensor semantics" }
+}
+
+test "physics world assigns stable nonzero body identifiers" {
+    fin world = engine::physics::world(vec3Zero(), 1)
+    fin first = engine::physics::addBody(world, engine::physics::dynamicBody(vec3Zero(), engine::physics::sphere(1.0)))
+    fin second = engine::physics::addBody(world, engine::physics::staticBody(Vec3(4.0, 0.0, 0.0), engine::physics::box(Vec3(1.0, 1.0, 1.0))))
+    assert first == 1 { "first body id must be one" }
+    assert second == 2 { "body ids must increase monotonically" }
+    assert engine::physics::bodyById(world, second).id == second { "body lookup must preserve identity" }
+}
+
+test "dynamic body is separated from a static body" {
+    fin world = engine::physics::world(vec3Zero(), 1)
+    fin dynamicId = engine::physics::addBody(
+        world,
+        engine::physics::dynamicBody(Vec3(0.0, 0.0, 0.0), engine::physics::box(Vec3(1.0, 1.0, 1.0)))
+    )
+    engine::physics::addBody(
+        world,
+        engine::physics::staticBody(Vec3(1.5, 0.0, 0.0), engine::physics::box(Vec3(1.0, 1.0, 1.0)))
+    )
+    engine::physics::step(world, 0.016)
+    fin dynamic = engine::physics::bodyById(world, dynamicId)
+    assert dynamic.position.x <= -0.5 { "contact solver must remove box penetration" }
+    assert world.contacts.length == 2 { "world must retain its sentinel and one collision contact" }
+}
+
+test .All "physics"

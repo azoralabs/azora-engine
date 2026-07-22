@@ -81,6 +81,8 @@ folder. New projects can opt into narrower modules:
 import engine.ui       // window, input, 2D UI/text
 import engine.render   // UI + camera, meshes, materials, render queues
 import engine.ecs      // @Component/@System/@Query, World, Storage<T>, events
+import engine.physics  // colliders, layers, contacts and rigid-body simulation
+import engine.audio    // procedural soundtrack, engine loops and effects
 import engine.jobs     // Azora task helpers for background work
 import engine.shaders  // Equivalent Metal, Vulkan, and WebGL shader sources
 ```

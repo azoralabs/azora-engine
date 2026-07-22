@@ -261,6 +261,16 @@ func gpuEndFrame(app: App) {
 
 // ── Meshes & 3D drawing ─────────────────────────────────────────────────
 
+func writeMeshVertex(bytes: Long, off: Long, x: Real, y: Real, z: Real, nx: Real, ny: Real, nz: Real): Long {
+    az_poke_f32(bytes, off, x)
+    az_poke_f32(bytes, off + 4L, y)
+    az_poke_f32(bytes, off + 8L, z)
+    az_poke_f32(bytes, off + 12L, nx)
+    az_poke_f32(bytes, off + 16L, ny)
+    az_poke_f32(bytes, off + 20L, nz)
+    return off + 24L
+}
+
 impl App {
 
     /// Creates a cube mesh with the given edge length.
@@ -316,6 +326,58 @@ impl App {
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, 864L, 0L)
         az_free(bytes)
         return Mesh(buffer, 36)
+    }
+
+    /**
+     * Creates a faceted cylinder whose axle lies on local X.
+     *
+     * The X-axis orientation makes the primitive directly useful for vehicle
+     * wheels: X rotation spins the wheel and Y rotation steers it.
+     */
+    func meshCylinder(radius: Real, length: Real, segments: Int = 16): Mesh {
+        var sides = segments
+        if sides < 3 { sides = 3 }
+        if sides > 64 { sides = 64 }
+        fin vertexCount = sides * 12
+        fin total = (vertexCount * 24) as Long
+        fin bytes = az_alloc(total)
+        fin half = length * 0.5
+        fin step = PI * 2.0 / (sides as Real)
+        var off = 0L
+        var segment = 0
+        while segment < sides {
+            fin a0 = (segment as Real) * step
+            fin a1 = ((segment + 1) as Real) * step
+            fin ny0 = cos(a0)
+            fin nz0 = sin(a0)
+            fin ny1 = cos(a1)
+            fin nz1 = sin(a1)
+            fin y0 = ny0 * radius
+            fin z0 = nz0 * radius
+            fin y1 = ny1 * radius
+            fin z1 = nz1 * radius
+
+            // Side quad, split into two triangles with radial normals.
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, 0.0, ny1, nz1)
+
+            // End caps use one triangle per segment and flat axle normals.
+            off = writeMeshVertex(bytes, off, 0.0 - half, 0.0, 0.0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, 0.0, 0.0, 1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, y0, z0, 1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 1.0, 0.0, 0.0)
+            segment = segment + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, 0L)
+        az_free(bytes)
+        return Mesh(buffer, vertexCount)
     }
 
     /// Creates a flat grid mesh in the XZ plane (`extent` half-size, `divisions` cells per side).
