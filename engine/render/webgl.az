@@ -4,7 +4,7 @@
  * Licensed under the Apache License, Version 2.0.
  */
 
-module engine.render
+module engine.render.webgl
 
 import std.math
 import engine.shaders
@@ -48,7 +48,7 @@ friend zone engine {
      * Internal WebAssembly device ABI. The WebGL backend implements these as
      * typed WASM imports; public engine behavior remains in Azora below.
      */
-    bridge WebGL {
+    bridge [.JavaScript, .WebAssembly] {
         func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
         func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
         func engineWebNextFrame(): Real
@@ -56,7 +56,7 @@ friend zone engine {
         func engineWebClear(r: Real, g: Real, b: Real): Unit
         func engineWebRect(x: Real, y: Real, width: Real, height: Real, r: Real, g: Real, b: Real, a: Real): Unit
         func engineWebCircle(x: Real, y: Real, radius: Real, r: Real, g: Real, b: Real, a: Real): Unit
-        func engineWebCube(size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real): Unit
+        func engineWebCubeAt(x: Real, y: Real, z: Real, size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real): Unit
         func engineWebCamera(distance: Real, fov: Real): Unit
         func engineWebLog(message: String): Unit
     }
@@ -110,7 +110,13 @@ friend zone engine {
     /** Draws or updates a lit cube. Rotation angles are radians. */
     @Experimental(sinceAzora: "0.0.4")
     func cube(size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real) {
-        engineWebCube(size, rotateX, rotateY, rotateZ, r, g, b)
+        engineWebCubeAt(0.0, 0.0, 0.0, size, rotateX, rotateY, rotateZ, r, g, b)
+    }
+
+    /** Draws or updates a lit cube at the given world-space position. */
+    @Experimental(sinceAzora: "0.0.4")
+    func cubeAt(x: Real, y: Real, z: Real, size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real) {
+        engineWebCubeAt(x, y, z, size, rotateX, rotateY, rotateZ, r, g, b)
     }
 
     /** Configures the perspective camera for the active 3D surface. */

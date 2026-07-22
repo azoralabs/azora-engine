@@ -1,0 +1,272 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+module engine.input
+
+/**
+ * @file engine/input/az_input
+ *
+ * Cross-platform, frame-snapshotted input for keyboard, mouse, pen, touch,
+ * and standard game controllers. Held state remains true across frames;
+ * pressed/released edges, pointer deltas, wheel motion, and text input belong
+ * only to the frame returned by `await engine::nextFrame()`.
+ *
+ * Pointer coordinates use the renderer's logical dimensions and a top-left
+ * origin on every target. The unified pointer functions select the active
+ * mouse, pen, or primary touch, making drag interactions device-independent.
+ *
+ * @since 0.0.4
+ */
+
+// Keyboard codes. Printable keys retain their uppercase ASCII values.
+fin KEY_BACKSPACE = 8
+fin KEY_TAB = 9
+fin KEY_ENTER = 13
+fin KEY_ESCAPE = 27
+fin KEY_SPACE = 32
+fin KEY_0 = 48
+fin KEY_1 = 49
+fin KEY_2 = 50
+fin KEY_3 = 51
+fin KEY_4 = 52
+fin KEY_5 = 53
+fin KEY_6 = 54
+fin KEY_7 = 55
+fin KEY_8 = 56
+fin KEY_9 = 57
+fin KEY_A = 65
+fin KEY_B = 66
+fin KEY_C = 67
+fin KEY_D = 68
+fin KEY_E = 69
+fin KEY_F = 70
+fin KEY_G = 71
+fin KEY_H = 72
+fin KEY_I = 73
+fin KEY_J = 74
+fin KEY_K = 75
+fin KEY_L = 76
+fin KEY_M = 77
+fin KEY_N = 78
+fin KEY_O = 79
+fin KEY_P = 80
+fin KEY_Q = 81
+fin KEY_R = 82
+fin KEY_S = 83
+fin KEY_T = 84
+fin KEY_U = 85
+fin KEY_V = 86
+fin KEY_W = 87
+fin KEY_X = 88
+fin KEY_Y = 89
+fin KEY_Z = 90
+
+fin KEY_LEFT = 1001
+fin KEY_RIGHT = 1002
+fin KEY_UP = 1003
+fin KEY_DOWN = 1004
+fin KEY_SHIFT = 1005
+fin KEY_CONTROL = 1006
+fin KEY_ALT = 1007
+fin KEY_META = 1008
+fin KEY_CAPS_LOCK = 1009
+fin KEY_INSERT = 1010
+fin KEY_DELETE = 1011
+fin KEY_HOME = 1012
+fin KEY_END = 1013
+fin KEY_PAGE_UP = 1014
+fin KEY_PAGE_DOWN = 1015
+fin KEY_F1 = 1021
+fin KEY_F2 = 1022
+fin KEY_F3 = 1023
+fin KEY_F4 = 1024
+fin KEY_F5 = 1025
+fin KEY_F6 = 1026
+fin KEY_F7 = 1027
+fin KEY_F8 = 1028
+fin KEY_F9 = 1029
+fin KEY_F10 = 1030
+fin KEY_F11 = 1031
+fin KEY_F12 = 1032
+
+fin MOUSE_LEFT = 0
+fin MOUSE_RIGHT = 1
+fin MOUSE_MIDDLE = 2
+fin MOUSE_BACK = 3
+fin MOUSE_FORWARD = 4
+
+fin POINTER_MOUSE = 0
+fin POINTER_TOUCH = 1
+fin POINTER_PEN = 2
+fin POINTER_NONE = -1
+
+fin TOUCH_NONE = 0
+fin TOUCH_BEGAN = 1
+fin TOUCH_MOVED = 2
+fin TOUCH_STATIONARY = 3
+fin TOUCH_ENDED = 4
+fin TOUCH_CANCELLED = 5
+
+// W3C standard gamepad layout.
+fin GAMEPAD_SOUTH = 0
+fin GAMEPAD_EAST = 1
+fin GAMEPAD_WEST = 2
+fin GAMEPAD_NORTH = 3
+fin GAMEPAD_LEFT_BUMPER = 4
+fin GAMEPAD_RIGHT_BUMPER = 5
+fin GAMEPAD_LEFT_TRIGGER = 6
+fin GAMEPAD_RIGHT_TRIGGER = 7
+fin GAMEPAD_BACK = 8
+fin GAMEPAD_START = 9
+fin GAMEPAD_LEFT_STICK = 10
+fin GAMEPAD_RIGHT_STICK = 11
+fin GAMEPAD_DPAD_UP = 12
+fin GAMEPAD_DPAD_DOWN = 13
+fin GAMEPAD_DPAD_LEFT = 14
+fin GAMEPAD_DPAD_RIGHT = 15
+fin GAMEPAD_HOME = 16
+
+fin GAMEPAD_LEFT_X = 0
+fin GAMEPAD_LEFT_Y = 1
+fin GAMEPAD_RIGHT_X = 2
+fin GAMEPAD_RIGHT_Y = 3
+
+friend zone engine::input {
+    /* Internal WebAssembly device ABI; applications use the wrappers below. */
+    bridge [.C, .JavaScript, .WebAssembly] {
+        func engineInputKeyDown(key: Int): Bool
+        func engineInputKeyPressed(key: Int): Bool
+        func engineInputKeyReleased(key: Int): Bool
+        func engineInputAnyKeyDown(): Bool
+        func engineInputTextCount(): Int
+        func engineInputTextCodePoint(index: Int): Int
+
+        func engineInputMouseX(): Real
+        func engineInputMouseY(): Real
+        func engineInputMouseDeltaX(): Real
+        func engineInputMouseDeltaY(): Real
+        func engineInputMouseWheelX(): Real
+        func engineInputMouseWheelY(): Real
+        func engineInputMouseDown(button: Int): Bool
+        func engineInputMousePressed(button: Int): Bool
+        func engineInputMouseReleased(button: Int): Bool
+        func engineInputMouseInside(): Bool
+        func engineInputPointerLocked(): Bool
+        func engineInputRequestPointerLock(): Bool
+        func engineInputReleasePointerLock(): Unit
+
+        func engineInputPointerKind(): Int
+        func engineInputPointerId(): Int
+        func engineInputPointerX(): Real
+        func engineInputPointerY(): Real
+        func engineInputPointerDeltaX(): Real
+        func engineInputPointerDeltaY(): Real
+        func engineInputPointerPressure(): Real
+        func engineInputPointerDown(): Bool
+        func engineInputPointerPressed(): Bool
+        func engineInputPointerReleased(): Bool
+
+        func engineInputTouchCount(): Int
+        func engineInputTouchId(index: Int): Int
+        func engineInputTouchX(index: Int): Real
+        func engineInputTouchY(index: Int): Real
+        func engineInputTouchDeltaX(index: Int): Real
+        func engineInputTouchDeltaY(index: Int): Real
+        func engineInputTouchPressure(index: Int): Real
+        func engineInputTouchRadiusX(index: Int): Real
+        func engineInputTouchRadiusY(index: Int): Real
+        func engineInputTouchPhase(index: Int): Int
+
+        func engineInputControllerCount(): Int
+        func engineInputControllerConnected(index: Int): Bool
+        func engineInputControllerButtonDown(index: Int, button: Int): Bool
+        func engineInputControllerButtonPressed(index: Int, button: Int): Bool
+        func engineInputControllerButtonReleased(index: Int, button: Int): Bool
+        func engineInputControllerButtonValue(index: Int, button: Int): Real
+        func engineInputControllerAxis(index: Int, axis: Int): Real
+        func engineInputControllerRumble(index: Int, low: Real, high: Real, durationMs: Int): Bool
+    }
+
+    /** True while [key] is held. */
+    func keyDown(key: Int): Bool { return engineInputKeyDown(key) }
+
+    /** True only during the frame in which [key] went down. */
+    func keyPressed(key: Int): Bool { return engineInputKeyPressed(key) }
+
+    /** True only during the frame in which [key] went up. */
+    func keyReleased(key: Int): Bool { return engineInputKeyReleased(key) }
+
+    /** True when at least one keyboard key is currently held. */
+    func anyKeyDown(): Bool { return engineInputAnyKeyDown() }
+
+    /** Number of Unicode code points entered during this frame. */
+    func textCount(): Int { return engineInputTextCount() }
+
+    /** Unicode code point at [index], or `0` when out of bounds. */
+    func textCodePoint(index: Int): Int { return engineInputTextCodePoint(index) }
+
+    /** Mouse position in logical pixels, origin at the top-left. */
+    func mouseX(): Real { return engineInputMouseX() }
+    func mouseY(): Real { return engineInputMouseY() }
+
+    /** Mouse movement accumulated since the previous engine frame. */
+    func mouseDeltaX(): Real { return engineInputMouseDeltaX() }
+    func mouseDeltaY(): Real { return engineInputMouseDeltaY() }
+
+    /** Horizontal and vertical wheel movement for this frame. */
+    func mouseWheelX(): Real { return engineInputMouseWheelX() }
+    func mouseWheelY(): Real { return engineInputMouseWheelY() }
+
+    func mouseDown(button: Int): Bool { return engineInputMouseDown(button) }
+    func mousePressed(button: Int): Bool { return engineInputMousePressed(button) }
+    func mouseReleased(button: Int): Bool { return engineInputMouseReleased(button) }
+    func mouseInside(): Bool { return engineInputMouseInside() }
+
+    /** True while relative pointer mode is active. */
+    func pointerLocked(): Bool { return engineInputPointerLocked() }
+
+    /** Requests relative pointer mode. Must be called from a user gesture. */
+    func requestPointerLock(): Bool { return engineInputRequestPointerLock() }
+    func releasePointerLock() { engineInputReleasePointerLock() }
+
+    /** Kind of the active unified pointer: POINTER_MOUSE/TOUCH/PEN/NONE. */
+    func pointerKind(): Int { return engineInputPointerKind() }
+    func pointerId(): Int { return engineInputPointerId() }
+    func pointerX(): Real { return engineInputPointerX() }
+    func pointerY(): Real { return engineInputPointerY() }
+    func pointerDeltaX(): Real { return engineInputPointerDeltaX() }
+    func pointerDeltaY(): Real { return engineInputPointerDeltaY() }
+    func pointerPressure(): Real { return engineInputPointerPressure() }
+    func pointerDown(): Bool { return engineInputPointerDown() }
+    func pointerPressed(): Bool { return engineInputPointerPressed() }
+    func pointerReleased(): Bool { return engineInputPointerReleased() }
+
+    /** Active touch points, ordered by stable pointer id. */
+    func touchCount(): Int { return engineInputTouchCount() }
+    func touchId(index: Int): Int { return engineInputTouchId(index) }
+    func touchX(index: Int): Real { return engineInputTouchX(index) }
+    func touchY(index: Int): Real { return engineInputTouchY(index) }
+    func touchDeltaX(index: Int): Real { return engineInputTouchDeltaX(index) }
+    func touchDeltaY(index: Int): Real { return engineInputTouchDeltaY(index) }
+    func touchPressure(index: Int): Real { return engineInputTouchPressure(index) }
+    func touchRadiusX(index: Int): Real { return engineInputTouchRadiusX(index) }
+    func touchRadiusY(index: Int): Real { return engineInputTouchRadiusY(index) }
+    func touchPhase(index: Int): Int { return engineInputTouchPhase(index) }
+
+    /** Number of connected standard-mapped controllers. */
+    func controllerCount(): Int { return engineInputControllerCount() }
+    func controllerConnected(index: Int): Bool { return engineInputControllerConnected(index) }
+    func controllerButtonDown(index: Int, button: Int): Bool { return engineInputControllerButtonDown(index, button) }
+    func controllerButtonPressed(index: Int, button: Int): Bool { return engineInputControllerButtonPressed(index, button) }
+    func controllerButtonReleased(index: Int, button: Int): Bool { return engineInputControllerButtonReleased(index, button) }
+    func controllerButtonValue(index: Int, button: Int): Real { return engineInputControllerButtonValue(index, button) }
+    func controllerAxis(index: Int, axis: Int): Real { return engineInputControllerAxis(index, axis) }
+
+    /** Starts dual-rumble feedback when supported by the selected controller. */
+    func controllerRumble(index: Int, low: Real, high: Real, durationMs: Int = 180): Bool {
+        return engineInputControllerRumble(index, low, high, durationMs)
+    }
+}

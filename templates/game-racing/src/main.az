@@ -1,0 +1,352 @@
+// Azora Racing — a low-poly arcade racer.
+//
+// A drivable car in a small low-poly city block grid. Steer with the arrow
+// keys or a gamepad's left stick / triggers, or with the on-screen touch
+// controls (which also work in the WebAssembly build). The camera chases the
+// car. A few AI cars drive around to keep the streets busy.
+//
+// Everything is built from scaled cubes, keeping the asset pipeline empty and
+// the whole scene a few hundred triangles.
+
+module game
+
+import engine.platform
+import engine.input
+import engine.gpu
+import engine.ui
+import engine.render
+import engine.math
+import engine.ecs
+
+// ── Components ────────────────────────────────────────────────────────────
+
+// A car: kinematic body driven by throttle/steer each frame.
+pack Car {
+    var pos: Vec3
+    var yaw: Real
+    var speed: Real
+    var steerPhase: Real
+    var color: Color
+    var isPlayer: Bool
+}
+
+// A static piece of the city (building or road tile).
+pack Prop {
+    var pos: Vec3
+    var scale: Vec3
+    var color: Color
+}
+
+// ── Tuning ────────────────────────────────────────────────────────────────
+
+fin MAX_SPEED = 26.0
+fin REVERSE_SPEED = 8.0
+fin ACCEL = 20.0
+fin BRAKE = 36.0
+fin FRICTION = 7.0
+fin STEER_RATE = 2.1
+fin CITY_LIMIT = 44.0
+
+func absReal(x: Real): Real {
+    if x < 0.0 {
+        return 0.0 - x
+    }
+    return x
+}
+
+func signReal(x: Real): Real {
+    if x > 0.0 {
+        return 1.0
+    }
+    if x < 0.0 {
+        return -1.0
+    }
+    return 0.0
+}
+
+func clampReal(x: Real, lo: Real, hi: Real): Real {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+// ── Car behaviour ─────────────────────────────────────────────────────────
+
+func defaultCar(): Car {
+    return Car(Vec3(0.0, 0.35, 0.0), 0.0, 0.0, 0.0, colorRgb(0.90, 0.22, 0.26), false)
+}
+
+impl Car {
+    // Heading on the ground plane; matches the camera's yaw convention.
+    func forward(): Vec3 {
+        return Vec3(0.0 - sin(self.yaw), 0.0, 0.0 - cos(self.yaw))
+    }
+
+    // Advance one frame. `throttle` in [-1, 1] (negative = reverse/brake),
+    // `steer` in [-1, 1] (positive = left).
+    func drive(throttle: Real, steer: Real, dt: Real) {
+        if throttle > 0.0 {
+            self.speed = self.speed + throttle * ACCEL * dt
+        } else {
+            if throttle < 0.0 {
+                if self.speed > 0.0 {
+                    self.speed = self.speed + throttle * BRAKE * dt
+                } else {
+                    self.speed = self.speed + throttle * ACCEL * dt
+                }
+            }
+        }
+
+        // Rolling friction always pulls the speed toward zero.
+        fin drag = FRICTION * dt
+        if self.speed > drag {
+            self.speed = self.speed - drag
+        } else {
+            if self.speed < (0.0 - drag) {
+                self.speed = self.speed + drag
+            } else {
+                self.speed = 0.0
+            }
+        }
+        self.speed = clampReal(self.speed, 0.0 - REVERSE_SPEED, MAX_SPEED)
+
+        // Steering authority grows with speed and reverses when backing up.
+        fin grip = clampReal(absReal(self.speed) / 6.0, 0.0, 1.0)
+        self.yaw = self.yaw + steer * STEER_RATE * dt * grip * signReal(self.speed)
+
+        fin step = self.forward().scale(self.speed * dt)
+        self.pos = self.pos + step
+
+        // Keep cars inside the city; a wall stops them dead.
+        if absReal(self.pos.x) > CITY_LIMIT {
+            self.pos = Vec3(clampReal(self.pos.x, 0.0 - CITY_LIMIT, CITY_LIMIT), self.pos.y, self.pos.z)
+            self.speed = 0.0
+        }
+        if absReal(self.pos.z) > CITY_LIMIT {
+            self.pos = Vec3(self.pos.x, self.pos.y, clampReal(self.pos.z, 0.0 - CITY_LIMIT, CITY_LIMIT))
+            self.speed = 0.0
+        }
+    }
+}
+
+// ── City construction ─────────────────────────────────────────────────────
+
+func addProp(world: World, props: Storage<Prop>, piece: Prop) {
+    spawnWith<Prop>(world, props, piece)
+}
+
+// A grid of building blocks separated by roads. Buildings sit on the block
+// centres; the gaps between them are the streets the cars drive on.
+func buildCity(world: World, props: Storage<Prop>) {
+    var gx = -3
+    while gx <= 3 {
+        var gz = -3
+        while gz <= 3 {
+            fin cx = (gx as Real) * 13.0
+            fin cz = (gz as Real) * 13.0
+
+            // Leave the centre block open as a plaza / start area.
+            if gx != 0 || gz != 0 {
+                fin wobble = ((((gx * 7 + gz * 3) % 5) + 5) % 5) as Real
+                fin h = 3.0 + absReal((gx as Real) + (gz as Real)) * 1.6 + wobble * 1.1
+                fin shade = 0.35 + (((gx + gz + 6) % 4) as Real) * 0.12
+                addProp(world, props, Prop(
+                    Vec3(cx, h * 0.5, cz),
+                    Vec3(6.5, h, 6.5),
+                    colorRgb(shade, shade * 0.95, shade * 1.1)
+                ))
+            }
+            gz = gz + 1
+        }
+        gx = gx + 1
+    }
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────
+
+pack DriveInput {
+    var throttle: Real
+    var steer: Real
+}
+
+// True while the pointer is held down inside the rectangle (unlike `button`,
+// which fires once per click) — the basis for hold-to-drive touch pedals.
+func padHeld(app: App, x: Real, y: Real, w: Real, h: Real): Bool {
+    return app.hovered(x, y, w, h) && app.mouseDown(MOUSE_LEFT)
+}
+
+func drawPad(app: App, label: String, x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real): Bool {
+    fin held = padHeld(app, x, y, w, h)
+    var br = r
+    var bg = g
+    var bb = b
+    if held {
+        br = r * 0.7
+        bg = g * 0.7
+        bb = b * 0.7
+    }
+    app.uiRect(x + 2.0, y + 3.0, w, h, 0.0, 0.0, 0.0, 0.22)
+    app.uiRect(x, y, w, h, br, bg, bb, 0.92)
+    fin ts = 16.0
+    fin tw = app.uiTextWidth(label, ts)
+    app.uiTextColored(label, x + (w - tw) * 0.5, y + (h - app.uiTextHeight(ts)) * 0.5, ts, 1.0, 1.0, 1.0)
+    return held
+}
+
+// Fold keyboard, gamepad and on-screen pedals into one drive command.
+func gatherInput(app: App): DriveInput {
+    var throttle = 0.0
+    var steer = 0.0
+
+    if app.keyDown(KEY_UP) { throttle = throttle + 1.0 }
+    if app.keyDown(KEY_DOWN) { throttle = throttle - 1.0 }
+    if app.keyDown(KEY_LEFT) { steer = steer + 1.0 }
+    if app.keyDown(KEY_RIGHT) { steer = steer - 1.0 }
+
+    // Controllers are exposed as engine::input zone functions (the App only
+    // carries keyboard/mouse state).
+    if engine::input::controllerConnected(0) {
+        throttle = throttle + engine::input::controllerButtonValue(0, GAMEPAD_RIGHT_TRIGGER)
+        throttle = throttle - engine::input::controllerButtonValue(0, GAMEPAD_LEFT_TRIGGER)
+        steer = steer - engine::input::controllerAxis(0, GAMEPAD_LEFT_X)
+    }
+
+    fin bottom = (app.height() as Real) - 96.0
+    if drawPad(app, "<", 24.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96) { steer = steer + 1.0 }
+    if drawPad(app, ">", 112.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96) { steer = steer - 1.0 }
+    fin rx = (app.width() as Real) - 190.0
+    if drawPad(app, "BRAKE", rx, bottom, 78.0, 78.0, 0.90, 0.30, 0.30) { throttle = throttle - 1.0 }
+    if drawPad(app, "GAS", rx + 88.0, bottom, 78.0, 78.0, 0.30, 0.82, 0.42) { throttle = throttle + 1.0 }
+
+    return DriveInput(clampReal(throttle, -1.0, 1.0), clampReal(steer, -1.0, 1.0))
+}
+
+// ── Systems ───────────────────────────────────────────────────────────────
+
+// Player drive + AI wander. AI cars steer along a slow sine weave and keep
+// the throttle on, bouncing off the city walls handled in `Car.drive`.
+func simulateCars(cars: Storage<Car>, input: DriveInput, dt: Real) {
+    var i = 1
+    while i < storageLength<Car>(cars) {
+        fin entity = storageEntityAt<Car>(cars, i)
+        if entity.isValid() {
+            fin car = storageValueAt<Car>(cars, i)
+            if car.isPlayer {
+                car.drive(input.throttle, input.steer, dt)
+            } else {
+                car.steerPhase = car.steerPhase + dt
+                fin wander = sin(car.steerPhase * 0.7) * 0.6
+                car.drive(0.55, wander, dt)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Third-person chase camera: sit behind and above the player, looking forward.
+func chaseCamera(cam: Camera, car: Car) {
+    fin f = car.forward()
+    cam.pos = Vec3(car.pos.x - f.x * 9.0, car.pos.y + 4.2, car.pos.z - f.z * 9.0)
+    cam.yaw = car.yaw
+    cam.pitch = -0.22
+}
+
+func pushCube(queue: RenderQueue, cube: Mesh, pos: Vec3, rot: Vec3, scale: Vec3, color: Color) {
+    queue.add(cube, Transform3d(pos, rot, scale), materialColor(color))
+}
+
+func renderScene(queue: RenderQueue, cube: Mesh, props: Storage<Prop>, cars: Storage<Car>) {
+    var p = 1
+    while p < storageLength<Prop>(props) {
+        if storageEntityAt<Prop>(props, p).isValid() {
+            fin piece = storageValueAt<Prop>(props, p)
+            pushCube(queue, cube, piece.pos, vec3Zero(), piece.scale, piece.color)
+        }
+        p = p + 1
+    }
+
+    var c = 1
+    while c < storageLength<Car>(cars) {
+        if storageEntityAt<Car>(cars, c).isValid() {
+            fin car = storageValueAt<Car>(cars, c)
+            fin rot = Vec3(0.0, car.yaw, 0.0)
+            // Body then cabin, stacked — a readable low-poly silhouette.
+            pushCube(queue, cube, car.pos, rot, Vec3(1.7, 0.7, 3.4), car.color)
+            fin cabin = car.pos + Vec3(0.0, 0.62, -0.2)
+            pushCube(queue, cube, cabin, rot, Vec3(1.4, 0.7, 1.6), colorRgb(0.12, 0.13, 0.16))
+        }
+        c = c + 1
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
+
+func playerCarOf(cars: Storage<Car>): Car {
+    return storageValueAt<Car>(cars, 1)
+}
+
+task main() {
+    var app = appInit("__AZORA_PROJECT_NAME__ — Azora Racing", 1280, 720)
+    if !app.ok {
+        return
+    }
+    defer {
+        app.shutdown()
+    }
+
+    app.setClearColor(0.53, 0.70, 0.92)
+    app.setLightDirection(-0.4, 0.9, 0.35)
+    app.setAmbientLight(0.42)
+
+    fin cube = app.meshCube(1.0)
+    fin ground = app.meshGrid(CITY_LIMIT * 2.0, 44)
+
+    var world = worldInit()
+    var props = storageInit<Prop>(Prop(vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.0, 0.0, 0.0)))
+    var cars = storageInit<Car>(defaultCar())
+    var queue = renderQueueInit()
+    var cam = cameraDefault()
+
+    buildCity(world, props)
+
+    // Player is always car index 1.
+    spawnWith<Car>(world, cars, Car(Vec3(0.0, 0.35, 6.0), 0.0, 0.0, 0.0, colorRgb(0.92, 0.24, 0.28), true))
+
+    var a = 0
+    while a < 4 {
+        fin ax = ((a as Real) - 1.5) * 9.0
+        fin col = colorRgb(0.25 + (a as Real) * 0.14, 0.55, 0.95 - (a as Real) * 0.12)
+        spawnWith<Car>(world, cars, Car(Vec3(ax, 0.35, -18.0), 0.0, 4.0, (a as Real) * 1.3, col, false))
+        a = a + 1
+    }
+
+    while app.frame() {
+        fin dt = app.deltaTime()
+        world.progress(dt)
+
+        fin input = gatherInput(app)
+        simulateCars(cars, input, dt)
+
+        fin player = playerCarOf(cars)
+        chaseCamera(cam, player)
+        app.applyCamera(cam)
+
+        queue.clear()
+        pushCube(queue, ground, Vec3(0.0, 0.0, 0.0), vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.22, 0.24, 0.27))
+        renderScene(queue, cube, props, cars)
+        app.drawRenderQueue(queue)
+
+        fin kmh = absReal(player.speed) * 3.6
+        app.uiText("Speed ${kmh as Int} km/h", 20.0, 24.0, 20.0)
+        app.uiText("Arrows / gamepad / touch pedals to drive — ESC to quit", 20.0, 52.0, 14.0)
+
+        if app.keyPressed(KEY_ESCAPE) {
+            app.quit()
+        }
+        app.present()
+    }
+}
