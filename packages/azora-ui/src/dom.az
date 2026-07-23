@@ -1,0 +1,224 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+module engine.ui.dom
+
+import std.container.array
+
+/**
+ * @file engine.ui.dom
+ *
+ * Declarative browser UI for Azora Engine.
+ *
+ * A UI function returns an immutable tree of `DomNode` values. The JavaScript
+ * target reconciles that virtual tree against the browser DOM. Event handlers
+ * are ordinary stored Azora `Func` values; after a handler mutates reactive
+ * state, the mounted render function is evaluated again and only changed DOM
+ * nodes are patched.
+ *
+ * This module is deliberately separate from `std.reactive`: reactivity has no
+ * rendering policy, while this engine package owns browser presentation.
+ */
+
+/**
+ * One HTML attribute in a virtual DOM node.
+ *
+ * Attribute names use their HTML spelling (`class`, `aria-label`, `href`).
+ * An empty value removes the attribute during reconciliation.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack DomAttribute {
+    fin name: String
+    fin value: String
+}
+
+/**
+ * One browser event listener attached to a virtual DOM node.
+ *
+ * The event name omits the `on` prefix: use `click`, `input`, `keydown`, and
+ * other standard DOM event names. Handlers are retained as first-class Azora
+ * callables and replaced safely when a node is patched.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack DomEvent {
+    fin name: String
+    fin handler: Func() -> Unit
+}
+
+/**
+ * An immutable virtual DOM node.
+ *
+ * `tag` is an HTML tag or `#text`. `key` gives sibling identity during
+ * reconciliation; use stable keys for lists. Attributes, events, and children
+ * preserve source order.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack DomNode {
+    fin tag: String
+    fin key: String
+    fin value: String
+    fin attributes: Array<DomAttribute>
+    fin events: Array<DomEvent>
+    fin children: Array<DomNode>
+}
+
+/**
+ * Creates an HTML attribute.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domAttribute(name: String, value: String): DomAttribute {
+    return DomAttribute(name, value)
+}
+
+/**
+ * Creates a browser event binding.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domEvent(name: String, handler: Func() -> Unit): DomEvent {
+    return DomEvent(name, handler)
+}
+
+/**
+ * Creates a text node.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domText(value: String): DomNode {
+    return DomNode(
+        "#text",
+        "",
+        value,
+        std::arrayOf<DomAttribute>(),
+        std::arrayOf<DomEvent>(),
+        std::arrayOf<DomNode>()
+    )
+}
+
+/**
+ * Creates an element with no attributes or events.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domElement(tag: String, children: Array<DomNode>): DomNode {
+    return DomNode(
+        tag,
+        "",
+        "",
+        std::arrayOf<DomAttribute>(),
+        std::arrayOf<DomEvent>(),
+        children
+    )
+}
+
+/**
+ * Creates an element with attributes and children.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domElementWithAttributes(
+    tag: String,
+    attributes: Array<DomAttribute>,
+    children: Array<DomNode>
+): DomNode {
+    return DomNode(
+        tag,
+        "",
+        "",
+        attributes,
+        std::arrayOf<DomEvent>(),
+        children
+    )
+}
+
+/**
+ * Creates a fully configured keyed element.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domKeyedElement(
+    tag: String,
+    key: String,
+    attributes: Array<DomAttribute>,
+    events: Array<DomEvent>,
+    children: Array<DomNode>
+): DomNode {
+    return DomNode(tag, key, "", attributes, events, children)
+}
+
+/**
+ * Creates an element whose only child is text.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domTextElement(
+    tag: String,
+    value: String,
+    attributes: Array<DomAttribute>
+): DomNode {
+    return domElementWithAttributes(tag, attributes, std::arrayOf(domText(value)))
+}
+
+/**
+ * Creates a button with a click handler.
+ */
+@Experimental(sinceAzora: "0.0.4")
+func domButton(
+    label: String,
+    attributes: Array<DomAttribute>,
+    onClick: Func() -> Unit
+): DomNode {
+    return domKeyedElement(
+        "button",
+        "",
+        attributes,
+        std::arrayOf(domEvent("click", onClick)),
+        std::arrayOf(domText(label))
+    )
+}
+
+/**
+ * Mounts a virtual DOM render function into an existing HTML element.
+ *
+ * The JavaScript backend owns the host bridge. It renders immediately, patches
+ * by node type and stable key, updates attributes and event listeners, and
+ * schedules one rerender after each event handler completes.
+ *
+ * @param rootId The `id` of the existing host element.
+ * @param render A stored callable returning the next immutable virtual tree.
+ */
+@Experimental(sinceAzora: "0.0.4")
+bridge [.JavaScript] {
+    func engineUiDomMount(rootId: String, render: Func() -> DomNode): Unit
+}
+
+test "dom text preserves content" {
+    fin node = domText("Azora")
+    assert node.tag == "#text" { "domText must create a text node" }
+    assert node.value == "Azora" { "domText changed its content" }
+}
+
+test "dom element preserves ordered children" {
+    fin node = domElement(
+        "section",
+        std::arrayOf(domText("first"), domText("second"))
+    )
+    assert node.children.size == 2 { "domElement changed its child count" }
+    assert node.children[0].value == "first" { "domElement changed child order" }
+}
+
+test "dom event stores its callable" {
+    var called = false
+    fin event = domEvent("click", func() { called = true })
+    event.handler()
+    assert called { "DomEvent did not retain its handler" }
+}
+
+test .All "engine ui dom"
