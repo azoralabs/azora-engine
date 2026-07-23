@@ -1,16 +1,19 @@
-// Azora Engine — facade package.
-//
-// `import engine` pulls in the whole engine: every subsystem package is
-// re-exported here, and the standard plugin bundle (`DefaultPlugins`) is
-// provided. Games normally need only:
-//
-//     import engine
-//
-// and then build an `Engine` with `defaultPlugins()` plus their own plugins.
-//
-// (Re-exporting with `export import` is what makes a single `import engine`
-// expose every package's symbols — plain transitive imports do not propagate
-// far enough across the engine's deep module chain.)
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine
+ *
+ * Complete Azora Engine facade.
+ *
+ * `import engine` exposes the data-oriented ECS, typed input, rendering,
+ * reactive UI, navigation, scheduling, and application APIs. The default
+ * plugin composition is declared in `engine.app` with `solo` and `wrap`; this
+ * facade contains no second plugin registry and allocates no boxed plugin list.
+ */
 
 module engine
 
@@ -28,56 +31,3 @@ export import engine.platform
 export import engine.ui
 export import engine.render
 export import engine.app
-
-// ── Standard plugins ─────────────────────────────────────────────────────
-//
-// Each plugin marks a subsystem as enabled and gets a chance to register
-// default systems during `Engine.build`. Window/GPU/render setup itself is
-// performed by `appInit` inside `Engine.run`, so these builds are light.
-
-/// Opens and configures the OS window (Cocoa/Metal surface).
-pack WindowPlugin
-impl Plugin for WindowPlugin {
-    func name(): String { ref self -> return "WindowPlugin" }
-    func build(engine: mut ref Engine) { ref self -> }
-}
-
-/// Enables keyboard, mouse, controller and touch input.
-pack InputPlugin
-impl Plugin for InputPlugin {
-    func name(): String { ref self -> return "InputPlugin" }
-    func build(engine: mut ref Engine) { ref self -> }
-}
-
-/// Enables the 3D/2D renderer: cameras, meshes, materials, render queues.
-pack RenderPlugin
-impl Plugin for RenderPlugin {
-    func name(): String { ref self -> return "RenderPlugin" }
-    func build(engine: mut ref Engine) { ref self -> }
-}
-
-/// Enables immediate-mode UI and text.
-pack UiPlugin
-impl Plugin for UiPlugin {
-    func name(): String { ref self -> return "UiPlugin" }
-    func build(engine: mut ref Engine) { ref self -> }
-}
-
-/// The standard bundle every game starts from: window + input + render + UI.
-pack DefaultPlugins
-impl PluginGroup for DefaultPlugins {
-    func plugins(): Array<Plugin> {
-        ref self ->
-        return arr![
-            WindowPlugin() as Plugin,
-            InputPlugin() as Plugin,
-            RenderPlugin() as Plugin,
-            UiPlugin() as Plugin
-        ]
-    }
-}
-
-/// Convenience constructor for the standard plugin bundle.
-func defaultPlugins(): PluginGroup {
-    return DefaultPlugins()
-}

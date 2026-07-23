@@ -135,6 +135,248 @@ fin GAMEPAD_RIGHT_X = 2
 fin GAMEPAD_RIGHT_Y = 3
 
 friend zone engine::input {
+/**
+ * Stable keyboard key identifiers used by `ButtonInput<KeyCode>`.
+ *
+ * Values are translated to the platform ABI by `keyCodeValue`; game code never
+ * depends on browser or operating-system scan codes.
+ */
+@Experimental(sinceAzora: "0.0.4")
+enum KeyCode {
+    Backspace
+    Tab
+    Enter
+    Escape
+    Space
+    Digit0
+    Digit1
+    Digit2
+    Digit3
+    Digit4
+    Digit5
+    Digit6
+    Digit7
+    Digit8
+    Digit9
+    A
+    B
+    C
+    D
+    E
+    F
+    G
+    H
+    I
+    J
+    K
+    L
+    M
+    N
+    O
+    P
+    Q
+    R
+    S
+    T
+    U
+    V
+    W
+    X
+    Y
+    Z
+    Left
+    Right
+    Up
+    Down
+    Shift
+    Control
+    Alt
+    Meta
+    CapsLock
+    Insert
+    Delete
+    Home
+    End
+    PageUp
+    PageDown
+    F1
+    F2
+    F3
+    F4
+    F5
+    F6
+    F7
+    F8
+    F9
+    F10
+    F11
+    F12
+}
+
+@Experimental(sinceAzora: "0.0.4")
+enum MouseButton {
+    Left
+    Right
+    Middle
+    Back
+    Forward
+}
+
+@Experimental(sinceAzora: "0.0.4")
+enum PointerKind {
+    Mouse
+    Touch
+    Pen
+    None
+}
+
+@Experimental(sinceAzora: "0.0.4")
+enum TouchPhase {
+    None
+    Began
+    Moved
+    Stationary
+    Ended
+    Cancelled
+}
+
+@Experimental(sinceAzora: "0.0.4")
+enum GamepadButton {
+    South
+    East
+    West
+    North
+    LeftBumper
+    RightBumper
+    LeftTrigger
+    RightTrigger
+    Back
+    Start
+    LeftStick
+    RightStick
+    DpadUp
+    DpadDown
+    DpadLeft
+    DpadRight
+    Home
+}
+
+@Experimental(sinceAzora: "0.0.4")
+enum GamepadAxis {
+    LeftX
+    LeftY
+    RightX
+    RightY
+}
+
+/**
+ * Typed, read-only button state injected as `res ButtonInput<KeyCode>`.
+ *
+ * The zero-sized type parameter selects the button domain at compile time.
+ * `device` identifies the host input stream and is constant for a resource.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack<T> ButtonInput {
+    confine fin device: Int
+}
+
+func keyboardInput(): ButtonInput<KeyCode> {
+    return ButtonInput<KeyCode>(0)
+}
+
+func keyCodeValue(key: KeyCode): Int {
+    when key {
+        KeyCode.Backspace -> { return KEY_BACKSPACE }
+        KeyCode.Tab -> { return KEY_TAB }
+        KeyCode.Enter -> { return KEY_ENTER }
+        KeyCode.Escape -> { return KEY_ESCAPE }
+        KeyCode.Space -> { return KEY_SPACE }
+        KeyCode.Digit0 -> { return KEY_0 }
+        KeyCode.Digit1 -> { return KEY_1 }
+        KeyCode.Digit2 -> { return KEY_2 }
+        KeyCode.Digit3 -> { return KEY_3 }
+        KeyCode.Digit4 -> { return KEY_4 }
+        KeyCode.Digit5 -> { return KEY_5 }
+        KeyCode.Digit6 -> { return KEY_6 }
+        KeyCode.Digit7 -> { return KEY_7 }
+        KeyCode.Digit8 -> { return KEY_8 }
+        KeyCode.Digit9 -> { return KEY_9 }
+        KeyCode.A -> { return KEY_A }
+        KeyCode.B -> { return KEY_B }
+        KeyCode.C -> { return KEY_C }
+        KeyCode.D -> { return KEY_D }
+        KeyCode.E -> { return KEY_E }
+        KeyCode.F -> { return KEY_F }
+        KeyCode.G -> { return KEY_G }
+        KeyCode.H -> { return KEY_H }
+        KeyCode.I -> { return KEY_I }
+        KeyCode.J -> { return KEY_J }
+        KeyCode.K -> { return KEY_K }
+        KeyCode.L -> { return KEY_L }
+        KeyCode.M -> { return KEY_M }
+        KeyCode.N -> { return KEY_N }
+        KeyCode.O -> { return KEY_O }
+        KeyCode.P -> { return KEY_P }
+        KeyCode.Q -> { return KEY_Q }
+        KeyCode.R -> { return KEY_R }
+        KeyCode.S -> { return KEY_S }
+        KeyCode.T -> { return KEY_T }
+        KeyCode.U -> { return KEY_U }
+        KeyCode.V -> { return KEY_V }
+        KeyCode.W -> { return KEY_W }
+        KeyCode.X -> { return KEY_X }
+        KeyCode.Y -> { return KEY_Y }
+        KeyCode.Z -> { return KEY_Z }
+        KeyCode.Left -> { return KEY_LEFT }
+        KeyCode.Right -> { return KEY_RIGHT }
+        KeyCode.Up -> { return KEY_UP }
+        KeyCode.Down -> { return KEY_DOWN }
+        KeyCode.Shift -> { return KEY_SHIFT }
+        KeyCode.Control -> { return KEY_CONTROL }
+        KeyCode.Alt -> { return KEY_ALT }
+        KeyCode.Meta -> { return KEY_META }
+        KeyCode.CapsLock -> { return KEY_CAPS_LOCK }
+        KeyCode.Insert -> { return KEY_INSERT }
+        KeyCode.Delete -> { return KEY_DELETE }
+        KeyCode.Home -> { return KEY_HOME }
+        KeyCode.End -> { return KEY_END }
+        KeyCode.PageUp -> { return KEY_PAGE_UP }
+        KeyCode.PageDown -> { return KEY_PAGE_DOWN }
+        KeyCode.F1 -> { return KEY_F1 }
+        KeyCode.F2 -> { return KEY_F2 }
+        KeyCode.F3 -> { return KEY_F3 }
+        KeyCode.F4 -> { return KEY_F4 }
+        KeyCode.F5 -> { return KEY_F5 }
+        KeyCode.F6 -> { return KEY_F6 }
+        KeyCode.F7 -> { return KEY_F7 }
+        KeyCode.F8 -> { return KEY_F8 }
+        KeyCode.F9 -> { return KEY_F9 }
+        KeyCode.F10 -> { return KEY_F10 }
+        KeyCode.F11 -> { return KEY_F11 }
+        KeyCode.F12 -> { return KEY_F12 }
+    }
+    return -1
+}
+
+impl ButtonInput<KeyCode> {
+    /** True while the key is held. */
+    func pressed(key: KeyCode): Bool {
+        return engineInputKeyDown(keyCodeValue(key))
+    }
+
+    /** True only on the frame in which the key went down. */
+    func justPressed(key: KeyCode): Bool {
+        return engineInputKeyPressed(keyCodeValue(key))
+    }
+
+    /** True only on the frame in which the key went up. */
+    func justReleased(key: KeyCode): Bool {
+        return engineInputKeyReleased(keyCodeValue(key))
+    }
+}
+}
+
+friend zone engine::input {
     /* Internal WebAssembly device ABI; applications use the wrappers below. */
     bridge [.C, .JavaScript, .WebAssembly] {
         func engineInputKeyDown(key: Int): Bool
@@ -269,4 +511,205 @@ friend zone engine::input {
     func controllerRumble(index: Int, low: Real, high: Real, durationMs: Int = 180): Bool {
         return engineInputControllerRumble(index, low, high, durationMs)
     }
+
+    /**
+     * Unified mouse, pen, and primary-touch resource.
+     *
+     * Values are read from the immutable input snapshot for the current frame,
+     * so every system observes the same coordinates and edge transitions.
+     */
+    @Experimental(sinceAzora: "0.0.4")
+    pack PointerInput
+
+    /** Typed mouse button and pointer-lock resource. */
+    @Experimental(sinceAzora: "0.0.4")
+    pack MouseInput
+
+    /** Snapshot of one active touch point. */
+    @Experimental(sinceAzora: "0.0.4")
+    pack TouchPoint {
+        fin id: Int
+        fin x: Real
+        fin y: Real
+        fin deltaX: Real
+        fin deltaY: Real
+        fin pressure: Real
+        fin radiusX: Real
+        fin radiusY: Real
+        fin phase: TouchPhase
+    }
+
+    /** Read-only collection of touches active in the current frame. */
+    @Experimental(sinceAzora: "0.0.4")
+    pack TouchInput
+
+    /** One standard-mapped game controller. */
+    @Experimental(sinceAzora: "0.0.4")
+    pack GamepadInput {
+        confine fin index: Int
+    }
+
+    func pointerInput(): PointerInput {
+        return PointerInput()
+    }
+
+    func mouseInput(): MouseInput {
+        return MouseInput()
+    }
+
+    func touchInput(): TouchInput {
+        return TouchInput()
+    }
+
+    func gamepadInput(index: Int): GamepadInput {
+        return GamepadInput(index)
+    }
+
+    func mouseButtonValue(button: MouseButton): Int {
+        when button {
+            MouseButton.Left -> { return MOUSE_LEFT }
+            MouseButton.Right -> { return MOUSE_RIGHT }
+            MouseButton.Middle -> { return MOUSE_MIDDLE }
+            MouseButton.Back -> { return MOUSE_BACK }
+            MouseButton.Forward -> { return MOUSE_FORWARD }
+        }
+        return -1
+    }
+
+    func gamepadButtonValue(button: GamepadButton): Int {
+        when button {
+            GamepadButton.South -> { return GAMEPAD_SOUTH }
+            GamepadButton.East -> { return GAMEPAD_EAST }
+            GamepadButton.West -> { return GAMEPAD_WEST }
+            GamepadButton.North -> { return GAMEPAD_NORTH }
+            GamepadButton.LeftBumper -> { return GAMEPAD_LEFT_BUMPER }
+            GamepadButton.RightBumper -> { return GAMEPAD_RIGHT_BUMPER }
+            GamepadButton.LeftTrigger -> { return GAMEPAD_LEFT_TRIGGER }
+            GamepadButton.RightTrigger -> { return GAMEPAD_RIGHT_TRIGGER }
+            GamepadButton.Back -> { return GAMEPAD_BACK }
+            GamepadButton.Start -> { return GAMEPAD_START }
+            GamepadButton.LeftStick -> { return GAMEPAD_LEFT_STICK }
+            GamepadButton.RightStick -> { return GAMEPAD_RIGHT_STICK }
+            GamepadButton.DpadUp -> { return GAMEPAD_DPAD_UP }
+            GamepadButton.DpadDown -> { return GAMEPAD_DPAD_DOWN }
+            GamepadButton.DpadLeft -> { return GAMEPAD_DPAD_LEFT }
+            GamepadButton.DpadRight -> { return GAMEPAD_DPAD_RIGHT }
+            GamepadButton.Home -> { return GAMEPAD_HOME }
+        }
+        return -1
+    }
+
+    func gamepadAxisValue(axis: GamepadAxis): Int {
+        when axis {
+            GamepadAxis.LeftX -> { return GAMEPAD_LEFT_X }
+            GamepadAxis.LeftY -> { return GAMEPAD_LEFT_Y }
+            GamepadAxis.RightX -> { return GAMEPAD_RIGHT_X }
+            GamepadAxis.RightY -> { return GAMEPAD_RIGHT_Y }
+        }
+        return -1
+    }
+
+    func pointerKindFromValue(value: Int): PointerKind {
+        if value == POINTER_TOUCH { return PointerKind.Touch }
+        if value == POINTER_PEN { return PointerKind.Pen }
+        if value == POINTER_NONE { return PointerKind.None }
+        return PointerKind.Mouse
+    }
+
+    func touchPhaseFromValue(value: Int): TouchPhase {
+        if value == TOUCH_BEGAN { return TouchPhase.Began }
+        if value == TOUCH_MOVED { return TouchPhase.Moved }
+        if value == TOUCH_STATIONARY { return TouchPhase.Stationary }
+        if value == TOUCH_ENDED { return TouchPhase.Ended }
+        if value == TOUCH_CANCELLED { return TouchPhase.Cancelled }
+        return TouchPhase.None
+    }
+
+    impl MouseInput {
+        func pressed(button: MouseButton): Bool { ref self ->
+            return engineInputMouseDown(mouseButtonValue(button))
+        }
+
+        func justPressed(button: MouseButton): Bool { ref self ->
+            return engineInputMousePressed(mouseButtonValue(button))
+        }
+
+        func justReleased(button: MouseButton): Bool { ref self ->
+            return engineInputMouseReleased(mouseButtonValue(button))
+        }
+    }
+
+    impl PointerInput {
+        prop kind: PointerKind = pointerKindFromValue(engineInputPointerKind())
+        prop id: Int = engineInputPointerId()
+        prop x: Real = engineInputPointerX()
+        prop y: Real = engineInputPointerY()
+        prop deltaX: Real = engineInputPointerDeltaX()
+        prop deltaY: Real = engineInputPointerDeltaY()
+        prop pressure: Real = engineInputPointerPressure()
+        prop pressed: Bool = engineInputPointerDown()
+        prop justPressed: Bool = engineInputPointerPressed()
+        prop justReleased: Bool = engineInputPointerReleased()
+    }
+
+    impl TouchInput {
+        prop size: Int = engineInputTouchCount()
+
+        func at(index: Int): TouchPoint { ref self ->
+            assert index >= 0 && index < self.size { "touch index out of bounds" }
+            return TouchPoint(
+                engineInputTouchId(index),
+                engineInputTouchX(index),
+                engineInputTouchY(index),
+                engineInputTouchDeltaX(index),
+                engineInputTouchDeltaY(index),
+                engineInputTouchPressure(index),
+                engineInputTouchRadiusX(index),
+                engineInputTouchRadiusY(index),
+                touchPhaseFromValue(engineInputTouchPhase(index))
+            )
+        }
+    }
+
+    impl GamepadInput {
+        prop connected: Bool = engineInputControllerConnected(self.index)
+
+        func pressed(button: GamepadButton): Bool { ref self ->
+            return engineInputControllerButtonDown(self.index, gamepadButtonValue(button))
+        }
+
+        func justPressed(button: GamepadButton): Bool { ref self ->
+            return engineInputControllerButtonPressed(self.index, gamepadButtonValue(button))
+        }
+
+        func justReleased(button: GamepadButton): Bool { ref self ->
+            return engineInputControllerButtonReleased(self.index, gamepadButtonValue(button))
+        }
+
+        func value(button: GamepadButton): Real { ref self ->
+            return engineInputControllerButtonValue(self.index, gamepadButtonValue(button))
+        }
+
+        func axis(axis: GamepadAxis): Real { ref self ->
+            return engineInputControllerAxis(self.index, gamepadAxisValue(axis))
+        }
+
+        func rumble(low: Real, high: Real, durationMs: Int = 180): Bool { ref self ->
+            return engineInputControllerRumble(self.index, low, high, durationMs)
+        }
+    }
+}
+
+test "typed input enums map to stable host values" {
+    assert keyCodeValue(KeyCode.W) == KEY_W { "KeyCode.W mapping changed" }
+    assert mouseButtonValue(MouseButton.Left) == MOUSE_LEFT { "left mouse mapping changed" }
+    assert gamepadButtonValue(GamepadButton.South) == GAMEPAD_SOUTH { "south gamepad mapping changed" }
+    assert gamepadAxisValue(GamepadAxis.RightY) == GAMEPAD_RIGHT_Y { "right Y axis mapping changed" }
+}
+
+test "typed pointer and touch state mappings are total" {
+    assert pointerKindFromValue(POINTER_TOUCH) == PointerKind.Touch { "touch pointer kind was lost" }
+    assert pointerKindFromValue(POINTER_NONE) == PointerKind.None { "none pointer kind was lost" }
+    assert touchPhaseFromValue(TOUCH_CANCELLED) == TouchPhase.Cancelled { "cancelled touch phase was lost" }
+    assert touchPhaseFromValue(-1) == TouchPhase.None { "unknown touch phases must map to None" }
 }

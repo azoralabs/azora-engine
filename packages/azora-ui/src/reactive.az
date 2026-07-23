@@ -1,0 +1,128 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine.ui.reactive
+ *
+ * Revision-based connection between std reactivity, ECS data, and engine UI.
+ *
+ * ECS remains the source of truth for game data. UI observes compact revision
+ * tokens instead of cloning components or subscribing every entity. A host can
+ * use the same observer from an immediate-mode renderer, a retained GPU UI, or
+ * the browser VDOM.
+ */
+module engine.ui.reactive
+
+import engine.core
+import engine.ecs
+
+/** Revisions observed by one reactive UI owner. */
+@Experimental(sinceAzora: "0.0.4")
+pack EcsObserver {
+    confine var worldRevision: Long
+    confine var storageRevision: Long
+    confine var navigationRevision: Long
+    confine var initialized: Bool
+}
+
+func ecsObserver(): EcsObserver {
+    return EcsObserver((0 - 1) as Long, (0 - 1) as Long, (0 - 1) as Long, false)
+}
+
+impl EcsObserver {
+    /**
+     * Observes structural world changes.
+     *
+     * Returns true exactly once for each distinct world revision.
+     */
+    func observeWorld(world: ref World): Bool { mut ref self ->
+        if self.worldRevision == world.revision {
+            return false
+        }
+        self.worldRevision = world.revision
+        self.initialized = true
+        return true
+    }
+
+    /** Observes insertions, removals, and writes in one component storage. */
+    func observeStorage<T>(storage: ref Storage<T>): Bool { mut ref self ->
+        if self.storageRevision == storage.revision {
+            return false
+        }
+        self.storageRevision = storage.revision
+        self.initialized = true
+        return true
+    }
+
+    /** Observes any independent revisioned state such as navigation. */
+    func observeRevision(revision: Long): Bool { mut ref self ->
+        if self.navigationRevision == revision {
+            return false
+        }
+        self.navigationRevision = revision
+        self.initialized = true
+        return true
+    }
+}
+
+/**
+ * Reactive value mirrored into ECS-aware UI.
+ *
+ * `Signal<T>` owns the value. `publishedRevision` records the revision already
+ * consumed by a renderer, making repeated frame polling constant-time.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack<T> ReactiveResource {
+    var signal: Signal<T>
+    var publishedRevision: Long
+}
+
+func<T> reactiveResource(value: T): ReactiveResource<T> {
+    return ReactiveResource<T>(signalInit<T>(value), (0 - 1) as Long)
+}
+
+impl<T> ReactiveResource {
+    prop value: T = signalGet<T>(self.signal)
+    prop version: Long = signalVersion<T>(self.signal)
+
+    func set(value: T) { mut ref self ->
+        signalSet<T>(self.signal, value)
+    }
+
+    /**
+     * Returns true once after each write.
+     *
+     * Hosts call this before rebuilding their UI tree or command list.
+     */
+    func consumeChange(): Bool { mut ref self ->
+        fin current = signalVersion<T>(self.signal)
+        if self.publishedRevision == current {
+            return false
+        }
+        self.publishedRevision = current
+        return true
+    }
+}
+
+test "ecs observer consumes each world revision once" {
+    var world = worldInit()
+    var observer = ecsObserver()
+    assert observer.observeWorld(world) { "first world observation must invalidate" }
+    assert !observer.observeWorld(world) { "unchanged world invalidated twice" }
+    world.spawn()
+    assert observer.observeWorld(world) { "spawn must invalidate world observers" }
+}
+
+test "reactive resource publishes each write once" {
+    var resource = reactiveResource<Int>(4)
+    assert resource.consumeChange() { "initial reactive value must publish" }
+    assert !resource.consumeChange() { "unchanged reactive value published twice" }
+    resource.set(9)
+    assert resource.value == 9 { "reactive resource lost its value" }
+    assert resource.consumeChange() { "reactive write did not publish" }
+}
+
+test .All "engine reactive ui"

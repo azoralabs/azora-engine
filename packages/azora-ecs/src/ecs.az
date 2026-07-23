@@ -9,6 +9,22 @@ module engine.ecs
 import std.container.*
 import engine.core
 
+/**
+ * Engine-owned type macros for zero-cost system parameters.
+ *
+ * `res T` and `mut res T` become ordinary borrows, so LLVM and WebAssembly do
+ * not allocate resource wrappers. `query [...]` preserves its heterogeneous
+ * component access list in the concrete Query type. `with` and `without` are
+ * compile-time filters and do not change the runtime handle representation.
+ */
+meta type {
+    res $T => ref $T
+    mut res $T => mut ref $T
+    query [...$T] => Query<...$T>
+    $Base with $Filter => $Base
+    $Base without $Filter => $Base
+}
+
 pack Entity {
     var id: Int
     var generation: Int
@@ -39,6 +55,7 @@ pack World {
     var totalTime: Real
     var fixedTimestep: Real
     var fixedAccumulator: Real
+    var revision: Long
 }
 
 func worldInit(): World {
@@ -50,7 +67,7 @@ func worldInit(): World {
     var prefabs = arr![false]
     var resources = arr![false]
     var freeIds = arr![-1]
-    return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0)
+    return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0, 0L)
 }
 
 impl World {
@@ -69,6 +86,7 @@ impl World {
             self.prefabs[id] = false
             self.resources[id] = false
             self.aliveCount = self.aliveCount + 1
+            self.revision = self.revision + 1
             return Entity(id, gen)
         }
 
@@ -92,6 +110,7 @@ impl World {
         }
         self.entityCount = self.entityCount + 1
         self.aliveCount = self.aliveCount + 1
+        self.revision = self.revision + 1
         return Entity(id, 0)
     }
 
@@ -119,6 +138,7 @@ impl World {
         self.prefabs[entity.id] = false
         self.resources[entity.id] = false
         self.freeIds.add(entity.id)
+        self.revision = self.revision + 1
     }
 
     func isAlive(entity: Entity): Bool {
@@ -260,6 +280,7 @@ pack<T> Storage {
     var values: Array<T>
     var added: Array<Bool>
     var changed: Array<Bool>
+    var revision: Long
 }
 
 func<T> storageInit(defaultValue: T): Storage<T> {
@@ -267,7 +288,7 @@ func<T> storageInit(defaultValue: T): Storage<T> {
     var values = arr![defaultValue]
     var added = arr![false]
     var changed = arr![false]
-    return Storage<T>(entities, values, added, changed)
+    return Storage<T>(entities, values, added, changed, 0)
 }
 
 func<T> storageIndexOf(store: Storage<T>, entity: Entity): Int {
@@ -294,12 +315,14 @@ func<T> storageInsert(store: Storage<T>, entity: Entity, value: T) {
     if index >= 0 {
         store.values[index] = value
         store.changed[index] = true
+        store.revision = store.revision + 1
         return
     }
     store.entities.add(entity)
     store.values.add(value)
     store.added.add(true)
     store.changed.add(false)
+    store.revision = store.revision + 1
 }
 
 func<T> storageGet(store: Storage<T>, entity: Entity): T {
@@ -323,6 +346,7 @@ func<T> storageRemove(store: Storage<T>, entity: Entity): Bool {
     store.entities[index] = entityInvalid()
     store.added[index] = false
     store.changed[index] = false
+    store.revision = store.revision + 1
     return true
 }
 
@@ -398,6 +422,54 @@ pack QueryCursor {
     var cursor: Int
     var ok: Bool
     var error: String
+}
+
+/**
+ * A typed single-result query.
+ *
+ * The component value remains borrowed from its storage. `deref single`
+ * exposes it explicitly; the entity is retained for commands and diagnostics.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack<...T> Single where (...T).length >= 1 {
+    var entity: Entity
+    inline for Ty in ...T {
+        value: Ty
+    }
+}
+
+impl<...T> deref for Single { ref self ->
+    return self.value
+}
+
+/**
+ * Heterogeneous ECS query handle produced by `query [...]`.
+ *
+ * The variadic type list is compile-time-only access metadata. Runtime state is
+ * one compact entity cursor, so adding component types does not increase the
+ * handle's allocation count.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack<...T> Query {
+    var cursor: QueryCursor
+}
+
+impl<...T> Query {
+    func reset() { mut ref self ->
+        self.cursor.reset()
+    }
+
+    prop hasNext: Bool = self.cursor.hasNext()
+
+    /**
+     * Returns the next matching entity.
+     *
+     * System-parameter lowering projects this entity into the tuple of borrowed
+     * components requested by `query [...]`.
+     */
+    func nextEntity(): Entity { mut ref self ->
+        return self.cursor.next()
+    }
 }
 
 func queryEmpty(): QueryCursor {
@@ -808,25 +880,107 @@ impl CommandBuffer {
     }
 }
 
-/**
- * Marks a pack as an ECS system. Each `@System` pack provides a static
- * `run(w: mut ref World)`. `stage` groups systems and `order` sequences them.
- */
-@Experimental(sinceAzora: "0.0.4")
-deco System {
-    fin stage: String = "Update"
-    fin order: Int = 0
-}
+/** Callable ABI shared by LLVM and WebAssembly system schedules. */
+typealias SystemCallback = Func(mut ref World, ref Time) -> Unit
 
 /**
- * Runs every `@System` pack's static `run(world)` once. The set of systems is
- * resolved at compile time via `std::reflect<*>.withDeco<System>`, so the schedule
- * is a sequence of static named calls — no function values — and lowers identically
- * to the interpreter, JavaScript, WebAssembly, and LLVM targets.
+ * One compiled system plus its static ECS access declaration.
+ *
+ * The scheduler never discovers access at runtime. Parameter lowering builds
+ * `access` from `res`, `query`, `with`, and `without` before code generation.
  */
 @Experimental(sinceAzora: "0.0.4")
-func runSystems(w: mut ref World) {
-    inline for S in std::reflect<*>.withDeco<System> {
-        S::run(w)
+pack ScheduledSystem {
+    fin name: String
+    fin phase: SystemPhase
+    fin order: Int
+    fin access: QueryAccess
+    fin callback: SystemCallback
+}
+
+/** Deterministic, conflict-aware system schedule. */
+@Experimental(sinceAzora: "0.0.4")
+pack Schedule {
+    var systems: Array<ScheduledSystem>
+    var size: Int
+}
+
+func scheduleInit(capacity: Int = 64): Schedule {
+    assert capacity >= 0 { "schedule capacity must be non-negative" }
+    return Schedule(Array::fill<ScheduledSystem>(capacity), 0)
+}
+
+impl Schedule {
+    /** Adds a system while retaining stable phase/order registration order. */
+    func add(system: ScheduledSystem) { mut ref self ->
+        assert self.size < self.systems.size { "system schedule capacity exceeded" }
+        var insertAt = self.size
+        var i = 0
+        while i < self.size {
+            fin current = self.systems[i]
+            if system.phase == current.phase && system.order < current.order {
+                insertAt = i
+                i = self.size
+            } else {
+                i = i + 1
+            }
+        }
+        var move = self.size
+        while move > insertAt {
+            self.systems[move] = self.systems[move - 1]
+            move = move - 1
+        }
+        self.systems[insertAt] = system
+        self.size = self.size + 1
+    }
+
+    /**
+     * Executes one phase deterministically.
+     *
+     * Native hosts may submit conflict-free ranges to the engine jobs package;
+     * this baseline path is allocation-free and identical in LLVM and WASM.
+     */
+    func run(phase: SystemPhase, world: mut ref World, time: ref Time) {
+        var i = 0
+        while i < self.size {
+            fin system = self.systems[i]
+            if system.phase == phase {
+                system.callback(world, time)
+            }
+            i = i + 1
+        }
+    }
+
+    /** True when two registered systems may execute concurrently. */
+    func canRunParallel(left: Int, right: Int): Bool {
+        assert left >= 0 && left < self.size { "left system index out of bounds" }
+        assert right >= 0 && right < self.size { "right system index out of bounds" }
+        return !queryAccessConflicts(self.systems[left].access, self.systems[right].access)
+    }
+}
+
+test "query access permits disjoint systems" {
+    var movement = queryAccessInit("movement")
+    queryAccessWrite(movement, "Transform")
+    queryAccessWith(movement, "Player")
+
+    var enemies = queryAccessInit("enemy_ai")
+    queryAccessWrite(enemies, "Transform")
+    queryAccessWithout(enemies, "Player")
+
+    assert !queryAccessConflicts(movement, enemies) {
+        "with/without filters must prove disjoint writes"
+    }
+}
+
+test "query access rejects shared writes" {
+    var movement = queryAccessInit("movement")
+    queryAccessWrite(movement, "Transform")
+
+    var physics = queryAccessInit("physics")
+    queryAccessRead(physics, "Transform")
+
+    assert queryAccessConflicts(movement, physics) {
+        "writer/reader overlap must serialize systems"
     }
 }

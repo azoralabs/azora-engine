@@ -106,23 +106,29 @@ if [ ! -f "$SRC_DIR/main.az" ]; then
     exit 1
 fi
 
-# ── Azora → LLVM IR ──────────────────────────────────────────────────────
-CLASSPATH=""
-for jar in "$LIB_DIR/tools/azorac/lib/"*.jar; do
-    [ -f "$jar" ] || continue
-    CLASSPATH="${CLASSPATH:+$CLASSPATH:}$jar"
-done
-if [ -z "$CLASSPATH" ]; then
-    echo "error: bundled Azora compiler not found in $LIB_DIR/tools/azorac/lib" >&2
-    exit 1
-fi
-
 APP_NAME="$(basename "$PROJECT_DIR" | tr -cd '[:alnum:]_-')"
 [ -n "$APP_NAME" ] || APP_NAME="app"
 
 echo "azora-engine: compiling ($APP_NAME)"
-"$JAVA_BIN" -cp "$CLASSPATH" dev.azora.lang.MainKt compile llvm "$SRC_DIR/main.az" \
-    > "$BUILD_DIR/$APP_NAME.ll"
+if [ -n "${AZORA_COMPILER_BIN:-}" ]; then
+    if [ ! -x "$AZORA_COMPILER_BIN" ]; then
+        echo "error: AZORA_COMPILER_BIN is not executable: $AZORA_COMPILER_BIN" >&2
+        exit 1
+    fi
+    "$AZORA_COMPILER_BIN" compile llvm "$SRC_DIR/main.az" > "$BUILD_DIR/$APP_NAME.ll"
+else
+    CLASSPATH=""
+    for jar in "$LIB_DIR/tools/azorac/lib/"*.jar; do
+        [ -f "$jar" ] || continue
+        CLASSPATH="${CLASSPATH:+$CLASSPATH:}$jar"
+    done
+    if [ -z "$CLASSPATH" ]; then
+        echo "error: bundled Azora compiler not found in $LIB_DIR/tools/azorac/lib" >&2
+        exit 1
+    fi
+    "$JAVA_BIN" -cp "$CLASSPATH" dev.azora.lang.MainKt compile llvm "$SRC_DIR/main.az" \
+        > "$BUILD_DIR/$APP_NAME.ll"
+fi
 
 if [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
     echo "error: Azora compilation produced no output (see errors above)." >&2
@@ -143,8 +149,14 @@ case "$OS" in
 esac
 
 if [ ! -d "$NATIVE_DIR" ]; then
-    echo "error: no native runtime for $OS in this build ($NATIVE_DIR missing)." >&2
-    exit 1
+    # Workspace checkouts keep the freshly built runtime under runtime/build;
+    # installed engine bundles use native/<platform>.
+    if [ -d "$LIB_DIR/runtime/build" ]; then
+        NATIVE_DIR="$LIB_DIR/runtime/build"
+    else
+        echo "error: no native runtime for $OS in this build ($NATIVE_DIR missing)." >&2
+        exit 1
+    fi
 fi
 
 echo "azora-engine: linking"

@@ -1,55 +1,150 @@
-// Azora Engine — modular core.
-//
-// Small opt-in primitives shared by higher-level engine modules. Decorators
-// are parsed and stored by azora-lang, so engine code can mark components and
-// systems without requiring runtime reflection.
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
 
+/**
+ * Core metadata, clock, reactivity, and dependency-injection services shared
+ * by every Azora Engine subsystem.
+ *
+ * The core package owns no renderer, window, or ECS storage. Keeping these
+ * primitives small makes the same system graph usable by LLVM executables and
+ * WebAssembly modules.
+ */
 module engine.core
 
-deco Component
-deco System {
-    fin phase: String
+/**
+ * Ordered engine schedule phases.
+ *
+ * Systems in one phase may run in parallel when their ECS access sets do not
+ * conflict. A phase completes before the next phase begins.
+ */
+@Experimental(sinceAzora: "0.0.4")
+enum SystemPhase {
+    Startup
+    PreUpdate
+    Update
+    PostUpdate
+    FixedUpdate
+    Render
+    Last
 }
-deco Query
-deco Resource
 
-fin AZ_PHASE_STARTUP = 0
-fin AZ_PHASE_PRE_UPDATE = 10
-fin AZ_PHASE_UPDATE = 20
-fin AZ_PHASE_POST_UPDATE = 30
-fin AZ_PHASE_FIXED_UPDATE = 40
-fin AZ_PHASE_RENDER = 50
-fin AZ_PHASE_LAST = 60
+/** Marks a pack or enum as ECS component data. */
+@Experimental(sinceAzora: "0.0.4")
+deco Component for [.Pack, .Enum]
 
+/**
+ * Marks a function or task as an engine system.
+ *
+ * @param phase Schedule phase in which the system executes.
+ * @param order Stable order among systems that cannot run concurrently.
+ */
+@Experimental(sinceAzora: "0.0.4")
+deco System for [.Func, .Task] {
+    fin phase: SystemPhase = SystemPhase.Update
+    fin order: Int = 0
+}
+
+/** Marks a pack as application-wide ECS resource data. */
+@Experimental(sinceAzora: "0.0.4")
+deco Resource for .Pack
+
+/** Marks a function parameter whose component access is query-derived. */
+@Experimental(sinceAzora: "0.0.4")
+deco Query for .Param
+
+/**
+ * Frame clock injected into systems through `time: res Time`.
+ *
+ * `deltaSecs` is the clamped variable timestep. `fixedDeltaSecs` is the
+ * deterministic simulation step used by `.FixedUpdate`.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack Time {
+    var deltaSecs: Real
+    var elapsedSecs: Real
+    var fixedDeltaSecs: Real
+    var frame: Long
+}
+
+/** Creates a clock with a 60 Hz fixed timestep. */
+@Experimental(sinceAzora: "0.0.4")
+func timeInit(): Time {
+    return Time(0.0, 0.0, 1.0 / 60.0, 0L)
+}
+
+impl Time {
+    /**
+     * Advances the clock by one rendered frame.
+     *
+     * Large deltas are clamped to 250 ms so a paused debugger or suspended tab
+     * cannot destabilize physics when execution resumes.
+     */
+    func advance(deltaSecs: Real) { mut ref self ->
+        var clamped = deltaSecs
+        if clamped < 0.0 {
+            clamped = 0.0
+        }
+        if clamped > 0.25 {
+            clamped = 0.25
+        }
+        self.deltaSecs = clamped
+        self.elapsedSecs = self.elapsedSecs + clamped
+        self.frame = self.frame + 1
+    }
+
+    /** Replaces the deterministic fixed timestep. */
+    func setFixedDelta(seconds: Real) { mut ref self ->
+        assert seconds > 0.0 { "fixed timestep must be positive" }
+        self.fixedDeltaSecs = seconds
+    }
+}
+
+/**
+ * Revisioned state shared by ECS resources and retained UI state.
+ *
+ * Reads are allocation-free. Writes increment `revision`, allowing systems and
+ * UI hosts to skip work when the observed value did not change.
+ */
+@Experimental(sinceAzora: "0.0.4")
 pack<T> Signal {
     var value: T
-    var revision: Int
+    var revision: Long
 }
 
 func<T> signalInit(value: T): Signal<T> {
-    return Signal<T>(value, 0)
+    return Signal<T>(value, 0L)
 }
 
-func<T> signalGet(signal: Signal<T>): T {
+func<T> signalGet(signal: ref Signal<T>): T {
     return signal.value
 }
 
-func<T> signalSet(signal: Signal<T>, value: T) {
+func<T> signalSet(signal: mut ref Signal<T>, value: T) {
     signal.value = value
     signal.revision = signal.revision + 1
 }
 
-func<T> signalVersion(signal: Signal<T>): Int {
+func<T> signalVersion(signal: ref Signal<T>): Long {
     return signal.revision
 }
 
-func<T> signalChangedSince(signal: Signal<T>, version: Int): Bool {
+func<T> signalChangedSince(signal: ref Signal<T>, version: Long): Bool {
     return signal.revision != version
 }
 
+/**
+ * Shared engine registry provided by the default dependency-injection wrap.
+ *
+ * Subsystems increment `loadedModules` during installation. The scheduler uses
+ * `frameIndex` and `worldRevision` as cheap change tokens.
+ */
 solo EngineRegistry {
     var loadedModules: Int = 0
-    var frameIndex: Int = 0
+    var frameIndex: Long = 0
+    var worldRevision: Long = 0
 
     func markModuleLoaded() {
         self.loadedModules = self.loadedModules + 1
@@ -58,8 +153,28 @@ solo EngineRegistry {
     func nextFrame() {
         self.frameIndex = self.frameIndex + 1
     }
+
+    func markWorldChanged() {
+        self.worldRevision = self.worldRevision + 1
+    }
 }
 
+/** Shared frame clock resolved by `inject EngineClock`. */
+solo EngineClock {
+    var value: Time = timeInit()
+
+    func advance(deltaSecs: Real) {
+        self.value.advance(deltaSecs)
+    }
+}
+
+/**
+ * Base dependency graph for engine applications.
+ *
+ * Higher-level wraps compose this one and register platform, input, renderer,
+ * ECS, and UI services without dynamic plugin objects.
+ */
 wrap AzEngine {
     solo EngineRegistry
+    solo EngineClock
 }

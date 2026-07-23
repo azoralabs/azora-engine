@@ -7,6 +7,10 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIB_DIR="${AZORA_ENGINE_HOME:-$HOME/.azora/libraries/__AZORA_LIBRARY_ID__/__AZORA_LIBRARY_VERSION__}"
 
 if [ ! -d "$LIB_DIR" ]; then
+    WORKSPACE_DIR="$(cd "$PROJECT_DIR/../.." && pwd)"
+    if [ -x "$WORKSPACE_DIR/tools/build.sh" ]; then
+        exec "$WORKSPACE_DIR/tools/build.sh" "$PROJECT_DIR" "${1:-run}"
+    fi
     echo "error: Azora Engine library not found at $LIB_DIR" >&2
     echo "Install the library in Azora Studio (Libraries) or set AZORA_ENGINE_HOME." >&2
     exit 1

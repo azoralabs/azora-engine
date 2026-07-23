@@ -1,0 +1,256 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine.ui.navigation
+ *
+ * State-based navigation inspired by Compose Navigation 3.
+ *
+ * Applications own a typed back stack. An entry provider maps keys to stored
+ * Azora callables, while `NavDisplay` controls lifecycle and transitions.
+ * Navigation itself has no browser, window, or renderer dependency and is
+ * therefore identical in LLVM and WebAssembly builds.
+ */
+module engine.ui.navigation
+
+import engine.core
+
+/** Lifecycle of a navigation entry retained by a display. */
+@Experimental(sinceAzora: "0.0.4")
+enum NavLifecycle {
+    Created
+    Active
+    Suspended
+    Destroyed
+}
+
+/** Direction of the most recent stack operation. */
+@Experimental(sinceAzora: "0.0.4")
+enum NavDirection {
+    None
+    Push
+    Pop
+    Replace
+}
+
+/**
+ * Typed, bounded navigation history.
+ *
+ * The stack owns its values and performs no allocation after construction.
+ * `revision` changes for every successful mutation and can be observed by a
+ * reactive UI host without coupling navigation to a renderer.
+ */
+@Experimental(sinceAzora: "0.0.4")
+opaque pack<K> NavBackStack {
+    var entries: Array<K>
+    var size: Int
+    var revision: Long
+    var direction: NavDirection
+}
+
+/** Creates a back stack containing one root key. */
+@Experimental(sinceAzora: "0.0.4")
+func<K> navBackStack(root: K, capacity: Int = 32): NavBackStack<K>
+in {
+    assert capacity > 0 { "navigation capacity must be positive" }
+} zone {
+    var entries = Array::fill<K>(capacity)
+    entries[0] = root
+    return NavBackStack<K>(entries, 1, 0L, NavDirection.None)
+}
+
+impl<K> NavBackStack {
+    prop count: Int = self.size
+    prop canPop: Bool = self.size > 1
+    prop version: Long = self.revision
+    prop lastDirection: NavDirection = self.direction
+
+    /** Returns the visible key. */
+    prop current: K
+    in {
+        assert self.size > 0 { "navigation stack is empty" }
+    } zone {
+        return self.entries[self.size - 1]
+    }
+
+    /** Adds a destination to the top of the stack. */
+    func push(key: K)
+    in {
+        assert self.size < self.entries.size { "navigation capacity exceeded" }
+    } zone {
+        self.entries[self.size] = key
+        self.size = self.size + 1
+        self.revision = self.revision + 1
+        self.direction = NavDirection.Push
+    }
+
+    /** Removes and returns the visible destination. The root cannot be popped. */
+    func pop(): K
+    in {
+        assert self.size > 1 { "cannot pop the navigation root" }
+    } zone {
+        fin key = self.entries[self.size - 1]
+        self.size = self.size - 1
+        self.revision = self.revision + 1
+        self.direction = NavDirection.Pop
+        return key
+    }
+
+    /** Replaces the visible destination without changing stack depth. */
+    func replace(key: K)
+    in {
+        assert self.size > 0 { "navigation stack is empty" }
+    } zone {
+        self.entries[self.size - 1] = key
+        self.revision = self.revision + 1
+        self.direction = NavDirection.Replace
+    }
+
+    /** Pops every destination above the root. */
+    func popToRoot() { mut ref self ->
+        if self.size > 1 {
+            self.size = 1
+            self.revision = self.revision + 1
+            self.direction = NavDirection.Pop
+        }
+    }
+
+    /** Reads a key by depth, starting with the root at zero. */
+    func at(index: Int): K
+    in {
+        assert index >= 0 && index < self.size { "navigation index out of bounds" }
+    } zone {
+        return self.entries[index]
+    }
+}
+
+/** Stored content associated with one typed navigation key. */
+typealias NavContent<K> = Func(ref K) -> Unit
+
+@Experimental(sinceAzora: "0.0.4")
+pack<K> NavEntry {
+    fin key: K
+    fin content: NavContent<K>
+}
+
+/**
+ * Registry used to resolve destinations.
+ *
+ * Providers preserve declaration order. A custom equality function allows
+ * packs, enums, and application-defined route keys without engine hardcoding.
+ */
+@Experimental(sinceAzora: "0.0.4")
+opaque pack<K> NavEntryProvider {
+    var entries: Array<NavEntry<K>>
+    var size: Int
+    fin equals: Func(ref K, ref K) -> Bool
+}
+
+func<K> navEntryProvider(
+    equals: Func(ref K, ref K) -> Bool,
+    capacity: Int = 32
+): NavEntryProvider<K>
+in {
+    assert capacity > 0 { "navigation provider capacity must be positive" }
+} zone {
+    return NavEntryProvider<K>(Array::fill<NavEntry<K>>(capacity), 0, equals)
+}
+
+impl<K> NavEntryProvider {
+    /** Registers one destination. Duplicate keys are rejected. */
+    func add(key: K, content: NavContent<K>)
+    in {
+        assert self.indexOf(key) < 0 { "duplicate navigation key" }
+        assert self.size < self.entries.size { "navigation provider capacity exceeded" }
+    } zone {
+        self.entries[self.size] = NavEntry<K>(key, content)
+        self.size = self.size + 1
+    }
+
+    func indexOf(key: ref K): Int { ref self ->
+        var index = 0
+        while index < self.size {
+            if self.equals(self.entries[index].key, key) {
+                return index
+            }
+            index = index + 1
+        }
+        return -1
+    }
+
+    /** Invokes content for `key`; returns false when no entry is registered. */
+    func present(key: ref K): Bool { ref self ->
+        fin index = self.indexOf(key)
+        if index < 0 {
+            return false
+        }
+        self.entries[index].content(key)
+        return true
+    }
+}
+
+/**
+ * Renderer-neutral state consumed by a navigation host.
+ *
+ * A host calls `sync` before presenting. The return value says whether the
+ * visible entry or transition changed since the previous frame.
+ */
+@Experimental(sinceAzora: "0.0.4")
+pack NavDisplay {
+    var observedRevision: Long
+    var lifecycle: NavLifecycle
+    var direction: NavDirection
+}
+
+func navDisplay(): NavDisplay {
+    return NavDisplay((0 - 1) as Long, NavLifecycle.Created, NavDirection.None)
+}
+
+impl NavDisplay {
+    func sync<K>(stack: ref NavBackStack<K>): Bool { mut ref self ->
+        if self.observedRevision == stack.version {
+            return false
+        }
+        self.observedRevision = stack.version
+        self.direction = stack.lastDirection
+        self.lifecycle = NavLifecycle.Active
+        return true
+    }
+
+    func suspend() { mut ref self ->
+        self.lifecycle = NavLifecycle.Suspended
+    }
+
+    func destroy() { mut ref self ->
+        self.lifecycle = NavLifecycle.Destroyed
+    }
+}
+
+test "navigation stack preserves typed history" {
+    var stack = navBackStack<Int>(1, 4)
+    stack.push(2)
+    stack.push(3)
+    assert stack.count == 3 { "push changed navigation depth incorrectly" }
+    assert stack.current == 3 { "current must return the visible key" }
+    assert stack.pop() == 3 { "pop must return the removed key" }
+    assert stack.current == 2 { "pop did not reveal the previous key" }
+    stack.replace(7)
+    assert stack.current == 7 { "replace did not update the visible key" }
+    stack.popToRoot()
+    assert stack.current == 1 && !stack.canPop { "popToRoot must preserve only the root" }
+}
+
+test "navigation display observes revisions once" {
+    var stack = navBackStack<Int>(1)
+    var display = navDisplay()
+    assert display.sync(stack) { "first display sync must activate the entry" }
+    assert !display.sync(stack) { "unchanged navigation must not invalidate UI" }
+    stack.push(2)
+    assert display.sync(stack) { "stack mutations must invalidate UI" }
+    assert display.direction == NavDirection.Push { "display lost transition direction" }
+}
+
+test .All "engine navigation"

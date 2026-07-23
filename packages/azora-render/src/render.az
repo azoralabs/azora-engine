@@ -10,6 +10,7 @@ export import engine.render.webgl
 
 import engine.ui
 import engine.math
+import engine.core
 
 pack Camera {
     var pos: Vec3
@@ -34,6 +35,23 @@ pack Transform3d {
     var position: Vec3
     var rotation: Vec3
     var scale: Vec3
+}
+
+/**
+ * ECS transform used by architecture-style systems.
+ *
+ * `Transform3d` remains available to existing render queues; this component
+ * uses the conventional `translation` field expected by gameplay systems.
+ */
+@Component
+pack Transform {
+    var translation: Vector3
+    var rotation: Vector3
+    var scale: Vector3
+}
+
+func transformEcsDefault(): Transform {
+    return Transform(Vector3::Zero, Vector3::Zero, Vec3(1.0, 1.0, 1.0))
 }
 
 pack RenderItem {
@@ -110,7 +128,7 @@ impl Camera {
         if (app.keyDown(KEY_E) || app.keyDown(KEY_SPACE)) { move = move + Vec3(0.0, 1.0, 0.0) }
         if (app.keyDown(KEY_Q) || app.keyDown(KEY_SHIFT)) { move = move - Vec3(0.0, 1.0, 0.0) }
 
-        fin step = move.normalized().scale(moveSpeed * dt)
+        fin step = move.normalized.scale(moveSpeed * dt)
         self.pos = self.pos + step
 
         if app.keyDown(KEY_LEFT) { self.yaw = self.yaw + lookSpeed * dt }

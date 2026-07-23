@@ -1,64 +1,40 @@
-// Azora Engine — application & plugin runtime (Bevy-style).
-//
-// This is the low-level `engine.app` package. It defines the plugin/system
-// contracts and the `Engine` builder that every game uses:
-//
-//     import engine
-//
-//     pack SpinCube
-//     impl GameSystem for SpinCube {
-//         func run(app: mut ref App) { ref self -> /* per-frame work */ }
-//     }
-//
-//     pack GamePlugin
-//     impl Plugin for GamePlugin {
-//         func name(): String { ref self -> return "GamePlugin" }
-//         func build(engine: mut ref Engine) {
-//             ref self -> engine.addUpdateSystem(SpinCube() as GameSystem)
-//         }
-//     }
-//
-//     func main() {
-//         engine("My Game", 1280, 720)
-//             .addPlugins(defaultPlugins())
-//             .addPlugin(GamePlugin() as Plugin)
-//             .run()
-//     }
-//
-// Plugins and systems dispatch dynamically through `spec` trait objects — the
-// same Rust-style `dyn` dispatch the Azora LLVM backend now lowers natively.
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
 
+/**
+ * Engine application, schedule, and dependency-injected plugin composition.
+ *
+ * Default plugins are `solo` services registered by `DefaultEnginePlugins`.
+ * There is no runtime array of boxed plugin objects on the primary path.
+ * Existing object-style plugins remain accepted as a compatibility adapter.
+ */
 module engine.app
 
 import std.container
+import engine.core
+import engine.ecs
 import engine.platform
 
-// ── Contracts ────────────────────────────────────────────────────────────
-
-/// A unit of per-frame (or startup) work. Implemented by a `pack`; the engine
-/// calls `run` for every registered system each tick.
+/** Compatibility contract for existing object-style frame systems. */
 spec GameSystem {
     func run(app: mut ref App)
 }
 
-/// A plugin configures the engine while it is being built — registering systems
-/// and wiring subsystems. Bevy's `Plugin`.
+/** Compatibility contract for third-party plugins not yet migrated to DI. */
 spec Plugin {
     func name(): String
     func build(engine: mut ref Engine)
 }
 
-/// A named bundle of plugins added together. Bevy's `PluginGroup`; see
-/// `defaultPlugins()` in the `engine` facade for the standard bundle.
-spec PluginGroup {
-    func plugins(): Array<Plugin>
-}
+/** Marker passed to `addPlugins(defaultPlugins())`. */
+pack DefaultPluginSet
 
-// ── The application builder ──────────────────────────────────────────────
-
-/// Owns the window configuration and the scheduled systems. Created by
-/// [engine]; plugins mutate it during `build`, then [run] opens the window and
-/// drives the frame loop.
+/**
+ * Owns platform configuration, ECS world, frame clock, and system schedule.
+ */
 pack Engine {
     var title: String
     var width: Int
@@ -66,72 +42,167 @@ pack Engine {
     var clearR: Real
     var clearG: Real
     var clearB: Real
+    var world: World
+    var time: Time
+    var schedule: Schedule
     var startup: Array<GameSystem>
     var update: Array<GameSystem>
+    var pluginsInstalled: Bool
 }
 
-/// Creates an engine with a window title and size and a default clear color.
 func engine(title: String, width: Int, height: Int): Engine {
-    return Engine(title, width, height, 0.06, 0.07, 0.09, Array::fill<GameSystem>(0), Array::fill<GameSystem>(0))
+    return Engine(
+        title,
+        width,
+        height,
+        0.06,
+        0.07,
+        0.09,
+        worldInit(),
+        timeInit(),
+        scheduleInit(),
+        Array::fill<GameSystem>(0),
+        Array::fill<GameSystem>(0),
+        false
+    )
+}
+
+/** Window/platform service in the default DI graph. */
+solo WindowPlugin {
+    func install(engine: mut ref Engine) {
+        inject EngineRegistry.markModuleLoaded()
+    }
+}
+
+/** Typed keyboard, pointer, touch, and controller service. */
+solo InputPlugin {
+    func install(engine: mut ref Engine) {
+        inject EngineRegistry.markModuleLoaded()
+    }
+}
+
+/** Render graph and GPU service. */
+solo RenderPlugin {
+    func install(engine: mut ref Engine) {
+        inject EngineRegistry.markModuleLoaded()
+    }
+}
+
+/** Reactive UI, VDOM, and navigation service. */
+solo UiPlugin {
+    func install(engine: mut ref Engine) {
+        inject EngineRegistry.markModuleLoaded()
+    }
+}
+
+/**
+ * Bevy-style default plugin composition expressed with language DI.
+ *
+ * Applications may define another wrap with a different service set; compile
+ * time registration keeps LLVM/WASM startup deterministic.
+ */
+wrap DefaultEnginePlugins {
+    solo EngineRegistry
+    solo EngineClock
+    solo WindowPlugin
+    solo InputPlugin
+    solo RenderPlugin
+    solo UiPlugin
+}
+
+func defaultPlugins(): DefaultPluginSet {
+    return DefaultPluginSet()
 }
 
 impl Engine {
-    /// Sets the background clear color (0..1 per channel). Returns `self` for chaining.
-    func setClearColor(r: Real, g: Real, b: Real): mut ref Engine {
-        mut ref self ->
+    func setClearColor(r: Real, g: Real, b: Real): mut ref Engine { mut ref self ->
         self.clearR = r
         self.clearG = g
         self.clearB = b
         return self
     }
 
-    /// Runs a plugin's `build` against this engine. Returns `self` for chaining.
-    func addPlugin(plugin: Plugin): mut ref Engine {
-        mut ref self ->
-        plugin.build(self)
-        return self
-    }
-
-    /// Adds every plugin in a group (e.g. `defaultPlugins()`). Returns `self`.
-    func addPlugins(group: PluginGroup): mut ref Engine {
-        mut ref self ->
-        for p in group.plugins() {
-            p.build(self)
+    /**
+     * Installs the default DI services once.
+     *
+     * The marker parameter preserves builder ergonomics without allocating a
+     * plugin group or performing virtual dispatch.
+     */
+    func addPlugins(plugins: DefaultPluginSet): mut ref Engine { mut ref self ->
+        if !self.pluginsInstalled {
+            inject WindowPlugin.install(self)
+            inject InputPlugin.install(self)
+            inject RenderPlugin.install(self)
+            inject UiPlugin.install(self)
+            self.pluginsInstalled = true
         }
         return self
     }
 
-    /// Registers a system that runs once, after the window opens.
-    func addStartupSystem(sys: GameSystem): mut ref Engine {
-        mut ref self ->
-        self.startup.add(sys)
+    /** Compatibility adapter for an object-style external plugin. */
+    func addPlugin(plugin: Plugin): mut ref Engine { mut ref self ->
+        plugin.build(self)
         return self
     }
 
-    /// Registers a system that runs every frame.
-    func addUpdateSystem(sys: GameSystem): mut ref Engine {
-        mut ref self ->
-        self.update.add(sys)
+    /** Registers a statically described ECS system. */
+    func addSystem(system: ScheduledSystem): mut ref Engine { mut ref self ->
+        self.schedule.add(system)
         return self
     }
 
-    /// Opens the window, runs startup systems once, then runs update systems
-    /// every frame until the window closes.
-    func run() {
-        mut ref self ->
+    func addStartupSystem(system: GameSystem): mut ref Engine { mut ref self ->
+        self.startup.add(system)
+        return self
+    }
+
+    func addUpdateSystem(system: GameSystem): mut ref Engine { mut ref self ->
+        self.update.add(system)
+        return self
+    }
+
+    /**
+     * Opens the platform app and executes the complete phase schedule.
+     *
+     * `.FixedUpdate` consumes the world's fixed-step accumulator; all other
+     * phases run exactly once per rendered frame.
+     */
+    func run() { mut ref self ->
+        if !self.pluginsInstalled {
+            self.addPlugins(defaultPlugins())
+        }
+
         var app = appInit(self.title, self.width, self.height)
         if !app.ok {
             return
         }
         app.setClearColor(self.clearR, self.clearG, self.clearB)
-        for s in self.startup {
-            s.run(app)
+
+        self.schedule.run(SystemPhase.Startup, self.world, self.time)
+        for system in self.startup {
+            system.run(app)
         }
+
         while app.frame() {
-            for s in self.update {
-                s.run(app)
+            self.time.advance(app.deltaTime())
+            self.world.progress(self.time.deltaSecs)
+            inject EngineClock.value = self.time
+            inject EngineRegistry.nextFrame()
+
+            self.schedule.run(SystemPhase.PreUpdate, self.world, self.time)
+            self.schedule.run(SystemPhase.Update, self.world, self.time)
+            for system in self.update {
+                system.run(app)
             }
+            self.schedule.run(SystemPhase.PostUpdate, self.world, self.time)
+
+            while self.world.consumeFixedStep() {
+                self.schedule.run(SystemPhase.FixedUpdate, self.world, self.time)
+            }
+
+            self.schedule.run(SystemPhase.Render, self.world, self.time)
             app.present()
+            self.schedule.run(SystemPhase.Last, self.world, self.time)
         }
         app.shutdown()
     }
