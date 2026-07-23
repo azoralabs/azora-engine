@@ -6,10 +6,11 @@
 #
 #   dist/azora-engine-<version>/
 #     library.json                       manifest (id, version, templates)
-#     engine/<module>/*.az               engine modules, Azora language
+#     workspace.azon                     package workspace manifest
+#     packages/<pkg>/{package.azon,src}  engine packages (crates), Azora language
 #     runtime/include/azora_runtime.h    native ABI reference
 #     native/macos/libazora_runtime.dylib
-#     tools/build.sh                     project build tool
+#     tools/{build.sh,azon.py,azpm.py}   project build tool + package resolver
 #     tools/azorac/lib/*.jar             bundled Azora compiler CLI
 #     templates/{app,game}/              project templates
 #
@@ -55,13 +56,15 @@ echo "  ✓ azora compiler"
 
 # ── 3. Assemble the bundle ───────────────────────────────────────────────
 rm -rf "$DIST"
-mkdir -p "$DIST/engine" "$DIST/native/macos" "$DIST/tools/azorac/lib" \
+mkdir -p "$DIST/packages" "$DIST/native/macos" "$DIST/tools/azorac/lib" \
          "$DIST/runtime/include" "$DIST/templates"
 
 cp "$ROOT_DIR/library.json" "$DIST/"
-cp -R "$ROOT_DIR/engine/." "$DIST/engine/"
+# The engine ships as a workspace of packages (crates) resolved by azpm.
+cp "$ROOT_DIR/workspace.azon" "$DIST/"
+cp -R "$ROOT_DIR/packages/." "$DIST/packages/"
 cp "$ROOT_DIR/runtime/include/azora_runtime.h" "$DIST/runtime/include/"
-cp "$ROOT_DIR/tools/build.sh" "$DIST/tools/"
+cp "$ROOT_DIR/tools/build.sh" "$ROOT_DIR/tools/azon.py" "$ROOT_DIR/tools/azpm.py" "$DIST/tools/"
 # The compiler's LLVM backend is pure text generation (clang assembles the IR),
 # so the huge llvm/javacpp binding jars are not needed at runtime.
 for jar in "$AZORAC_LIB/"*.jar; do

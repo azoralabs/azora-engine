@@ -6,44 +6,70 @@
 //   arrow keys  look around
 //   ESC         quit
 //
+// Built the Bevy way: subsystems come from `defaultPlugins()`, and the game's
+// own logic is a `Plugin` that registers a `GameSystem` running each frame.
 // Runs natively (compiled via LLVM); the engine — including its Metal
 // renderer — is written in the Azora language.
 
 module game
 
-import engine.render
+import engine
 
-func main() {
-    var app = appInit("__AZORA_PROJECT_NAME__", 1280, 720)
-    if !app.ok {
-        return
-    }
-    app.setClearColor(0.06, 0.07, 0.09)
+// ── The scene ────────────────────────────────────────────────────────────
+//
+// A system carries its own persistent state (camera + meshes). Meshes upload
+// GPU buffers, so they are created once, lazily, on the first frame.
 
-    fin cube = app.meshCube(1.0)
-    fin ground = app.meshGrid(10.0, 10)
-    var cam = cameraDefault()
+pack Scene {
+    var cam: Camera
+    var cube: Mesh
+    var ground: Mesh
+    var ready: Bool
+}
 
-    while app.frame() {
+impl GameSystem for Scene {
+    func run(app: mut ref App) {
+        mut ref self ->
+        if !self.ready {
+            self.cube = app.meshCube(1.0)
+            self.ground = app.meshGrid(10.0, 10)
+            self.ready = true
+        }
+
         fin dt = app.deltaTime()
 
         // Camera: WASD + QE movement, arrow-key look.
-        cam.update(app, dt, 5.0, 1.8)
-        app.applyCamera(cam)
+        self.cam.update(app, dt, 5.0, 1.8)
+        app.applyCamera(self.cam)
 
         // A cube slowly spinning above the ground.
         fin spin = mat4Mul(mat4Translation(0.0, 0.75, 0.0), mat4RotationY(app.timeNow() * 0.8))
-        app.drawMesh(cube, spin, 0.92, 0.47, 0.20)
-        app.drawMesh(ground, mat4Identity(), 0.20, 0.24, 0.30)
+        app.drawMesh(self.cube, spin, 0.92, 0.47, 0.20)
+        app.drawMesh(self.ground, mat4Identity(), 0.20, 0.24, 0.30)
 
         app.uiText("WASD move   Q/E up-down   arrows look   ESC quit", 16.0, 16.0, 13.0)
 
         if app.keyPressed(KEY_ESCAPE) {
             app.quit()
         }
-
-        app.present()
     }
+}
 
-    app.shutdown()
+// ── The game plugin ──────────────────────────────────────────────────────
+
+pack GamePlugin
+impl Plugin for GamePlugin {
+    func name(): String { ref self -> return "GamePlugin" }
+    func build(engine: mut ref Engine) {
+        mut ref self ->
+        engine.addUpdateSystem(Scene(cameraDefault(), Mesh(0L, 0), Mesh(0L, 0), false) as GameSystem)
+    }
+}
+
+func main() {
+    var e = engine("__AZORA_PROJECT_NAME__", 1280, 720)
+    e.setClearColor(0.06, 0.07, 0.09)
+    e.addPlugins(defaultPlugins())
+    e.addPlugin(GamePlugin() as Plugin)
+    e.run()
 }

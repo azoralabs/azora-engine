@@ -1,14 +1,20 @@
 #!/bin/bash
 # Azora Engine — project build tool.
 #
-# Compiles an Azora Engine project (engine sources + project src/*.az) to a
-# native executable via the Azora compiler's LLVM backend and clang, linking
-# against the engine's native runtime.
+# Compiles an Azora Engine project (its resolved engine packages + the project's
+# own src/*.az) to a native executable via the Azora compiler's LLVM backend and
+# clang, linking against the frameworks the resolved packages declare.
+#
+# The set of engine packages to stage and the native frameworks/libs to link are
+# resolved from the .azon package manifests by tools/azpm.py — there is no
+# hard-coded dependency graph or framework list here.
 #
 # Usage: build.sh <project_dir> [build|run]
 #
-# Layout expectations (a library bundle install):
-#   <lib>/engine/<module>/*.az           engine modules (Azora language)
+# Layout expectations (a workspace checkout or an installed bundle):
+#   <lib>/workspace.azon
+#   <lib>/packages/<pkg>/{package.azon, src/*.az}
+#   <lib>/tools/{azon.py, azpm.py}
 #   <lib>/native/macos/libazora_runtime.dylib
 #   <lib>/tools/azorac/lib/*.jar         bundled Azora compiler CLI
 set -euo pipefail
@@ -62,7 +68,13 @@ if [ -z "$CLANG_BIN" ]; then
     exit 1
 fi
 
-# ── Collect sources: selected engine modules + project src ───────────────
+PYTHON_BIN="$(command -v python3 || true)"
+if [ -z "$PYTHON_BIN" ]; then
+    echo "error: python3 is required (used by the azpm package resolver)." >&2
+    exit 1
+fi
+
+# ── Collect sources: resolved engine packages + project src ──────────────
 if [ ! -d "$PROJECT_DIR/src" ]; then
     echo "error: no src/ directory in $PROJECT_DIR" >&2
     exit 1
@@ -71,97 +83,21 @@ fi
 rm -rf "$SRC_DIR"
 mkdir -p "$SRC_DIR"
 
-ENGINE_MODULES=""
-append_engine_module() {
-    local module="$1"
-    if [ ! -d "$LIB_DIR/engine/$module" ]; then
-        echo "warning: unknown engine module '$module' (ignored)" >&2
-        return
-    fi
-    case " $ENGINE_MODULES " in
-        *" $module "*) ;;
-        *) ENGINE_MODULES="$ENGINE_MODULES $module" ;;
+# azpm resolves the project's `import engine[.x]` statements to a package
+# closure, telling us which source dirs to stage where and what to link.
+RESOLVE="$("$PYTHON_BIN" "$LIB_DIR/tools/azpm.py" resolve "$PROJECT_DIR")"
+
+NATIVE_FLAGS=""
+while IFS=$'\t' read -r kind a b; do
+    case "$kind" in
+        STAGE)
+            mkdir -p "$SRC_DIR/$b"
+            cp "$a/"*.az "$SRC_DIR/$b/" 2>/dev/null || true
+            ;;
+        FRAMEWORK) NATIVE_FLAGS="$NATIVE_FLAGS -framework $a" ;;
+        LIB)       NATIVE_FLAGS="$NATIVE_FLAGS -l$a" ;;
     esac
-}
-
-add_engine_module() {
-    local module="$1"
-    case "$module" in
-        gpu)
-            add_engine_module "objc"
-            add_engine_module "math"
-            add_engine_module "shaders"
-            append_engine_module "gpu"
-            ;;
-        platform)
-            add_engine_module "input"
-            add_engine_module "gpu"
-            append_engine_module "platform"
-            ;;
-        ui)
-            add_engine_module "platform"
-            append_engine_module "ui"
-            ;;
-        render)
-            add_engine_module "ui"
-            append_engine_module "render"
-            ;;
-        ecs)
-            add_engine_module "core"
-            append_engine_module "ecs"
-            ;;
-        physics)
-            add_engine_module "math"
-            append_engine_module "physics"
-            ;;
-        audio)
-            add_engine_module "objc"
-            add_engine_module "math"
-            append_engine_module "audio"
-            ;;
-        jobs|concurrency)
-            add_engine_module "core"
-            append_engine_module "jobs"
-            ;;
-        engine|all)
-            for dir in "$LIB_DIR/engine/"*/; do
-                [ -d "$dir" ] || continue
-                add_engine_module "$(basename "$dir")"
-            done
-            ;;
-        *)
-            append_engine_module "$module"
-            ;;
-    esac
-}
-
-ENGINE_IMPORTS="$(
-    awk '
-        /^[[:space:]]*import[[:space:]]+engine([[:space:]]|$)/ { print "engine" }
-        /^[[:space:]]*import[[:space:]]+engine\./ {
-            line = $0
-            sub(/^[[:space:]]*import[[:space:]]+engine\./, "", line)
-            sub(/[[:space:]].*/, "", line)
-            print line
-        }
-    ' "$PROJECT_DIR"/src/*.az
-)"
-
-if [ -z "$ENGINE_IMPORTS" ]; then
-    add_engine_module "engine"
-else
-    for module in $ENGINE_IMPORTS; do
-        add_engine_module "$module"
-    done
-fi
-
-for module in $ENGINE_MODULES; do
-    mkdir -p "$SRC_DIR/engine/$module"
-    for file in "$LIB_DIR/engine/$module/"*.az; do
-        [ -f "$file" ] || continue
-        cp "$file" "$SRC_DIR/engine/$module/"
-    done
-done
+done <<< "$RESOLVE"
 
 cp "$PROJECT_DIR/src/"*.az "$SRC_DIR/"
 
@@ -195,14 +131,11 @@ fi
 
 # ── LLVM IR → native executable ──────────────────────────────────────────
 # The platform layer is Azora code calling the OS directly, so the final link
-# pulls in the system frameworks it uses (Cocoa/Metal/CoreText/…) plus the
+# pulls in the system frameworks the resolved packages declared plus the
 # engine's small FFI shim (libazora_runtime).
 OS="$(uname -s)"
 case "$OS" in
-    Darwin)
-        NATIVE_DIR="$LIB_DIR/native/macos"
-        PLATFORM_LIBS="-lobjc -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework CoreFoundation -framework GameController -framework AVFoundation"
-        ;;
+    Darwin) NATIVE_DIR="$LIB_DIR/native/macos" ;;
     *)
         echo "error: only macOS is supported right now (Vulkan backend planned)." >&2
         exit 1
@@ -210,7 +143,7 @@ case "$OS" in
 esac
 
 if [ ! -d "$NATIVE_DIR" ]; then
-    echo "error: no native runtime for $OS in this library build ($NATIVE_DIR missing)." >&2
+    echo "error: no native runtime for $OS in this build ($NATIVE_DIR missing)." >&2
     exit 1
 fi
 
@@ -218,7 +151,7 @@ echo "azora-engine: linking"
 "$CLANG_BIN" "$BUILD_DIR/$APP_NAME.ll" \
     -L "$NATIVE_DIR" -lazora_runtime \
     -Wl,-rpath,"$NATIVE_DIR" \
-    $PLATFORM_LIBS \
+    $NATIVE_FLAGS \
     -Wno-override-module \
     -o "$BUILD_DIR/$APP_NAME"
 
