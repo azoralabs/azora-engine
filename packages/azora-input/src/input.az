@@ -626,15 +626,15 @@ friend zone engine::input {
     }
 
     impl MouseInput {
-        func pressed(button: MouseButton): Bool { ref self ->
+        func pressed(button: MouseButton): Bool { self& ->
             return engineInputMouseDown(mouseButtonValue(button))
         }
 
-        func justPressed(button: MouseButton): Bool { ref self ->
+        func justPressed(button: MouseButton): Bool { self& ->
             return engineInputMousePressed(mouseButtonValue(button))
         }
 
-        func justReleased(button: MouseButton): Bool { ref self ->
+        func justReleased(button: MouseButton): Bool { self& ->
             return engineInputMouseReleased(mouseButtonValue(button))
         }
     }
@@ -655,7 +655,7 @@ friend zone engine::input {
     impl TouchInput {
         prop size: Int = engineInputTouchCount()
 
-        func at(index: Int): TouchPoint { ref self ->
+        func at(index: Int): TouchPoint { self& ->
             assert index >= 0 && index < self.size { "touch index out of bounds" }
             return TouchPoint(
                 engineInputTouchId(index),
@@ -674,27 +674,27 @@ friend zone engine::input {
     impl GamepadInput {
         prop connected: Bool = engineInputControllerConnected(self.index)
 
-        func pressed(button: GamepadButton): Bool { ref self ->
+        func pressed(button: GamepadButton): Bool { self& ->
             return engineInputControllerButtonDown(self.index, gamepadButtonValue(button))
         }
 
-        func justPressed(button: GamepadButton): Bool { ref self ->
+        func justPressed(button: GamepadButton): Bool { self& ->
             return engineInputControllerButtonPressed(self.index, gamepadButtonValue(button))
         }
 
-        func justReleased(button: GamepadButton): Bool { ref self ->
+        func justReleased(button: GamepadButton): Bool { self& ->
             return engineInputControllerButtonReleased(self.index, gamepadButtonValue(button))
         }
 
-        func value(button: GamepadButton): Real { ref self ->
+        func value(button: GamepadButton): Real { self& ->
             return engineInputControllerButtonValue(self.index, gamepadButtonValue(button))
         }
 
-        func axis(axis: GamepadAxis): Real { ref self ->
+        func axis(axis: GamepadAxis): Real { self& ->
             return engineInputControllerAxis(self.index, gamepadAxisValue(axis))
         }
 
-        func rumble(low: Real, high: Real, durationMs: Int = 180): Bool { ref self ->
+        func rumble(low: Real, high: Real, durationMs: Int = 180): Bool { self& ->
             return engineInputControllerRumble(self.index, low, high, durationMs)
         }
     }

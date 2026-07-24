@@ -110,7 +110,7 @@ impl<K> NavBackStack {
     }
 
     /** Pops every destination above the root. */
-    func popToRoot() { mut ref self ->
+    func popToRoot() { self! ->
         if self.size > 1 {
             self.size = 1
             self.revision = self.revision + 1
@@ -128,7 +128,7 @@ impl<K> NavBackStack {
 }
 
 /** Stored content associated with one typed navigation key. */
-typealias NavContent<K> = Func(ref K) -> Unit
+typealias NavContent<K> = Func(K&) -> Unit
 
 @Experimental(sinceAzora: "0.0.4")
 pack<K> NavEntry {
@@ -146,11 +146,11 @@ pack<K> NavEntry {
 opaque pack<K> NavEntryProvider {
     var entries: Array<NavEntry<K>>
     var size: Int
-    fin equals: Func(ref K, ref K) -> Bool
+    fin equals: Func(K&, K&) -> Bool
 }
 
 func<K> navEntryProvider(
-    equals: Func(ref K, ref K) -> Bool,
+    equals: Func(K&, K&) -> Bool,
     capacity: Int = 32
 ): NavEntryProvider<K>
 in {
@@ -170,7 +170,7 @@ impl<K> NavEntryProvider {
         self.size = self.size + 1
     }
 
-    func indexOf(key: ref K): Int { ref self ->
+    func indexOf(key: K&): Int { self& ->
         var index = 0
         while index < self.size {
             if self.equals(self.entries[index].key, key) {
@@ -182,7 +182,7 @@ impl<K> NavEntryProvider {
     }
 
     /** Invokes content for `key`; returns false when no entry is registered. */
-    func present(key: ref K): Bool { ref self ->
+    func present(key: K&): Bool { self& ->
         fin index = self.indexOf(key)
         if index < 0 {
             return false
@@ -210,7 +210,7 @@ func navDisplay(): NavDisplay {
 }
 
 impl NavDisplay {
-    func sync<K>(stack: ref NavBackStack<K>): Bool { mut ref self ->
+    func sync<K>(stack: NavBackStack<K>&): Bool { self! ->
         if self.observedRevision == stack.version {
             return false
         }
@@ -220,11 +220,11 @@ impl NavDisplay {
         return true
     }
 
-    func suspend() { mut ref self ->
+    func suspend() { self! ->
         self.lifecycle = NavLifecycle.Suspended
     }
 
-    func destroy() { mut ref self ->
+    func destroy() { self! ->
         self.lifecycle = NavLifecycle.Destroyed
     }
 }

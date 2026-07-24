@@ -59,14 +59,14 @@ pack World {
 }
 
 func worldInit(): World {
-    var generations = arr![0]
-    var alive = arr![false]
-    var names = arr![""]
-    var parents = arr![-1]
-    var childCounts = arr![0]
-    var prefabs = arr![false]
-    var resources = arr![false]
-    var freeIds = arr![-1]
+    var generations = arr@[0]
+    var alive = arr@[false]
+    var names = arr@[""]
+    var parents = arr@[-1]
+    var childCounts = arr@[0]
+    var prefabs = arr@[false]
+    var resources = arr@[false]
+    var freeIds = arr@[-1]
     return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0, 0L)
 }
 
@@ -284,10 +284,10 @@ pack<T> Storage {
 }
 
 func<T> storageInit(defaultValue: T): Storage<T> {
-    var entities = arr![entityInvalid()]
-    var values = arr![defaultValue]
-    var added = arr![false]
-    var changed = arr![false]
+    var entities = arr@[entityInvalid()]
+    var values = arr@[defaultValue]
+    var added = arr@[false]
+    var changed = arr@[false]
     return Storage<T>(entities, values, added, changed, 0)
 }
 
@@ -438,7 +438,7 @@ pack<...T> Single where (...T).length >= 1 {
     }
 }
 
-impl<...T> deref for Single { ref self ->
+impl<...T> deref for Single { self& ->
     return self.value
 }
 
@@ -455,7 +455,7 @@ pack<...T> Query {
 }
 
 impl<...T> Query {
-    func reset() { mut ref self ->
+    func reset() { self! ->
         self.cursor.reset()
     }
 
@@ -467,17 +467,17 @@ impl<...T> Query {
      * System-parameter lowering projects this entity into the tuple of borrowed
      * components requested by `query [...]`.
      */
-    func nextEntity(): Entity { mut ref self ->
+    func nextEntity(): Entity { self! ->
         return self.cursor.next()
     }
 }
 
 func queryEmpty(): QueryCursor {
-    return QueryCursor(arr![entityInvalid()], 1, true, "")
+    return QueryCursor(arr@[entityInvalid()], 1, true, "")
 }
 
 func queryError(message: String): QueryCursor {
-    return QueryCursor(arr![entityInvalid()], 1, false, message)
+    return QueryCursor(arr@[entityInvalid()], 1, false, message)
 }
 
 impl QueryCursor {
@@ -695,7 +695,7 @@ pack QueryAccess {
 }
 
 func queryAccessInit(system: String): QueryAccess {
-    return QueryAccess(system, arr![""], arr![""], arr![""], arr![""], arr![""], arr![""], false, false, false, true, "")
+    return QueryAccess(system, arr@[""], arr@[""], arr@[""], arr@[""], arr@[""], arr@[""], false, false, false, true, "")
 }
 
 func queryNameListHas(list: Array<String>, name: String): Bool {
@@ -827,7 +827,7 @@ pack<T> EventQueue {
 }
 
 func<T> eventQueueInit(defaultEvent: T): EventQueue<T> {
-    var events = arr![defaultEvent]
+    var events = arr@[defaultEvent]
     return EventQueue<T>(events, 1)
 }
 
@@ -863,7 +863,7 @@ pack CommandBuffer {
 }
 
 func commandBufferInit(): CommandBuffer {
-    var despawns = arr![entityInvalid()]
+    var despawns = arr@[entityInvalid()]
     return CommandBuffer(despawns, 1)
 }
 
@@ -881,7 +881,7 @@ impl CommandBuffer {
 }
 
 /** Callable ABI shared by LLVM and WebAssembly system schedules. */
-typealias SystemCallback = Func(mut ref World, ref Time) -> Unit
+typealias SystemCallback = Func(World!, Time&) -> Unit
 
 /**
  * One compiled system plus its static ECS access declaration.
@@ -912,7 +912,7 @@ func scheduleInit(capacity: Int = 64): Schedule {
 
 impl Schedule {
     /** Adds a system while retaining stable phase/order registration order. */
-    func add(system: ScheduledSystem) { mut ref self ->
+    func add(system: ScheduledSystem) { self! ->
         assert self.size < self.systems.size { "system schedule capacity exceeded" }
         var insertAt = self.size
         var i = 0
@@ -940,7 +940,7 @@ impl Schedule {
      * Native hosts may submit conflict-free ranges to the engine jobs package;
      * this baseline path is allocation-free and identical in LLVM and WASM.
      */
-    func run(phase: SystemPhase, world: mut ref World, time: ref Time) {
+    func run(phase: SystemPhase, world: World!, time: Time&) {
         var i = 0
         while i < self.size {
             fin system = self.systems[i]

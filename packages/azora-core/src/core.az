@@ -82,7 +82,7 @@ impl Time {
      * Large deltas are clamped to 250 ms so a paused debugger or suspended tab
      * cannot destabilize physics when execution resumes.
      */
-    func advance(deltaSecs: Real) { mut ref self ->
+    func advance(deltaSecs: Real) { self! ->
         var clamped = deltaSecs
         if clamped < 0.0 {
             clamped = 0.0
@@ -96,7 +96,7 @@ impl Time {
     }
 
     /** Replaces the deterministic fixed timestep. */
-    func setFixedDelta(seconds: Real) { mut ref self ->
+    func setFixedDelta(seconds: Real) { self! ->
         assert seconds > 0.0 { "fixed timestep must be positive" }
         self.fixedDeltaSecs = seconds
     }
@@ -118,20 +118,20 @@ func<T> signalInit(value: T): Signal<T> {
     return Signal<T>(value, 0L)
 }
 
-func<T> signalGet(signal: ref Signal<T>): T {
+func<T> signalGet(signal: Signal<T>&): T {
     return signal.value
 }
 
-func<T> signalSet(signal: mut ref Signal<T>, value: T) {
+func<T> signalSet(signal: Signal<T>!, value: T) {
     signal.value = value
     signal.revision = signal.revision + 1
 }
 
-func<T> signalVersion(signal: ref Signal<T>): Long {
+func<T> signalVersion(signal: Signal<T>&): Long {
     return signal.revision
 }
 
-func<T> signalChangedSince(signal: ref Signal<T>, version: Long): Bool {
+func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool {
     return signal.revision != version
 }
 

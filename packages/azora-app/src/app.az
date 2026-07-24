@@ -20,13 +20,13 @@ import engine.platform
 
 /** Compatibility contract for existing object-style frame systems. */
 spec GameSystem {
-    func run(app: mut ref App)
+    func run(app: App!)
 }
 
 /** Compatibility contract for third-party plugins not yet migrated to DI. */
 spec Plugin {
     func name(): String
-    func build(engine: mut ref Engine)
+    func build(engine: Engine!)
 }
 
 /** Marker passed to `addPlugins(defaultPlugins())`. */
@@ -69,28 +69,28 @@ func engine(title: String, width: Int, height: Int): Engine {
 
 /** Window/platform service in the default DI graph. */
 solo WindowPlugin {
-    func install(engine: mut ref Engine) {
+    func install(engine: Engine!) {
         inject EngineRegistry.markModuleLoaded()
     }
 }
 
 /** Typed keyboard, pointer, touch, and controller service. */
 solo InputPlugin {
-    func install(engine: mut ref Engine) {
+    func install(engine: Engine!) {
         inject EngineRegistry.markModuleLoaded()
     }
 }
 
 /** Render graph and GPU service. */
 solo RenderPlugin {
-    func install(engine: mut ref Engine) {
+    func install(engine: Engine!) {
         inject EngineRegistry.markModuleLoaded()
     }
 }
 
 /** Reactive UI, VDOM, and navigation service. */
 solo UiPlugin {
-    func install(engine: mut ref Engine) {
+    func install(engine: Engine!) {
         inject EngineRegistry.markModuleLoaded()
     }
 }
@@ -115,7 +115,7 @@ func defaultPlugins(): DefaultPluginSet {
 }
 
 impl Engine {
-    func setClearColor(r: Real, g: Real, b: Real): mut ref Engine { mut ref self ->
+    func setClearColor(r: Real, g: Real, b: Real): Engine! { self! ->
         self.clearR = r
         self.clearG = g
         self.clearB = b
@@ -128,7 +128,7 @@ impl Engine {
      * The marker parameter preserves builder ergonomics without allocating a
      * plugin group or performing virtual dispatch.
      */
-    func addPlugins(plugins: DefaultPluginSet): mut ref Engine { mut ref self ->
+    func addPlugins(plugins: DefaultPluginSet): Engine! { self! ->
         if !self.pluginsInstalled {
             inject WindowPlugin.install(self)
             inject InputPlugin.install(self)
@@ -140,23 +140,23 @@ impl Engine {
     }
 
     /** Compatibility adapter for an object-style external plugin. */
-    func addPlugin(plugin: Plugin): mut ref Engine { mut ref self ->
+    func addPlugin(plugin: Plugin): Engine! { self! ->
         plugin.build(self)
         return self
     }
 
     /** Registers a statically described ECS system. */
-    func addSystem(system: ScheduledSystem): mut ref Engine { mut ref self ->
+    func addSystem(system: ScheduledSystem): Engine! { self! ->
         self.schedule.add(system)
         return self
     }
 
-    func addStartupSystem(system: GameSystem): mut ref Engine { mut ref self ->
+    func addStartupSystem(system: GameSystem): Engine! { self! ->
         self.startup.add(system)
         return self
     }
 
-    func addUpdateSystem(system: GameSystem): mut ref Engine { mut ref self ->
+    func addUpdateSystem(system: GameSystem): Engine! { self! ->
         self.update.add(system)
         return self
     }
@@ -167,7 +167,7 @@ impl Engine {
      * `.FixedUpdate` consumes the world's fixed-step accumulator; all other
      * phases run exactly once per rendered frame.
      */
-    func run() { mut ref self ->
+    func run() { self! ->
         if !self.pluginsInstalled {
             self.addPlugins(defaultPlugins())
         }

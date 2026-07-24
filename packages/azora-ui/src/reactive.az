@@ -38,7 +38,7 @@ impl EcsObserver {
      *
      * Returns true exactly once for each distinct world revision.
      */
-    func observeWorld(world: ref World): Bool { mut ref self ->
+    func observeWorld(world: World&): Bool { self! ->
         if self.worldRevision == world.revision {
             return false
         }
@@ -48,7 +48,7 @@ impl EcsObserver {
     }
 
     /** Observes insertions, removals, and writes in one component storage. */
-    func observeStorage<T>(storage: ref Storage<T>): Bool { mut ref self ->
+    func observeStorage<T>(storage: Storage<T>&): Bool { self! ->
         if self.storageRevision == storage.revision {
             return false
         }
@@ -58,7 +58,7 @@ impl EcsObserver {
     }
 
     /** Observes any independent revisioned state such as navigation. */
-    func observeRevision(revision: Long): Bool { mut ref self ->
+    func observeRevision(revision: Long): Bool { self! ->
         if self.navigationRevision == revision {
             return false
         }
@@ -88,7 +88,7 @@ impl<T> ReactiveResource {
     prop value: T = signalGet<T>(self.signal)
     prop version: Long = signalVersion<T>(self.signal)
 
-    func set(value: T) { mut ref self ->
+    func set(value: T) { self! ->
         signalSet<T>(self.signal, value)
     }
 
@@ -97,7 +97,7 @@ impl<T> ReactiveResource {
      *
      * Hosts call this before rebuilding their UI tree or command list.
      */
-    func consumeChange(): Bool { mut ref self ->
+    func consumeChange(): Bool { self! ->
         fin current = signalVersion<T>(self.signal)
         if self.publishedRevision == current {
             return false
