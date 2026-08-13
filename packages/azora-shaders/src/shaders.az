@@ -11,7 +11,7 @@
 module engine.shaders
 
 /** Complete Metal shader library containing the equivalent 3D and 2D stages. */
-func metalShaderSource(): String {
+func metalShaderSource(): std::String {
     return (""
         + "#include <metal_stdlib>\n"
         + "using namespace metal;\n"
@@ -50,7 +50,13 @@ func metalShaderSource(): String {
         + "fragment float4 f2_main(V2Out in [[stage_in]], constant U2& u [[buffer(1)]],\n"
         + "                        texture2d<float> tex [[texture(0)]],\n"
         + "                        sampler smp [[sampler(0)]]) {\n"
+        + "    if (u.useTex > 1.5) {\n"
+        + "        // Image mode: the texture supplies colour, the vertex tints it.\n"
+        + "        float4 t = tex.sample(smp, in.uv);\n"
+        + "        return float4(t.rgb * in.color.rgb, t.a * in.color.a);\n"
+        + "    }\n"
         + "    if (u.useTex > 0.5) {\n"
+        + "        // Glyph mode: the texture is a coverage mask, the vertex is the colour.\n"
         + "        float4 t = tex.sample(smp, in.uv);\n"
         + "        return float4(in.color.rgb, in.color.a * t.a);\n"
         + "    }\n"
@@ -60,12 +66,12 @@ func metalShaderSource(): String {
 }
 
 /** Compatibility name used by the native Metal renderer. */
-func shaderSource(): String {
+func shaderSource(): std::String {
     return metalShaderSource()
 }
 
-/** Vulkan GLSL 4.50 equivalent of Metal `v3_main`. */
-func vulkan3dVertexShaderSource(): String {
+/** Vulkan GLSL 4.50 equivalent of Metal `v3Main`. */
+func vulkan3dVertexShaderSource(): std::String {
     return (""
         + "#version 450\n"
         + "layout(location = 0) in vec3 inPosition;\n"
@@ -79,8 +85,8 @@ func vulkan3dVertexShaderSource(): String {
     )
 }
 
-/** Vulkan GLSL 4.50 equivalent of Metal `f3_main`. */
-func vulkan3dFragmentShaderSource(): String {
+/** Vulkan GLSL 4.50 equivalent of Metal `f3Main`. */
+func vulkan3dFragmentShaderSource(): std::String {
     return (""
         + "#version 450\n"
         + "layout(location = 0) in vec3 normal;\n"
@@ -96,8 +102,8 @@ func vulkan3dFragmentShaderSource(): String {
     )
 }
 
-/** Vulkan GLSL 4.50 equivalent of Metal `v2_main`. */
-func vulkan2dVertexShaderSource(): String {
+/** Vulkan GLSL 4.50 equivalent of Metal `v2Main`. */
+func vulkan2dVertexShaderSource(): std::String {
     return (""
         + "#version 450\n"
         + "layout(location = 0) in vec2 inPosition;\n"
@@ -114,8 +120,8 @@ func vulkan2dVertexShaderSource(): String {
     )
 }
 
-/** Vulkan GLSL 4.50 equivalent of Metal `f2_main`. */
-func vulkan2dFragmentShaderSource(): String {
+/** Vulkan GLSL 4.50 equivalent of Metal `f2Main`. */
+func vulkan2dFragmentShaderSource(): std::String {
     return (""
         + "#version 450\n"
         + "layout(location = 0) in vec2 uv;\n"
@@ -124,7 +130,10 @@ func vulkan2dFragmentShaderSource(): String {
         + "layout(set = 0, binding = 1) uniform sampler2D tex;\n"
         + "layout(location = 0) out vec4 outColor;\n"
         + "void main() {\n"
-        + "    if (u.useTex > 0.5) {\n"
+        + "    if (u.useTex > 1.5) {\n"
+        + "        vec4 sampled = texture(tex, uv);\n"
+        + "        outColor = vec4(sampled.rgb * color.rgb, sampled.a * color.a);\n"
+        + "    } else if (u.useTex > 0.5) {\n"
         + "        vec4 sampled = texture(tex, uv);\n"
         + "        outColor = vec4(color.rgb, color.a * sampled.a);\n"
         + "    } else {\n"
@@ -134,8 +143,8 @@ func vulkan2dFragmentShaderSource(): String {
     )
 }
 
-/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v3_main`. */
-func webgl3dVertexShaderSource(): String {
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v3Main`. */
+func webgl3dVertexShaderSource(): std::String {
     return (""
         + "#version 300 es\n"
         + "precision highp float;\n"
@@ -152,8 +161,8 @@ func webgl3dVertexShaderSource(): String {
     )
 }
 
-/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f3_main`. */
-func webgl3dFragmentShaderSource(): String {
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f3Main`. */
+func webgl3dFragmentShaderSource(): std::String {
     return (""
         + "#version 300 es\n"
         + "precision highp float;\n"
@@ -170,8 +179,8 @@ func webgl3dFragmentShaderSource(): String {
     )
 }
 
-/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v2_main`. */
-func webgl2dVertexShaderSource(): String {
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `v2Main`. */
+func webgl2dVertexShaderSource(): std::String {
     return (""
         + "#version 300 es\n"
         + "precision highp float;\n"
@@ -189,8 +198,8 @@ func webgl2dVertexShaderSource(): String {
     )
 }
 
-/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f2_main`. */
-func webgl2dFragmentShaderSource(): String {
+/** WebGL 2 GLSL ES 3.00 equivalent of Metal `f2Main`. */
+func webgl2dFragmentShaderSource(): std::String {
     return (""
         + "#version 300 es\n"
         + "precision highp float;\n"

@@ -21,6 +21,7 @@
  */
 
 #include <dlfcn.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,27 @@
 
 typedef struct { double a, b, c, d; } AzQuad;   /* CGRect / MTLClearColor */
 typedef struct { double x, y; } AzPair;         /* CGPoint / CGSize */
+
+/*
+ * Native implementations for the bridge declarations in std.math. Azora
+ * preserves the library zone in emitted symbols, so these adapters expose the
+ * corresponding C math functions under that stable ABI.
+ */
+double __std_math_sin(double x)              { return sin(x); }
+double __std_math_cos(double x)              { return cos(x); }
+double __std_math_tan(double x)              { return tan(x); }
+double __std_math_asin(double x)             { return asin(x); }
+double __std_math_acos(double x)             { return acos(x); }
+double __std_math_atan(double x)             { return atan(x); }
+double __std_math_atan2(double y, double x)   { return atan2(y, x); }
+double __std_math_sqrt(double x)              { return sqrt(x); }
+double __std_math_cbrt(double x)              { return cbrt(x); }
+double __std_math_log(double x)               { return log(x); }
+double __std_math_log2(double x)              { return log2(x); }
+double __std_math_log10(double x)             { return log10(x); }
+double __std_math_exp(double x)               { return exp(x); }
+double __std_math_exp2(double x)              { return exp2(x); }
+double __std_math_hypot(double x, double y)    { return hypot(x, y); }
 
 #ifdef __APPLE__
 

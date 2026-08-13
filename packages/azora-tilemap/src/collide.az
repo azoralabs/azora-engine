@@ -1,0 +1,627 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/collide
+ *
+ * Asking a map what is in the way: overlap tests, swept box movement and ray
+ * casts against the tiles carrying a given trait.
+ *
+ * ## Built on the 2D physics
+ *
+ * The geometry is not reimplemented here. Shapes, contacts, swept box queries
+ * and ray casts all come from `engine.physics.d2`, and this module supplies
+ * only what is specific to a tilemap: which cells a query has to look at, and
+ * which of them block. A tilemap that solved its own box sweeps would be a
+ * second collision system that disagrees with the first one at the edges —
+ * which is exactly where a character standing half on a tile and half on a
+ * crate would notice.
+ *
+ * Collision reads the tileset's traits, never a cell's own flags, so what
+ * blocks is a property of the tile, decided once when the tileset is described.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.collide
+
+import std.container.array
+import engine.math.vec
+import engine.physics.core
+import engine.physics.d2
+import engine.tilemap.types
+import engine.tilemap.coords
+import engine.tilemap.storage
+import engine.tilemap.tileset
+import engine.tilemap.atlas
+import engine.tilemap.map
+
+/** Passed as a layer index to query every layer of a map at once. */
+inline fin tileAnyLayer = -1
+
+/** What a ray met on a map. */
+variant enum TileRayHit {
+    /**
+     * The ray entered a blocking tile.
+     *
+     * `normal` points back along the face that was crossed, and `t` is the
+     * fraction of the ray's direction travelled — the same parametric contract
+     * `engine.physics.d2` uses, so a hit can be fed straight into [slide] or
+     * [bounce].
+     */
+    Hit(pos: TilePos, index: std::Int, normal: Vec2, t: std::Double, point: Vec2)
+    /** The ray reached its limit without meeting a blocking tile. */
+    Miss
+}
+
+/** Where a moved box ended up on a map. */
+pack TileMove {
+    /** The resolved top-left corner. */
+    var position: Vec2
+    /** The velocity left after sliding along whatever was hit. */
+    var velocity: Vec2
+    var hitX: std::Bool
+    var hitY: std::Bool
+    /** True when the downward move ended on solid ground. */
+    var grounded: std::Bool
+    /** True when the upward move ended against a ceiling. */
+    var ceiling: std::Bool
+}
+
+// ── Trait queries ───────────────────────────────────────────────────────
+
+/**
+ * The trait bits at [pos], on one layer or across the whole stack.
+ *
+ * Pass [tileAnyLayer] for the union over every layer, which is what a
+ * "can I walk here" question usually means.
+ */
+func traitsAt(map: Tilemap, layer: std::Int, pos: TilePos): std::Int {
+    return if layer == tileAnyLayer {
+        tilemapTraitsAt(map, pos)
+    } else {
+        tilemapLayerTraitsAt(map, layer, pos)
+    }
+}
+
+/** True when the tile at [pos] carries any bit of [mask]. */
+func tileBlocks(map: Tilemap, layer: std::Int, pos: TilePos, mask: std::Int): std::Bool {
+    return flagsAny(traitsAt(map, layer, pos), mask)
+}
+
+/** True when the tile at [pos] is solid. */
+func tileIsSolid(map: Tilemap, layer: std::Int, pos: TilePos): std::Bool {
+    return tileBlocks(map, layer, pos, traitSolid)
+}
+
+/**
+ * The index of the tile at [pos] that actually carries a bit of [mask].
+ *
+ * Across the whole stack the topmost blocking tile wins: reporting the ground
+ * under a wall would be true and useless.
+ */
+func blockingIndexAt(map: Tilemap, layer: std::Int, pos: TilePos, mask: std::Int): std::Int {
+    if layer != tileAnyLayer {
+        return tilemapIndexAt(map, layer, pos)
+    }
+    var i = map.count - 1
+    while i >= 0 {
+        fin tile = layerIndexAt(map.layers[i], pos)
+        if tile != tileEmpty && flagsAny(map.tiles.traitsOf(tile), mask) {
+            return tile
+        }
+        i = i - 1
+    }
+    return tileEmpty
+}
+
+/** The tiles a world-space box touches, clipped to the map. */
+func tilesUnder(map: Tilemap, area: Aabb2D): TileRect {
+    return visibleTiles(map.geometry, worldRect(area.minX, area.minY, area.maxX, area.maxY))
+}
+
+/** The physics box a tile's drawn quad occupies. */
+func tileBox(map: Tilemap, pos: TilePos): Aabb2D {
+    fin quad = tileQuad(map.geometry, pos)
+    return Aabb2D(quad.minX, quad.minY, quad.maxX, quad.maxY)
+}
+
+/**
+ * True when [area] overlaps any tile carrying a bit of [mask].
+ *
+ * The overlap is tested against each candidate tile's own quad rather than its
+ * lattice cell, so it stays correct on the isometric and hexagonal lattices,
+ * where the two are not the same rectangle.
+ */
+func boxOverlaps(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int): std::Bool {
+    fin cells = tilesUnder(map, area)
+    if cells.isEmpty() {
+        return false
+    }
+    for y in cells.minY..cells.maxY {
+        for x in cells.minX..cells.maxX {
+            fin pos = TilePos(x, y)
+            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+/** How many tiles of [area] carry a bit of [mask]. */
+func countBlocking(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int): std::Int {
+    fin cells = tilesUnder(map, area)
+    if cells.isEmpty() {
+        return 0
+    }
+    var total = 0
+    for y in cells.minY..cells.maxY {
+        for x in cells.minX..cells.maxX {
+            fin pos = TilePos(x, y)
+            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) {
+                total = total + 1
+            }
+        }
+    }
+    return total
+}
+
+/** True when a box resting at [body] has blocking ground within [reach] below it. */
+func isGrounded(map: Tilemap, layer: std::Int, body: Aabb2D, mask: std::Int, reach: std::Double): std::Bool {
+    fin probe = Aabb2D(body.minX, body.maxY, body.maxX, body.maxY + reach)
+    return boxOverlaps(map, layer, probe, mask) || boxOverlaps(map, layer, probe, traitOneWay)
+}
+
+// ── Swept movement ──────────────────────────────────────────────────────
+
+/**
+ * Sweeps [body] by [motion] against the map and returns the safe fraction.
+ *
+ * Every candidate tile is swept with `engine.physics.d2`'s box sweep and the
+ * earliest contact wins, so a body moving many tiles in one step still stops at
+ * the first one — the tunnelling a destination-only overlap test would miss.
+ *
+ * When [oneWay] is set, tiles carrying [traitOneWay] block only a downward
+ * sweep that begins at or above the tile's top edge, so a jump from below
+ * passes through and the landing still works.
+ */
+func sweepBoxAgainstMap(
+    map: Tilemap,
+    layer: std::Int,
+    body: Aabb2D,
+    motion: Vec2,
+    mask: std::Int,
+    oneWay: std::Bool
+): Sweep2D {
+    fin cells = tilesUnder(map, body.sweptBy(motion))
+    if cells.isEmpty() {
+        return Sweep2D.Clear
+    }
+
+    var best = Sweep2D.Clear
+    var bestT = 1.0
+    for y in cells.minY..cells.maxY {
+        for x in cells.minX..cells.maxX {
+            fin pos = TilePos(x, y)
+            fin traits = traitsAt(map, layer, pos)
+            fin quad = tileBox(map, pos)
+            var blocks = flagsAny(traits, mask)
+            if !blocks && oneWay && flagsAny(traits, traitOneWay) && motion.y > 0.0 {
+                blocks = body.maxY <= quad.minY
+            }
+            if blocks {
+                when sweepBox(body, motion, quad) {
+                    Sweep2D.Blocked(t, normal, point) -> {
+                        if t < bestT {
+                            bestT = t
+                            best = Sweep2D.Blocked(t, normal, point)
+                        }
+                    }
+                    Sweep2D.Clear() -> { }
+                }
+            }
+        }
+    }
+    return best
+}
+
+/**
+ * Moves [body] by ([dx], [dy]) against the map, resolving one axis at a time.
+ *
+ * Resolving separately — horizontal first, then vertical from the corrected
+ * position — is what lets a character slide along a wall instead of sticking to
+ * it, and is why one combined sweep is not enough.
+ */
+func moveBox(
+    map: Tilemap,
+    layer: std::Int,
+    body: Aabb2D,
+    motion: Vec2,
+    mask: std::Int,
+    oneWay: std::Bool
+): TileMove {
+    fin size = Vec2(body.width(), body.height())
+    var at = Vec2(body.minX, body.minY)
+    var left = motion
+    var hitX = false
+    var hitY = false
+    var grounded = false
+    var ceiling = false
+
+    if left.x != 0.0 {
+        fin current = aabbAt(at.x, at.y, size.x, size.y)
+        fin swept = sweepBoxAgainstMap(map, layer, current, Vec2(left.x, 0.0), mask, false)
+        fin fraction = sweepFraction(swept)
+        at = Vec2(at.x + left.x * fraction, at.y)
+        if sweepBlocked(swept) {
+            hitX = true
+            left = Vec2(0.0, left.y)
+        }
+    }
+
+    if left.y != 0.0 {
+        fin current = aabbAt(at.x, at.y, size.x, size.y)
+        fin swept = sweepBoxAgainstMap(map, layer, current, Vec2(0.0, left.y), mask, oneWay)
+        fin fraction = sweepFraction(swept)
+        at = Vec2(at.x, at.y + left.y * fraction)
+        if sweepBlocked(swept) {
+            hitY = true
+            grounded = left.y > 0.0
+            ceiling = left.y < 0.0
+            left = Vec2(left.x, 0.0)
+        }
+    }
+
+    return TileMove(at, left, hitX, hitY, grounded, ceiling)
+}
+
+/**
+ * Moves a body and slides its velocity along whatever it hit.
+ *
+ * This is the character-controller entry point: give it a box, a velocity and a
+ * timestep, and it returns where the body ended up and the velocity it should
+ * carry into the next frame.
+ */
+func moveAndSlide(
+    map: Tilemap,
+    layer: std::Int,
+    body: Aabb2D,
+    velocity: Vec2,
+    dt: std::Double,
+    mask: std::Int,
+    oneWay: std::Bool
+): TileMove {
+    var moved = moveBox(map, layer, body, velocity.scale(dt), mask, oneWay)
+    var result = velocity
+    if moved.hitX {
+        result = Vec2(0.0, result.y)
+    }
+    if moved.hitY {
+        result = Vec2(result.x, 0.0)
+    }
+    moved.velocity = result
+    return moved
+}
+
+// ── Ray casting ─────────────────────────────────────────────────────────
+
+/**
+ * Walks `origin + direction * t` for `t` in `0 .. maxT`, stopping at the first
+ * tile carrying a bit of [mask].
+ *
+ * On a square lattice this is an exact grid traversal: every cell the ray
+ * crosses is visited once, in order, with no sampling gaps. Other lattices are
+ * marched in small steps instead — their cells are not axis-aligned, so there
+ * is no exact traversal to run — which can miss a tile clipped by a corner.
+ */
+func rayCast(
+    map: Tilemap,
+    layer: std::Int,
+    origin: Vec2,
+    direction: Vec2,
+    maxT: std::Double,
+    mask: std::Int
+): TileRayHit {
+    return when map.geometry.kind {
+        TilemapKind.Square() -> raySquare(map, layer, origin, direction, maxT, mask)
+        else -> rayMarch(map, layer, origin, direction, maxT, mask)
+    }
+}
+
+/**
+ * Exact square-lattice traversal.
+ *
+ * The ray is rewritten into a unit grid where cell `k` spans `k .. k + 1`, so
+ * the crossing arithmetic is the classic incremental one: track the `t` at
+ * which each axis next crosses a boundary and always step the smaller.
+ */
+func raySquare(
+    map: Tilemap,
+    layer: std::Int,
+    origin: Vec2,
+    direction: Vec2,
+    maxT: std::Double,
+    mask: std::Int
+): TileRayHit {
+    fin geo = map.geometry
+    fin gx = geo.grid.x
+    fin gy = geo.grid.y
+    if gx <= 0.0 || gy <= 0.0 {
+        return TileRayHit.Miss
+    }
+
+    // Lattice space, shifted so a cell spans a unit interval starting at its
+    // own index rather than being centred on it.
+    fin u = (origin.x - geo.shift.x - geo.origin.x) / gx + 0.5
+    fin v = (origin.y - geo.shift.y - geo.origin.y) / gy + 0.5
+
+    var cellX = realFloorToInt(u)
+    var cellY = realFloorToInt(v)
+
+    fin du = direction.x / gx
+    fin dv = direction.y / gy
+
+    var stepX = 0
+    var tMaxX = maxT + 1.0
+    var tDeltaX = maxT + 1.0
+    if du > 0.0 {
+        stepX = 1
+        tMaxX = ((cellX + 1) as std::Double - u) / du
+        tDeltaX = 1.0 / du
+    }
+    if du < 0.0 {
+        stepX = -1
+        tMaxX = ((cellX as std::Double) - u) / du
+        tDeltaX = -1.0 / du
+    }
+
+    var stepY = 0
+    var tMaxY = maxT + 1.0
+    var tDeltaY = maxT + 1.0
+    if dv > 0.0 {
+        stepY = 1
+        tMaxY = ((cellY + 1) as std::Double - v) / dv
+        tDeltaY = 1.0 / dv
+    }
+    if dv < 0.0 {
+        stepY = -1
+        tMaxY = ((cellY as std::Double) - v) / dv
+        tDeltaY = -1.0 / dv
+    }
+
+    if stepX == 0 && stepY == 0 {
+        return TileRayHit.Miss
+    }
+
+    // The origin's own cell has no crossing to report, so it is tested first
+    // with a zero normal; a ray that starts inside a wall says so.
+    var pos = TilePos(cellX, cellY)
+    if tileBlocks(map, layer, pos, mask) {
+        return TileRayHit.Hit(pos, blockingIndexAt(map, layer, pos, mask), vec2Zero(), 0.0, origin)
+    }
+
+    var t = 0.0
+    loop {
+        if t > maxT {
+            return TileRayHit.Miss
+        }
+        var normal = vec2Zero()
+        if tMaxX < tMaxY {
+            t = tMaxX
+            cellX = cellX + stepX
+            tMaxX = tMaxX + tDeltaX
+            normal = Vec2(0.0 - (stepX as std::Double), 0.0)
+        } else {
+            t = tMaxY
+            cellY = cellY + stepY
+            tMaxY = tMaxY + tDeltaY
+            normal = Vec2(0.0, 0.0 - (stepY as std::Double))
+        }
+        if t > maxT {
+            return TileRayHit.Miss
+        }
+
+        pos = TilePos(cellX, cellY)
+        if !geo.size.contains(pos) {
+            // Once the ray is past the far edge it can never come back.
+            if rayLeftForGood(geo.size, pos, stepX, stepY) {
+                return TileRayHit.Miss
+            }
+        } else {
+            if tileBlocks(map, layer, pos, mask) {
+                return TileRayHit.Hit(
+                    pos,
+                    blockingIndexAt(map, layer, pos, mask),
+                    normal,
+                    t,
+                    origin + direction.scale(t)
+                )
+            }
+        }
+    }
+    return TileRayHit.Miss
+}
+
+/** True when a ray at [pos] stepping by ([stepX], [stepY]) can never re-enter the map. */
+func rayLeftForGood(size: TilemapSize, pos: TilePos, stepX: std::Int, stepY: std::Int): std::Bool {
+    return (pos.x < 0 && stepX <= 0) ||
+        (pos.x >= size.x && stepX >= 0) ||
+        (pos.y < 0 && stepY <= 0) ||
+        (pos.y >= size.y && stepY >= 0)
+}
+
+/**
+ * Stepped traversal for the lattices that have no exact one.
+ *
+ * The step is half the shortest lattice step, so no cell is skipped along the
+ * axis it is narrowest on.
+ */
+func rayMarch(
+    map: Tilemap,
+    layer: std::Int,
+    origin: Vec2,
+    direction: Vec2,
+    maxT: std::Double,
+    mask: std::Int
+): TileRayHit {
+    fin step = geometryStep(map.geometry)
+    fin shortest = realMax(realMin(step.x, step.y), 0.0001)
+    fin travel = realMax(realAbs(direction.x), realAbs(direction.y))
+    if travel <= 0.0 {
+        return TileRayHit.Miss
+    }
+
+    fin increment = shortest * 0.5 / travel
+    var t = 0.0
+    var last = TilePos(-999999, -999999)
+    while t <= maxT {
+        fin point = origin + direction.scale(t)
+        fin pos = worldToTile(map.geometry, worldPos(point.x, point.y))
+        if !pos.same(last) {
+            last = pos
+            if map.geometry.size.contains(pos) && tileBlocks(map, layer, pos, mask) {
+                return TileRayHit.Hit(pos, blockingIndexAt(map, layer, pos, mask), vec2Zero(), t, point)
+            }
+        }
+        t = t + increment
+    }
+    return TileRayHit.Miss
+}
+
+/** True when nothing carrying a bit of [mask] stands between [from] and [to]. */
+func lineOfSight(map: Tilemap, layer: std::Int, from: Vec2, to: Vec2, mask: std::Int): std::Bool {
+    return when rayCast(map, layer, from, to - from, 1.0, mask) {
+        TileRayHit.Miss() -> true
+        else -> false
+    }
+}
+
+/** True when [result] met a tile. */
+func rayHitOk(result: TileRayHit): std::Bool {
+    return when result {
+        TileRayHit.Hit(pos, index, normal, t, point) -> true
+        else -> false
+    }
+}
+
+/** The tile [result] met, or `(0, 0)` when it met nothing. */
+func rayHitPos(result: TileRayHit): TilePos {
+    return when result {
+        TileRayHit.Hit(pos, index, normal, t, point) -> pos
+        else -> TilePos(0, 0)
+    }
+}
+
+/** The `t` [result] hit at, or `-1` when it met nothing. */
+func rayHitT(result: TileRayHit): std::Double {
+    return when result {
+        TileRayHit.Hit(pos, index, normal, t, point) -> t
+        else -> -1.0
+    }
+}
+
+/** The surface normal [result] struck, or zero. */
+func rayHitNormal(result: TileRayHit): Vec2 {
+    return when result {
+        TileRayHit.Hit(pos, index, normal, t, point) -> normal
+        else -> vec2Zero()
+    }
+}
+
+test "a fast box stops at the wall instead of tunnelling through it" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(1, traitSolid)
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
+    tilemapNewLayer(map, "walls")
+    layerFillRect(map.layers[0], tileRect(4, 0, 4, 7), 1)
+
+    // Column 4 is drawn at x = 64 .. 80; the box must stop at 64 however fast
+    // it is travelling.
+    fin body = aabbAt(24.0, 20.0, 8.0, 8.0)
+    fin moved = moveBox(map, tileAnyLayer, body, Vec2(60.0, 6.0), traitSolid, false)
+
+    assert moved.hitX { "moving into the wall must register a horizontal hit" }
+    assert realAbs(moved.position.x - 56.0) < 0.01 {
+        "a move longer than a tile must still stop at the wall"
+    }
+    assert !moved.hitY { "a clear vertical move must not be blocked" }
+    assert realAbs(moved.position.y - 26.0) < 0.01 { "the box must still slide down past the wall" }
+}
+
+test "a one-way platform is passed from below and landed on from above" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(2, traitOneWay)
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
+    tilemapNewLayer(map, "walls")
+    layerFillRect(map.layers[0], tileRect(0, 4, 7, 4), 2)
+
+    // Row 4 is drawn at y = 64 .. 80.
+    fin landing = moveBox(map, tileAnyLayer, aabbAt(20.0, 40.0, 8.0, 8.0), Vec2(0.0, 20.0), traitSolid, true)
+    assert landing.grounded { "a fall onto a platform must land" }
+    assert realAbs(landing.position.y - 56.0) < 0.01 { "the box must rest on top of the platform" }
+
+    fin rising = moveBox(map, tileAnyLayer, aabbAt(20.0, 80.0, 8.0, 8.0), Vec2(0.0, -20.0), traitSolid, true)
+    assert !rising.hitY { "a jump from below must pass through a one-way platform" }
+    assert realAbs(rising.position.y - 60.0) < 0.01 { "the rising box must keep its full movement" }
+}
+
+test "a square ray reports the tile, the normal and where it landed" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(1, traitSolid)
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
+    tilemapNewLayer(map, "walls")
+    layerFillRect(map.layers[0], tileRect(5, 0, 5, 7), 1)
+
+    when rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(1.0, 0.0), 200.0, traitSolid) {
+        TileRayHit.Hit(pos, index, normal, t, point) -> {
+            assert pos.x == 5 { "the ray must stop in the wall column" }
+            assert normal.x < -0.99 { "the normal must face back along the ray" }
+            assert index == 1 { "the hit must report the tile it met, across every layer" }
+            assert realAbs(point.x - 80.0) < 0.01 { "the hit point must be on the wall's near face" }
+        }
+        TileRayHit.Miss() -> { assert false { "a ray straight into a wall must hit" } }
+    }
+
+    assert !rayHitOk(rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(0.0, 1.0), 100.0, traitSolid)) {
+        "a ray down an empty column must miss"
+    }
+    assert !lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(120.0, 24.0), traitSolid) {
+        "the wall must break the line of sight"
+    }
+    assert lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(8.0, 100.0), traitSolid) {
+        "an unobstructed line must be clear"
+    }
+}
+
+test "overlap tests see only the traits they ask for" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(1, traitSolid)
+    tiles.addTraits(2, traitWater)
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
+    tilemapNewLayer(map, "walls")
+    tilemapSet(map, 0, TilePos(2, 2), 1)
+    tilemapSet(map, 0, TilePos(3, 2), 2)
+
+    fin overSolid = aabbAt(34.0, 34.0, 4.0, 4.0)
+    assert boxOverlaps(map, tileAnyLayer, overSolid, traitSolid) { "the solid tile must be found" }
+    assert !boxOverlaps(map, tileAnyLayer, overSolid, traitWater) { "the water tile is elsewhere" }
+    assert countBlocking(map, tileAnyLayer, aabbAt(34.0, 34.0, 24.0, 4.0), traitSolid | traitWater) == 2 {
+        "a box spanning both tiles must count both"
+    }
+}
+
+test "move and slide keeps the tangent velocity" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(1, traitSolid)
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
+    tilemapNewLayer(map, "walls")
+    layerFillRect(map.layers[0], tileRect(4, 0, 4, 7), 1)
+
+    fin moved = moveAndSlide(map, tileAnyLayer, aabbAt(24.0, 20.0, 8.0, 8.0), Vec2(600.0, 60.0), 0.1, traitSolid, false)
+    assert moved.hitX { "the wall must stop the horizontal motion" }
+    assert moved.velocity.x == 0.0 { "the blocked axis must lose its velocity" }
+    assert moved.velocity.y == 60.0 { "the free axis must keep its velocity" }
+}

@@ -1,0 +1,184 @@
+// Azora Engine — 3D math library.
+//
+// Vec3 and Mat4 are value types in spirit: every operation returns a new
+// instance (packs are reference types at runtime, so shared mutation is
+// avoided by convention here).
+//
+// Mat4 is row-major with translation in m03/m13/m23; the native runtime
+// converts to the GPU layout when a matrix crosses the FFI boundary.
+
+module engine.math.mat
+
+import std.math
+import std.reflection
+
+enum MatrixOrder {
+    RowMajor
+    ColumnMajor
+}
+
+@std::Experimental(since: "0.0.1")
+pack Mat<T, R: std::Int, C: std::Int, O: MatrixOrder = .RowMajor>
+where T is Number && R in 2..4 && C in 2..4 {
+    inline when O {
+        .RowMajor => {
+            inline for r in 0..<R {
+                inline for c in 0..<C {
+                    var m$r$c: T = 0
+                }
+            }
+        }
+        .ColumnMajor => {
+            inline for c in 0..<C {
+                inline for r in 0..<R {
+                    var m$r$c: T = 0
+                }
+            }
+        }
+    }
+}
+
+impl Mat<T, R, C, O> {
+    ctor [self: Self!](all: T) {
+        inline for f in std::reflect<Self>.fields {
+            self.${f.name} = all
+        }
+    }
+
+    /**
+     * Element-wise arithmetic against another matrix of the same shape.
+     */
+    inline for op in @std::arr["+", "-"] {
+        inline fin assignOp = "${op}="
+
+        oper $op [self: Self&](rhs: Self&): Self {
+            var result = Self(0 as T)
+            inline for r in 0..<R {
+                inline for c in 0..<C {
+                    result.m$r$c = self.m$r$c $op rhs.m$r$c
+                }
+            }
+            return result
+        }
+
+        oper $assignOp [self: Self!](rhs: Self&) {
+            inline for r in 0..<R {
+                inline for c in 0..<C {
+                    self.m$r$c $assignOp rhs.m$r$c
+                }
+            }
+        }
+    }
+
+    /**
+     * Element-wise arithmetic against a scalar.
+     */
+    inline for op in @std::arr["*", "/"] {
+        inline fin assignOp = "${op}="
+
+        oper $op [self: Self&](rhs: T&): Self {
+            var result = Self(0 as T)
+            inline for r in 0..<R {
+                inline for c in 0..<C {
+                    result.m$r$c = self.m$r$c $op rhs
+                }
+            }
+            return result
+        }
+
+        oper $assignOp [self: Self!](rhs: T&) {
+            inline for r in 0..<R {
+                inline for c in 0..<C {
+                    self.m$r$c $assignOp rhs
+                }
+            }
+        }
+    }
+
+    oper+ [self: Self&]: Self = self
+
+    oper- [self: Self&]: Self where T is SignedNumber {
+        var result = Self(0 as T)
+        inline for r in 0..<R {
+            inline for c in 0..<C {
+                result.m$r$c = -self.m$r$c
+            }
+        }
+        return result
+    }
+
+    oper== [self: Self&](rhs: Self&): std::Bool {
+        inline for r in 0..<R {
+            inline for c in 0..<C {
+                if self.m$r$c != rhs.m$r$c { return false }
+            }
+        }
+        return true
+    }
+
+    /**
+     * Matrix product. Square only: the shape is what makes `a * b` a matrix of the
+     * same type, which is what an operator has to return.
+     */
+    oper* [self: Self&](rhs: Self&): Self where R == C {
+        var result = Self(0 as T)
+        inline for r in 0..<R {
+            inline for c in 0..<C {
+                var sum: T = 0 as T
+                inline for k in 0..<C {
+                    sum += self.m$r$k * rhs.m$k$c
+                }
+                result.m$r$c = sum
+            }
+        }
+        return result
+    }
+
+    /**
+     * This matrix with rows and columns exchanged.
+     */
+    prop transposed[self: Self&]: Mat<T, C, R, O> {
+        var result = Mat<T, C, R, O>(0 as T)
+        inline for r in 0..<R {
+            inline for c in 0..<C {
+                result.m$c$r = self.m$r$c
+            }
+        }
+        return result
+    }
+
+    /**
+     * The sum of the diagonal.
+     */
+    prop diagonalSum[self: Self&]: T where R == C {
+        var total: T = 0 as T
+        inline for i in 0..<R {
+            total += self.m$i$i
+        }
+        return total
+    }
+
+}
+
+impl Mat<T, R, C, O>:: {
+    fin zero = Mat<T, R, C, O>(0 as T)
+}
+
+impl Mat<T, R, C, O>:: where R == C {
+    /**
+     * The identity: ones down the diagonal, zeroes elsewhere.
+     */
+    func identity(): Mat<T, R, C, O> {
+        var result = Mat<T, R, C, O>(0 as T)
+        inline for i in 0..<R {
+            result.m$i$i = 1 as T
+        }
+        return result
+    }
+}
+
+inline for [t, Ty] in [@std::arr["i", "u", "f", ""], [std::Int, std::UInt, std::Float, std::Double]] {
+    inline for n in 2..4 {
+        typealias Mat$n$t = Mat<Ty, n, n>
+    }
+}

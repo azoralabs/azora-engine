@@ -1,0 +1,352 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/ecs
+ *
+ * The ECS face of a tilemap: per-tile entities, their components, and the
+ * systems that keep them and the dense layers in step.
+ *
+ * ## Why tiles are not all entities
+ *
+ * A tile is data, not behaviour. A 512 x 512 background is a quarter of a
+ * million cells, and giving each one an entity would make every component query
+ * in the game walk a quarter of a million rows to find the six that matter.
+ * The dense [TileLayer] stays the storage of record.
+ *
+ * What entities buy is *behaviour on a particular cell* — a door that opens, a
+ * switch that is thrown, a crate that can be pushed. Those tiles get an entity
+ * carrying [TilePosition] and whatever gameplay components they need, and
+ * [syncTilesToLayers] writes their appearance back into the layer each frame,
+ * so the renderer keeps reading one flat array and never learns that some of
+ * its cells are alive.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.ecs
+
+import std.container.array
+import engine.core
+import engine.ecs
+import engine.tilemap.types
+import engine.tilemap.storage
+import engine.tilemap.map
+import engine.tilemap.coords
+import engine.tilemap.tileset
+import engine.tilemap.atlas
+
+// ── Components ──────────────────────────────────────────────────────────
+
+/** Which cell a tile entity occupies. */
+@Component
+pack TilePosition {
+    var pos: TilePos
+}
+
+/** Which tile of the tileset a tile entity draws. */
+@Component
+pack TileTextureIndex {
+    var index: std::Int
+}
+
+/** A per-entity tint, multiplied over its layer's own. */
+@Component
+pack TileTint {
+    var color: TileColor
+}
+
+/** Whether a tile entity is drawn; the cell stays occupied either way. */
+@Component
+pack TileVisibility {
+    var visible: std::Bool
+}
+
+/** A tile entity's mirroring. */
+@Component
+pack TileMirror {
+    var mirrors: TileFlip
+}
+
+/** Which layer of its map a tile entity writes into. */
+@Component
+pack TileLayerIndex {
+    var layer: std::Int
+}
+
+/** The tilemap entity a tile belongs to. */
+@Component
+pack TilemapId {
+    var owner: Entity
+}
+
+/**
+ * The component stores a tilemap's tile entities live in, plus the cell index
+ * that finds them.
+ *
+ * Storage is explicit in this ECS, so the stores travel together rather than
+ * being looked up from a registry — which also means a game can keep two
+ * independent sets of tile entities without them colliding.
+ */
+pack TileEntities {
+    var positions: Storage<TilePosition>
+    var indices: Storage<TileTextureIndex>
+    var tints: Storage<TileTint>
+    var visibility: Storage<TileVisibility>
+    var mirrors: Storage<TileMirror>
+    var layers: Storage<TileLayerIndex>
+    var owners: Storage<TilemapId>
+    /** Cell to entity, so a position resolves without scanning the stores. */
+    var bindings: TileStorage
+}
+
+// ── Construction ────────────────────────────────────────────────────────
+
+/** Empty stores and a cell index sized to [size]. */
+func tileEntitiesNew(size: TilemapSize): TileEntities {
+    return TileEntities(
+        storageInit<TilePosition>(TilePosition(TilePos(0, 0))),
+        storageInit<TileTextureIndex>(TileTextureIndex(tileEmpty)),
+        storageInit<TileTint>(TileTint(tileColorWhite())),
+        storageInit<TileVisibility>(TileVisibility(true)),
+        storageInit<TileMirror>(TileMirror(tileFlipNone())),
+        storageInit<TileLayerIndex>(TileLayerIndex(0)),
+        storageInit<TilemapId>(TilemapId(entityInvalid())),
+        tileStorageNew(size)
+    )
+}
+
+/**
+ * Spawns an entity for the cell [pos] of [layer] and writes its tile.
+ *
+ * The cell is written immediately as well as bound, so a tile entity looks
+ * right on the frame it is created rather than on the one after the first sync.
+ */
+func spawnTile(
+    world: World!,
+    entities: TileEntities!,
+    map: Tilemap&,
+    layer: std::Int,
+    pos: TilePos,
+    index: std::Int,
+    owner: Entity
+): Entity ?! TilemapFault {
+    if !map.hasLayer(layer) {
+        return .OutOfBounds
+    }
+    if !map.geometry.size.contains(pos) {
+        return .OutOfBounds
+    }
+
+    fin entity = world.spawn()
+    storageInsert<TilePosition>(entities.positions, entity, TilePosition(pos))
+    storageInsert<TileTextureIndex>(entities.indices, entity, TileTextureIndex(index))
+    storageInsert<TileVisibility>(entities.visibility, entity, TileVisibility(true))
+    storageInsert<TileLayerIndex>(entities.layers, entity, TileLayerIndex(layer))
+    storageInsert<TilemapId>(entities.owners, entity, TilemapId(owner))
+    try tileStorageSet(entities.bindings, pos, entity)
+    layerPut(map.layers[layer], pos, index)
+    return entity
+}
+
+/**
+ * Spawns a tile entity, or an invalid entity where it could not be placed.
+ *
+ * The convenience form for level building, where an out-of-range cell is a
+ * skipped decoration rather than something to unwind for.
+ */
+func spawnTileOrNone(
+    world: World!,
+    entities: TileEntities!,
+    map: Tilemap&,
+    layer: std::Int,
+    pos: TilePos,
+    index: std::Int,
+    owner: Entity
+): Entity {
+    return spawnTile(world, entities, map, layer, pos, index, owner) catch entityInvalid()
+}
+
+/** The entity bound to [pos], or an invalid entity. */
+func tileEntityAt(entities: TileEntities&, pos: TilePos): Entity {
+    return tileStorageEntity(entities.bindings, pos)
+}
+
+/** Gives [entity] a tint, creating the component if it has none. */
+func setTileTint(entities: TileEntities!, entity: Entity, color: TileColor) {
+    storageInsert<TileTint>(entities.tints, entity, TileTint(color))
+}
+
+/** Gives [entity] a mirroring, creating the component if it has none. */
+func setTileMirror(entities: TileEntities!, entity: Entity, mirrors: TileFlip) {
+    storageInsert<TileMirror>(entities.mirrors, entity, TileMirror(mirrors))
+}
+
+/** Shows or hides [entity] without clearing its cell. */
+func setTileVisible(entities: TileEntities!, entity: Entity, visible: std::Bool) {
+    storageInsert<TileVisibility>(entities.visibility, entity, TileVisibility(visible))
+}
+
+/** Changes the tile [entity] draws. */
+func setTileIndex(entities: TileEntities!, entity: Entity, index: std::Int) {
+    storageInsert<TileTextureIndex>(entities.indices, entity, TileTextureIndex(index))
+}
+
+/**
+ * Despawns the tile entity at [pos] and clears its cell.
+ *
+ * Clearing the cell is part of despawning: an entity removed without its tile
+ * leaves the picture of a door that no longer exists.
+ */
+func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: TilePos): std::Bool {
+    fin entity = tileEntityAt(entities, pos)
+    if !entity.isValid() {
+        return false
+    }
+    fin layer = storageGetOrDefault<TileLayerIndex>(entities.layers, entity, TileLayerIndex(0)).layer
+    if map.hasLayer(layer) {
+        layerPut(map.layers[layer], pos, tileEmpty)
+    }
+    tileStorageRemove(entities.bindings, pos) catch { }
+    world.despawn(entity)
+    return true
+}
+
+// ── Systems ─────────────────────────────────────────────────────────────
+//
+// These are phase-shaped but not yet `@System`-scheduled. A scheduled system
+// takes the world and nothing else, and both of these also need the tile
+// entity index and the map — state the world has no way to hand them until it
+// gains a resource store. Until then a tilemap host calls them itself, in the
+// phase named in each one's documentation.
+
+/**
+ * Writes every live tile entity's appearance into its layer.
+ *
+ * Belongs in `.PostUpdate`, late enough that gameplay has already had its say:
+ * a switch thrown during `.Update` shows its new tile in the same frame it was
+ * thrown, not the next one.
+ */
+func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): std::Int {
+    var written = 0
+    var i = 0
+    while i < storageLength<TilePosition>(entities.positions) {
+        fin entity = storageEntityAt<TilePosition>(entities.positions, i)
+        if entity.isValid() && world.isAlive(entity) {
+            fin pos = storageValueAt<TilePosition>(entities.positions, i).pos
+            fin layer = storageGetOrDefault<TileLayerIndex>(entities.layers, entity, TileLayerIndex(0)).layer
+            if map.hasLayer(layer) {
+                fin index = storageGetOrDefault<TileTextureIndex>(
+                    entities.indices,
+                    entity,
+                    TileTextureIndex(tileEmpty)
+                ).index
+                fin visible = storageGetOrDefault<TileVisibility>(
+                    entities.visibility,
+                    entity,
+                    TileVisibility(true)
+                ).visible
+                fin mirrors = storageGetOrDefault<TileMirror>(
+                    entities.mirrors,
+                    entity,
+                    TileMirror(tileFlipNone())
+                ).mirrors
+
+                var flags = tileFlipToFlags(mirrors)
+                if !visible {
+                    flags = flagsSet(flags, cellHidden)
+                }
+
+                var tint = tileTintNone
+                if storageHas<TileTint>(entities.tints, entity) {
+                    tint = tileColorPack(storageGet<TileTint>(entities.tints, entity).color)
+                }
+
+                layerPutFull(map.layers[layer], pos, index, flags, tint)
+                written = written + 1
+            }
+        }
+        i = i + 1
+    }
+    return written
+}
+
+/**
+ * Unbinds every cell whose tile entity has been despawned.
+ *
+ * A cell still pointing at a dead handle would hand later lookups an entity id
+ * the world has since recycled, which is how a door starts answering for a
+ * crate. Belongs in `.Last`, after everything that can despawn a tile.
+ */
+func sweepTileEntities(world: World&, entities: TileEntities!): std::Int {
+    return tileStorageSweep(entities.bindings, world)
+}
+
+/** Despawns every tile entity and unbinds every cell. */
+func clearTileEntities(world: World!, entities: TileEntities!): std::Int {
+    return tileStorageDespawnAll(entities.bindings, world)
+}
+
+test "a tile entity writes its own cell and can be found again" {
+    var world = worldInit()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "walls")
+    var entities = tileEntitiesNew(map.geometry.size)
+
+    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(2, 3), 5, entityInvalid())
+    assert entity.isValid() { "spawning inside the map must succeed" }
+    assert tileEntityAt(entities, TilePos(2, 3)).id == entity.id { "the cell must resolve to its entity" }
+    assert layerIndexAt(map.layers[0], TilePos(2, 3)) == 5 {
+        "spawning must write the tile immediately, not on the next sync"
+    }
+
+    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, entityInvalid()).isValid() {
+        "spawning outside the map must be refused"
+    }
+}
+
+test "syncing carries appearance from components into the layer" {
+    var world = worldInit()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "walls")
+    var entities = tileEntitiesNew(map.geometry.size)
+
+    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(1, 1), 3, entityInvalid())
+    setTileIndex(entities, entity, 9)
+    setTileMirror(entities, entity, tileFlip(true, false, false))
+    setTileTint(entities, entity, tileColor(1.0, 0.0, 0.0, 1.0))
+
+    assert syncTilesToLayers(world, entities, map) == 1 { "the one live tile entity must be written" }
+    assert layerIndexAt(map.layers[0], TilePos(1, 1)) == 9 { "the new index must reach the layer" }
+    assert layerFlipAt(map.layers[0], TilePos(1, 1)).x { "the mirror must reach the layer" }
+    assert layerTintAt(map.layers[0], TilePos(1, 1)) != tileTintNone { "the tint must reach the layer" }
+
+    setTileVisible(entities, entity, false)
+    syncTilesToLayers(world, entities, map)
+    assert !layerIsDrawable(map.layers[0], TilePos(1, 1)) { "hiding must stop the cell being drawn" }
+    assert layerHasTile(map.layers[0], TilePos(1, 1)) { "hiding must not clear the cell" }
+}
+
+test "despawning clears the cell and sweeping unbinds dead handles" {
+    var world = worldInit()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "walls")
+    var entities = tileEntitiesNew(map.geometry.size)
+
+    spawnTileOrNone(world, entities, map, 0, TilePos(4, 4), 7, entityInvalid())
+    assert despawnTile(world, entities, map, TilePos(4, 4)) { "despawning a bound cell must succeed" }
+    assert layerIndexAt(map.layers[0], TilePos(4, 4)) == tileEmpty { "despawning must clear the cell" }
+    assert !tileEntityAt(entities, TilePos(4, 4)).isValid() { "the cell must no longer be bound" }
+    assert !despawnTile(world, entities, map, TilePos(4, 4)) { "despawning an empty cell must report nothing done" }
+
+    // A tile entity killed behind the tilemap's back must still be swept up.
+    fin orphan = spawnTileOrNone(world, entities, map, 0, TilePos(5, 5), 2, entityInvalid())
+    world.despawn(orphan)
+    assert sweepTileEntities(world, entities) == 1 { "the dead handle must be swept" }
+    assert !tileEntityAt(entities, TilePos(5, 5)).isValid() { "the swept cell must be unbound" }
+}

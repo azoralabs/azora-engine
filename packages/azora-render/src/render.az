@@ -6,29 +6,32 @@
 
 module engine.render
 
-export import engine.render.webgl
+exposed import engine.render.webgl
 
 import engine.ui
-import engine.math
+import engine.math.vec
+import engine.math.mat
 import engine.core
+import engine.input
+import engine.platform
 
 pack Camera {
     var pos: Vec3
-    var yaw: Real
-    var pitch: Real
-    var fovDeg: Real
+    var yaw: std::Double
+    var pitch: std::Double
+    var fovDeg: std::Double
 }
 
 pack Color {
-    var r: Real
-    var g: Real
-    var b: Real
-    var a: Real
+    var r: std::Double
+    var g: std::Double
+    var b: std::Double
+    var a: std::Double
 }
 
 pack Material {
     var color: Color
-    var roughness: Real
+    var roughness: std::Double
 }
 
 pack Transform3d {
@@ -61,19 +64,19 @@ pack RenderItem {
 }
 
 pack RenderQueue {
-    var items: Array<RenderItem>
-    var itemCount: Int
+    var items: std::Array<RenderItem>
+    var itemCount: std::Int
 }
 
 func cameraDefault(): Camera {
     return Camera(Vec3(0.0, 1.5, 5.0), 0.0, -0.15, 60.0)
 }
 
-func colorRgb(r: Real, g: Real, b: Real): Color {
+func colorRgb(r: std::Double, g: std::Double, b: std::Double): Color {
     return Color(r, g, b, 1.0)
 }
 
-func colorRgba(r: Real, g: Real, b: Real, a: Real): Color {
+func colorRgba(r: std::Double, g: std::Double, b: std::Double, a: std::Double): Color {
     return Color(r, g, b, a)
 }
 
@@ -92,7 +95,7 @@ func transformAt(position: Vec3): Transform3d {
 func renderQueueInit(): RenderQueue {
     // Enough room for a streamed city neighborhood, landmark geometry and
     // traffic without replacing a persistent queue inside a frame arena.
-    var items: Array<RenderItem> = Array::fill<RenderItem>(2048)
+    var items: std::Array<RenderItem> = std::Array::fill<RenderItem>(2048)
     return RenderQueue(items, 0)
 }
 
@@ -108,7 +111,7 @@ impl Camera {
     }
 
     /// The view-projection matrix for this camera at the given aspect ratio.
-    func viewProj(aspect: Real): Mat4 {
+    func viewProj(aspect: std::Double): Mat4 {
         fin rotP = mat4RotationX(0.0 - self.pitch)
         fin rotY = mat4RotationY(0.0 - self.yaw)
         fin trans = mat4Translation(0.0 - self.pos.x, 0.0 - self.pos.y, 0.0 - self.pos.z)
@@ -119,22 +122,22 @@ impl Camera {
 
     /// Standard fly controls: WASD moves in the yaw plane, Q/E (or
     /// Space/Shift) moves down/up, arrow keys look around.
-    func update(app: App, dt: Real, moveSpeed: Real, lookSpeed: Real) {
+    func update(app: App, dt: std::Double, moveSpeed: std::Double, lookSpeed: std::Double) {
         var move = vec3Zero()
-        if app.keyDown(KEY_W) { move = move + self.forward() }
-        if app.keyDown(KEY_S) { move = move - self.forward() }
-        if app.keyDown(KEY_D) { move = move + self.right() }
-        if app.keyDown(KEY_A) { move = move - self.right() }
-        if (app.keyDown(KEY_E) || app.keyDown(KEY_SPACE)) { move = move + Vec3(0.0, 1.0, 0.0) }
-        if (app.keyDown(KEY_Q) || app.keyDown(KEY_SHIFT)) { move = move - Vec3(0.0, 1.0, 0.0) }
+        if app.keyDown(keyW) { move = move + self.forward() }
+        if app.keyDown(keyS) { move = move - self.forward() }
+        if app.keyDown(keyD) { move = move + self.right() }
+        if app.keyDown(keyA) { move = move - self.right() }
+        if (app.keyDown(keyE) || app.keyDown(keySpace)) { move = move + Vec3(0.0, 1.0, 0.0) }
+        if (app.keyDown(keyQ) || app.keyDown(keyShift)) { move = move - Vec3(0.0, 1.0, 0.0) }
 
         fin step = move.normalized.scale(moveSpeed * dt)
         self.pos = self.pos + step
 
-        if app.keyDown(KEY_LEFT) { self.yaw = self.yaw + lookSpeed * dt }
-        if app.keyDown(KEY_RIGHT) { self.yaw = self.yaw - lookSpeed * dt }
-        if app.keyDown(KEY_UP) { self.pitch = self.pitch + lookSpeed * dt }
-        if app.keyDown(KEY_DOWN) { self.pitch = self.pitch - lookSpeed * dt }
+        if app.keyDown(keyArrowLeft) { self.yaw = self.yaw + lookSpeed * dt }
+        if app.keyDown(keyArrowRight) { self.yaw = self.yaw - lookSpeed * dt }
+        if app.keyDown(keyArrowUp) { self.pitch = self.pitch + lookSpeed * dt }
+        if app.keyDown(keyArrowDown) { self.pitch = self.pitch - lookSpeed * dt }
 
         // Clamp pitch to avoid flipping over the poles.
         if self.pitch > 1.5 { self.pitch = 1.5 }
@@ -156,8 +159,8 @@ impl Transform3d {
 
 impl RenderQueue {
     func add(mesh: Mesh, transform: Transform3d, material: Material) {
-        if self.itemCount >= self.items.length {
-            var grown: Array<RenderItem> = Array::fill<RenderItem>(self.items.length * 2)
+        if self.itemCount >= self.items.size {
+            var grown: std::Array<RenderItem> = std::Array::fill<RenderItem>(self.items.size * 2)
             var i = 0
             while i < self.itemCount {
                 grown[i] = self.items[i]
@@ -173,7 +176,7 @@ impl RenderQueue {
         self.itemCount = 0
     }
 
-    func count(): Int {
+    func count(): std::Int {
         return self.itemCount
     }
 }
@@ -184,7 +187,7 @@ impl App {
         var aspect = 1.0
         fin h = self.height()
         if h > 0 {
-            aspect = (self.width() as Real) / (h as Real)
+            aspect = (self.width() as std::Double) / (h as std::Double)
         }
         pokeMat4(self.gpu.viewProj, 0L, cam.viewProj(aspect))
     }

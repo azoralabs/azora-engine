@@ -1,0 +1,400 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/physics/core/core
+ *
+ * The vocabulary both physics dimensions share: body kinds, materials,
+ * collision layers, damping, sleeping, force modes and the solver settings.
+ *
+ * Nothing here knows how many axes a world has. A material's friction, a
+ * layer mask and a sleep threshold read the same in a platformer and in a
+ * flight simulator, so they are declared once and the dimensional packages add
+ * only what genuinely differs: vectors, shapes and inertia.
+ *
+ * Every gameplay-facing type is an ECS `@Component` or `@Resource`, so a body
+ * is assembled from components on an entity rather than from a bespoke handle
+ * the ECS cannot see.
+ *
+ * @since 0.0.4
+ */
+module engine.physics.core
+
+import std.container.array
+import engine.core
+import engine.ecs
+
+// ── Tuning constants ────────────────────────────────────────────────────
+
+/** Below this squared speed a body is a candidate for sleeping. */
+inline fin physicsSleepEpsilon = 0.001
+/** Contacts shallower than this are ignored, so resting bodies stop jittering. */
+inline fin physicsContactSlop = 0.005
+/** The fraction of a penetration corrected per substep. */
+inline fin physicsCorrectionRate = 0.8
+/** The largest frame delta the solver will accept, in seconds. */
+inline fin physicsMaxDelta = 0.1
+/** Layer mask matching everything. */
+inline fin physicsAllLayers = -1
+
+// ── Kinds and modes ─────────────────────────────────────────────────────
+
+/** How the solver is allowed to move a body. */
+enum RigidBodyKind {
+    /** Never moves and has infinite mass: terrain, walls, the tilemap itself. */
+    Static
+    /** Moved by forces, gravity and contacts. */
+    Dynamic
+    /**
+     * Moved only by the game, but pushes dynamic bodies.
+     *
+     * A moving platform is kinematic: it must not be shoved off its path by the
+     * character standing on it, yet it must still carry that character.
+     */
+    Kinematic
+}
+
+/**
+ * How an applied vector enters the integrator.
+ *
+ * The four modes differ in whether mass divides the value and whether it acts
+ * over the timestep or instantly, which is exactly the distinction between a
+ * thruster and a bullet impact.
+ */
+enum ForceMode {
+    /** Continuous, scaled by the timestep and divided by mass. */
+    Force
+    /** Continuous, scaled by the timestep, ignoring mass. */
+    Acceleration
+    /** Instantaneous, divided by mass. */
+    Impulse
+    /** Instantaneous, ignoring mass. */
+    VelocityChange
+}
+
+/** How far a solver got. */
+enum SolverStatus {
+    Converged
+    IterationsExhausted
+    Skipped
+}
+
+// ── Faults ──────────────────────────────────────────────────────────────
+
+/**
+ * Everything the physics packages can refuse to do.
+ *
+ * As in the rest of the engine these travel inside result `slot`s rather than
+ * being raised: a bad mass or an unknown body is something a caller inspects,
+ * not something that should unwind a frame.
+ */
+error PhysicsFault {
+    /** A body id names nothing in this world. */
+    UnknownBody,
+    /** A mass was zero or negative where a positive one was required. */
+    BadMass,
+    /** A shape was given a non-positive extent. */
+    BadShape,
+    /** The world is full. */
+    CapacityExceeded,
+    /** The operation is not defined for this body kind. */
+    WrongBodyKind,
+    /** A timestep was negative or not finite. */
+    BadTimestep
+}
+
+// ── Shared components ───────────────────────────────────────────────────
+
+/**
+ * Surface response shared by every contact involving a body.
+ *
+ * `density` is carried alongside so a collider can derive its own mass from its
+ * area or volume; a game that sets mass directly simply ignores it.
+ */
+@Component
+pack PhysicsMaterial {
+    var friction: std::Double
+    var restitution: std::Double
+    var density: std::Double
+}
+
+/**
+ * Bit masks deciding which pairs may interact.
+ *
+ * Two colliders interact only when each is a member of a layer the other
+ * filters for. Requiring both directions is what makes "bullets hit walls but
+ * ignore each other" expressible without an exception table.
+ */
+@Component
+pack CollisionLayers {
+    var memberships: std::Int
+    var filters: std::Int
+}
+
+/** Per-body velocity decay, applied once per substep. */
+@Component
+pack Damping {
+    var linear: std::Double
+    var angular: std::Double
+}
+
+/**
+ * Whether a body is being simulated, and how long it has been still.
+ *
+ * Sleeping is not an optimisation detail the caller can ignore: a stack of
+ * resting crates that never sleeps jitters forever, because floating-point
+ * contact resolution is never exactly zero.
+ */
+@Component
+pack Sleeping {
+    var awake: std::Bool
+    var stillFor: std::Double
+    var threshold: std::Double
+}
+
+/** Marks a collider that reports contacts without resolving them. */
+@Component
+pack Sensor {
+    var active: std::Bool
+}
+
+/** Gravity scale for one body; `0` makes it float, `-1` makes it fall upward. */
+@Component
+pack GravityScale {
+    var value: std::Double
+}
+
+/** Solver tuning shared by a whole world. */
+@Resource
+pack PhysicsSettings {
+    var substeps: std::Int
+    var correctionRate: std::Double
+    var contactSlop: std::Double
+    var maxDelta: std::Double
+    var sleepThreshold: std::Double
+    var allowSleeping: std::Bool
+}
+
+// ── Constructors ────────────────────────────────────────────────────────
+
+/** A material with the friction and bounce of ordinary painted metal. */
+func physicsMaterial(friction: std::Double = 0.65, restitution: std::Double = 0.05, density: std::Double = 1.0): PhysicsMaterial {
+    return PhysicsMaterial(
+        realClamp01(friction),
+        realClamp01(restitution),
+        realMaxOf(density, 0.0)
+    )
+}
+
+/** A frictionless, perfectly elastic material — a pinball bumper. */
+func bouncyMaterial(): PhysicsMaterial {
+    return PhysicsMaterial(0.0, 1.0, 1.0)
+}
+
+/** A material that absorbs everything it touches. */
+func deadMaterial(): PhysicsMaterial {
+    return PhysicsMaterial(1.0, 0.0, 1.0)
+}
+
+/** Layers that interact with everything. */
+func allLayers(): CollisionLayers {
+    return CollisionLayers(physicsAllLayers, physicsAllLayers)
+}
+
+func collisionLayers(memberships: std::Int, filters: std::Int): CollisionLayers {
+    return CollisionLayers(memberships, filters)
+}
+
+/** True when each of [a] and [b] is a member of a layer the other filters for. */
+func layersInteract(a: CollisionLayers, b: CollisionLayers): std::Bool {
+    return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
+}
+
+func damping(linear: std::Double = 0.01, angular: std::Double = 0.05): Damping {
+    return Damping(realClamp01(linear), realClamp01(angular))
+}
+
+func awakeBody(threshold: std::Double = 0.001): Sleeping {
+    return Sleeping(true, 0.0, threshold)
+}
+
+func gravityScale(value: std::Double = 1.0): GravityScale {
+    return GravityScale(value)
+}
+
+/** Default solver settings: four substeps, sleeping enabled. */
+func physicsSettings(): PhysicsSettings {
+    return PhysicsSettings(
+        4,
+        physicsCorrectionRate,
+        physicsContactSlop,
+        physicsMaxDelta,
+        physicsSleepEpsilon,
+        true
+    )
+}
+
+// ── Mass ────────────────────────────────────────────────────────────────
+
+/**
+ * The inverse mass a body of [kind] and [mass] integrates with.
+ *
+ * Static and kinematic bodies have zero inverse mass, which is what makes them
+ * immovable without the solver needing to branch on the kind at every contact.
+ */
+func inverseMassFor(kind: RigidBodyKind, mass: std::Double): std::Double {
+    return when kind {
+        RigidBodyKind.Dynamic -> if mass > 0.0 { 1.0 / mass } else { 0.0 }
+        else -> 0.0
+    }
+}
+
+/** True when [kind] is moved by the solver rather than by the game. */
+func kindIsSimulated(kind: RigidBodyKind): std::Bool {
+    return when kind {
+        RigidBodyKind.Dynamic -> true
+        else -> false
+    }
+}
+
+/** True when [kind] pushes other bodies but is never pushed itself. */
+func kindIsImmovable(kind: RigidBodyKind): std::Bool {
+    return when kind {
+        RigidBodyKind.Dynamic -> false
+        else -> true
+    }
+}
+
+/**
+ * The velocity change one application of [amount] produces.
+ *
+ * Folding the four modes into a single scale factor here keeps the integrators
+ * in both dimensions free of mode branching.
+ */
+func forceScale(mode: ForceMode, inverseMass: std::Double, dt: std::Double): std::Double {
+    return when mode {
+        ForceMode.Force -> inverseMass * dt
+        ForceMode.Acceleration -> dt
+        ForceMode.Impulse -> inverseMass
+        ForceMode.VelocityChange -> 1.0
+    }
+}
+
+// ── Sleeping ────────────────────────────────────────────────────────────
+
+/**
+ * Advances a body's sleep timer from its current squared speed.
+ *
+ * Returns whether the body is still awake. A body must be slow for a continuous
+ * quarter second before it sleeps, so a projectile at the top of its arc — which
+ * is momentarily motionless — is not put to sleep in mid-air.
+ */
+func updateSleep(sleep: Sleeping, speedSquared: std::Double, dt: std::Double): std::Bool {
+    if speedSquared > sleep.threshold {
+        sleep.stillFor = 0.0
+        sleep.awake = true
+        return true
+    }
+    sleep.stillFor = sleep.stillFor + dt
+    if sleep.stillFor >= 0.25 {
+        sleep.awake = false
+    }
+    return sleep.awake
+}
+
+/** Wakes a body and resets its stillness timer. */
+func wake(sleep: Sleeping) {
+    sleep.awake = true
+    sleep.stillFor = 0.0
+}
+
+// ── Scalar helpers ──────────────────────────────────────────────────────
+
+func realClamp01(value: std::Double): std::Double {
+    return when true {
+        value < 0.0 -> 0.0
+        value > 1.0 -> 1.0
+        else -> value
+    }
+}
+
+func realMaxOf(a: std::Double, b: std::Double): std::Double {
+    return if a > b { a } else { b }
+}
+
+func realMinOf(a: std::Double, b: std::Double): std::Double {
+    return if a < b { a } else { b }
+}
+
+func realClampTo(value: std::Double, low: std::Double, high: std::Double): std::Double {
+    return realMinOf(realMaxOf(value, low), high)
+}
+
+func absReal(value: std::Double): std::Double {
+    return if value < 0.0 { 0.0 - value } else { value }
+}
+
+func realSign(value: std::Double): std::Double {
+    return when true {
+        value > 0.0 -> 1.0
+        value < 0.0 -> -1.0
+        else -> 0.0
+    }
+}
+
+/** The timestep the solver will actually use for a frame delta of [dt]. */
+func clampTimestep(dt: std::Double, settings: PhysicsSettings): std::Double {
+    return realClampTo(dt, 0.0, settings.maxDelta)
+}
+
+/** The number of substeps [settings] asks for, held to a sane range. */
+func substepCount(settings: PhysicsSettings): std::Int {
+    return when true {
+        settings.substeps < 1 -> 1
+        settings.substeps > 16 -> 16
+        else -> settings.substeps
+    }
+}
+
+test "layer masks require agreement in both directions" {
+    fin bullets = collisionLayers(1, 2)
+    fin walls = collisionLayers(2, 1)
+    fin ghosts = collisionLayers(4, 4)
+
+    assert layersInteract(bullets, walls) { "a bullet and a wall must interact" }
+    assert !layersInteract(bullets, ghosts) { "layers that ignore each other must not interact" }
+    assert layersInteract(allLayers(), ghosts) { "the universal mask must interact with everything" }
+}
+
+test "inverse mass encodes the body kind" {
+    assert inverseMassFor(RigidBodyKind.Dynamic, 4.0) > 0.24 { "a dynamic body must be movable" }
+    assert inverseMassFor(RigidBodyKind.Static, 4.0) == 0.0 { "a static body must be immovable" }
+    assert inverseMassFor(RigidBodyKind.Kinematic, 4.0) == 0.0 { "a kinematic body must be immovable" }
+    assert inverseMassFor(RigidBodyKind.Dynamic, 0.0) == 0.0 { "a massless dynamic body must not divide by zero" }
+    assert kindIsSimulated(RigidBodyKind.Dynamic) && kindIsImmovable(RigidBodyKind.Static) {
+        "the kind predicates must agree with the inverse mass"
+    }
+}
+
+test "force modes scale the way their names promise" {
+    fin dt = 0.5
+    fin inverseMass = 0.25
+    assert forceScale(ForceMode.Force, inverseMass, dt) == 0.125 { "a force is scaled by mass and time" }
+    assert forceScale(ForceMode.Acceleration, inverseMass, dt) == 0.5 { "an acceleration ignores mass" }
+    assert forceScale(ForceMode.Impulse, inverseMass, dt) == 0.25 { "an impulse ignores time" }
+    assert forceScale(ForceMode.VelocityChange, inverseMass, dt) == 1.0 { "a velocity change is applied whole" }
+}
+
+test "a body sleeps only after staying still" {
+    var sleep = awakeBody()
+    assert updateSleep(sleep, 0.0, 0.1) { "a body must not sleep the instant it stops" }
+    updateSleep(sleep, 0.0, 0.2)
+    assert !sleep.awake { "a body still for a quarter second must sleep" }
+
+    updateSleep(sleep, 10.0, 0.016)
+    assert sleep.awake { "movement must wake a sleeping body" }
+    assert sleep.stillFor == 0.0 { "waking must reset the stillness timer" }
+}

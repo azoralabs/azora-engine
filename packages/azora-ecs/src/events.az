@@ -1,0 +1,275 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/ecs/events
+ *
+ * Events: written by one system, read by any number of others, and forgotten
+ * two frames later.
+ *
+ * ## Why two buffers
+ *
+ * A reader scheduled *before* the writer would miss an event sent this frame if
+ * the queue were cleared at the frame boundary. Keeping the previous frame's
+ * events alongside the current one gives every reader a full frame to notice,
+ * whatever order the systems run in. Keeping only two means a queue nobody
+ * drains cannot grow without bound — the failure mode of a single ever-growing
+ * list.
+ *
+ * ## Why readers hold a cursor
+ *
+ * Each [EventReader] remembers the sequence number it has read up to, so two
+ * systems reading the same events do not consume each other's. That is the
+ * whole difference from a plain queue, and it is why an event can be observed
+ * by a sound system, a scoring system and a particle system without any of them
+ * knowing about the others.
+ *
+ * @since 0.0.4
+ */
+module engine.ecs.events
+
+import std.container.array
+import engine.core
+
+/**
+ * A double-buffered event queue.
+ *
+ * `sent` counts every event ever written, which is what gives each one a stable
+ * sequence number: a reader's cursor is a position in that sequence, not an
+ * index into a buffer that shifts underneath it.
+ */
+pack Events<T> {
+    var current: std::Array<T>
+    var currentCount: std::Int
+    var previous: std::Array<T>
+    var previousCount: std::Int
+    /** Total events ever sent; the sequence number the next one will take. */
+    var sent: std::Long
+}
+
+/**
+ * One reader's position in an event stream.
+ *
+ * Independent of every other reader, and of the buffers themselves.
+ */
+pack EventReader {
+    var next: std::Long
+}
+
+/** A reader positioned at the start of whatever is currently buffered. */
+func eventReader(): EventReader {
+    return EventReader(0L)
+}
+
+/** An empty queue with room for [capacity] events per frame. */
+func eventsNew<T>(capacity: std::Int): Events<T> {
+    fin room = if capacity > 0 { capacity } else { 0 }
+    var current: std::Array<T> = std::Array::fill<T>(room)
+    var previous: std::Array<T> = std::Array::fill<T>(room)
+    return Events<T>(current, 0, previous, 0, 0L)
+}
+
+/** The sequence number of the oldest event still readable. */
+func eventsOldest<T>(events: Events<T>&): std::Long {
+    fin buffered = (events.currentCount + events.previousCount) as std::Long
+    return events.sent - buffered
+}
+
+/** Writes [event], giving it the next sequence number. */
+func eventsSend<T>(events: Events<T>!, event: T) {
+    if events.currentCount >= events.current.size {
+        fin room = if events.current.size * 2 > 8 { events.current.size * 2 } else { 8 }
+        var grown: std::Array<T> = std::Array::fill<T>(room)
+        var i = 0
+        while i < events.currentCount {
+            grown[i] = events.current[i]
+            i = i + 1
+        }
+        events.current = grown
+    }
+    events.current[events.currentCount] = event
+    events.currentCount = events.currentCount + 1
+    events.sent = events.sent + 1L
+}
+
+/**
+ * Advances to the next frame: this frame's events become last frame's, and the
+ * frame before that is dropped.
+ *
+ * Call once per frame, after the systems have run. Anything not read by the end
+ * of the *next* frame is gone, which is the contract that keeps the queue
+ * bounded.
+ */
+func eventsUpdate<T>(events: Events<T>!) {
+    fin swap = events.previous
+    events.previous = events.current
+    events.previousCount = events.currentCount
+    events.current = swap
+    events.currentCount = 0
+}
+
+/** Drops everything buffered and resets the sequence. */
+func eventsClear<T>(events: Events<T>!) {
+    events.currentCount = 0
+    events.previousCount = 0
+}
+
+/** The number of events currently buffered, across both frames. */
+func eventsBuffered<T>(events: Events<T>&): std::Int {
+    return events.currentCount + events.previousCount
+}
+
+/**
+ * The event with sequence number [sequence].
+ *
+ * The two buffers are addressed as one run: the older frame first, then this
+ * one. A sequence that has already been dropped reads as the oldest still
+ * present rather than as an error — a reader that fell behind sees what is
+ * left, which is the only useful answer.
+ */
+func eventsAt<T>(events: Events<T>&, sequence: std::Long, fallback: T): T {
+    fin oldest = eventsOldest<T>(events)
+    if events.sent <= oldest || sequence >= events.sent {
+        return fallback
+    }
+    fin offset = if sequence < oldest { 0 } else { (sequence - oldest) as std::Int }
+    if offset < events.previousCount {
+        return events.previous[offset]
+    }
+    fin inCurrent = offset - events.previousCount
+    if inCurrent < events.currentCount {
+        return events.current[inCurrent]
+    }
+    return fallback
+}
+
+/**
+ * How many events [reader] has not seen.
+ *
+ * A reader that has fallen more than a frame behind is counted from the oldest
+ * event still buffered, not from where it left off, so the count never claims
+ * events that are gone.
+ */
+func eventsUnread<T>(events: Events<T>&, reader: EventReader&): std::Int {
+    fin oldest = eventsOldest<T>(events)
+    fin from = if reader.next < oldest { oldest } else { reader.next }
+    if from >= events.sent {
+        return 0
+    }
+    return (events.sent - from) as std::Int
+}
+
+/** True when [reader] has an event waiting. */
+func eventsHasNext<T>(events: Events<T>&, reader: EventReader&): std::Bool {
+    return eventsUnread<T>(events, reader) > 0
+}
+
+/**
+ * The next event for [reader], advancing its cursor.
+ *
+ * Returns [fallback] when there is nothing to read, so a caller that ignores
+ * [eventsHasNext] gets a defined value rather than a stale one.
+ */
+func eventsNext<T>(events: Events<T>&, reader: EventReader!, fallback: T): T {
+    fin oldest = eventsOldest<T>(events)
+    if reader.next < oldest {
+        reader.next = oldest
+    }
+    if reader.next >= events.sent {
+        return fallback
+    }
+    fin value = eventsAt<T>(events, reader.next, fallback)
+    reader.next = reader.next + 1L
+    return value
+}
+
+/** Moves [reader] past everything currently buffered without reading it. */
+func eventsSkip<T>(events: Events<T>&, reader: EventReader!) {
+    reader.next = events.sent
+}
+
+test "a reader sees what was sent, once" {
+    var events = eventsNew<std::Int>(4)
+    var reader = eventReader()
+
+    assert !eventsHasNext<std::Int>(events, reader) { "a fresh queue has nothing to read" }
+
+    eventsSend<std::Int>(events, 10)
+    eventsSend<std::Int>(events, 20)
+    assert eventsUnread<std::Int>(events, reader) == 2 { "both events must be waiting" }
+    assert eventsNext<std::Int>(events, reader, -1) == 10 { "events must arrive in order" }
+    assert eventsNext<std::Int>(events, reader, -1) == 20 { "and then the second" }
+    assert !eventsHasNext<std::Int>(events, reader) { "a drained reader must see nothing" }
+    assert eventsNext<std::Int>(events, reader, -1) == -1 { "reading past the end must give the fallback" }
+}
+
+test "two readers do not consume each other's events" {
+    var events = eventsNew<std::Int>(4)
+    var first = eventReader()
+    var second = eventReader()
+
+    eventsSend<std::Int>(events, 7)
+    assert eventsNext<std::Int>(events, first, -1) == 7 { "the first reader sees the event" }
+    assert eventsNext<std::Int>(events, second, -1) == 7 {
+        "the second reader must see it too — that is the whole point of a cursor"
+    }
+    assert !eventsHasNext<std::Int>(events, first) { "each reader advances only itself" }
+}
+
+test "an event survives exactly one frame past the one it was sent in" {
+    var events = eventsNew<std::Int>(4)
+    var late = eventReader()
+
+    eventsSend<std::Int>(events, 1)
+    eventsUpdate<std::Int>(events)
+    // A reader that only wakes up next frame must still see it.
+    assert eventsNext<std::Int>(events, late, -1) == 1 { "last frame's events must still be readable" }
+
+    eventsSend<std::Int>(events, 2)
+    eventsUpdate<std::Int>(events)
+    eventsUpdate<std::Int>(events)
+    assert eventsBuffered<std::Int>(events) == 0 { "two frames on, the queue must be empty again" }
+}
+
+test "a reader that falls behind sees what is left rather than nothing" {
+    var events = eventsNew<std::Int>(4)
+    var asleep = eventReader()
+
+    eventsSend<std::Int>(events, 1)
+    eventsUpdate<std::Int>(events)
+    eventsSend<std::Int>(events, 2)
+    eventsUpdate<std::Int>(events)
+    eventsSend<std::Int>(events, 3)
+
+    // Event 1 has aged out; 2 and 3 remain.
+    assert eventsUnread<std::Int>(events, asleep) == 2 { "the count must not claim dropped events" }
+    assert eventsNext<std::Int>(events, asleep, -1) == 2 { "reading resumes at the oldest survivor" }
+    assert eventsNext<std::Int>(events, asleep, -1) == 3 { "and continues into this frame" }
+}
+
+test "skipping moves past everything without reading it" {
+    var events = eventsNew<std::Int>(4)
+    var reader = eventReader()
+    eventsSend<std::Int>(events, 1)
+    eventsSend<std::Int>(events, 2)
+    eventsSkip<std::Int>(events, reader)
+    assert !eventsHasNext<std::Int>(events, reader) { "a skipped reader must be caught up" }
+
+    eventsSend<std::Int>(events, 3)
+    assert eventsNext<std::Int>(events, reader, -1) == 3 { "and still see what comes after" }
+}
+
+test "the queue grows past its initial capacity" {
+    var events = eventsNew<std::Int>(1)
+    var reader = eventReader()
+    var i = 0
+    while i < 40 {
+        eventsSend<std::Int>(events, i)
+        i = i + 1
+    }
+    assert eventsUnread<std::Int>(events, reader) == 40 { "every event must be kept" }
+    assert eventsNext<std::Int>(events, reader, -1) == 0 { "the first must still be first" }
+}

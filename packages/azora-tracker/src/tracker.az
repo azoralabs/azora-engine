@@ -1,0 +1,778 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * FastTracker II module reader.
+ *
+ * A tracker module is a song plus the instruments that play it: a pattern is a
+ * grid of note events per channel, and an instrument owns the sampled waveforms
+ * those notes trigger. Nothing here decodes to audio — this module only turns
+ * the file into data, so parsing stays testable on its own and the renderer can
+ * be replaced without touching the format.
+ *
+ * The layout is little-endian throughout, with a header whose own size is
+ * declared (so unknown trailing fields are skipped rather than misread), then
+ * patterns, then instruments.
+ */
+module engine.tracker
+
+import std.io
+import std.math
+import std.string
+import engine.io
+import engine.audio
+
+/** Every XM file begins with this signature. */
+fin xmSignature = "Extended Module: "
+
+/** Offset of the header-size field; everything before it is fixed. */
+fin xmHeaderStart = 60
+
+/** Maximum entries in the pattern order table. */
+fin xmMaxOrder = 256
+
+/** Bit set in a packed note byte when the row is compressed. */
+fin xmPackedFlag = 0x80
+
+/**
+ * One note event in a pattern.
+ *
+ * Every field is optional in the file's packed encoding; zero means "no change"
+ * for that column, which is how a tracker expresses sustain.
+ */
+@std::Experimental(since: "0.0.4")
+pack TrackerNote {
+    var note: std::Int
+    var instrument: std::Int
+    var volume: std::Int
+    var command: std::Int
+    var commandParam: std::Int
+}
+
+/**
+ * A pattern: `rows` × `channels` note events, stored row-major.
+ *
+ * Row-major matches playback order — a tracker advances one row across all
+ * channels at a time — so the renderer reads contiguous memory.
+ */
+@std::Experimental(since: "0.0.4")
+pack TrackerPattern {
+    var rows: std::Int
+    var channels: std::Int
+    var notes: std::Array<TrackerNote>
+}
+
+/**
+ * A sampled waveform belonging to an instrument.
+ *
+ * `data` holds signed 16-bit PCM regardless of the file's storage width, so the
+ * renderer has one representation to mix.
+ */
+@std::Experimental(since: "0.0.4")
+pack TrackerSample {
+    var length: std::Int
+    var loopStart: std::Int
+    var loopLength: std::Int
+    var volume: std::Int
+    var fineTune: std::Int
+    var loopMode: std::Int
+    var panning: std::Int
+    var relativeNote: std::Int
+    var data: std::Long
+}
+
+/** An instrument: the samples a note can trigger, and the map from note to sample. */
+@std::Experimental(since: "0.0.4")
+pack TrackerInstrument {
+    var name: std::String
+    var samples: std::Array<TrackerSample>
+    var sampleForNote: std::Array<std::Int>
+}
+
+/** A parsed module: the song, its patterns, and its instruments. */
+@std::Experimental(since: "0.0.4")
+pack TrackerModule {
+    var name: std::String
+    var channels: std::Int
+    var songLength: std::Int
+    var restartPosition: std::Int
+    var defaultTempo: std::Int
+    var defaultBpm: std::Int
+    var linearFrequency: std::Bool
+    var order: std::Array<std::Int>
+    var patterns: std::Array<TrackerPattern>
+    var instruments: std::Array<TrackerInstrument>
+    var ok: std::Bool
+}
+
+/** The module returned when parsing fails. */
+@std::Experimental(since: "0.0.4")
+func moduleEmpty(): TrackerModule {
+    return TrackerModule(
+        "", 0, 0, 0, 6, 125, true,
+        std::Array::fill<std::Int>(0),
+        std::Array::fill<TrackerPattern>(0),
+        std::Array::fill<TrackerInstrument>(0),
+        false
+    )
+}
+
+/** An empty note event: every column meaning "no change". */
+func noteEmpty(): TrackerNote {
+    return TrackerNote(0, 0, 0, 0, 0)
+}
+
+/** An unusable sample, used where a slot carries no waveform. */
+func sampleEmpty(): TrackerSample {
+    return TrackerSample(0, 0, 0, 64, 0, 0, 128, 0, 0L)
+}
+
+/**
+ * Parses the module in [blob].
+ *
+ * Returns an unusable module rather than failing loudly when the signature does
+ * not match, so a caller can probe a file cheaply.
+ */
+@std::Experimental(since: "0.0.4")
+func parseModule(blob: Blob): TrackerModule {
+    if !blob.ok() || !blob.matches(0, xmSignature) {
+        return moduleEmpty()
+    }
+
+    fin name = std::strTrim(blob.text(17, 20))
+    fin headerSize = blob.i32(xmHeaderStart)
+    fin songLength = blob.u16(64)
+    fin restart = blob.u16(66)
+    fin channels = blob.u16(68)
+    fin patternCount = blob.u16(70)
+    fin instrumentCount = blob.u16(72)
+    fin flags = blob.u16(74)
+    fin tempo = blob.u16(76)
+    fin bpm = blob.u16(78)
+
+    if channels <= 0 || headerSize <= 0 {
+        return moduleEmpty()
+    }
+
+    // Pattern order table, clamped to what the file declares.
+    var order: std::Array<std::Int> = std::Array::fill<std::Int>(xmMaxOrder)
+    var i = 0
+    while i < xmMaxOrder {
+        order[i] = if i < songLength { blob.u8(80 + i) } else { 0 }
+        i = i + 1
+    }
+
+    var cursor = xmHeaderStart + headerSize
+    var patterns: std::Array<TrackerPattern> = std::Array::fill<TrackerPattern>(patternCount)
+    var p = 0
+    while p < patternCount {
+        patterns[p] = readPattern(blob, cursor, channels)
+        cursor = cursor + patternByteLength(blob, cursor)
+        p = p + 1
+    }
+
+    var instruments: std::Array<TrackerInstrument> = std::Array::fill<TrackerInstrument>(instrumentCount)
+    var n = 0
+    while n < instrumentCount {
+        instruments[n] = readInstrument(blob, cursor)
+        cursor = cursor + instrumentByteLength(blob, cursor)
+        n = n + 1
+    }
+
+    return TrackerModule(
+        name, channels, songLength, restart, tempo, bpm,
+        (flags % 2) == 1,
+        order, patterns, instruments, true
+    )
+}
+
+/** Total bytes a pattern occupies, header included. */
+func patternByteLength(blob: Blob, at: std::Int): std::Int {
+    fin headerLength = blob.i32(at)
+    fin packedSize = blob.u16(at + 7)
+    return headerLength + packedSize
+}
+
+/**
+ * Reads one pattern.
+ *
+ * Rows are stored in a packed form: a leading byte with the high bit set names
+ * which columns are present, and absent columns keep their previous meaning.
+ * A byte without the flag is a plain note followed by all four other columns.
+ */
+func readPattern(blob: Blob, at: std::Int, channels: std::Int): TrackerPattern {
+    fin headerLength = blob.i32(at)
+    fin rows = blob.u16(at + 5)
+    fin packedSize = blob.u16(at + 7)
+    var notes: std::Array<TrackerNote> = std::Array::fill<TrackerNote>(rows * channels)
+
+    var index = 0
+    fin total = rows * channels
+    while index < total {
+        notes[index] = noteEmpty()
+        index = index + 1
+    }
+    if packedSize == 0 || rows <= 0 {
+        return TrackerPattern(rows, channels, notes)
+    }
+
+    var cursor = at + headerLength
+    fin end = cursor + packedSize
+    var cell = 0
+    while cell < total && cursor < end {
+        var note = 0
+        var instrument = 0
+        var volume = 0
+        var command = 0
+        var param = 0
+
+        fin lead = blob.u8(cursor)
+        cursor = cursor + 1
+        if lead >= xmPackedFlag {
+            if (lead % 2) == 1 {
+                note = blob.u8(cursor)
+                cursor = cursor + 1
+            }
+            if ((lead / 2) % 2) == 1 {
+                instrument = blob.u8(cursor)
+                cursor = cursor + 1
+            }
+            if ((lead / 4) % 2) == 1 {
+                volume = blob.u8(cursor)
+                cursor = cursor + 1
+            }
+            if ((lead / 8) % 2) == 1 {
+                command = blob.u8(cursor)
+                cursor = cursor + 1
+            }
+            if ((lead / 16) % 2) == 1 {
+                param = blob.u8(cursor)
+                cursor = cursor + 1
+            }
+        } else {
+            note = lead
+            instrument = blob.u8(cursor)
+            volume = blob.u8(cursor + 1)
+            command = blob.u8(cursor + 2)
+            param = blob.u8(cursor + 3)
+            cursor = cursor + 4
+        }
+
+        notes[cell] = TrackerNote(note, instrument, volume, command, param)
+        cell = cell + 1
+    }
+
+    return TrackerPattern(rows, channels, notes)
+}
+
+/** Total bytes an instrument occupies, including all of its samples. */
+func instrumentByteLength(blob: Blob, at: std::Int): std::Int {
+    fin headerLength = blob.i32(at)
+    fin sampleCount = blob.u16(at + 27)
+    if sampleCount <= 0 {
+        return headerLength
+    }
+    fin sampleHeaderSize = blob.i32(at + 29)
+    var total = headerLength + sampleCount * sampleHeaderSize
+    var s = 0
+    while s < sampleCount {
+        total = total + blob.i32(at + headerLength + s * sampleHeaderSize)
+        s = s + 1
+    }
+    return total
+}
+
+/** Reads one instrument and every sample it owns. */
+func readInstrument(blob: Blob, at: std::Int): TrackerInstrument {
+    fin headerLength = blob.i32(at)
+    fin name = std::strTrim(blob.text(at + 4, 22))
+    fin sampleCount = blob.u16(at + 27)
+
+    var sampleForNote: std::Array<std::Int> = std::Array::fill<std::Int>(96)
+    var n = 0
+    while n < 96 {
+        sampleForNote[n] = if sampleCount > 0 { blob.u8(at + 33 + n) } else { 0 }
+        n = n + 1
+    }
+
+    if sampleCount <= 0 {
+        return TrackerInstrument(name, std::Array::fill<TrackerSample>(0), sampleForNote)
+    }
+
+    fin sampleHeaderSize = blob.i32(at + 29)
+    var samples: std::Array<TrackerSample> = std::Array::fill<TrackerSample>(sampleCount)
+
+    // Sample headers come first, then all of their waveform data in order.
+    var dataCursor = at + headerLength + sampleCount * sampleHeaderSize
+    var s = 0
+    while s < sampleCount {
+        fin head = at + headerLength + s * sampleHeaderSize
+        fin byteLength = blob.i32(head)
+        fin loopStart = blob.i32(head + 4)
+        fin loopLength = blob.i32(head + 8)
+        fin volume = blob.u8(head + 12)
+        fin fineTune = blob.i8(head + 13)
+        fin storage = blob.u8(head + 14)
+        fin panning = blob.u8(head + 15)
+        fin relative = blob.i8(head + 16)
+
+        // Bit 4 of `type` selects 16-bit storage; both decode to 16-bit PCM.
+        fin sixteenBit = ((storage / 16) % 2) == 1
+        fin frames = if sixteenBit { byteLength / 2 } else { byteLength }
+        fin pcm = decodeSampleData(blob, dataCursor, byteLength, sixteenBit)
+
+        samples[s] = TrackerSample(
+            frames,
+            if sixteenBit { loopStart / 2 } else { loopStart },
+            if sixteenBit { loopLength / 2 } else { loopLength },
+            volume, fineTune, storage % 4, panning, relative, pcm
+        )
+        dataCursor = dataCursor + byteLength
+        s = s + 1
+    }
+
+    return TrackerInstrument(name, samples, sampleForNote)
+}
+
+/**
+ * Decodes sample data into signed 16-bit PCM.
+ *
+ * Waveforms are stored as deltas rather than absolute values, so each frame is
+ * the running sum of everything before it. Eight-bit samples are widened so the
+ * renderer only ever mixes one format.
+ */
+func decodeSampleData(blob: Blob, at: std::Int, byteLength: std::Int, sixteenBit: std::Bool): std::Long {
+    if byteLength <= 0 {
+        return 0L
+    }
+    fin frames = if sixteenBit { byteLength / 2 } else { byteLength }
+    if frames <= 0 {
+        return 0L
+    }
+    fin buffer = azAlloc((frames * 2) as std::Long)
+    if buffer == 0L {
+        return 0L
+    }
+
+    var running = 0
+    var i = 0
+    while i < frames {
+        if sixteenBit {
+            running = wrap16(running + blob.i16(at + i * 2))
+        } else {
+            running = wrap16(running + blob.i8(at + i) * 256)
+        }
+        azPoke8(buffer, (i * 2) as std::Long, running % 256)
+        azPoke8(buffer, (i * 2 + 1) as std::Long, (running / 256) % 256)
+        i = i + 1
+    }
+    return buffer
+}
+
+/** Wraps a value into signed 16-bit range, as the delta encoding assumes. */
+func wrap16(value: std::Int): std::Int {
+    var v = value % 65536
+    if v > 32767 {
+        v = v - 65536
+    }
+    if v < -32768 {
+        v = v + 65536
+    }
+    return v
+}
+
+impl TrackerModule {
+    /** The pattern played at [position] in the song order. */
+    func patternAt(position: std::Int): TrackerPattern {
+        if position < 0 || position >= self.songLength {
+            return TrackerPattern(0, self.channels, std::Array::fill<TrackerNote>(0))
+        }
+        fin index = self.order[position]
+        if index < 0 || index >= self.patterns.size {
+            return TrackerPattern(0, self.channels, std::Array::fill<TrackerNote>(0))
+        }
+        return self.patterns[index]
+    }
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────
+//
+// The module is rendered to PCM in one pass rather than streamed. A song is a
+// few minutes of audio, so the buffer is a handful of megabytes, and rendering
+// ahead removes any risk of an underrun in the middle of playback.
+
+/** Output rate for rendered music. Tracker material carries fine at 22 kHz. */
+fin renderRate = 22050
+
+/** Bytes of RIFF/WAVE header before the sample data. */
+fin wavHeaderBytes = 44
+
+/**
+ * The playback frequency of a note, in Hz.
+ *
+ * XM linear frequency expresses pitch as a period counted down from a fixed
+ * origin; the sample's own `relativeNote` and `fineTune` shift that period so
+ * one waveform can serve the whole keyboard.
+ */
+func exp2Of(x: std::Double): std::Double {
+    // Split into an integer part, handled by doubling, and a fraction in
+    // [0,1) evaluated as e^(f·ln2). The series converges quickly over that
+    // range, which keeps this accurate enough for pitch without linking libm.
+    var whole = x as std::Int
+    var frac = x - (whole as std::Double)
+    if frac < 0.0 {
+        frac = frac + 1.0
+        whole = whole - 1
+    }
+
+    fin y = frac * 0.6931471805599453
+    var term = 1.0
+    var sum = 1.0
+    var k = 1
+    while k < 16 {
+        term = term * y / (k as std::Double)
+        sum = sum + term
+        k = k + 1
+    }
+
+    var result = sum
+    var i = 0
+    if whole > 0 {
+        while i < whole {
+            result = result * 2.0
+            i = i + 1
+        }
+    }
+    if whole < 0 {
+        while i < 0 - whole {
+            result = result / 2.0
+            i = i + 1
+        }
+    }
+    return result
+}
+
+func noteFrequency(note: std::Int, relativeNote: std::Int, fineTune: std::Int): std::Double {
+    fin index = (note + relativeNote - 1) as std::Double
+    fin period = 7680.0 - index * 64.0 - (fineTune as std::Double) / 2.0
+    return 8363.0 * exp2Of((4608.0 - period) / 768.0)
+}
+
+/** Writes a mono 16-bit RIFF/WAVE header describing [frames] samples. */
+func pokeWav(buffer: std::Long, frames: std::Int, rate: std::Int) {
+    fin dataBytes = frames * 2
+    pokeAscii(buffer, 0, "RIFF")
+    pokeI32(buffer, 4, 36 + dataBytes)
+    pokeAscii(buffer, 8, "WAVE")
+    pokeAscii(buffer, 12, "fmt ")
+    pokeI32(buffer, 16, 16)
+    pokeI16(buffer, 20, 1)
+    pokeI16(buffer, 22, 1)
+    pokeI32(buffer, 24, rate)
+    pokeI32(buffer, 28, rate * 2)
+    pokeI16(buffer, 32, 2)
+    pokeI16(buffer, 34, 16)
+    pokeAscii(buffer, 36, "data")
+    pokeI32(buffer, 40, dataBytes)
+}
+
+func pokeAscii(buffer: std::Long, at: std::Int, text: std::String) {
+    var i = 0
+    fin length = std::strLength(text)
+    while i < length {
+        azPoke8(buffer, (at + i) as std::Long, asciiCodeAt(text, i))
+        i = i + 1
+    }
+}
+
+/** The ASCII code of character [index] of [text]. */
+func asciiCodeAt(text: std::String, index: std::Int): std::Int {
+    fin ch = std::strSlice(text, index, index + 1)
+    var code = 32
+    while code < 127 {
+        if asciiChar(code) == ch {
+            return code
+        }
+        code = code + 1
+    }
+    return 32
+}
+
+func pokeI16(buffer: std::Long, at: std::Int, value: std::Int) {
+    azPoke8(buffer, at as std::Long, value % 256)
+    azPoke8(buffer, (at + 1) as std::Long, (value / 256) % 256)
+}
+
+func pokeI32(buffer: std::Long, at: std::Int, value: std::Int) {
+    azPoke8(buffer, at as std::Long, value % 256)
+    azPoke8(buffer, (at + 1) as std::Long, (value / 256) % 256)
+    azPoke8(buffer, (at + 2) as std::Long, (value / 65536) % 256)
+    azPoke8(buffer, (at + 3) as std::Long, (value / 16777216) % 256)
+}
+
+/** Reads a signed 16-bit frame from decoded sample data. */
+func sampleFrame(data: std::Long, index: std::Int): std::Int {
+    fin lo = azPeek8(data, (index * 2) as std::Long) & 0xFF
+    fin hi = azPeek8(data, (index * 2 + 1) as std::Long) & 0xFF
+    var value = lo + hi * 256
+    if value > 32767 {
+        value = value - 65536
+    }
+    return value
+}
+
+/**
+ * Renders [module] to a mono PCM WAV in memory.
+ *
+ * This plays notes, instruments, sample loops and the volume column. The effect
+ * column is parsed but not yet applied, so pitch slides, vibrato and pattern
+ * jumps are absent — the melody and instrumentation are correct, the
+ * articulation is not. Returns 0 when the module is unusable.
+ */
+/**
+ * A rendered buffer and its byte length.
+ *
+ * Returned as a value rather than through an out-parameter: `T!` parameters do
+ * not write back to the caller, so a length returned that way is silently zero.
+ */
+@std::Experimental(since: "0.0.4")
+pack RenderedAudio {
+    var data: std::Long
+    var length: std::Int
+}
+
+@std::Experimental(since: "0.0.4")
+func renderModule(song: TrackerModule&): RenderedAudio {
+    if !song.ok || song.channels <= 0 || song.songLength <= 0 {
+        return RenderedAudio(0L, 0)
+    }
+
+    fin ticksPerRow = if song.defaultTempo > 0 { song.defaultTempo } else { 6 }
+    fin bpm = if song.defaultBpm > 0 { song.defaultBpm } else { 125 }
+    fin framesPerTick = (renderRate * 5) / (bpm * 2)
+    if framesPerTick <= 0 {
+        return RenderedAudio(0L, 0)
+    }
+
+    // Total length is bounded by the song order, so the buffer is sized once.
+    var totalFrames = 0
+    var position = 0
+    while position < song.songLength {
+        totalFrames = totalFrames + song.patternAt(position).rows * ticksPerRow * framesPerTick
+        position = position + 1
+    }
+    if totalFrames <= 0 {
+        return RenderedAudio(0L, 0)
+    }
+
+    fin buffer = azAlloc((wavHeaderBytes + totalFrames * 2) as std::Long)
+    if buffer == 0L {
+        return RenderedAudio(0L, 0)
+    }
+    pokeWav(buffer, totalFrames, renderRate)
+
+    // Per-channel voice state, held as parallel arrays.
+    fin channels = song.channels
+    var voiceSample: std::Array<std::Int> = std::Array::fill<std::Int>(channels)
+    var voiceInstrument: std::Array<std::Int> = std::Array::fill<std::Int>(channels)
+    var voicePos: std::Array<std::Double> = std::Array::fill<std::Double>(channels)
+    var voiceStep: std::Array<std::Double> = std::Array::fill<std::Double>(channels)
+    var voiceVolume: std::Array<std::Double> = std::Array::fill<std::Double>(channels)
+    var voiceActive: std::Array<std::Int> = std::Array::fill<std::Int>(channels)
+
+    var c = 0
+    while c < channels {
+        voiceSample[c] = -1
+        voiceInstrument[c] = -1
+        voicePos[c] = 0.0
+        voiceStep[c] = 0.0
+        voiceVolume[c] = 0.0
+        voiceActive[c] = 0
+        c = c + 1
+    }
+
+    var writeFrame = 0
+    position = 0
+    while position < song.songLength {
+        fin pattern = song.patternAt(position)
+        var row = 0
+        while row < pattern.rows {
+            // Trigger this row's notes before any audio for the row is mixed.
+            c = 0
+            while c < channels {
+                fin event = pattern.notes[row * pattern.channels + c]
+                applyEvent(
+                    song, event, c,
+                    voiceSample, voiceInstrument, voicePos, voiceStep, voiceVolume, voiceActive
+                )
+                c = c + 1
+            }
+
+            var frame = 0
+            fin rowFrames = ticksPerRow * framesPerTick
+            while frame < rowFrames && writeFrame < totalFrames {
+                var mixed = 0.0
+                c = 0
+                while c < channels {
+                    if voiceActive[c] == 1 {
+                        mixed = mixed + advanceVoice(
+                            song, c, voiceSample, voiceInstrument,
+                            voicePos, voiceStep, voiceVolume, voiceActive
+                        )
+                    }
+                    c = c + 1
+                }
+
+                // Headroom so a dense row cannot clip the mix.
+                var value = (mixed * 0.25) as std::Int
+                if value > 32767 {
+                    value = 32767
+                }
+                if value < -32768 {
+                    value = -32768
+                }
+                pokeI16(buffer, wavHeaderBytes + writeFrame * 2, value % 65536)
+
+                writeFrame = writeFrame + 1
+                frame = frame + 1
+            }
+            row = row + 1
+        }
+        position = position + 1
+    }
+
+    return RenderedAudio(buffer, wavHeaderBytes + totalFrames * 2)
+}
+
+/** Starts, retunes or stops a voice according to one note event. */
+func applyEvent(    song: TrackerModule&,
+    event: TrackerNote,
+    channel: std::Int,
+    voiceSample: std::Array<std::Int>,
+    voiceInstrument: std::Array<std::Int>,
+    voicePos: std::Array<std::Double>,
+    voiceStep: std::Array<std::Double>,
+    voiceVolume: std::Array<std::Double>,
+    voiceActive: std::Array<std::Int>
+) {
+    // 97 is note-off; it silences the channel without retriggering.
+    if event.note == 97 {
+        voiceActive[channel] = 0
+        return
+    }
+
+    if event.instrument > 0 && event.instrument <= song.instruments.size {
+        voiceInstrument[channel] = event.instrument - 1
+    }
+    fin instrumentIndex = voiceInstrument[channel]
+    if instrumentIndex < 0 || instrumentIndex >= song.instruments.size {
+        return
+    }
+    fin instrument = song.instruments[instrumentIndex]
+    if instrument.samples.size == 0 {
+        return
+    }
+
+    if event.note > 0 && event.note < 97 {
+        var mapped = 0
+        if event.note - 1 < instrument.sampleForNote.size {
+            mapped = instrument.sampleForNote[event.note - 1]
+        }
+        if mapped >= instrument.samples.size {
+            mapped = 0
+        }
+        fin sample = instrument.samples[mapped]
+        if sample.size <= 0 {
+            return
+        }
+        voiceSample[channel] = mapped
+        voicePos[channel] = 0.0
+        voiceStep[channel] =
+            noteFrequency(event.note, sample.relativeNote, sample.fineTune) / (renderRate as std::Double)
+        voiceVolume[channel] = (sample.volume as std::Double) / 64.0
+        voiceActive[channel] = 1
+    }
+
+    // Volume column values 0x10..0x50 set the channel volume directly.
+    if event.volume >= 16 && event.volume <= 80 {
+        voiceVolume[channel] = ((event.volume - 16) as std::Double) / 64.0
+    }
+}
+
+/** Advances one voice by a frame and returns its contribution to the mix. */
+func advanceVoice(
+    song: TrackerModule&,
+    channel: std::Int,
+    voiceSample: std::Array<std::Int>,
+    voiceInstrument: std::Array<std::Int>,
+    voicePos: std::Array<std::Double>,
+    voiceStep: std::Array<std::Double>,
+    voiceVolume: std::Array<std::Double>,
+    voiceActive: std::Array<std::Int>
+): std::Double {
+    fin instrumentIndex = voiceInstrument[channel]
+    if instrumentIndex < 0 || instrumentIndex >= song.instruments.size {
+        voiceActive[channel] = 0
+        return 0.0
+    }
+    fin instrument = song.instruments[instrumentIndex]
+    fin sampleIndex = voiceSample[channel]
+    if sampleIndex < 0 || sampleIndex >= instrument.samples.size {
+        voiceActive[channel] = 0
+        return 0.0
+    }
+    fin sample = instrument.samples[sampleIndex]
+    if sample.data == 0L || sample.size <= 0 {
+        voiceActive[channel] = 0
+        return 0.0
+    }
+
+    var position = voicePos[channel]
+    var index = position as std::Int
+    if index >= sample.size {
+        // Loop modes 1 and 2 repeat; anything else ends the note.
+        if sample.loopMode > 0 && sample.loopLength > 0 {
+            position = (sample.loopStart as std::Double)
+            index = sample.loopStart
+        } else {
+            voiceActive[channel] = 0
+            return 0.0
+        }
+    }
+    if index < 0 || index >= sample.size {
+        voiceActive[channel] = 0
+        return 0.0
+    }
+
+    fin value = (sampleFrame(sample.data, index) as std::Double) * voiceVolume[channel]
+    voicePos[channel] = position + voiceStep[channel]
+    return value
+}
+
+/** Renders [module] and hands the PCM to the platform audio player. */
+@std::Experimental(since: "0.0.4")
+func moduleToSound(song: TrackerModule&): Sound {
+    fin rendered = renderModule(song)
+    if rendered.data == 0L || rendered.size <= 0 {
+        return soundEmpty()
+    }
+    fin sound = soundFromBytes(rendered.data, rendered.size)
+    azFree(rendered.data)
+    return sound
+}
+
+/** Loads and renders a tracker module in one call. */
+@std::Experimental(since: "0.0.4")
+func loadMusic(path: std::String): Sound {
+    var blob = readFile(path)
+    if !blob.ok() {
+        return soundEmpty()
+    }
+    var song = parseModule(blob)
+    fin sound = moduleToSound(song)
+    blob.release()
+    return sound
+}

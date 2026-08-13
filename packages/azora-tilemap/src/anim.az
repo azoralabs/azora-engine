@@ -1,0 +1,288 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/anim
+ *
+ * Animated tiles: a run of consecutive tile indices played at a rate, resolved
+ * at draw time from the clock rather than written back into the map.
+ *
+ * Nothing here mutates a layer. A cell keeps the tile index it was authored
+ * with for as long as the level is loaded, and the renderer asks what should be
+ * drawn *now*. That keeps animation off the layer's revision counter — a field
+ * of torches does not make the map look dirty every frame — and means saving a
+ * level never captures a half-played flame.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.anim
+
+import std.container.array
+import engine.tilemap.types
+
+/** How an animation continues once it reaches its last frame. */
+enum TileAnimationMode {
+    /** Jump back to the first frame. */
+    Repeat
+    /** Walk back down to the first frame, then up again. */
+    PingPong
+    /** Hold the last frame forever. */
+    Once
+}
+
+/**
+ * A run of consecutive tile indices played as one animation.
+ *
+ * Frames are consecutive because that is how tilesets are authored: an artist
+ * lays the frames of a waterfall side by side, and an arbitrary frame list
+ * would mostly be a more error-prone way of writing `first .. last`.
+ */
+pack TileAnimation {
+    /** The first tile index of the run. */
+    var first: std::Int
+    /** The last tile index of the run, inclusive. */
+    var last: std::Int
+    /** Frames per second. */
+    var fps: std::Double
+    var mode: TileAnimationMode
+}
+
+/**
+ * Every animation of a tileset, and the index that finds them.
+ *
+ * `byTile` maps a tile index to an animation id in constant time, with `-1` for
+ * the overwhelming majority of tiles that do not animate. Drawing consults it
+ * once per drawn tile, so it has to be an array lookup and not a search.
+ */
+pack TileAnimationSet {
+    var animations: std::Array<TileAnimation>
+    var count: std::Int
+    var byTile: std::Array<std::Int>
+}
+
+func tileAnimation(first: std::Int, last: std::Int, fps: std::Double, mode: TileAnimationMode): TileAnimation {
+    return TileAnimation(first, last, fps, mode)
+}
+
+/** An animation set covering tile indices `0 .. tileCount - 1`. */
+func tileAnimationSetNew(tileCount: std::Int): TileAnimationSet {
+    var animations: std::Array<TileAnimation> = std::Array::fill<TileAnimation>(0)
+    return TileAnimationSet(animations, 0, intGridFill(intMax(tileCount, 0), 1, -1))
+}
+
+impl TileAnimation {
+    /** The number of frames in the run. */
+    func frameCount(): std::Int {
+        return intMax(self.last - self.first + 1, 1)
+    }
+
+    /**
+     * The tile index to draw at [seconds].
+     *
+     * A non-positive rate holds the first frame, which is how an animation is
+     * paused without removing it from the set.
+     */
+    func frameAt(seconds: std::Double): std::Int {
+        fin frames = self.frameCount()
+        if frames <= 1 || self.fps <= 0.0 || seconds <= 0.0 {
+            return self.first
+        }
+        fin ticks = realFloorToInt(seconds * self.fps)
+        when self.mode {
+            TileAnimationMode.Repeat -> {
+                return self.first + tileFloorMod(ticks, frames)
+            }
+            TileAnimationMode.Once -> {
+                return self.first + intMin(ticks, frames - 1)
+            }
+            TileAnimationMode.PingPong -> {
+                // A ping-pong cycle is twice the run minus the two frames that
+                // would otherwise be shown twice at the turning points.
+                fin period = intMax(frames * 2 - 2, 1)
+                fin phase = tileFloorMod(ticks, period)
+                if phase < frames {
+                    return self.first + phase
+                }
+                return self.first + (period - phase)
+            }
+        }
+        return self.first
+    }
+}
+
+impl TileAnimationSet {
+    /**
+     * Registers [animation] and binds its first frame to it.
+     *
+     * Only the first frame is bound: a cell authored as frame 0 of a waterfall
+     * animates, and a cell deliberately authored as frame 2 stays a still
+     * picture of frame 2. Bind the rest explicitly with [bindTile] when a map is
+     * meant to animate from whichever frame it was drawn with.
+     */
+    func add(animation: TileAnimation): std::Int {
+        if self.count >= self.animations.size {
+            fin room = intMax(self.animations.size * 2, 4)
+            var grown: std::Array<TileAnimation> = std::Array::fill<TileAnimation>(room)
+            var i = 0
+            while i < self.count {
+                grown[i] = self.animations[i]
+                i = i + 1
+            }
+            self.animations = grown
+        }
+        fin id = self.count
+        self.animations[id] = animation
+        self.count = self.count + 1
+        self.bindTile(animation.first, id)
+        return id
+    }
+
+    /** Binds the tile index [index] to the animation [id]. */
+    func bindTile(index: std::Int, id: std::Int) {
+        if index < 0 || index >= self.byTile.size {
+            return
+        }
+        self.byTile[index] = id
+    }
+
+    /** Binds every frame of [id]'s run, so any authored frame animates. */
+    func bindRange(id: std::Int): std::Int {
+        if id < 0 || id >= self.count {
+            return 0
+        }
+        fin animation = self.animations[id]
+        var bound = 0
+        var index = animation.first
+        while index <= animation.last {
+            self.bindTile(index, id)
+            bound = bound + 1
+            index = index + 1
+        }
+        return bound
+    }
+
+    /** The animation id bound to [index], or `-1`. */
+    func idOf(index: std::Int): std::Int {
+        if index < 0 || index >= self.byTile.size {
+            return -1
+        }
+        return self.byTile[index]
+    }
+
+    /** True when [index] animates. */
+    func animates(index: std::Int): std::Bool {
+        return self.idOf(index) >= 0
+    }
+
+    /** The animation with id [id]; a still frame when the id is unknown. */
+    func at(id: std::Int): TileAnimation {
+        if id < 0 || id >= self.count {
+            return TileAnimation(0, 0, 0.0, TileAnimationMode.Once)
+        }
+        return self.animations[id]
+    }
+
+    /** The tile index to draw for [index] at [seconds]. */
+    func resolve(index: std::Int, seconds: std::Double): std::Int {
+        fin id = self.idOf(index)
+        if id < 0 {
+            return index
+        }
+        return self.animations[id].frameAt(seconds)
+    }
+
+    /**
+     * The tile index to draw for [index] at [seconds], offset by [phase].
+     *
+     * A phase shift is what stops a wall of torches flickering in lockstep. Use
+     * [tilePhase] to derive a stable one from a cell's position, so the same
+     * cell always animates the same way across saves and reloads.
+     */
+    func resolvePhased(index: std::Int, seconds: std::Double, phase: std::Double): std::Int {
+        fin id = self.idOf(index)
+        if id < 0 {
+            return index
+        }
+        return self.animations[id].frameAt(seconds + phase)
+    }
+
+    /** Resolves [index] with a phase derived from the cell [pos]. */
+    func resolveAt(index: std::Int, seconds: std::Double, pos: TilePos): std::Int {
+        fin id = self.idOf(index)
+        if id < 0 {
+            return index
+        }
+        fin animation = self.animations[id]
+        return animation.frameAt(seconds + tilePhase(pos, animation.frameCount(), animation.fps))
+    }
+}
+
+/**
+ * A stable per-cell time offset, spread over one full cycle.
+ *
+ * The hash mixes the two coordinates with large odd constants so neighbouring
+ * cells land far apart in the cycle rather than a frame apart, which is what
+ * makes a field of animated tiles look scattered instead of rippling.
+ */
+func tilePhase(pos: TilePos, frames: std::Int, fps: std::Double): std::Double {
+    if frames <= 1 || fps <= 0.0 {
+        return 0.0
+    }
+    fin mixed = tileFloorMod(pos.x * 73856093 ^ pos.y * 19349663, intMax(frames, 1))
+    return (mixed as std::Double) / fps
+}
+
+test "each mode walks its run the way its name promises" {
+    fin repeat = tileAnimation(10, 13, 4.0, TileAnimationMode.Repeat)
+    assert repeat.frameCount() == 4 { "10..13 inclusive is four frames" }
+    assert repeat.frameAt(0.0) == 10 { "an animation starts on its first frame" }
+    assert repeat.frameAt(0.30) == 11 { "a quarter-second at 4fps is one frame in" }
+    assert repeat.frameAt(1.05) == 10 { "a full cycle must return to the first frame" }
+
+    fin once = tileAnimation(10, 13, 4.0, TileAnimationMode.Once)
+    assert once.frameAt(100.0) == 13 { "a one-shot animation must hold its last frame" }
+
+    fin pingPong = tileAnimation(0, 2, 1.0, TileAnimationMode.PingPong)
+    assert pingPong.frameAt(0.0) == 0 && pingPong.frameAt(1.5) == 1 && pingPong.frameAt(2.5) == 2 {
+        "a ping-pong must climb to its last frame"
+    }
+    assert pingPong.frameAt(3.5) == 1 && pingPong.frameAt(4.5) == 0 {
+        "a ping-pong must walk back down without repeating the turning frames"
+    }
+}
+
+test "an animation set leaves still tiles alone" {
+    var set = tileAnimationSetNew(64)
+    fin id = set.add(tileAnimation(20, 23, 8.0, TileAnimationMode.Repeat))
+
+    assert set.animates(20) { "the first frame must trigger the animation" }
+    assert !set.animates(21) { "a later frame must stay a still picture until it is bound" }
+    assert set.resolve(7, 5.0) == 7 { "a tile with no animation must resolve to itself" }
+    assert set.resolve(20, 0.0) == 20 { "an animated tile starts on its first frame" }
+    assert set.resolve(20, 0.13) == 21 { "an animated tile must advance with the clock" }
+
+    set.bindRange(id)
+    assert set.animates(22) { "binding the run must make every frame animate" }
+}
+
+test "phase spreads identical tiles across the cycle" {
+    fin animation = tileAnimation(0, 7, 8.0, TileAnimationMode.Repeat)
+    var set = tileAnimationSetNew(16)
+    set.add(animation)
+
+    var differs = false
+    var x = 0
+    while x < 8 {
+        if set.resolveAt(0, 0.0, TilePos(x, 0)) != set.resolveAt(0, 0.0, TilePos(0, 0)) {
+            differs = true
+        }
+        x = x + 1
+    }
+    assert differs { "neighbouring cells must not all show the same frame" }
+    assert set.resolveAt(0, 0.0, TilePos(3, 3)) == set.resolveAt(0, 0.0, TilePos(3, 3)) {
+        "a cell's phase must be stable across calls"
+    }
+}

@@ -1,0 +1,768 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/animation/d2/d2
+ *
+ * Animation in the plane: sprite sheets, frame animations, flipbooks, animated
+ * sprite components, and tracks over 2D transforms and colours.
+ *
+ * All timing comes from `engine.animation.core` — clips, players, loop modes,
+ * easing and events are shared with the 3D package. What is specific to 2D is
+ * what gets animated: a rectangle on a sheet, a position and rotation in the
+ * plane, an RGBA tint.
+ *
+ * ## Frames are addressed, not stored
+ *
+ * A [SpriteAnimation] holds a run of *indices* into a [SpriteSheet], not copies
+ * of frames. A sheet is uploaded once and every animation over it is a handful
+ * of integers, which is what lets a character with thirty animations cost one
+ * texture.
+ *
+ * @since 0.0.4
+ */
+module engine.animation.d2
+
+import std.container.array
+import engine.core
+import engine.math.vec
+import engine.animation.core
+
+/** A rectangle in texture pixels. */
+pack SpriteRect {
+    var x: std::Int
+    var y: std::Int
+    var w: std::Int
+    var h: std::Int
+}
+
+/**
+ * A grid of equally sized frames on one texture.
+ *
+ * Described the way art is exported — an outer margin, a gap between frames, a
+ * frame size — so the index-to-rectangle arithmetic lives here once rather than
+ * at every call site, where an off-by-one shows up as a sliver of the
+ * neighbouring frame along an edge.
+ */
+pack SpriteSheet {
+    var texture: std::Long
+    var texWidth: std::Int
+    var texHeight: std::Int
+    var frameWidth: std::Int
+    var frameHeight: std::Int
+    var columns: std::Int
+    var rows: std::Int
+    var spacingX: std::Int
+    var spacingY: std::Int
+    var marginX: std::Int
+    var marginY: std::Int
+}
+
+/** Which way a sprite is mirrored when drawn. */
+@Component
+pack SpriteMirror {
+    var x: std::Bool
+    var y: std::Bool
+}
+
+/**
+ * A run of consecutive frames played at a rate.
+ *
+ * Consecutive because that is how sheets are authored; [Flipbook] covers the
+ * case where the frames are not in order.
+ */
+pack FrameAnimation {
+    var name: std::String
+    var first: std::Int
+    var last: std::Int
+    var fps: std::Double
+    var loopMode: LoopMode
+}
+
+/**
+ * An explicit, ordered list of frames with individual hold times.
+ *
+ * A flipbook is what hand-timed animation needs: three frames of anticipation
+ * held long, one frame of impact held for a single tick. A [FrameAnimation]
+ * cannot express that because every frame shares one rate.
+ */
+pack Flipbook {
+    var name: std::String
+    var frames: std::Array<std::Int>
+    var holds: std::Array<std::Double>
+    var count: std::Int
+    var loopMode: LoopMode
+}
+
+/** A named set of frame animations over one sheet. */
+pack SpriteAnimation {
+    var sheet: SpriteSheet
+    var animations: std::Array<FrameAnimation>
+    var count: std::Int
+}
+
+/**
+ * A sprite playing one animation of a set.
+ *
+ * The player holds the clock; this holds which animation the clock is running,
+ * so switching animation is one field write and does not disturb the timing
+ * machinery.
+ */
+@Component
+pack AnimatedSprite {
+    var animation: SpriteAnimation
+    var current: std::Int
+    var player: AnimationPlayer
+    var mirror: SpriteMirror
+    var tint: TintColor
+}
+
+/** A straight RGBA colour with components in `0 .. 1`. */
+@Component
+pack TintColor {
+    var r: std::Double
+    var g: std::Double
+    var b: std::Double
+    var a: std::Double
+}
+
+/** A keyed curve over a 2D transform. */
+pack Transform2DTrack {
+    var name: std::String
+    var position: Track<Vec2>
+    var scale: Track<Vec2>
+    var rotation: RealTrack
+}
+
+/** A keyed curve over an RGBA colour. */
+pack ColorTrack {
+    var name: std::String
+    var red: RealTrack
+    var green: RealTrack
+    var blue: RealTrack
+    var alpha: RealTrack
+}
+
+/**
+ * One animated layer of a composite: a transform curve, a colour curve, and a
+ * weight.
+ *
+ * A character's body, its cape and its glow are three layers over one clip, and
+ * a layer is what lets the glow fade independently of the body's motion.
+ */
+pack LayerAnimation {
+    var name: std::String
+    var transform: Transform2DTrack
+    var color: ColorTrack
+    var weight: BlendWeight
+    var visible: std::Bool
+}
+
+/** Which sprite rectangle to draw right now. */
+variant enum SpriteFrame {
+    Frame(rect: SpriteRect, mirrorX: std::Bool, mirrorY: std::Bool)
+    Blank
+}
+
+// ── Sheets ──────────────────────────────────────────────────────────────
+
+/** The sheet returned by every failure path; drawing from it is a no-op. */
+func spriteSheetEmpty(): SpriteSheet {
+    return SpriteSheet(0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+}
+
+/**
+ * A sheet over an existing texture.
+ *
+ * The column and row counts are derived from the texture size rather than taken
+ * from the caller, because they are a fact about the image.
+ */
+func spriteSheet(
+    texture: std::Long,
+    texWidth: std::Int,
+    texHeight: std::Int,
+    frameWidth: std::Int,
+    frameHeight: std::Int,
+    spacingX: std::Int,
+    spacingY: std::Int,
+    marginX: std::Int,
+    marginY: std::Int
+): SpriteSheet {
+    var columns = 0
+    var rows = 0
+    if frameWidth > 0 && frameHeight > 0 {
+        fin usableX = texWidth - marginX * 2 + spacingX
+        fin usableY = texHeight - marginY * 2 + spacingY
+        columns = animIntMax(usableX / (frameWidth + spacingX), 0)
+        rows = animIntMax(usableY / (frameHeight + spacingY), 0)
+    }
+    return SpriteSheet(
+        texture,
+        texWidth,
+        texHeight,
+        frameWidth,
+        frameHeight,
+        columns,
+        rows,
+        spacingX,
+        spacingY,
+        marginX,
+        marginY
+    )
+}
+
+/** A sheet of tightly packed frames with no margin or spacing. */
+func spriteSheetSimple(texture: std::Long, texWidth: std::Int, texHeight: std::Int, frameWidth: std::Int, frameHeight: std::Int): SpriteSheet {
+    return spriteSheet(texture, texWidth, texHeight, frameWidth, frameHeight, 0, 0, 0, 0)
+}
+
+func animIntMax(a: std::Int, b: std::Int): std::Int {
+    return if a > b { a } else { b }
+}
+
+func animIntMin(a: std::Int, b: std::Int): std::Int {
+    return if a < b { a } else { b }
+}
+
+func animIntClamp(value: std::Int, low: std::Int, high: std::Int): std::Int {
+    return animIntMin(animIntMax(value, low), high)
+}
+
+impl SpriteSheet {
+    /** True when the sheet has a usable texture and at least one frame. */
+    func ok(): std::Bool {
+        return self.texture != 0L && self.columns > 0 && self.rows > 0
+    }
+
+    /** The number of frames on the sheet. */
+    func frameCount(): std::Int {
+        return self.columns * self.rows
+    }
+
+    /**
+     * The pixel rectangle of frame [index].
+     *
+     * An out-of-range frame yields a zero rectangle rather than sampling
+     * whatever pixels follow the sheet.
+     */
+    func rectOf(index: std::Int): SpriteRect {
+        if index < 0 || index >= self.frameCount() || self.columns <= 0 {
+            return SpriteRect(0, 0, 0, 0)
+        }
+        fin column = index % self.columns
+        fin row = index / self.columns
+        return SpriteRect(
+            self.marginX + column * (self.frameWidth + self.spacingX),
+            self.marginY + row * (self.frameHeight + self.spacingY),
+            self.frameWidth,
+            self.frameHeight
+        )
+    }
+}
+
+// ── Frame animations ────────────────────────────────────────────────────
+
+func frameAnimation(name: std::String, first: std::Int, last: std::Int, fps: std::Double, loopMode: LoopMode): FrameAnimation {
+    return FrameAnimation(name, first, last, fps, loopMode)
+}
+
+impl FrameAnimation {
+    func frameCount(): std::Int {
+        return animIntMax(self.last - self.first + 1, 1)
+    }
+
+    /** How long one pass through the animation takes. */
+    func duration(): std::Double {
+        if self.fps <= 0.0 {
+            return 0.0
+        }
+        return (self.frameCount() as std::Double) / self.fps
+    }
+
+    /**
+     * The frame to draw at [localTime] seconds into the animation.
+     *
+     * The time is expected to be clip-local — already folded by the loop mode —
+     * so this only has to turn a position into an index.
+     */
+    func frameAt(localTime: std::Double): std::Int {
+        fin frames = self.frameCount()
+        if frames <= 1 || self.fps <= 0.0 {
+            return self.first
+        }
+        fin step = (localTime * self.fps) as std::Int
+        return self.first + animIntClamp(step, 0, frames - 1)
+    }
+}
+
+/**
+ * The clip a frame animation's timing is expressed as.
+ *
+ * A free function rather than a method on [FrameAnimation]: building a clip
+ * calls across into `engine.animation.core`, and doing that from inside an
+ * `impl` currently trips a compiler bug in the standard library's generic
+ * array path.
+ */
+func frameAnimationClip(animation: FrameAnimation): AnimationClip {
+    var events: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(0)
+    return AnimationClip(animation.name, animation.duration(), animation.loopMode, events, 0)
+}
+
+// ── Flipbooks ───────────────────────────────────────────────────────────
+
+/** An empty flipbook with room for [capacity] frames. */
+func flipbookNew(name: std::String, capacity: std::Int, loopMode: LoopMode): Flipbook {
+    fin room = animIntMax(capacity, 0)
+    var frames: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+    var holds: std::Array<std::Double> = std::Array::fill<std::Double>(room)
+    return Flipbook(name, frames, holds, 0, loopMode)
+}
+
+impl Flipbook {
+    /** Appends [frame], held for [hold] seconds. */
+    func add(frame: std::Int, hold: std::Double): std::Int {
+        if self.count >= self.frames.size {
+            fin room = if self.frames.size * 2 > 4 { self.frames.size * 2 } else { 4 }
+            var grownFrames: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+            var grownHolds: std::Array<std::Double> = std::Array::fill<std::Double>(room)
+            var i = 0
+            while i < self.count {
+                grownFrames[i] = self.frames[i]
+                grownHolds[i] = self.holds[i]
+                i = i + 1
+            }
+            self.frames = grownFrames
+            self.holds = grownHolds
+        }
+        self.frames[self.count] = frame
+        self.holds[self.count] = animMax(hold, 0.0)
+        self.count = self.count + 1
+        return self.count - 1
+    }
+
+    /** The total length of one pass. */
+    func duration(): std::Double {
+        var total = 0.0
+        for i in 0..(self.count - 1) {
+            total = total + self.holds[i]
+        }
+        return total
+    }
+
+    /**
+     * The frame to draw at [localTime] seconds in.
+     *
+     * Holds are walked rather than divided, because they differ per frame —
+     * which is the whole point of a flipbook over a [FrameAnimation].
+     */
+    func frameAt(localTime: std::Double): std::Int {
+        if self.count <= 0 {
+            return -1
+        }
+        var remaining = localTime
+        for i in 0..(self.count - 1) {
+            if remaining < self.holds[i] {
+                return self.frames[i]
+            }
+            remaining = remaining - self.holds[i]
+        }
+        return self.frames[self.count - 1]
+    }
+}
+
+/** The clip a flipbook's timing is expressed as. See [frameAnimationClip]. */
+func flipbookClip(book: Flipbook): AnimationClip {
+    var events: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(0)
+    return AnimationClip(book.name, book.duration(), book.loopMode, events, 0)
+}
+
+// ── Sprite animation sets ───────────────────────────────────────────────
+
+/** An empty set of animations over [sheet]. */
+func spriteAnimation(sheet: SpriteSheet, capacity: std::Int): SpriteAnimation {
+    var animations: std::Array<FrameAnimation> = std::Array::fill<FrameAnimation>(animIntMax(capacity, 0))
+    return SpriteAnimation(sheet, animations, 0)
+}
+
+impl SpriteAnimation {
+    /** Appends [animation] and returns its index. */
+    func add(animation: FrameAnimation): std::Int {
+        if self.count >= self.animations.size {
+            fin room = if self.animations.size * 2 > 4 { self.animations.size * 2 } else { 4 }
+            var grown: std::Array<FrameAnimation> = std::Array::fill<FrameAnimation>(room)
+            var i = 0
+            while i < self.count {
+                grown[i] = self.animations[i]
+                i = i + 1
+            }
+            self.animations = grown
+        }
+        self.animations[self.count] = animation
+        self.count = self.count + 1
+        return self.count - 1
+    }
+
+    /** The index of the animation called [name], or `-1`. */
+    func indexOf(name: std::String): std::Int {
+        for i in 0..(self.count - 1) {
+            if self.animations[i].name == name {
+                return i
+            }
+        }
+        return -1
+    }
+
+    /** The animation at [index], or a still first frame. */
+    func at(index: std::Int): FrameAnimation {
+        if index < 0 || index >= self.count {
+            return frameAnimation("", 0, 0, 0.0, LoopMode.Once)
+        }
+        return self.animations[index]
+    }
+}
+
+// ── Animated sprites ────────────────────────────────────────────────────
+
+func tintWhite(): TintColor {
+    return TintColor(1.0, 1.0, 1.0, 1.0)
+}
+
+func tintColor(r: std::Double, g: std::Double, b: std::Double, a: std::Double): TintColor {
+    return TintColor(r, g, b, a)
+}
+
+func spriteMirror(x: std::Bool, y: std::Bool): SpriteMirror {
+    return SpriteMirror(x, y)
+}
+
+/** A sprite positioned at the start of animation [index], playing. */
+func animatedSprite(animation: SpriteAnimation, index: std::Int): AnimatedSprite {
+    fin chosen = animation.at(index)
+    fin clip = frameAnimationClip(chosen)
+    fin player = AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
+    return AnimatedSprite(animation, index, player, spriteMirror(false, false), tintWhite())
+}
+
+impl AnimatedSprite {
+    /**
+     * Switches to animation [index], restarting the clock.
+     *
+     * Switching to the animation already playing is ignored, so calling this
+     * every frame from a state machine — which is how it is actually used —
+     * does not restart the animation on every frame.
+     */
+    func playAnimation(index: std::Int) {
+        if index == self.current {
+            return
+        }
+        self.current = index
+        fin chosen = self.animation.at(index)
+        fin clip = frameAnimationClip(chosen)
+        self.player = AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
+    }
+
+    /** Switches to the animation called [name], if there is one. */
+    func playNamed(name: std::String) {
+        fin index = self.animation.indexOf(name)
+        if index >= 0 {
+            self.playAnimation(index)
+        }
+    }
+
+    /** Advances the sprite's clock and reports its playback state. */
+    func advance(dt: std::Double): PlaybackState {
+        return self.player.advance(dt)
+    }
+
+    /** The frame index the sprite is showing. */
+    func frame(): std::Int {
+        return self.animation.at(self.current).frameAt(self.player.localTime())
+    }
+
+    /** What to draw right now, mirrors included. */
+    func currentFrame(): SpriteFrame {
+        if !self.animation.sheet.ok() {
+            return SpriteFrame.Blank
+        }
+        fin rect = self.animation.sheet.rectOf(self.frame())
+        if rect.w <= 0 {
+            return SpriteFrame.Blank
+        }
+        return SpriteFrame.Frame(rect, self.mirror.x, self.mirror.y)
+    }
+
+    /** True once a non-looping animation has run out. */
+    func isFinished(): std::Bool {
+        return self.player.state == PlaybackState.Finished
+    }
+}
+
+/** The rectangle of [frame], or a zero rectangle when there is nothing to draw. */
+func spriteFrameRect(frame: SpriteFrame): SpriteRect {
+    return when frame {
+        SpriteFrame.Frame(rect, mirrorX, mirrorY) -> rect
+        else -> SpriteRect(0, 0, 0, 0)
+    }
+}
+
+/** True when [frame] has something to draw. */
+func spriteFrameVisible(frame: SpriteFrame): std::Bool {
+    return when frame {
+        SpriteFrame.Frame(rect, mirrorX, mirrorY) -> true
+        else -> false
+    }
+}
+
+// ── Transform and colour tracks ─────────────────────────────────────────
+
+/** Empty transform curves with room for [capacity] keys each. */
+func transform2dTrack(name: std::String, capacity: std::Int): Transform2DTrack {
+    return Transform2DTrack(
+        name,
+        trackNew<Vec2>(name + ".position", capacity),
+        trackNew<Vec2>(name + ".scale", capacity),
+        realTrackNew(name + ".rotation", capacity)
+    )
+}
+
+/** Adds a fully specified transform key. */
+func transform2dKey(
+    track: Transform2DTrack,
+    time: std::Double,
+    position: Vec2,
+    scale: Vec2,
+    rotation: std::Double,
+    mode: Interpolation
+) {
+    trackInsert<Vec2>(track.position, Keyframe<Vec2>(time, position, mode))
+    trackInsert<Vec2>(track.scale, Keyframe<Vec2>(time, scale, mode))
+    realTrackKey(track.rotation, time, rotation, mode)
+}
+
+/** The 2D vector a `Track<Vec2>` holds at [time]. */
+func sampleVec2(track: Track<Vec2>, time: std::Double): Vec2 {
+    fin span = trackSpanAt<Vec2>(track, time)
+    if !span.valid {
+        return vec2Zero()
+    }
+    fin fromKey: Keyframe<Vec2> = trackAt<Vec2>(track, span.fromIndex)
+    fin toKey: Keyframe<Vec2> = trackAt<Vec2>(track, span.toIndex)
+    fin a: Vec2 = fromKey.value
+    fin b: Vec2 = toKey.value
+    return Vec2(
+        lerpReal(a.x, b.x, span.factor),
+        lerpReal(a.y, b.y, span.factor)
+    )
+}
+
+/** The transform a curve holds at [time]. */
+func sampleTransform2d(track: Transform2DTrack, time: std::Double): Transform2DPose {
+    return Transform2DPose(
+        sampleVec2(track.position, time),
+        sampleVec2(track.scale, time),
+        sampleReal(track.rotation, time)
+    )
+}
+
+/** A sampled 2D transform. */
+pack Transform2DPose {
+    var position: Vec2
+    var scale: Vec2
+    var rotation: std::Double
+}
+
+/** Empty colour curves with room for [capacity] keys each. */
+func colorTrack(name: std::String, capacity: std::Int): ColorTrack {
+    return ColorTrack(
+        name,
+        realTrackNew(name + ".r", capacity),
+        realTrackNew(name + ".g", capacity),
+        realTrackNew(name + ".b", capacity),
+        realTrackNew(name + ".a", capacity)
+    )
+}
+
+/** Adds a colour key at [time]. */
+func colorKey(track: ColorTrack, time: std::Double, color: TintColor, mode: Interpolation) {
+    realTrackKey(track.red, time, color.r, mode)
+    realTrackKey(track.green, time, color.g, mode)
+    realTrackKey(track.blue, time, color.b, mode)
+    realTrackKey(track.alpha, time, color.a, mode)
+}
+
+/** The colour a curve holds at [time]. */
+func sampleColor(track: ColorTrack, time: std::Double): TintColor {
+    return TintColor(
+        sampleReal(track.red, time),
+        sampleReal(track.green, time),
+        sampleReal(track.blue, time),
+        sampleReal(track.alpha, time)
+    )
+}
+
+// ── Layers ──────────────────────────────────────────────────────────────
+
+/** An empty layer with room for [capacity] keys in each of its curves. */
+func layerAnimation(name: std::String, capacity: std::Int): LayerAnimation {
+    return LayerAnimation(
+        name,
+        transform2dTrack(name, capacity),
+        colorTrack(name, capacity),
+        blendWeight(1.0),
+        true
+    )
+}
+
+/** The layer's transform at [time], scaled by nothing — the weight is the caller's. */
+func layerTransformAt(layer: LayerAnimation, time: std::Double): Transform2DPose {
+    return sampleTransform2d(layer.transform, time)
+}
+
+/** The layer's colour at [time], with its weight folded into the alpha. */
+func layerColorAt(layer: LayerAnimation, time: std::Double): TintColor {
+    fin sampled = sampleColor(layer.color, time)
+    if !layer.visible {
+        return TintColor(sampled.r, sampled.g, sampled.b, 0.0)
+    }
+    return TintColor(sampled.r, sampled.g, sampled.b, sampled.a * layer.weight.value)
+}
+
+/**
+ * Blends two 2D poses.
+ *
+ * `t` of `0` is [a] and `1` is [b], so a crossfade between two animations is
+ * two samples and one call.
+ */
+func blendPose2d(a: Transform2DPose, b: Transform2DPose, t: std::Double): Transform2DPose {
+    return Transform2DPose(
+        Vec2(lerpReal(a.position.x, b.position.x, t), lerpReal(a.position.y, b.position.y, t)),
+        Vec2(lerpReal(a.scale.x, b.scale.x, t), lerpReal(a.scale.y, b.scale.y, t)),
+        lerpReal(a.rotation, b.rotation, t)
+    )
+}
+
+/** Blends two colours. */
+func blendColor(a: TintColor, b: TintColor, t: std::Double): TintColor {
+    return TintColor(
+        lerpReal(a.r, b.r, t),
+        lerpReal(a.g, b.g, t),
+        lerpReal(a.b, b.b, t),
+        lerpReal(a.a, b.a, t)
+    )
+}
+
+test "a sheet's frame rectangles account for margin and spacing" {
+    // A 3x2 sheet of 16px frames with a 1px gap and a 2px border.
+    fin sheet = spriteSheet(1L, 2 + 3 * 17 - 1 + 2, 2 + 2 * 17 - 1 + 2, 16, 16, 1, 1, 2, 2)
+    assert sheet.columns == 3 && sheet.rows == 2 { "the frame grid must come from the sheet size" }
+    assert sheet.frameCount() == 6 { "a 3x2 sheet holds six frames" }
+    assert sheet.rectOf(0).x == 2 && sheet.rectOf(0).y == 2 { "frame 0 starts after the margin" }
+    assert sheet.rectOf(1).x == 19 { "frame 1 must clear the frame width and the gap" }
+    assert sheet.rectOf(3).y == 19 { "frame 3 must wrap to the second row" }
+    assert sheet.rectOf(6).w == 0 { "an out-of-range frame must not sample past the sheet" }
+}
+
+test "a frame animation maps its clock onto its run" {
+    fin walk = frameAnimation("walk", 4, 7, 8.0, LoopMode.Repeat)
+    assert walk.frameCount() == 4 { "4..7 inclusive is four frames" }
+    assert animAbs(walk.duration() - 0.5) < 0.001 { "four frames at 8fps is half a second" }
+    assert walk.frameAt(0.0) == 4 { "an animation starts on its first frame" }
+    assert walk.frameAt(0.2) == 5 { "an eighth of a second in is one frame on" }
+    assert walk.frameAt(0.49) == 7 { "the end of the run is the last frame" }
+    assert walk.frameAt(99.0) == 7 { "a local time past the run must clamp, not wrap" }
+}
+
+test "a flipbook honours per-frame holds" {
+    var book = flipbookNew("impact", 3, LoopMode.Once)
+    book.add(10, 0.4)
+    book.add(11, 0.05)
+    book.add(12, 0.4)
+
+    assert animAbs(book.duration() - 0.85) < 0.001 { "the length is the sum of the holds" }
+    assert book.frameAt(0.0) == 10 { "the first frame shows first" }
+    assert book.frameAt(0.39) == 10 { "a long hold must last" }
+    assert book.frameAt(0.42) == 11 { "the single-tick frame must appear" }
+    assert book.frameAt(0.5) == 12 { "and be left again quickly" }
+    assert book.frameAt(99.0) == 12 { "past the end holds the last frame" }
+}
+
+test "an animated sprite switches without restarting itself" {
+    var set = spriteAnimation(spriteSheetSimple(1L, 64, 64, 16, 16), 2)
+    fin idle = set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
+    fin run = set.add(frameAnimation("run", 4, 7, 8.0, LoopMode.Repeat))
+
+    var sprite = animatedSprite(set, idle)
+    assert sprite.frame() == 0 { "a new sprite shows its first frame" }
+    sprite.advance(0.3)
+    assert sprite.frame() == 1 { "the sprite must advance through its run" }
+
+    sprite.playAnimation(run)
+    assert sprite.current == run { "switching must change the animation" }
+    assert sprite.frame() == 4 { "a switch must restart on the new animation's first frame" }
+
+    sprite.advance(0.2)
+    fin mid = sprite.frame()
+    sprite.playAnimation(run)
+    assert sprite.frame() == mid { "switching to the animation already playing must be ignored" }
+
+    assert spriteFrameVisible(sprite.currentFrame()) { "a sheet-backed sprite must have a frame" }
+    assert spriteFrameRect(sprite.currentFrame()).w == 16 { "the frame rectangle must be the frame size" }
+}
+
+test "a sprite with no usable sheet draws nothing rather than garbage" {
+    var set = spriteAnimation(spriteSheetEmpty(), 1)
+    set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
+    fin sprite = animatedSprite(set, 0)
+    assert !spriteFrameVisible(sprite.currentFrame()) { "a sprite with no texture must report nothing to draw" }
+}
+
+test "transform and colour curves sample componentwise" {
+    var track = transform2dTrack("move", 2)
+    transform2dKey(track, 0.0, Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0, Interpolation.Linear)
+    transform2dKey(track, 1.0, Vec2(10.0, 20.0), Vec2(2.0, 2.0), 3.0, Interpolation.Linear)
+
+    fin pose = sampleTransform2d(track, 0.5)
+    assert animAbs(pose.position.x - 5.0) < 0.001 && animAbs(pose.position.y - 10.0) < 0.001 {
+        "position must interpolate on both axes"
+    }
+    assert animAbs(pose.scale.x - 1.5) < 0.001 { "scale must interpolate" }
+    assert animAbs(pose.rotation - 1.5) < 0.001 { "rotation must interpolate" }
+
+    var fade = colorTrack("fade", 2)
+    colorKey(fade, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
+    colorKey(fade, 1.0, tintColor(1.0, 0.0, 0.0, 0.0), Interpolation.Linear)
+    fin half = sampleColor(fade, 0.5)
+    assert animAbs(half.g - 0.5) < 0.001 && animAbs(half.a - 0.5) < 0.001 {
+        "every channel must interpolate independently"
+    }
+}
+
+test "a layer folds its weight into its alpha" {
+    var layer = layerAnimation("glow", 2)
+    colorKey(layer.color, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
+    colorKey(layer.color, 1.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
+
+    layer.weight = blendWeight(0.25)
+    assert animAbs(layerColorAt(layer, 0.5).a - 0.25) < 0.001 {
+        "the layer weight must scale the sampled alpha"
+    }
+
+    layer.visible = false
+    assert layerColorAt(layer, 0.5).a == 0.0 { "a hidden layer must contribute nothing" }
+}
+
+test "poses and colours blend between two samples" {
+    fin a = Transform2DPose(Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0)
+    fin b = Transform2DPose(Vec2(10.0, 10.0), Vec2(3.0, 3.0), 2.0)
+    fin mid = blendPose2d(a, b, 0.5)
+    assert animAbs(mid.position.x - 5.0) < 0.001 && animAbs(mid.scale.x - 2.0) < 0.001 {
+        "a half blend must sit halfway between the poses"
+    }
+    assert blendPose2d(a, b, 0.0).rotation == 0.0 { "a blend of zero is the first pose" }
+
+    fin colour = blendColor(tintColor(0.0, 0.0, 0.0, 1.0), tintColor(1.0, 1.0, 1.0, 1.0), 0.5)
+    assert animAbs(colour.r - 0.5) < 0.001 { "colours must blend channelwise" }
+}

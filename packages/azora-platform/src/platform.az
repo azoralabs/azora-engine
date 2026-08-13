@@ -23,53 +23,55 @@ module engine.platform
 
 import engine.input
 import engine.gpu
+import engine.objc
+import engine.io
 
-bridge C {
-    func CACurrentMediaTime(): Real
+bridge .C {
+    func CACurrentMediaTime(): std::Double
 }
 
 // ── State ───────────────────────────────────────────────────────────────
 
 pack AzWindow {
-    var handle: Long
-    var content: Long
-    var layer: Long
-    var scale: Real
+    var handle: std::Long
+    var content: std::Long
+    var layer: std::Long
+    var scale: std::Double
 }
 
 pack AzInput {
     // Raw state block: key down [0..2047], key pressed [2048..4095],
     // mouse down [4096..4098], mouse clicked [4100..4102].
-    var state: Long
+    var state: std::Long
 }
 
 pack AzTime {
-    var start: Real
-    var last: Real
-    var delta: Real
+    var start: std::Double
+    var last: std::Double
+    var delta: std::Double
 }
 
 /// The engine application: window + GPU + input + timing. Created by
 /// [appInit]; all engine functionality hangs off this as methods.
 pack App {
-    var ok: Bool
+    var ok: std::Bool
     var win: AzWindow
     var gpu: AzGpu
     var inp: AzInput
     var clk: AzTime
-    var clearR: Real
-    var clearG: Real
-    var clearB: Real
-    var pool: Long
-    var closing: Bool
-    var everVisible: Bool
+    var clearR: std::Double
+    var clearG: std::Double
+    var clearB: std::Double
+    var pool: std::Long
+    var closing: std::Bool
+    var everVisible: std::Bool
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────
 
 /// Creates the window and GPU renderer. Check `.ok` before entering the loop.
-func appInit(title: String, width: Int, height: Int): App {
-    fin pool = objc_autoreleasePoolPush()
+func appInit(title: std::String, width: std::Int, height: std::Int): App {
+    fin pool = objcAutoreleasePoolPush()
 
     // NSApplication as a regular, activatable app.
     fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
@@ -77,9 +79,9 @@ func appInit(title: String, width: Int, height: Int): App {
 
     // Window: titled | closable | miniaturizable | resizable, buffered.
     fin winAlloc = send0(cls("NSWindow"), sel("alloc"))
-    fin window = az_send_quad_i3(
+    fin window = azSendQuadI3(
         winAlloc, sel("initWithContentRect:styleMask:backing:defer:"),
-        0.0, 0.0, width as Real, height as Real,
+        0.0, 0.0, width as std::Double, height as std::Double,
         15L, 2L, 0L
     )
     if window == 0L {
@@ -89,7 +91,7 @@ func appInit(title: String, width: Int, height: Int): App {
     send1(window, sel("setReleasedWhenClosed:"), 0L)
     send0(window, sel("center"))
 
-    fin scale = az_send_d0(window, sel("backingScaleFactor"))
+    fin scale = azSendD0(window, sel("backingScaleFactor"))
     fin contentV = send0(window, sel("contentView"))
 
     // GPU device + CAMetalLayer backing the content view.
@@ -111,7 +113,7 @@ func appInit(title: String, width: Int, height: Int): App {
         true,
         win,
         gpu,
-        AzInput(az_alloc(4112L)),
+        AzInput(azAlloc(4112L)),
         AzTime(now, now, 1.0 / 60.0),
         0.10, 0.10, 0.12,
         pool,
@@ -141,15 +143,15 @@ impl App {
 
     /// Starts a frame: pumps events, updates timing/input and begins the
     /// render pass. Returns false once the window closed or quit() was called.
-    func frame(): Bool {
+    func frame(): std::Bool {
         if !self.ok {
             return false
         }
 
         // Recycle the per-frame autorelease pool (releases last frame's
         // drawable/event objects).
-        objc_autoreleasePoolPop(self.pool)
-        self.pool = objc_autoreleasePoolPush()
+        objcAutoreleasePoolPop(self.pool)
+        self.pool = objcAutoreleasePoolPush()
 
         self.pumpEvents()
         if self.closing {
@@ -199,41 +201,41 @@ impl App {
             self.gpu.hasEncoder = false
         }
         send0(self.win.handle, sel("close"))
-        objc_autoreleasePoolPop(self.pool)
-        az_free(self.inp.state)
+        objcAutoreleasePoolPop(self.pool)
+        azFree(self.inp.state)
         self.ok = false
     }
 
     // ── Timing / window ─────────────────────────────────────────────────
 
     /// Seconds since appInit.
-    func timeNow(): Real {
+    func timeNow(): std::Double {
         return CACurrentMediaTime() - self.clk.start
     }
 
     /// Seconds between the two most recent frames.
-    func deltaTime(): Real {
+    func deltaTime(): std::Double {
         return self.clk.delta
     }
 
     /// Window content width in points.
-    func width(): Int {
-        return self.boundsSize(2L) as Int
+    func width(): std::Int {
+        return self.boundsSize(2L) as std::Int
     }
 
     /// Window content height in points.
-    func height(): Int {
-        return self.boundsSize(3L) as Int
+    func height(): std::Int {
+        return self.boundsSize(3L) as std::Int
     }
 
     /// Content bounds component (2 = width, 3 = height) in points.
-    func boundsSize(index: Long): Real {
-        az_send_out_quad(self.win.content, sel("bounds"), self.gpu.scratch)
-        return az_peek_f64(self.gpu.scratch, index * 8L)
+    func boundsSize(index: std::Long): std::Double {
+        azSendOutQuad(self.win.content, sel("bounds"), self.gpu.scratch)
+        return azPeekF64(self.gpu.scratch, index * 8L)
     }
 
     /// Background clear color for subsequent frames (components 0..1).
-    func setClearColor(r: Real, g: Real, b: Real) {
+    func setClearColor(r: std::Double, g: std::Double, b: std::Double) {
         self.clearR = r
         self.clearG = g
         self.clearB = b
@@ -242,56 +244,56 @@ impl App {
     // ── Input ───────────────────────────────────────────────────────────
 
     /// True while the key is held down (uppercase ASCII or KEY_* constants).
-    func keyDown(key: Int): Bool {
+    func keyDown(key: std::Int): std::Bool {
         if key < 0 || key >= 2048 {
             return false
         }
-        return az_peek8(self.inp.state, key as Long) != 0
+        return azPeek8(self.inp.state, key as std::Long) != 0
     }
 
     /// True only on the frame the key went down.
-    func keyPressed(key: Int): Bool {
+    func keyPressed(key: std::Int): std::Bool {
         if key < 0 || key >= 2048 {
             return false
         }
-        return az_peek8(self.inp.state, 2048L + key as Long) != 0
+        return azPeek8(self.inp.state, 2048L + key as std::Long) != 0
     }
 
     /// Mouse position in window points, origin top-left.
-    func mouseX(): Real {
-        az_send_out_pair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
-        return az_peek_f64(self.gpu.scratch, 0L)
+    func mouseX(): std::Double {
+        azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
+        return azPeekF64(self.gpu.scratch, 0L)
     }
 
-    func mouseY(): Real {
-        az_send_out_pair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
-        fin y = az_peek_f64(self.gpu.scratch, 8L)
+    func mouseY(): std::Double {
+        azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
+        fin y = azPeekF64(self.gpu.scratch, 8L)
         return self.boundsSize(3L) - y
     }
 
     /// True while the mouse button is held (0 = left, 1 = right).
-    func mouseDown(button: Int): Bool {
+    func mouseDown(button: std::Int): std::Bool {
         if button < 0 || button > 2 {
             return false
         }
-        return az_peek8(self.inp.state, 4096L + button as Long) != 0
+        return azPeek8(self.inp.state, 4096L + button as std::Long) != 0
     }
 
     /// True only on the frame the button went down.
-    func mouseClicked(button: Int): Bool {
+    func mouseClicked(button: std::Int): std::Bool {
         if button < 0 || button > 2 {
             return false
         }
-        return az_peek8(self.inp.state, 4100L + button as Long) != 0
+        return azPeek8(self.inp.state, 4100L + button as std::Long) != 0
     }
 
     /// True when a standard extended game controller exists at [index].
-    func controllerConnected(index: Int): Bool {
+    func controllerConnected(index: std::Int): std::Bool {
         return gamepadAt(index) != 0L
     }
 
     /// Analog value in the range 0..1 for a standard gamepad button.
-    func controllerButtonValue(index: Int, button: Int): Real {
+    func controllerButtonValue(index: std::Int, button: std::Int): std::Double {
         fin gamepad = gamepadAt(index)
         if gamepad == 0L {
             return 0.0
@@ -300,11 +302,11 @@ impl App {
         if input == 0L {
             return 0.0
         }
-        return az_send_float0(input, sel("value"))
+        return azSendFloat0(input, sel("value"))
     }
 
     /// Standard gamepad axis value in the range -1..1.
-    func controllerAxis(index: Int, axis: Int): Real {
+    func controllerAxis(index: std::Int, axis: std::Int): std::Double {
         fin gamepad = gamepadAt(index)
         if gamepad == 0L {
             return 0.0
@@ -313,7 +315,7 @@ impl App {
         if input == 0L {
             return 0.0
         }
-        return az_send_float0(input, sel("value"))
+        return azSendFloat0(input, sel("value"))
     }
 
     // ── Event pump (internal) ───────────────────────────────────────────
@@ -322,12 +324,12 @@ impl App {
         // Clear per-frame edges (pressed keys / clicked buttons).
         var i = 0
         while i < 2048 {
-            az_poke8(self.inp.state, 2048L + i as Long, 0)
+            azPoke8(self.inp.state, 2048L + i as std::Long, 0)
             i = i + 1
         }
-        az_poke8(self.inp.state, 4100L, 0)
-        az_poke8(self.inp.state, 4101L, 0)
-        az_poke8(self.inp.state, 4102L, 0)
+        azPoke8(self.inp.state, 4100L, 0)
+        azPoke8(self.inp.state, 4101L, 0)
+        azPoke8(self.inp.state, 4102L, 0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
@@ -342,14 +344,14 @@ impl App {
             fin evType = send0(ev, sel("type"))
 
             if evType == 10L {
-                // keyDown — swallowed (avoids the system beep for unhandled keys)
+                // keyArrowDown — swallowed (avoids the system beep for unhandled keys)
                 if send0(ev, sel("isARepeat")) == 0L {
                     self.setKey(self.mapKey(ev), 1)
                 }
                 continue
             }
             if evType == 11L {
-                // keyUp — swallowed
+                // keyArrowUp — swallowed
                 self.setKey(self.mapKey(ev), 0)
                 continue
             }
@@ -360,7 +362,7 @@ impl App {
                 if (flags & 131072L) != 0L {
                     shiftDown = 1
                 }
-                self.setKey(KEY_SHIFT, shiftDown)
+                self.setKey(keyShift, shiftDown)
             }
             if evType == 1L {
                 self.setMouse(0, 1)
@@ -379,42 +381,42 @@ impl App {
         }
     }
 
-    func setKey(key: Int, down: Int) {
+    func setKey(key: std::Int, down: std::Int) {
         if key < 0 || key >= 2048 {
             return
         }
         if down != 0 {
-            if az_peek8(self.inp.state, key as Long) == 0 {
-                az_poke8(self.inp.state, 2048L + key as Long, 1)
+            if azPeek8(self.inp.state, key as std::Long) == 0 {
+                azPoke8(self.inp.state, 2048L + key as std::Long, 1)
             }
-            az_poke8(self.inp.state, key as Long, 1)
+            azPoke8(self.inp.state, key as std::Long, 1)
         } else {
-            az_poke8(self.inp.state, key as Long, 0)
+            azPoke8(self.inp.state, key as std::Long, 0)
         }
     }
 
-    func setMouse(button: Int, down: Int) {
+    func setMouse(button: std::Int, down: std::Int) {
         if down != 0 {
-            if az_peek8(self.inp.state, 4096L + button as Long) == 0 {
-                az_poke8(self.inp.state, 4100L + button as Long, 1)
+            if azPeek8(self.inp.state, 4096L + button as std::Long) == 0 {
+                azPoke8(self.inp.state, 4100L + button as std::Long, 1)
             }
-            az_poke8(self.inp.state, 4096L + button as Long, 1)
+            azPoke8(self.inp.state, 4096L + button as std::Long, 1)
         } else {
-            az_poke8(self.inp.state, 4096L + button as Long, 0)
+            azPoke8(self.inp.state, 4096L + button as std::Long, 0)
         }
     }
 
     /// Maps an NSEvent to the engine key code (uppercase ASCII / KEY_*).
-    func mapKey(ev: Long): Int {
+    func mapKey(ev: std::Long): std::Int {
         fin code = send0(ev, sel("keyCode"))
-        if code == 53L { return KEY_ESCAPE }
-        if code == 36L { return KEY_ENTER }
-        if code == 48L { return KEY_TAB }
-        if code == 49L { return KEY_SPACE }
-        if code == 123L { return KEY_LEFT }
-        if code == 124L { return KEY_RIGHT }
-        if code == 126L { return KEY_UP }
-        if code == 125L { return KEY_DOWN }
+        if code == 53L { return keyEscape }
+        if code == 36L { return keyEnter }
+        if code == 48L { return keyTab }
+        if code == 49L { return keySpace }
+        if code == 123L { return keyArrowLeft }
+        if code == 124L { return keyArrowRight }
+        if code == 126L { return keyArrowUp }
+        if code == 125L { return keyArrowDown }
 
         fin chars = send0(ev, sel("charactersIgnoringModifiers"))
         if chars == 0L {
@@ -427,7 +429,7 @@ impl App {
         if cstr == 0L {
             return -1
         }
-        var c = az_peek8(cstr, 0L)
+        var c = azPeek8(cstr, 0L)
         if c >= 97 && c <= 122 {
             c = c - 32
         }
@@ -440,57 +442,124 @@ impl App {
 
 // GameController framework access stays in Azora. The C shim only provides
 // the exact float-return objc_msgSend signature required by the native ABI.
-func gamepadAt(index: Int): Long {
+func gamepadAt(index: std::Int): std::Long {
     if index < 0 {
         return 0L
     }
     fin controllers = send0(cls("GCController"), sel("controllers"))
-    if controllers == 0L || index >= send0(controllers, sel("count")) as Int {
+    if controllers == 0L || index >= send0(controllers, sel("count")) as std::Int {
         return 0L
     }
-    fin controller = send1(controllers, sel("objectAtIndex:"), index as Long)
+    fin controller = send1(controllers, sel("objectAtIndex:"), index as std::Long)
     if controller == 0L {
         return 0L
     }
     return send0(controller, sel("extendedGamepad"))
 }
 
-func gamepadButton(gamepad: Long, button: Int): Long {
-    if button == GAMEPAD_SOUTH { return send0(gamepad, sel("buttonA")) }
-    if button == GAMEPAD_EAST { return send0(gamepad, sel("buttonB")) }
-    if button == GAMEPAD_WEST { return send0(gamepad, sel("buttonX")) }
-    if button == GAMEPAD_NORTH { return send0(gamepad, sel("buttonY")) }
-    if button == GAMEPAD_LEFT_BUMPER { return send0(gamepad, sel("leftShoulder")) }
-    if button == GAMEPAD_RIGHT_BUMPER { return send0(gamepad, sel("rightShoulder")) }
-    if button == GAMEPAD_LEFT_TRIGGER { return send0(gamepad, sel("leftTrigger")) }
-    if button == GAMEPAD_RIGHT_TRIGGER { return send0(gamepad, sel("rightTrigger")) }
-    if button == GAMEPAD_BACK { return send0(gamepad, sel("buttonOptions")) }
-    if button == GAMEPAD_START { return send0(gamepad, sel("buttonMenu")) }
-    if button == GAMEPAD_LEFT_STICK { return send0(gamepad, sel("leftThumbstickButton")) }
-    if button == GAMEPAD_RIGHT_STICK { return send0(gamepad, sel("rightThumbstickButton")) }
-    if button == GAMEPAD_HOME { return send0(gamepad, sel("buttonHome")) }
+func gamepadButton(gamepad: std::Long, button: std::Int): std::Long {
+    if button == gamepadSouth { return send0(gamepad, sel("buttonA")) }
+    if button == gamepadEast { return send0(gamepad, sel("buttonB")) }
+    if button == gamepadWest { return send0(gamepad, sel("buttonX")) }
+    if button == gamepadNorth { return send0(gamepad, sel("buttonY")) }
+    if button == gamepadLeftBumper { return send0(gamepad, sel("leftShoulder")) }
+    if button == gamepadRightBumper { return send0(gamepad, sel("rightShoulder")) }
+    if button == gamepadLeftTrigger { return send0(gamepad, sel("leftTrigger")) }
+    if button == gamepadRightTrigger { return send0(gamepad, sel("rightTrigger")) }
+    if button == gamepadBack { return send0(gamepad, sel("buttonOptions")) }
+    if button == gamepadStart { return send0(gamepad, sel("buttonMenu")) }
+    if button == gamepadLeftStick { return send0(gamepad, sel("leftThumbstickButton")) }
+    if button == gamepadRightStick { return send0(gamepad, sel("rightThumbstickButton")) }
+    if button == gamepadHome { return send0(gamepad, sel("buttonHome")) }
 
     fin dpad = send0(gamepad, sel("dpad"))
     if dpad == 0L { return 0L }
-    if button == GAMEPAD_DPAD_UP { return send0(dpad, sel("up")) }
-    if button == GAMEPAD_DPAD_DOWN { return send0(dpad, sel("down")) }
-    if button == GAMEPAD_DPAD_LEFT { return send0(dpad, sel("left")) }
-    if button == GAMEPAD_DPAD_RIGHT { return send0(dpad, sel("right")) }
+    if button == gamepadDpadUp { return send0(dpad, sel("up")) }
+    if button == gamepadDpadDown { return send0(dpad, sel("down")) }
+    if button == gamepadDpadLeft { return send0(dpad, sel("left")) }
+    if button == gamepadDpadRight { return send0(dpad, sel("right")) }
     return 0L
 }
 
-func gamepadAxis(gamepad: Long, axis: Int): Long {
+func gamepadAxis(gamepad: std::Long, axis: std::Int): std::Long {
     var stick = 0L
-    if axis == GAMEPAD_LEFT_X || axis == GAMEPAD_LEFT_Y {
+    if axis == gamepadLeftX || axis == gamepadLeftY {
         stick = send0(gamepad, sel("leftThumbstick"))
     } else {
-        if axis == GAMEPAD_RIGHT_X || axis == GAMEPAD_RIGHT_Y {
+        if axis == gamepadRightX || axis == gamepadRightY {
             stick = send0(gamepad, sel("rightThumbstick"))
         }
     }
     if stick == 0L { return 0L }
-    if axis == GAMEPAD_LEFT_X || axis == GAMEPAD_RIGHT_X {
+    if axis == gamepadLeftX || axis == gamepadRightX {
         return send0(stick, sel("xAxis"))
     }
     return send0(stick, sel("yAxis"))
+}
+
+// ── Frame ───────────────────────────────────────────────────────────────
+
+func gpuBeginFrame(app: App) {
+    var gpu = app.gpu
+
+    // Match the drawable to the current view size.
+    azSendOutQuad(app.win.content, sel("bounds"), gpu.scratch)
+    fin wPts = azPeekF64(gpu.scratch, 16L)
+    fin hPts = azPeekF64(gpu.scratch, 24L)
+    fin pw = (wPts * gpu.scale) as std::Long
+    fin ph = (hPts * gpu.scale) as std::Long
+    if pw < 1L || ph < 1L {
+        gpu.hasEncoder = false
+        return
+    }
+    fin unused0 = azSendPair(gpu.layer, sel("setDrawableSize:"), pw as std::Double, ph as std::Double)
+
+    // (Re)create the depth texture on resize.
+    if gpu.depthTex == 0L || gpu.depthW != pw || gpu.depthH != ph {
+        fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 252L, pw, ph, 0L)
+        send1(td, sel("setUsage:"), 4L)
+        send1(td, sel("setStorageMode:"), 2L)
+        gpu.depthTex = send1(gpu.device, sel("newTextureWithDescriptor:"), td)
+        gpu.depthW = pw
+        gpu.depthH = ph
+    }
+
+    gpu.drawable = send0(gpu.layer, sel("nextDrawable"))
+    if gpu.drawable == 0L {
+        gpu.hasEncoder = false
+        return
+    }
+
+    gpu.cmd = send0(gpu.queue, sel("commandBuffer"))
+    fin rp = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+
+    fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
+    send1(ca, sel("setTexture:"), send0(gpu.drawable, sel("texture")))
+    send1(ca, sel("setLoadAction:"), 2L)
+    send1(ca, sel("setStoreAction:"), 1L)
+    fin unused1 = azSendQuad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
+
+    fin da = send0(rp, sel("depthAttachment"))
+    send1(da, sel("setTexture:"), gpu.depthTex)
+    send1(da, sel("setLoadAction:"), 2L)
+    send1(da, sel("setStoreAction:"), 0L)
+    fin unused2 = azSendF1(da, sel("setClearDepth:"), 1.0)
+
+    gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
+    gpu.hasEncoder = true
+    gpu.mode = -1
+}
+
+func gpuEndFrame(app: App) {
+    var gpu = app.gpu
+    if !gpu.hasEncoder {
+        return
+    }
+    send0(gpu.enc, sel("endEncoding"))
+    send1(gpu.cmd, sel("presentDrawable:"), gpu.drawable)
+    send0(gpu.cmd, sel("commit"))
+    gpu.enc = 0L
+    gpu.cmd = 0L
+    gpu.drawable = 0L
+    gpu.hasEncoder = false
 }

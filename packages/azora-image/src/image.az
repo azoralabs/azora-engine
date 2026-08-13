@@ -1,0 +1,309 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * Image decoding for the Azora Engine.
+ *
+ * Decoding produces an [Image] holding straight RGBA8 pixels ready for upload
+ * to a texture. When the source format is palettized the palette and the index
+ * plane are kept alongside the pixels rather than discarded, because a palette
+ * is not merely a compression detail — rewriting entries and re-expanding is how
+ * a great deal of 2D art animates water, fire and cycling lights. Throwing the
+ * indices away would make those effects impossible to reproduce.
+ *
+ * Format support is dispatched from the file's own magic bytes, so callers hand
+ * over a [Blob] and never name a format.
+ */
+module engine.image
+
+import engine.io
+
+/** Bytes per pixel in the decoded RGBA8 output. */
+fin rgbaStride = 4
+
+/**
+ * A decoded image.
+ *
+ * `pixels` is always present on success: `width * height * 4` bytes of RGBA8,
+ * top row first. `indices` and `palette` are non-zero only for a palettized
+ * source, and are what [applyPalette] re-expands from.
+ */
+@std::Experimental(since: "0.0.4")
+pack Image {
+    var width: std::Int
+    var height: std::Int
+    /** RGBA8 pixels, `width * height * 4` bytes. */
+    var pixels: std::Long
+    /** One byte per pixel of palette indices, or 0 when not palettized. */
+    var indices: std::Long
+    /** RGBA8 palette entries, or 0 when not palettized. */
+    var palette: std::Long
+    /** Number of entries in `palette`. */
+    var paletteCount: std::Int
+}
+
+/** The empty image returned by every failure path. */
+@std::Experimental(since: "0.0.4")
+func imageEmpty(): Image {
+    return Image(0, 0, 0L, 0L, 0L, 0)
+}
+
+/**
+ * Decodes [blob] by sniffing its magic bytes.
+ *
+ * Returns an empty image for an unrecognized or malformed source; callers test
+ * [Image.ok] rather than handling an error type, so a missing asset degrades to
+ * a blank draw instead of taking the frame down.
+ */
+@std::Experimental(since: "0.0.4")
+func decode(blob: Blob): Image {
+    if !blob.ok() {
+        return imageEmpty()
+    }
+    if blob.matches(0, "BM") {
+        return decodeBmp(blob)
+    }
+    return imageEmpty()
+}
+
+/**
+ * Decodes a Windows BMP.
+ *
+ * Handles the 8-bit palettized, 24-bit and 32-bit uncompressed forms, which is
+ * the whole of what BMP is used for as a game asset. Rows are stored bottom-up
+ * and padded to a four-byte boundary; both are undone here so the caller always
+ * receives top-down tightly packed RGBA.
+ */
+@std::Experimental(since: "0.0.4")
+func decodeBmp(blob: Blob): Image {
+    if !blob.has(0, 54) {
+        return imageEmpty()
+    }
+
+    fin dataOffset = blob.i32(10)
+    fin headerSize = blob.i32(14)
+    fin width = blob.i32(18)
+    fin rawHeight = blob.i32(22)
+    fin bitCount = blob.u16(28)
+    fin compression = blob.i32(30)
+
+    // Only uncompressed BMPs occur as game art; RLE variants are rejected
+    // rather than half-decoded into plausible-looking garbage.
+    if compression != 0 {
+        return imageEmpty()
+    }
+    if width <= 0 || rawHeight == 0 {
+        return imageEmpty()
+    }
+
+    // A negative height means the rows are already top-down.
+    var height = rawHeight
+    var bottomUp = true
+    if rawHeight < 0 {
+        height = -rawHeight
+        bottomUp = false
+    }
+
+    fin pixelCount = width * height
+    fin pixels = azAlloc((pixelCount * rgbaStride) as std::Long)
+    if pixels == 0L {
+        return imageEmpty()
+    }
+
+    var image = Image(width, height, pixels, 0L, 0L, 0)
+
+    if bitCount == 8 {
+        fin paletteOffset = 14 + headerSize
+        fin declared = blob.i32(46)
+        var paletteCount = declared
+        if paletteCount <= 0 || paletteCount > 256 {
+            paletteCount = 256
+        }
+        image.palette = readBmpPalette(blob, paletteOffset, paletteCount)
+        image.paletteCount = paletteCount
+        image.indices = azAlloc(pixelCount as std::Long)
+        if image.palette == 0L || image.indices == 0L {
+            image.release()
+            return imageEmpty()
+        }
+        readIndexedRows(blob, image, dataOffset, bottomUp)
+        image.applyPalette()
+        return image
+    }
+
+    if bitCount == 24 || bitCount == 32 {
+        readTrueColorRows(blob, image, dataOffset, bitCount, bottomUp)
+        return image
+    }
+
+    image.release()
+    return imageEmpty()
+}
+
+/**
+ * Reads a BMP palette into RGBA8 entries.
+ *
+ * BMP stores palette entries as BGRA with an unused fourth byte, so the channel
+ * order is corrected here and every entry is made fully opaque.
+ */
+func readBmpPalette(blob: Blob, offset: std::Int, count: std::Int): std::Long {
+    fin palette = azAlloc((count * rgbaStride) as std::Long)
+    if palette == 0L {
+        return 0L
+    }
+    var i = 0
+    while i < count {
+        fin src = offset + i * 4
+        fin dst = (i * rgbaStride) as std::Long
+        azPoke8(palette, dst, blob.u8(src + 2))
+        azPoke8(palette, dst + 1L, blob.u8(src + 1))
+        azPoke8(palette, dst + 2L, blob.u8(src))
+        azPoke8(palette, dst + 3L, 255)
+        i = i + 1
+    }
+    return palette
+}
+
+/** Copies one-byte-per-pixel rows into [image]'s index plane, top-down. */
+func readIndexedRows(blob: Blob, image: Image, dataOffset: std::Int, bottomUp: std::Bool) {
+    fin rowStride = paddedStride(image.width)
+    var y = 0
+    while y < image.height {
+        fin sourceRow = if bottomUp { image.height - 1 - y } else { y }
+        fin rowStart = dataOffset + sourceRow * rowStride
+        var x = 0
+        while x < image.width {
+            azPoke8(image.indices, (y * image.width + x) as std::Long, blob.u8(rowStart + x))
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+/** Decodes 24- or 32-bit BGR(A) rows straight into [image]'s RGBA pixels. */
+func readTrueColorRows(blob: Blob, image: Image, dataOffset: std::Int, bitCount: std::Int, bottomUp: std::Bool) {
+    fin bytesPerPixel = bitCount / 8
+    fin rowStride = paddedStride(image.width * bytesPerPixel)
+    var y = 0
+    while y < image.height {
+        fin sourceRow = if bottomUp { image.height - 1 - y } else { y }
+        fin rowStart = dataOffset + sourceRow * rowStride
+        var x = 0
+        while x < image.width {
+            fin src = rowStart + x * bytesPerPixel
+            fin dst = ((y * image.width + x) * rgbaStride) as std::Long
+            azPoke8(image.pixels, dst, blob.u8(src + 2))
+            azPoke8(image.pixels, dst + 1L, blob.u8(src + 1))
+            azPoke8(image.pixels, dst + 2L, blob.u8(src))
+            if bytesPerPixel == 4 {
+                azPoke8(image.pixels, dst + 3L, blob.u8(src + 3))
+            } else {
+                azPoke8(image.pixels, dst + 3L, 255)
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+/** A BMP row's byte width, rounded up to the next four-byte boundary. */
+func paddedStride(unpadded: std::Int): std::Int {
+    return (unpadded + 3) / 4 * 4
+}
+
+impl Image {
+
+    /** Whether the image decoded successfully. */
+    func ok(): std::Bool {
+        return self.pixels != 0L && self.width > 0 && self.height > 0
+    }
+
+    /** Whether the image kept a palette that [applyPalette] can re-expand. */
+    func isPalettized(): std::Bool {
+        return self.indices != 0L && self.palette != 0L && self.paletteCount > 0
+    }
+
+    /**
+     * Rebuilds the RGBA pixels from the index plane and the current palette.
+     *
+     * Call this after editing palette entries to animate the image. Doing the
+     * work here rather than in the decoder is what makes palette cycling a
+     * per-frame operation instead of a re-decode.
+     */
+    func applyPalette() {
+        if !self.isPalettized() {
+            return
+        }
+        fin count = self.width * self.height
+        var i = 0
+        while i < count {
+            var index = azPeek8(self.indices, i as std::Long) & 0xFF
+            if index >= self.paletteCount {
+                index = 0
+            }
+            fin src = (index * rgbaStride) as std::Long
+            fin dst = (i * rgbaStride) as std::Long
+            azPoke8(self.pixels, dst, azPeek8(self.palette, src) & 0xFF)
+            azPoke8(self.pixels, dst + 1L, azPeek8(self.palette, src + 1L) & 0xFF)
+            azPoke8(self.pixels, dst + 2L, azPeek8(self.palette, src + 2L) & 0xFF)
+            azPoke8(self.pixels, dst + 3L, azPeek8(self.palette, src + 3L) & 0xFF)
+            i = i + 1
+        }
+    }
+
+    /**
+     * Replaces palette entry [index] with an RGB colour.
+     *
+     * The change only reaches the pixels on the next [applyPalette], so a caller
+     * can rewrite a whole cycle and expand once.
+     */
+    func setPaletteEntry(index: std::Int, r: std::Int, g: std::Int, b: std::Int) {
+        if self.palette == 0L || index < 0 || index >= self.paletteCount {
+            return
+        }
+        fin dst = (index * rgbaStride) as std::Long
+        azPoke8(self.palette, dst, r)
+        azPoke8(self.palette, dst + 1L, g)
+        azPoke8(self.palette, dst + 2L, b)
+    }
+
+    /**
+     * Makes palette entry [index] fully transparent.
+     *
+     * Palettized game art conventionally reserves one index as the colour key
+     * rather than carrying an alpha channel.
+     */
+    func setColorKey(index: std::Int) {
+        if self.palette == 0L || index < 0 || index >= self.paletteCount {
+            return
+        }
+        azPoke8(self.palette, (index * rgbaStride + 3) as std::Long, 0)
+    }
+
+    /** The number of bytes in the RGBA pixel buffer. */
+    func byteCount(): std::Int {
+        return self.width * self.height * rgbaStride
+    }
+
+    /** Releases every buffer the image owns. */
+    func release[self: Self!]() {
+        if self.pixels != 0L {
+            azFree(self.pixels)
+        }
+        if self.indices != 0L {
+            azFree(self.indices)
+        }
+        if self.palette != 0L {
+            azFree(self.palette)
+        }
+        self.pixels = 0L
+        self.indices = 0L
+        self.palette = 0L
+        self.width = 0
+        self.height = 0
+        self.paletteCount = 0
+    }
+}

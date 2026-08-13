@@ -1,0 +1,994 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/storage
+ *
+ * Where a map's tiles actually live: [TileLayer], a dense plane of tile data,
+ * and [TileStorage], the optional cell-to-entity index that gives individual
+ * tiles ECS components.
+ *
+ * ## Two storages, on purpose
+ *
+ * A [TileLayer] is three flat integer planes — index, cell flags, tint — and is
+ * what the renderer, the collision queries and the loaders all read. A
+ * 512 x 512 layer is a couple of megabytes of contiguous memory that a frame can
+ * walk without touching an allocator.
+ *
+ * A [TileStorage] maps cells to entities, so a tile can carry arbitrary
+ * components and be found by systems. It is *opt-in* because the engine's ECS
+ * resolves a component by scanning its store: giving a quarter of a million
+ * background tiles an entity each would make every query quadratic for no
+ * gain. Give entities to the tiles that need behaviour — doors, switches,
+ * spawners — and leave the scenery in the layer.
+ *
+ * ## Sparse planes
+ *
+ * Most maps flip no tiles and tint no cells, so the flag and tint planes are
+ * allocated only when something is actually written to them. A plain map costs
+ * one plane, not three.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.storage
+
+import std.container.array
+import engine.ecs
+import engine.tilemap.types
+
+/** The default chunk edge, as a power-of-two shift: 16 x 16 cells. */
+fin tileChunkShift = 4
+
+// Writes are checked rather than clamped: silently dropping an off-map write is
+// how a level generator's off-by-one goes unnoticed until a level looks subtly
+// wrong. A single-cell write is therefore `Unit ?! TilemapFault` — a caller
+// propagates it with `try`, handles it with `catch`, or discards it explicitly.
+//
+// The bulk operations clamp their rectangle first and then write through
+// [layerPut], which cannot fail, so they report a count rather than a fault.
+
+/**
+ * A coarse occupancy index over a layer.
+ *
+ * Each chunk records how many of its cells hold a tile. Drawing and collision
+ * skip a chunk whose count is zero without reading a single cell, which is what
+ * makes a large, mostly-empty layer — a sky, a foreground detail pass — nearly
+ * free to traverse. The counts are maintained by the writers, so they never go
+ * stale behind the caller's back.
+ */
+pack TileChunks {
+    var shift: std::Int
+    var width: std::Int
+    var height: std::Int
+    var counts: std::Array<std::Int>
+}
+
+/**
+ * One dense plane of tiles.
+ *
+ * `flags` and `tints` are empty until something writes to them; read them
+ * through [layerFlagsAt] and [layerTintAt], which report the defaults for an
+ * unallocated plane.
+ */
+pack TileLayer {
+    var name: std::String
+    var size: TilemapSize
+    /** Tile index per cell, [tileEmpty] where the cell is empty. */
+    var indices: std::Array<std::Int>
+    /** Cell flags per cell; empty until a flag is written. */
+    var flags: std::Array<std::Int>
+    /** Packed tint per cell; empty until a tint is written. */
+    var tints: std::Array<std::Int>
+    /** Whether the renderer draws this layer at all. */
+    var visible: std::Bool
+    /** Layer-wide opacity multiplier. */
+    var opacity: std::Double
+    /** Layer-wide tint, multiplied with any per-cell tint. */
+    var tint: TileColor
+    /** Scroll rate relative to the camera; `1.0` is locked to the world. */
+    var parallaxX: std::Double
+    var parallaxY: std::Double
+    /** Extra world-space offset, applied after parallax. */
+    var offsetX: std::Double
+    var offsetY: std::Double
+    /** Draw order among the layers of a map; lower draws first. */
+    var order: std::Int
+    /** Bumped on every write, so caches can tell whether they are stale. */
+    var revision: std::Long
+    var chunks: TileChunks
+}
+
+/**
+ * A cell-to-entity index, parallel to a layer.
+ *
+ * Entities are held as two integer planes rather than as an array of `Entity`
+ * values so an unbound cell costs eight bytes and no allocation.
+ */
+pack TileStorage {
+    var size: TilemapSize
+    var ids: std::Array<std::Int>
+    var generations: std::Array<std::Int>
+    var count: std::Int
+}
+
+/** What a cell of a [TileStorage] holds. */
+variant enum TileEntity {
+    /** The cell is bound to an entity. */
+    Bound(entity: Entity)
+    /** The cell is inside the map and bound to nothing. */
+    Unbound
+    /** The coordinate is outside the map. */
+    OutOfBounds
+}
+
+// ── Chunks ──────────────────────────────────────────────────────────────
+
+/** A chunk index over a `size` map, with chunks of `1 << shift` cells a side. */
+func tileChunksNew(size: TilemapSize, shift: std::Int): TileChunks {
+    fin edge = intMax(shift, 0)
+    fin span = 1 << edge
+    fin width = intMax((size.x + span - 1) / span, 0)
+    fin height = intMax((size.y + span - 1) / span, 0)
+    return TileChunks(edge, width, height, intGridFill(width, height, 0))
+}
+
+impl TileChunks {
+    /** The number of tiles in the chunk containing cell ([x], [y]). */
+    func countAt(x: std::Int, y: std::Int): std::Int {
+        fin cx = x >> self.shift
+        fin cy = y >> self.shift
+        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
+            return 0
+        }
+        return self.counts[cy * self.width + cx]
+    }
+
+    /** Adds [delta] to the count of the chunk containing cell ([x], [y]). */
+    func adjust(x: std::Int, y: std::Int, delta: std::Int) {
+        fin cx = x >> self.shift
+        fin cy = y >> self.shift
+        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
+            return
+        }
+        fin at = cy * self.width + cx
+        self.counts[at] = intMax(self.counts[at] + delta, 0)
+    }
+
+    /** The number of tiles in chunk ([cx], [cy]). */
+    func count(cx: std::Int, cy: std::Int): std::Int {
+        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
+            return 0
+        }
+        return self.counts[cy * self.width + cx]
+    }
+
+    /** The cells chunk ([cx], [cy]) covers. */
+    func rect(cx: std::Int, cy: std::Int): TileRect {
+        fin span = 1 << self.shift
+        return TileRect(cx * span, cy * span, cx * span + span - 1, cy * span + span - 1)
+    }
+
+    /** The chunks overlapping a rectangle of cells. */
+    func rectOf(cells: TileRect): TileRect {
+        if cells.isEmpty() {
+            return tileRectEmpty()
+        }
+        return TileRect(
+            cells.minX >> self.shift,
+            cells.minY >> self.shift,
+            cells.maxX >> self.shift,
+            cells.maxY >> self.shift
+        )
+    }
+}
+
+// ── Layers ──────────────────────────────────────────────────────────────
+
+/** An empty layer of [size], with every cell clear and every plane sparse. */
+func tileLayerNew(name: std::String, size: TilemapSize): TileLayer {
+    var empty: std::Array<std::Int> = std::Array::fill<std::Int>(0)
+    return TileLayer(
+        name,
+        size,
+        intGridFill(size.x, size.y, tileEmpty),
+        empty,
+        empty,
+        true,
+        1.0,
+        tileColorWhite(),
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0,
+        0L,
+        tileChunksNew(size, tileChunkShift)
+    )
+}
+
+/** A layer of [size] with every cell holding [index]. */
+func tileLayerFilled(name: std::String, size: TilemapSize, index: std::Int): TileLayer {
+    var layer = tileLayerNew(name, size)
+    layerFill(layer, index)
+    return layer
+}
+
+impl TileLayer {
+    /** True when [pos] addresses a cell of this layer. */
+    func contains(pos: TilePos): std::Bool {
+        return self.size.contains(pos)
+    }
+
+    /** The row-major offset of [pos], or `-1` when it is off the layer. */
+    func offsetOf(pos: TilePos): std::Int {
+        if !self.size.contains(pos) {
+            return -1
+        }
+        return pos.y * self.size.x + pos.x
+    }
+
+    /** Allocates the flag plane if it is still sparse. */
+    func ensureFlags() {
+        if self.flags.size == 0 && self.size.isValid() {
+            self.flags = intGridFill(self.size.x, self.size.y, 0)
+        }
+    }
+
+    /** Allocates the tint plane if it is still sparse. */
+    func ensureTints() {
+        if self.tints.size == 0 && self.size.isValid() {
+            self.tints = intGridFill(self.size.x, self.size.y, tileTintNone)
+        }
+    }
+
+    func touch() {
+        self.revision = self.revision + 1
+    }
+}
+
+/** The tile index at [pos], or [tileEmpty] when empty or off the layer. */
+func layerIndexAt(layer: TileLayer&, pos: TilePos): std::Int {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return tileEmpty
+    }
+    return layer.indices[at]
+}
+
+/** The cell flags at [pos], or `0` when the plane is sparse or [pos] is off the layer. */
+func layerFlagsAt(layer: TileLayer&, pos: TilePos): std::Int {
+    fin at = layer.offsetOf(pos)
+    if at < 0 || layer.flags.size == 0 {
+        return 0
+    }
+    return layer.flags[at]
+}
+
+/** The packed tint at [pos], or [tileTintNone] when untinted. */
+func layerTintAt(layer: TileLayer&, pos: TilePos): std::Int {
+    fin at = layer.offsetOf(pos)
+    if at < 0 || layer.tints.size == 0 {
+        return tileTintNone
+    }
+    return layer.tints[at]
+}
+
+/** Everything about the cell at [pos] in one read. */
+func layerLookup(layer: TileLayer&, pos: TilePos): TileLookup {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return TileLookup.OutOfBounds
+    }
+    fin index = layer.indices[at]
+    if index == tileEmpty {
+        return TileLookup.Empty
+    }
+    var flags = 0
+    if layer.flags.size > 0 {
+        flags = layer.flags[at]
+    }
+    var tint = tileTintNone
+    if layer.tints.size > 0 {
+        tint = layer.tints[at]
+    }
+    return TileLookup.Tile(index, flags, tint)
+}
+
+/** True when [pos] holds a tile. */
+func layerHasTile(layer: TileLayer&, pos: TilePos): std::Bool {
+    return layerIndexAt(layer, pos) != tileEmpty
+}
+
+/** True when [pos] is on the layer and holds no tile. */
+func layerIsEmptyAt(layer: TileLayer&, pos: TilePos): std::Bool {
+    fin at = layer.offsetOf(pos)
+    return at >= 0 && layer.indices[at] == tileEmpty
+}
+
+/**
+ * Writes the tile index at [pos], maintaining the chunk occupancy counts.
+ *
+ * Pass [tileEmpty] to clear the cell; the flags and tint are cleared with it,
+ * because a cleared cell that keeps a stale flip or tint reappears wrong the
+ * next time something is written there.
+ */
+func layerSet(layer: TileLayer!, pos: TilePos, index: std::Int): std::Unit ?! TilemapFault {
+    if layer.offsetOf(pos) < 0 {
+        return .OutOfBounds
+    }
+    layerPut(layer, pos, index)
+}
+
+/**
+ * Writes a cell that is already known to be on the layer.
+ *
+ * The bulk operations clip to the layer before they start, so re-checking every
+ * cell would be a bounds test per write for a condition already established.
+ * An off-map position is ignored here rather than reported.
+ */
+func layerPut(layer: TileLayer!, pos: TilePos, index: std::Int) {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return
+    }
+
+    fin was = layer.indices[at]
+    if was == tileEmpty && index != tileEmpty {
+        layer.chunks.adjust(pos.x, pos.y, 1)
+    }
+    if was != tileEmpty && index == tileEmpty {
+        layer.chunks.adjust(pos.x, pos.y, -1)
+    }
+
+    layer.indices[at] = index
+    if index == tileEmpty {
+        if layer.flags.size > 0 {
+            layer.flags[at] = 0
+        }
+        if layer.tints.size > 0 {
+            layer.tints[at] = tileTintNone
+        }
+    }
+    layer.touch()
+}
+
+/** Writes an index, its cell flags and its packed tint in one call. */
+func layerSetFull(layer: TileLayer!, pos: TilePos, index: std::Int, flags: std::Int, tint: std::Int): std::Unit ?! TilemapFault {
+    if layer.offsetOf(pos) < 0 {
+        return .OutOfBounds
+    }
+    layerPutFull(layer, pos, index, flags, tint)
+}
+
+/** [layerSetFull] for a position already known to be on the layer. */
+func layerPutFull(layer: TileLayer!, pos: TilePos, index: std::Int, flags: std::Int, tint: std::Int) {
+    layerPut(layer, pos, index)
+    if index == tileEmpty {
+        return
+    }
+    fin at = layer.offsetOf(pos)
+    if flags != 0 {
+        layer.ensureFlags()
+    }
+    if layer.flags.size > 0 {
+        layer.flags[at] = flags
+    }
+    if tint != tileTintNone {
+        layer.ensureTints()
+    }
+    if layer.tints.size > 0 {
+        layer.tints[at] = tint
+    }
+}
+
+/** Clears the cell at [pos]. */
+func layerClear(layer: TileLayer!, pos: TilePos): std::Unit ?! TilemapFault {
+    try layerSet(layer, pos, tileEmpty)
+}
+
+/** Replaces the cell flags at [pos]. */
+func layerSetFlags(layer: TileLayer!, pos: TilePos, flags: std::Int): std::Unit ?! TilemapFault {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return .OutOfBounds
+    }
+    if flags == 0 && layer.flags.size == 0 {
+        return
+    }
+    layer.ensureFlags()
+    layer.flags[at] = flags
+    layer.touch()
+}
+
+/** Sets the mirrors of the cell at [pos], leaving its other flags alone. */
+func layerSetFlip(layer: TileLayer!, pos: TilePos, mirrors: TileFlip): std::Unit ?! TilemapFault {
+    fin kept = flagsClear(layerFlagsAt(layer, pos), cellFlipX | cellFlipY | cellFlipD)
+    try layerSetFlags(layer, pos, kept | tileFlipToFlags(mirrors))
+}
+
+/** The mirrors of the cell at [pos]. */
+func layerFlipAt(layer: TileLayer&, pos: TilePos): TileFlip {
+    return tileFlipFromFlags(layerFlagsAt(layer, pos))
+}
+
+/** Shows or hides one cell without clearing it. */
+func layerSetHidden(layer: TileLayer!, pos: TilePos, hidden: std::Bool): std::Unit ?! TilemapFault {
+    var flags = layerFlagsAt(layer, pos)
+    if hidden {
+        flags = flagsSet(flags, cellHidden)
+    } else {
+        flags = flagsClear(flags, cellHidden)
+    }
+    try layerSetFlags(layer, pos, flags)
+}
+
+/** True when the cell at [pos] holds a tile the renderer will draw. */
+func layerIsDrawable(layer: TileLayer&, pos: TilePos): std::Bool {
+    return layerHasTile(layer, pos) && !flagsAny(layerFlagsAt(layer, pos), cellHidden)
+}
+
+/** Tints the cell at [pos]; pass [tileColorWhite] to leave the art unchanged. */
+func layerSetTint(layer: TileLayer!, pos: TilePos, color: TileColor): std::Unit ?! TilemapFault {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return .OutOfBounds
+    }
+    layer.ensureTints()
+    layer.tints[at] = tileColorPack(color)
+    layer.touch()
+}
+
+/** Removes any individual tint from the cell at [pos]. */
+func layerClearTint(layer: TileLayer!, pos: TilePos): std::Unit ?! TilemapFault {
+    fin at = layer.offsetOf(pos)
+    if at < 0 {
+        return .OutOfBounds
+    }
+    if layer.tints.size > 0 {
+        layer.tints[at] = tileTintNone
+        layer.touch()
+    }
+}
+
+// ── Bulk operations ─────────────────────────────────────────────────────
+
+/** Sets every cell of the layer to [index]; returns the number of cells written. */
+func layerFill(layer: TileLayer!, index: std::Int): std::Int {
+    intGridClear(layer.indices, index)
+    if layer.flags.size > 0 {
+        intGridClear(layer.flags, 0)
+    }
+    if layer.tints.size > 0 {
+        intGridClear(layer.tints, tileTintNone)
+    }
+
+    var perChunk = 0
+    if index != tileEmpty {
+        perChunk = 1
+    }
+    // Rebuild rather than adjust: a full fill touches every chunk anyway.
+    var cy = 0
+    while cy < layer.chunks.height {
+        var cx = 0
+        while cx < layer.chunks.width {
+            fin cells = layer.chunks.rect(cx, cy).clampTo(layer.size)
+            layer.chunks.counts[cy * layer.chunks.width + cx] = cells.area() * perChunk
+            cx = cx + 1
+        }
+        cy = cy + 1
+    }
+    layer.touch()
+    return layer.size.count()
+}
+
+/** Clears every cell of the layer. */
+func layerClearAll(layer: TileLayer!): std::Int {
+    return layerFill(layer, tileEmpty)
+}
+
+/** Sets every cell of [rect] that lies on the layer; returns how many were written. */
+func layerFillRect(layer: TileLayer!, rect: TileRect, index: std::Int): std::Int {
+    fin clipped = rect.clampTo(layer.size)
+    if clipped.isEmpty() {
+        return 0
+    }
+    var written = 0
+    var y = clipped.minY
+    while y <= clipped.maxY {
+        var x = clipped.minX
+        while x <= clipped.maxX {
+            layerPut(layer, TilePos(x, y), index)
+            written = written + 1
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return written
+}
+
+/** Fills [rect] with [index] and tints every cell it writes. */
+func layerFillRectColor(layer: TileLayer!, rect: TileRect, index: std::Int, color: TileColor): std::Int {
+    fin clipped = rect.clampTo(layer.size)
+    if clipped.isEmpty() {
+        return 0
+    }
+    fin packed = tileColorPack(color)
+    var written = 0
+    var y = clipped.minY
+    while y <= clipped.maxY {
+        var x = clipped.minX
+        while x <= clipped.maxX {
+            layerPutFull(layer, TilePos(x, y), index, 0, packed)
+            written = written + 1
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return written
+}
+
+/** Draws the outline of [rect] with [index]; returns how many cells were written. */
+func layerOutlineRect(layer: TileLayer!, rect: TileRect, index: std::Int): std::Int {
+    if rect.isEmpty() {
+        return 0
+    }
+    var written = 0
+    var x = rect.minX
+    while x <= rect.maxX {
+        layerPut(layer, TilePos(x, rect.minY), index)
+        written = written + 1
+        if rect.maxY != rect.minY {
+            layerPut(layer, TilePos(x, rect.maxY), index)
+            written = written + 1
+        }
+        x = x + 1
+    }
+    var y = rect.minY + 1
+    while y <= rect.maxY - 1 {
+        layerPut(layer, TilePos(rect.minX, y), index)
+        written = written + 1
+        if rect.maxX != rect.minX {
+            layerPut(layer, TilePos(rect.maxX, y), index)
+            written = written + 1
+        }
+        y = y + 1
+    }
+    return written
+}
+
+/** Replaces every cell holding [from] with [to]; returns how many changed. */
+func layerReplace(layer: TileLayer!, from: std::Int, to: std::Int): std::Int {
+    var changed = 0
+    var y = 0
+    while y < layer.size.y {
+        var x = 0
+        while x < layer.size.x {
+            fin pos = TilePos(x, y)
+            if layerIndexAt(layer, pos) == from {
+                layerPut(layer, pos, to)
+                changed = changed + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return changed
+}
+
+/**
+ * Copies the cells of [rect] from [source] to [target], offset to [at].
+ *
+ * Everything about a cell travels — index, flags and tint — so stamping a
+ * prefabricated room into a generated level keeps the flips its art relies on.
+ */
+func layerCopyRect(source: TileLayer&, rect: TileRect, target: TileLayer!, at: TilePos): std::Int {
+    fin clipped = rect.clampTo(source.size)
+    if clipped.isEmpty() {
+        return 0
+    }
+    var written = 0
+    var y = clipped.minY
+    while y <= clipped.maxY {
+        var x = clipped.minX
+        while x <= clipped.maxX {
+            fin from = TilePos(x, y)
+            fin to = TilePos(at.x + x - clipped.minX, at.y + y - clipped.minY)
+            if target.size.contains(to) {
+                layerPutFull(
+                    target,
+                    to,
+                    layerIndexAt(source, from),
+                    layerFlagsAt(source, from),
+                    layerTintAt(source, from)
+                )
+                written = written + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return written
+}
+
+/** The number of cells of the layer that hold a tile. */
+func layerCount(layer: TileLayer&): std::Int {
+    var total = 0
+    var i = 0
+    while i < layer.chunks.counts.size {
+        total = total + layer.chunks.counts[i]
+        i = i + 1
+    }
+    return total
+}
+
+/** The number of cells of [rect] that hold a tile. */
+func layerCountIn(layer: TileLayer&, rect: TileRect): std::Int {
+    fin clipped = rect.clampTo(layer.size)
+    if clipped.isEmpty() {
+        return 0
+    }
+    var total = 0
+    var y = clipped.minY
+    while y <= clipped.maxY {
+        var x = clipped.minX
+        while x <= clipped.maxX {
+            if layerHasTile(layer, TilePos(x, y)) {
+                total = total + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return total
+}
+
+/** True when no cell of the chunk containing [pos] holds a tile. */
+func layerChunkEmptyAt(layer: TileLayer&, pos: TilePos): std::Bool {
+    return layer.chunks.countAt(pos.x, pos.y) == 0
+}
+
+/** Recomputes the chunk occupancy counts from the tile plane. */
+func layerRebuildChunks(layer: TileLayer!) {
+    intGridClear(layer.chunks.counts, 0)
+    var y = 0
+    while y < layer.size.y {
+        var x = 0
+        while x < layer.size.x {
+            if layer.indices[y * layer.size.x + x] != tileEmpty {
+                layer.chunks.adjust(x, y, 1)
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+/**
+ * Resizes the layer, keeping whatever content still fits.
+ *
+ * Growing a map during play — a level that extends as it is explored — is
+ * ordinary, and rebuilding the planes by hand each time is where content gets
+ * dropped, so the copy happens here.
+ */
+func layerResize(layer: TileLayer!, size: TilemapSize): std::Unit ?! TilemapFault {
+    if !size.isValid() {
+        return .EmptySize
+    }
+    fin hadFlags = layer.flags.size > 0
+    fin hadTints = layer.tints.size > 0
+
+    var indices = intGridFill(size.x, size.y, tileEmpty)
+    var flags: std::Array<std::Int> = std::Array::fill<std::Int>(0)
+    var tints: std::Array<std::Int> = std::Array::fill<std::Int>(0)
+    if hadFlags {
+        flags = intGridFill(size.x, size.y, 0)
+    }
+    if hadTints {
+        tints = intGridFill(size.x, size.y, tileTintNone)
+    }
+
+    fin copyX = intMin(size.x, layer.size.x)
+    fin copyY = intMin(size.y, layer.size.y)
+    var y = 0
+    while y < copyY {
+        var x = 0
+        while x < copyX {
+            fin from = y * layer.size.x + x
+            fin to = y * size.x + x
+            indices[to] = layer.indices[from]
+            if hadFlags {
+                flags[to] = layer.flags[from]
+            }
+            if hadTints {
+                tints[to] = layer.tints[from]
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+
+    layer.size = size
+    layer.indices = indices
+    layer.flags = flags
+    layer.tints = tints
+    layer.chunks = tileChunksNew(size, layer.chunks.shift)
+    layerRebuildChunks(layer)
+    layer.touch()
+}
+
+/** An independent copy of [layer], sharing nothing with it. */
+func layerClone(layer: TileLayer&, name: std::String): TileLayer {
+    var copy = tileLayerNew(name, layer.size)
+    var i = 0
+    while i < layer.indices.size {
+        copy.indices[i] = layer.indices[i]
+        i = i + 1
+    }
+    if layer.flags.size > 0 {
+        copy.ensureFlags()
+        var f = 0
+        while f < layer.flags.size {
+            copy.flags[f] = layer.flags[f]
+            f = f + 1
+        }
+    }
+    if layer.tints.size > 0 {
+        copy.ensureTints()
+        var t = 0
+        while t < layer.tints.size {
+            copy.tints[t] = layer.tints[t]
+            t = t + 1
+        }
+    }
+    copy.visible = layer.visible
+    copy.opacity = layer.opacity
+    copy.tint = layer.tint
+    copy.parallaxX = layer.parallaxX
+    copy.parallaxY = layer.parallaxY
+    copy.offsetX = layer.offsetX
+    copy.offsetY = layer.offsetY
+    copy.order = layer.order
+    layerRebuildChunks(copy)
+    return copy
+}
+
+/** The smallest rectangle containing every tile of the layer, possibly empty. */
+func layerUsedRect(layer: TileLayer&): TileRect {
+    var minX = layer.size.x
+    var minY = layer.size.y
+    var maxX = -1
+    var maxY = -1
+    var y = 0
+    while y < layer.size.y {
+        var x = 0
+        while x < layer.size.x {
+            if layer.indices[y * layer.size.x + x] != tileEmpty {
+                minX = intMin(minX, x)
+                minY = intMin(minY, y)
+                maxX = intMax(maxX, x)
+                maxY = intMax(maxY, y)
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    if maxX < 0 {
+        return tileRectEmpty()
+    }
+    return TileRect(minX, minY, maxX, maxY)
+}
+
+// ── Entity storage ──────────────────────────────────────────────────────
+
+/** A cell-to-entity index over a map of [size], with every cell unbound. */
+func tileStorageNew(size: TilemapSize): TileStorage {
+    return TileStorage(
+        size,
+        intGridFill(size.x, size.y, -1),
+        intGridFill(size.x, size.y, 0),
+        0
+    )
+}
+
+impl TileStorage {
+    func offsetOf(pos: TilePos): std::Int {
+        if !self.size.contains(pos) {
+            return -1
+        }
+        return pos.y * self.size.x + pos.x
+    }
+}
+
+/** What the cell at [pos] is bound to. */
+func tileStorageGet(storage: TileStorage&, pos: TilePos): TileEntity {
+    fin at = storage.offsetOf(pos)
+    if at < 0 {
+        return TileEntity.OutOfBounds
+    }
+    fin id = storage.ids[at]
+    if id < 0 {
+        return TileEntity.Unbound
+    }
+    return TileEntity.Bound(Entity(id, storage.generations[at]))
+}
+
+/** The entity bound to [pos], or an invalid entity when the cell is unbound. */
+func tileStorageEntity(storage: TileStorage&, pos: TilePos): Entity {
+    when tileStorageGet(storage, pos) {
+        TileEntity.Bound(entity) -> { return entity }
+        else -> { return entityInvalid() }
+    }
+    return entityInvalid()
+}
+
+/** Binds [pos] to [entity], replacing whatever it held. */
+func tileStorageSet(storage: TileStorage!, pos: TilePos, entity: Entity): std::Unit ?! TilemapFault {
+    fin at = storage.offsetOf(pos)
+    if at < 0 {
+        return .OutOfBounds
+    }
+    if storage.ids[at] < 0 && entity.isValid() {
+        storage.count = storage.count + 1
+    }
+    if storage.ids[at] >= 0 && !entity.isValid() {
+        storage.count = storage.count - 1
+    }
+    if entity.isValid() {
+        storage.ids[at] = entity.id
+        storage.generations[at] = entity.generation
+    } else {
+        storage.ids[at] = -1
+        storage.generations[at] = 0
+    }
+}
+
+/** Unbinds [pos], leaving the entity itself alone. */
+func tileStorageRemove(storage: TileStorage!, pos: TilePos): std::Unit ?! TilemapFault {
+    try tileStorageSet(storage, pos, entityInvalid())
+}
+
+/** Unbinds every cell. */
+func tileStorageClear(storage: TileStorage!) {
+    intGridClear(storage.ids, -1)
+    intGridClear(storage.generations, 0)
+    storage.count = 0
+}
+
+/** True when [pos] is bound to a live entity of [world]. */
+func tileStorageIsAlive(storage: TileStorage&, world: World&, pos: TilePos): std::Bool {
+    when tileStorageGet(storage, pos) {
+        TileEntity.Bound(entity) -> { return world.isAlive(entity) }
+        else -> { return false }
+    }
+    return false
+}
+
+/**
+ * Despawns every entity the storage holds and unbinds every cell.
+ *
+ * Tearing a level down is where tile entities leak: the storage is dropped, the
+ * entities are not, and the world keeps growing across level loads.
+ */
+func tileStorageDespawnAll(storage: TileStorage!, world: World!): std::Int {
+    var removed = 0
+    var i = 0
+    while i < storage.ids.size {
+        fin id = storage.ids[i]
+        if id >= 0 {
+            fin entity = Entity(id, storage.generations[i])
+            if world.isAlive(entity) {
+                world.despawn(entity)
+                removed = removed + 1
+            }
+            storage.ids[i] = -1
+            storage.generations[i] = 0
+        }
+        i = i + 1
+    }
+    storage.count = 0
+    return removed
+}
+
+/**
+ * Unbinds every cell whose entity is no longer alive.
+ *
+ * A tile entity despawned by gameplay leaves its cell pointing at a dead
+ * handle; sweeping keeps `count` honest and stops later reads resurrecting a
+ * recycled entity id.
+ */
+func tileStorageSweep(storage: TileStorage!, world: World&): std::Int {
+    var swept = 0
+    var i = 0
+    while i < storage.ids.size {
+        fin id = storage.ids[i]
+        if id >= 0 && !world.isAlive(Entity(id, storage.generations[i])) {
+            storage.ids[i] = -1
+            storage.generations[i] = 0
+            storage.count = storage.count - 1
+            swept = swept + 1
+        }
+        i = i + 1
+    }
+    return swept
+}
+
+test "writing and clearing a cell keeps the chunk counts honest" {
+    var layer = tileLayerNew("ground", TilemapSize(40, 40))
+    assert layerCount(layer) == 0 { "a new layer holds no tiles" }
+
+    layerPut(layer, TilePos(3, 3), 7)
+    layerPut(layer, TilePos(20, 20), 9)
+    assert layerCount(layer) == 2 { "two writes must register as two tiles" }
+    assert !layerChunkEmptyAt(layer, TilePos(3, 3)) { "an occupied chunk must not read as empty" }
+    assert layerChunkEmptyAt(layer, TilePos(3, 35)) { "an untouched chunk must read as empty" }
+
+    layerPut(layer, TilePos(3, 3), 8)
+    assert layerCount(layer) == 2 { "overwriting a tile must not change the count" }
+
+    layerPut(layer, TilePos(3, 3), tileEmpty)
+    assert layerCount(layer) == 1 { "clearing a cell must decrement the count" }
+    assert layerChunkEmptyAt(layer, TilePos(3, 3)) { "the chunk must fall back to empty" }
+}
+
+test "an off-map write is refused rather than dropped" {
+    var layer = tileLayerNew("ground", TilemapSize(8, 8))
+
+    var refused = false
+    try {
+        layerSet(layer, TilePos(9, 0), 1)
+    } catch {
+        refused = true
+    }
+    assert refused { "a write outside the layer must fail" }
+
+    var accepted = true
+    try {
+        layerSet(layer, TilePos(7, 7), 1)
+    } catch {
+        accepted = false
+    }
+    assert accepted { "the last cell must be writable" }
+}
+
+test "the flag and tint planes stay sparse until they are used" {
+    var layer = tileLayerNew("ground", TilemapSize(16, 16))
+    layerFill(layer, 4)
+    assert layer.flags.size == 0 && layer.tints.size == 0 {
+        "a plain filled layer must not allocate flags or tints"
+    }
+    assert layerFlagsAt(layer, TilePos(2, 2)) == 0 { "a sparse flag plane must read as zero" }
+    assert layerTintAt(layer, TilePos(2, 2)) == tileTintNone { "a sparse tint plane must read as untinted" }
+
+    layerSetFlip(layer, TilePos(2, 2), tileFlip(true, false, false)) catch { }
+    assert layer.flags.size > 0 { "writing a mirror must allocate the flag plane" }
+    assert layerFlipAt(layer, TilePos(2, 2)).x { "the mirror must survive the round trip" }
+    assert !layerFlipAt(layer, TilePos(3, 2)).x { "a neighbouring cell must be unaffected" }
+}
+
+test "bulk fills and copies move every plane" {
+    var source = tileLayerNew("source", TilemapSize(8, 8))
+    layerFillRectColor(source, tileRect(0, 0, 3, 3), 5, tileColor(1.0, 0.0, 0.0, 1.0))
+    layerSetFlip(source, TilePos(1, 1), tileFlip(true, true, false)) catch { }
+    assert layerCountIn(source, tileRect(0, 0, 3, 3)) == 16 { "a 4x4 fill must write 16 cells" }
+
+    var target = tileLayerNew("target", TilemapSize(8, 8))
+    layerCopyRect(source, tileRect(0, 0, 3, 3), target, TilePos(4, 4))
+    assert layerIndexAt(target, TilePos(4, 4)) == 5 { "the copy must carry the tile index" }
+    assert layerFlipAt(target, TilePos(5, 5)).x { "the copy must carry the cell flags" }
+    assert layerTintAt(target, TilePos(4, 4)) != tileTintNone { "the copy must carry the tint" }
+    assert layerCount(target) == 16 { "the copy must register in the chunk counts" }
+}
+
+test "resizing preserves the content that still fits" {
+    var layer = tileLayerNew("ground", TilemapSize(8, 8))
+    layerFill(layer, 3)
+    layerPut(layer, TilePos(7, 7), 9)
+    layerResize(layer, TilemapSize(4, 12)) catch { }
+    assert layer.size.x == 4 && layer.size.y == 12 { "the layer must adopt the new size" }
+    assert layerIndexAt(layer, TilePos(3, 7)) == 3 { "content inside the new extent must survive" }
+    assert layerIndexAt(layer, TilePos(3, 9)) == tileEmpty { "new rows must start empty" }
+    assert layerCount(layer) == 32 { "the chunk counts must be rebuilt for the new size" }
+}

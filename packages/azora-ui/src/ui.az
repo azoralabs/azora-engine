@@ -10,21 +10,23 @@
 
 module engine.ui
 
-export import engine.ui.dom
-export import engine.ui.navigation
-export import engine.ui.reactive
+exposed import engine.ui.dom
+exposed import engine.ui.navigation
+exposed import engine.ui.reactive
 
 import engine.platform
+import engine.input
+import engine.gpu.draw
 
 impl App {
 
     /// Text with the default UI foreground color.
-    func uiText(text: String, x: Real, y: Real, size: Real) {
+    func uiText(text: std::String, x: std::Double, y: std::Double, size: std::Double) {
         self.uiTextColored(text, x, y, size, 0.92, 0.94, 0.96)
     }
 
     /// True while the mouse is inside the rectangle.
-    func hovered(x: Real, y: Real, w: Real, h: Real): Bool {
+    func hovered(x: std::Double, y: std::Double, w: std::Double, h: std::Double): std::Bool {
         fin mx = self.mouseX()
         fin my = self.mouseY()
         return mx >= x && mx <= x + w && my >= y && my <= y + h
@@ -32,14 +34,14 @@ impl App {
 
     /// A button with the engine's default style. Returns true on the frame
     /// it is clicked.
-    func button(label: String, x: Real, y: Real, w: Real, h: Real): Bool {
+    func button(label: std::String, x: std::Double, y: std::Double, w: std::Double, h: std::Double): std::Bool {
         return self.buttonColored(label, x, y, w, h, 0.23, 0.51, 0.96)
     }
 
     /// A button with a custom accent color. Returns true on the frame it is clicked.
-    func buttonColored(label: String, x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real): Bool {
+    func buttonColored(label: std::String, x: std::Double, y: std::Double, w: std::Double, h: std::Double, r: std::Double, g: std::Double, b: std::Double): std::Bool {
         fin isHover = self.hovered(x, y, w, h)
-        fin isPress = isHover && self.mouseDown(MOUSE_LEFT)
+        fin isPress = isHover && self.mouseDown(mouseLeft)
 
         var cr = r
         var cg = g
@@ -66,12 +68,12 @@ impl App {
         fin th = self.uiTextHeight(size)
         self.uiTextColored(label, x + (w - tw) * 0.5, y + (h - th) * 0.5, size, 1.0, 1.0, 1.0)
 
-        return isHover && self.mouseClicked(MOUSE_LEFT)
+        return isHover && self.mouseClicked(mouseLeft)
     }
 
     /// A text label centered horizontally at the given y.
-    func uiTitle(text: String, y: Real, size: Real) {
-        fin w = self.width() as Real
+    func uiTitle(text: std::String, y: std::Double, size: std::Double) {
+        fin w = self.width() as std::Double
         fin tw = self.uiTextWidth(text, size)
         self.uiTextColored(text, (w - tw) * 0.5, y, size, 0.95, 0.96, 0.98)
     }

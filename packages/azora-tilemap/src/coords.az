@@ -1,0 +1,628 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/coords
+ *
+ * The geometry of a tilemap: where each tile sits in world space, which tile a
+ * world point falls in, how big the whole map is, and which tiles a view
+ * rectangle can possibly show.
+ *
+ * Every lattice in [TilemapKind] is handled here, and everything above this
+ * module — drawing, picking, collision — is written against these functions
+ * rather than against a particular lattice. That is what lets a game switch a
+ * map from square to hexagonal by changing one field.
+ *
+ * ## Grid size conventions
+ *
+ * `grid` is the step between neighbouring tile centres, except for hexagons,
+ * where it is the **full width and height of a hex's bounding box**. The three
+ * quarter factor a hex lattice needs is applied here rather than being pushed
+ * onto callers, so `grid == tile` is the right default for every kind.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.coords
+
+import std.container.array
+import engine.tilemap.types
+import engine.tilemap.hex
+
+/**
+ * A tilemap's placement and lattice.
+ *
+ * `shift` and `bounds` are derived from the other fields and cached, because
+ * every tile drawn in every frame needs them and recomputing a map's bounding
+ * box per tile would dominate the frame. Any change to the fields above them
+ * must be followed by [geometryRefresh].
+ */
+pack TilemapGeometry {
+    var kind: TilemapKind
+    var size: TilemapSize
+    var tile: TileSize
+    var grid: GridSize
+    var anchor: TilemapAnchor
+    /** The tilemap's own position in world space. */
+    var origin: WorldPos
+    /** Cached anchor shift, applied to every tile centre. */
+    var shift: WorldPos
+    /** Cached world-space bounding box, anchor and origin included. */
+    var bounds: WorldRect
+}
+
+/**
+ * Where a world point falls on a lattice.
+ *
+ * Both variants carry the coordinate: a point outside the map still lands on a
+ * well-defined lattice cell, and a camera, a cursor or a projectile that has
+ * left the map usually wants to know *which* cell it would be in.
+ */
+variant enum TilePick {
+    /** The point is over a cell of the map. */
+    At(pos: TilePos)
+    /** The point is on the lattice but outside the map's extent. */
+    Outside(pos: TilePos)
+}
+
+/** The position [pick] found, whether or not it is on the map. */
+func tilePickPos(pick: TilePick): TilePos {
+    when pick {
+        TilePick.At(pos) -> { return pos }
+        TilePick.Outside(pos) -> { return pos }
+    }
+    return TilePos(0, 0)
+}
+
+/** True when [pick] landed on a cell of the map. */
+func tilePickOnMap(pick: TilePick): std::Bool {
+    when pick {
+        TilePick.At(pos) -> { return true }
+        else -> { return false }
+    }
+    return false
+}
+
+// ── Construction ────────────────────────────────────────────────────────
+
+/**
+ * A geometry for [kind] at [origin], with its anchor shift and bounds computed.
+ */
+func tilemapGeometry(
+    kind: TilemapKind,
+    size: TilemapSize,
+    tile: TileSize,
+    grid: GridSize,
+    anchor: TilemapAnchor,
+    origin: WorldPos
+): TilemapGeometry {
+    var geo = TilemapGeometry(
+        kind,
+        size,
+        tile,
+        grid,
+        anchor,
+        origin,
+        WorldPos(0.0, 0.0),
+        WorldRect(0.0, 0.0, 0.0, 0.0)
+    )
+    geometryRefresh(geo)
+    return geo
+}
+
+/** A square map of [width] x [height] tiles, top-left anchored at the origin. */
+func squareGeometry(width: std::Int, height: std::Int, tileWidth: std::Double, tileHeight: std::Double): TilemapGeometry {
+    return tilemapGeometry(
+        TilemapKind.Square,
+        TilemapSize(width, height),
+        TileSize(tileWidth, tileHeight),
+        GridSize(tileWidth, tileHeight),
+        TilemapAnchor.TopLeft,
+        WorldPos(0.0, 0.0)
+    )
+}
+
+/** An isometric map in the given coordinate system, top-left anchored. */
+func isoGeometry(
+    system: IsoCoordSystem,
+    width: std::Int,
+    height: std::Int,
+    tileWidth: std::Double,
+    tileHeight: std::Double
+): TilemapGeometry {
+    return tilemapGeometry(
+        TilemapKind.Isometric(system),
+        TilemapSize(width, height),
+        TileSize(tileWidth, tileHeight),
+        GridSize(tileWidth, tileHeight),
+        TilemapAnchor.TopLeft,
+        WorldPos(0.0, 0.0)
+    )
+}
+
+/** A hexagonal map in the given coordinate system, top-left anchored. */
+func hexGeometry(
+    system: HexCoordSystem,
+    width: std::Int,
+    height: std::Int,
+    tileWidth: std::Double,
+    tileHeight: std::Double
+): TilemapGeometry {
+    return tilemapGeometry(
+        TilemapKind.Hexagon(system),
+        TilemapSize(width, height),
+        TileSize(tileWidth, tileHeight),
+        GridSize(tileWidth, tileHeight),
+        TilemapAnchor.TopLeft,
+        WorldPos(0.0, 0.0)
+    )
+}
+
+// ── Lattice steps ───────────────────────────────────────────────────────
+
+/**
+ * The world distance between adjacent tile centres along each axis.
+ *
+ * This is not always the grid size: a diamond lattice steps half a cell per
+ * coordinate on both axes, a staggered one does so vertically, and a hex
+ * lattice steps three quarters of its bounding box along its skewed axis.
+ * Culling margins and traversal both need the real step, so it is computed
+ * once here rather than being re-derived per kind at every call site.
+ */
+func geometryStep(geo: TilemapGeometry): WorldPos {
+    when geo.kind {
+        TilemapKind.Square() -> {
+            return WorldPos(geo.grid.x, geo.grid.y)
+        }
+        TilemapKind.Isometric(system) -> {
+            when system {
+                IsoCoordSystem.Diamond -> { return WorldPos(geo.grid.x * 0.5, geo.grid.y * 0.5) }
+                IsoCoordSystem.Staggered -> { return WorldPos(geo.grid.x, geo.grid.y * 0.5) }
+            }
+            return WorldPos(geo.grid.x, geo.grid.y)
+        }
+        TilemapKind.Hexagon(system) -> {
+            if hexIsPointyTop(system) {
+                return WorldPos(geo.grid.x, geo.grid.y * 0.75)
+            }
+            return WorldPos(geo.grid.x * 0.75, geo.grid.y)
+        }
+    }
+    return WorldPos(geo.grid.x, geo.grid.y)
+}
+
+/** True when the lattice draws overlapping tiles that must be painted in depth order. */
+func geometryDepthSorted(geo: TilemapGeometry): std::Bool {
+    when geo.kind {
+        TilemapKind.Isometric(system) -> { return true }
+        else -> { return false }
+    }
+    return false
+}
+
+// ── Tile to world ───────────────────────────────────────────────────────
+
+/**
+ * The centre of tile [pos] on the bare lattice, before anchoring or origin.
+ *
+ * This is the one function that knows how each lattice is laid out; everything
+ * else in the package composes it.
+ */
+func latticeCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
+    when geo.kind {
+        TilemapKind.Square() -> {
+            return WorldPos((pos.x as std::Double) * geo.grid.x, (pos.y as std::Double) * geo.grid.y)
+        }
+        TilemapKind.Isometric(system) -> {
+            when system {
+                IsoCoordSystem.Diamond -> {
+                    return WorldPos(
+                        ((pos.x - pos.y) as std::Double) * geo.grid.x * 0.5,
+                        ((pos.x + pos.y) as std::Double) * geo.grid.y * 0.5
+                    )
+                }
+                IsoCoordSystem.Staggered -> {
+                    var indent = 0.0
+                    if intIsOdd(pos.y) {
+                        indent = geo.grid.x * 0.5
+                    }
+                    return WorldPos(
+                        (pos.x as std::Double) * geo.grid.x + indent,
+                        (pos.y as std::Double) * geo.grid.y * 0.5
+                    )
+                }
+            }
+            return WorldPos(0.0, 0.0)
+        }
+        TilemapKind.Hexagon(system) -> {
+            fin axial = hexToAxial(pos, system)
+            if hexIsPointyTop(system) {
+                // Pointy-top: rows are straight, and the skewed axis leans the
+                // lattice half a hex right per row.
+                return WorldPos(
+                    geo.grid.x * ((axial.q as std::Double) + (axial.r as std::Double) * 0.5),
+                    geo.grid.y * 0.75 * (axial.r as std::Double)
+                )
+            }
+            return WorldPos(
+                geo.grid.x * 0.75 * (axial.q as std::Double),
+                geo.grid.y * ((axial.r as std::Double) + (axial.q as std::Double) * 0.5)
+            )
+        }
+    }
+    return WorldPos(0.0, 0.0)
+}
+
+/** The centre of tile [pos] in world space. */
+func tileCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
+    fin raw = latticeCenter(geo, pos)
+    return WorldPos(
+        raw.x + geo.shift.x + geo.origin.x,
+        raw.y + geo.shift.y + geo.origin.y
+    )
+}
+
+/** The rectangle tile [pos] is drawn into. */
+func tileQuad(geo: TilemapGeometry, pos: TilePos): WorldRect {
+    fin center = tileCenter(geo, pos)
+    fin halfX = geo.tile.x * 0.5
+    fin halfY = geo.tile.y * 0.5
+    return WorldRect(center.x - halfX, center.y - halfY, center.x + halfX, center.y + halfY)
+}
+
+/** The top-left corner of the rectangle tile [pos] is drawn into. */
+func tileCorner(geo: TilemapGeometry, pos: TilePos): WorldPos {
+    fin center = tileCenter(geo, pos)
+    return WorldPos(center.x - geo.tile.x * 0.5, center.y - geo.tile.y * 0.5)
+}
+
+// ── World to tile ───────────────────────────────────────────────────────
+
+/**
+ * The lattice cell containing the raw lattice-space point ([x], [y]).
+ *
+ * Square and diamond lattices invert exactly: both are linear, so rounding in
+ * lattice space lands in the cell whose shape *is* that lattice's cell. The
+ * staggered and hex lattices are not, so each falls back to testing the few
+ * candidates around the approximate answer and keeping the nearest centre —
+ * which is what makes a click near a shared edge pick the hex the cursor is
+ * actually over.
+ */
+func latticeCellAt(geo: TilemapGeometry, x: std::Double, y: std::Double): TilePos {
+    when geo.kind {
+        TilemapKind.Square() -> {
+            return TilePos(
+                realFloorToInt(x / geo.grid.x + 0.5),
+                realFloorToInt(y / geo.grid.y + 0.5)
+            )
+        }
+        TilemapKind.Isometric(system) -> {
+            when system {
+                IsoCoordSystem.Diamond -> {
+                    fin a = x / (geo.grid.x * 0.5)
+                    fin b = y / (geo.grid.y * 0.5)
+                    return TilePos(
+                        realFloorToInt((a + b) * 0.5 + 0.5),
+                        realFloorToInt((b - a) * 0.5 + 0.5)
+                    )
+                }
+                IsoCoordSystem.Staggered -> {
+                    return staggeredCellAt(geo, x, y)
+                }
+            }
+            return TilePos(0, 0)
+        }
+        TilemapKind.Hexagon(system) -> {
+            var axial = HexAxial(0, 0)
+            if hexIsPointyTop(system) {
+                fin r = y / (geo.grid.y * 0.75)
+                fin q = x / geo.grid.x - r * 0.5
+                axial = hexRound(HexFrac(q, r))
+            } else {
+                fin q = x / (geo.grid.x * 0.75)
+                fin r = y / geo.grid.y - q * 0.5
+                axial = hexRound(HexFrac(q, r))
+            }
+            return hexFromAxial(axial, system)
+        }
+    }
+    return TilePos(0, 0)
+}
+
+/**
+ * The staggered cell nearest ([x], [y]).
+ *
+ * Rows alternate their horizontal indent, so the row a point belongs to cannot
+ * be read off its `y` alone near a row boundary. Three candidate rows are
+ * tested and the nearest centre wins.
+ */
+func staggeredCellAt(geo: TilemapGeometry, x: std::Double, y: std::Double): TilePos {
+    fin rowStep = geo.grid.y * 0.5
+    fin approxRow = realFloorToInt(y / rowStep + 0.5)
+
+    var best = TilePos(0, 0)
+    var bestDistance = -1.0
+    var offset = -1
+    while offset <= 1 {
+        fin row = approxRow + offset
+        var indent = 0.0
+        if intIsOdd(row) {
+            indent = geo.grid.x * 0.5
+        }
+        fin column = realFloorToInt((x - indent) / geo.grid.x + 0.5)
+        fin candidate = TilePos(column, row)
+        fin center = latticeCenter(geo, candidate)
+        fin dx = center.x - x
+        fin dy = center.y - y
+        fin distance = dx * dx + dy * dy
+        if bestDistance < 0.0 || distance < bestDistance {
+            bestDistance = distance
+            best = candidate
+        }
+        offset = offset + 1
+    }
+    return best
+}
+
+/** The tile containing world point [point], on the map or beyond it. */
+func worldToTile(geo: TilemapGeometry, point: WorldPos): TilePos {
+    return latticeCellAt(
+        geo,
+        point.x - geo.shift.x - geo.origin.x,
+        point.y - geo.shift.y - geo.origin.y
+    )
+}
+
+/** Where [point] falls, distinguishing a cell of the map from one beyond it. */
+func pickTile(geo: TilemapGeometry, point: WorldPos): TilePick {
+    fin pos = worldToTile(geo, point)
+    if geo.size.contains(pos) {
+        return TilePick.At(pos)
+    }
+    return TilePick.Outside(pos)
+}
+
+// ── Bounds ──────────────────────────────────────────────────────────────
+
+/**
+ * The bare lattice's bounding box, tile extents included, before anchoring.
+ *
+ * The border of the map is scanned rather than four corners being evaluated,
+ * because on a staggered or hex lattice the extreme tile is not always a
+ * corner — an indented row reaches further right than the row above it. A
+ * border scan costs `O(width + height)` once per refresh and is exact for every
+ * lattice, which four corners plus a fudge factor would not be.
+ */
+func latticeBounds(geo: TilemapGeometry): WorldRect {
+    if !geo.size.isValid() {
+        return WorldRect(0.0, 0.0, 0.0, 0.0)
+    }
+
+    fin lastX = geo.size.x - 1
+    fin lastY = geo.size.y - 1
+    var minX = 0.0
+    var minY = 0.0
+    var maxX = 0.0
+    var maxY = 0.0
+    var seeded = false
+
+    var y = 0
+    while y <= lastY {
+        var x = 0
+        while x <= lastX {
+            fin onBorder = x == 0 || y == 0 || x == lastX || y == lastY
+            if onBorder {
+                fin center = latticeCenter(geo, TilePos(x, y))
+                if !seeded {
+                    minX = center.x
+                    maxX = center.x
+                    minY = center.y
+                    maxY = center.y
+                    seeded = true
+                } else {
+                    minX = realMin(minX, center.x)
+                    maxX = realMax(maxX, center.x)
+                    minY = realMin(minY, center.y)
+                    maxY = realMax(maxY, center.y)
+                }
+            }
+            // Interior columns cannot extend the box, so the scan skips over
+            // them instead of walking every cell of a large map.
+            if y == 0 || y == lastY || x >= lastX {
+                x = x + 1
+            } else {
+                x = lastX
+            }
+        }
+        y = y + 1
+    }
+
+    fin halfX = geo.tile.x * 0.5
+    fin halfY = geo.tile.y * 0.5
+    return WorldRect(minX - halfX, minY - halfY, maxX + halfX, maxY + halfY)
+}
+
+/**
+ * Recomputes the cached anchor shift and world bounds.
+ *
+ * Call after changing a geometry's kind, size, tile size, grid, anchor or
+ * origin; the drawing and picking paths read the cache and never recompute it.
+ */
+func geometryRefresh(geo: TilemapGeometry) {
+    fin raw = latticeBounds(geo)
+    if anchorShifts(geo.anchor) {
+        fin fraction = anchorFraction(geo.anchor)
+        geo.shift = WorldPos(
+            0.0 - (raw.minX + raw.width() * fraction.x),
+            0.0 - (raw.minY + raw.height() * fraction.y)
+        )
+    } else {
+        geo.shift = WorldPos(0.0, 0.0)
+    }
+    geo.bounds = WorldRect(
+        raw.minX + geo.shift.x + geo.origin.x,
+        raw.minY + geo.shift.y + geo.origin.y,
+        raw.maxX + geo.shift.x + geo.origin.x,
+        raw.maxY + geo.shift.y + geo.origin.y
+    )
+}
+
+/** Moves the map to [origin] and refreshes the cache. */
+func geometrySetOrigin(geo: TilemapGeometry, origin: WorldPos) {
+    geo.origin = origin
+    geometryRefresh(geo)
+}
+
+/** Re-anchors the map and refreshes the cache. */
+func geometrySetAnchor(geo: TilemapGeometry, anchor: TilemapAnchor) {
+    geo.anchor = anchor
+    geometryRefresh(geo)
+}
+
+/** Resizes the map and refreshes the cache. */
+func geometrySetSize(geo: TilemapGeometry, size: TilemapSize) {
+    geo.size = size
+    geometryRefresh(geo)
+}
+
+/** The centre of the map's bounding box in world space. */
+func geometryCenter(geo: TilemapGeometry): WorldPos {
+    return geo.bounds.center()
+}
+
+// ── Culling ─────────────────────────────────────────────────────────────
+
+/**
+ * The tiles a view rectangle can possibly show, clipped to the map.
+ *
+ * The four corners of the view are converted back to lattice coordinates and
+ * their bounding box is taken. That is exact for the linear lattices; for the
+ * staggered and offset-hex ones it is within a cell, so the box is grown by a
+ * margin covering both the indent and any tile art that overhangs its cell.
+ * The result is conservative — it can include a tile that turns out to be just
+ * off screen, and never excludes one that is on.
+ */
+func visibleTiles(geo: TilemapGeometry, view: WorldRect): TileRect {
+    if !geo.size.isValid() {
+        return tileRectEmpty()
+    }
+    if !view.overlaps(geo.bounds) {
+        return tileRectEmpty()
+    }
+
+    fin offsetX = geo.shift.x + geo.origin.x
+    fin offsetY = geo.shift.y + geo.origin.y
+
+    fin a = latticeCellAt(geo, view.minX - offsetX, view.minY - offsetY)
+    fin b = latticeCellAt(geo, view.maxX - offsetX, view.minY - offsetY)
+    fin c = latticeCellAt(geo, view.minX - offsetX, view.maxY - offsetY)
+    fin d = latticeCellAt(geo, view.maxX - offsetX, view.maxY - offsetY)
+
+    var rect = TileRect(
+        intMin(intMin(a.x, b.x), intMin(c.x, d.x)),
+        intMin(intMin(a.y, b.y), intMin(c.y, d.y)),
+        intMax(intMax(a.x, b.x), intMax(c.x, d.x)),
+        intMax(intMax(a.y, b.y), intMax(c.y, d.y))
+    )
+
+    fin step = geometryStep(geo)
+    var marginX = 1
+    var marginY = 1
+    if step.x > 0.0 {
+        marginX = marginX + realCeilToInt(geo.tile.x * 0.5 / step.x)
+    }
+    if step.y > 0.0 {
+        marginY = marginY + realCeilToInt(geo.tile.y * 0.5 / step.y)
+    }
+
+    rect = TileRect(
+        rect.minX - marginX,
+        rect.minY - marginY,
+        rect.maxX + marginX,
+        rect.maxY + marginY
+    )
+    return rect.clampTo(geo.size)
+}
+
+/** Every tile of the map, as a rectangle. */
+func allTiles(geo: TilemapGeometry): TileRect {
+    if !geo.size.isValid() {
+        return tileRectEmpty()
+    }
+    return geo.size.rect()
+}
+
+test "a square lattice round-trips every tile it owns" {
+    var geo = squareGeometry(8, 6, 32.0, 32.0)
+    var y = 0
+    while y < 6 {
+        var x = 0
+        while x < 8 {
+            fin pos = TilePos(x, y)
+            fin back = worldToTile(geo, tileCenter(geo, pos))
+            assert back.same(pos) { "a tile centre must convert back to that tile" }
+            y = y
+            x = x + 1
+        }
+        y = y + 1
+    }
+    assert tilePickOnMap(pickTile(geo, tileCenter(geo, TilePos(0, 0)))) {
+        "the first tile must be picked as on the map"
+    }
+    assert !tilePickOnMap(pickTile(geo, WorldPos(-100.0, -100.0))) {
+        "a point far outside must not be reported as on the map"
+    }
+}
+
+test "a top-left anchored map starts at its own origin" {
+    fin geo = squareGeometry(4, 4, 16.0, 16.0)
+    assert realAbs(geo.bounds.minX) < 0.001 && realAbs(geo.bounds.minY) < 0.001 {
+        "TopLeft must put the bounding box corner on the tilemap position"
+    }
+    assert realAbs(geo.bounds.width() - 64.0) < 0.001 {
+        "four 16-unit tiles must span 64 units"
+    }
+}
+
+test "every lattice round-trips its own tile centres" {
+    var maps: std::Array<TilemapGeometry> = std::Array::fill<TilemapGeometry>(5)
+    maps[0] = squareGeometry(6, 6, 32.0, 32.0)
+    maps[1] = isoGeometry(IsoCoordSystem.Diamond, 6, 6, 64.0, 32.0)
+    maps[2] = isoGeometry(IsoCoordSystem.Staggered, 6, 6, 64.0, 32.0)
+    maps[3] = hexGeometry(HexCoordSystem.RowOdd, 6, 6, 32.0, 36.0)
+    maps[4] = hexGeometry(HexCoordSystem.ColumnEven, 6, 6, 36.0, 32.0)
+
+    var m = 0
+    while m < 5 {
+        var y = 0
+        while y < 6 {
+            var x = 0
+            while x < 6 {
+                fin pos = TilePos(x, y)
+                fin back = worldToTile(maps[m], tileCenter(maps[m], pos))
+                assert back.same(pos) {
+                    "a tile centre must convert back to that tile on every lattice"
+                }
+                x = x + 1
+            }
+            y = y + 1
+        }
+        m = m + 1
+    }
+}
+
+test "culling keeps the tiles a view covers and drops the rest" {
+    fin geo = squareGeometry(64, 64, 32.0, 32.0)
+    fin view = worldRectAt(320.0, 320.0, 128.0, 128.0)
+    fin rect = visibleTiles(geo, view)
+
+    assert rect.contains(TilePos(10, 10)) { "a tile in the middle of the view must survive culling" }
+    assert !rect.contains(TilePos(0, 0)) { "a tile far from the view must be culled" }
+    assert rect.area() < 64 * 64 { "culling must actually reduce the tile count" }
+
+    assert visibleTiles(geo, worldRectAt(-5000.0, -5000.0, 10.0, 10.0)).isEmpty() {
+        "a view that misses the map entirely must cull everything"
+    }
+}

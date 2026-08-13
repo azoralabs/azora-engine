@@ -10,24 +10,20 @@ import std.container.*
 import engine.core
 
 /**
- * Engine-owned type macros for zero-cost system parameters.
+ * Narrows a query to entities that also carry [$Filter].
  *
- * `res T` and `mut res T` become ordinary borrows, so LLVM and WebAssembly do
- * not allocate resource wrappers. `query [...]` preserves its heterogeneous
- * component access list in the concrete Query type. `with` and `without` are
- * compile-time filters and do not change the runtime handle representation.
+ * The filter is a compile-time predicate: it selects which entities a system
+ * iterates without changing the runtime handle representation, so the expansion
+ * is the base type unchanged.
  */
-meta type {
-    res $T => ref $T
-    mut res $T => mut ref $T
-    query [...$T] => Query<...$T>
-    $Base with $Filter => $Base
-    $Base without $Filter => $Base
-}
+macro $Base @with $Filter => $Base
+
+/** Narrows a query to entities that do *not* carry [$Filter]. */
+macro $Base @without $Filter => $Base
 
 pack Entity {
-    var id: Int
-    var generation: Int
+    var id: std::Int
+    var generation: std::Int
 }
 
 func entityInvalid(): Entity {
@@ -35,45 +31,45 @@ func entityInvalid(): Entity {
 }
 
 impl Entity {
-    func isValid(): Bool {
+    func isValid(): std::Bool {
         return self.id >= 0
     }
 }
 
 pack World {
-    var generations: Array<Int>
-    var alive: Array<Bool>
-    var names: Array<String>
-    var parents: Array<Int>
-    var childCounts: Array<Int>
-    var prefabs: Array<Bool>
-    var resources: Array<Bool>
-    var freeIds: Array<Int>
-    var entityCount: Int
-    var aliveCount: Int
-    var tick: Int
-    var totalTime: Real
-    var fixedTimestep: Real
-    var fixedAccumulator: Real
-    var revision: Long
+    var generations: std::Array<std::Int>
+    var alive: std::Array<std::Bool>
+    var names: std::Array<std::String>
+    var parents: std::Array<std::Int>
+    var childCounts: std::Array<std::Int>
+    var prefabs: std::Array<std::Bool>
+    var resources: std::Array<std::Bool>
+    var freeIds: std::Array<std::Int>
+    var entityCount: std::Int
+    var aliveCount: std::Int
+    var tick: std::Int
+    var totalTime: std::Double
+    var fixedTimestep: std::Double
+    var fixedAccumulator: std::Double
+    var revision: std::Long
 }
 
 func worldInit(): World {
-    var generations = arr@[0]
-    var alive = arr@[false]
-    var names = arr@[""]
-    var parents = arr@[-1]
-    var childCounts = arr@[0]
-    var prefabs = arr@[false]
-    var resources = arr@[false]
-    var freeIds = arr@[-1]
+    var generations = @std::arr[0]
+    var alive = @std::arr[false]
+    var names = @std::arr[""]
+    var parents = @std::arr[-1]
+    var childCounts = @std::arr[0]
+    var prefabs = @std::arr[false]
+    var resources = @std::arr[false]
+    var freeIds = @std::arr[-1]
     return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0, 0L)
 }
 
 impl World {
     func spawn(): Entity {
-        if self.freeIds.length > 1 {
-            fin last = self.freeIds.length - 1
+        if self.freeIds.size > 1 {
+            fin last = self.freeIds.size - 1
             fin id = self.freeIds[last]
             self.freeIds.remove(id)
 
@@ -91,7 +87,7 @@ impl World {
         }
 
         fin id = self.entityCount
-        if id < self.generations.length {
+        if id < self.generations.size {
             self.generations[id] = 0
             self.alive[id] = true
             self.names[id] = ""
@@ -114,7 +110,7 @@ impl World {
         return Entity(id, 0)
     }
 
-    func spawnNamed(name: String): Entity {
+    func spawnNamed(name: std::String): Entity {
         fin entity = self.spawn()
         self.names[entity.id] = name
         return entity
@@ -141,38 +137,38 @@ impl World {
         self.revision = self.revision + 1
     }
 
-    func isAlive(entity: Entity): Bool {
+    func isAlive(entity: Entity): std::Bool {
         if entity.id < 0 || entity.id >= self.entityCount {
             return false
         }
         return self.alive[entity.id] && self.generations[entity.id] == entity.generation
     }
 
-    func count(): Int {
+    func count(): std::Int {
         return self.aliveCount
     }
 
-    func entityAt(id: Int): Entity {
+    func entityAt(id: std::Int): Entity {
         if id < 0 || id >= self.entityCount {
             return entityInvalid()
         }
         return Entity(id, self.generations[id])
     }
 
-    func setName(entity: Entity, name: String) {
+    func setName(entity: Entity, name: std::String) {
         if self.isAlive(entity) {
             self.names[entity.id] = name
         }
     }
 
-    func getName(entity: Entity): String {
+    func getName(entity: Entity): std::String {
         if !self.isAlive(entity) {
             return ""
         }
         return self.names[entity.id]
     }
 
-    func lookup(name: String): Entity {
+    func lookup(name: std::String): Entity {
         var i = 0
         while i < self.entityCount {
             if self.alive[i] && self.names[i] == name {
@@ -217,7 +213,7 @@ impl World {
         return Entity(parentId, self.generations[parentId])
     }
 
-    func getChildCount(entity: Entity): Int {
+    func getChildCount(entity: Entity): std::Int {
         if !self.isAlive(entity) {
             return 0
         }
@@ -230,14 +226,14 @@ impl World {
         }
     }
 
-    func isPrefab(entity: Entity): Bool {
+    func isPrefab(entity: Entity): std::Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.prefabs[entity.id]
     }
 
-    func spawnResource(name: String): Entity {
+    func spawnResource(name: std::String): Entity {
         fin entity = self.spawnNamed(name)
         self.resources[entity.id] = true
         return entity
@@ -249,24 +245,24 @@ impl World {
         }
     }
 
-    func isResource(entity: Entity): Bool {
+    func isResource(entity: Entity): std::Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.resources[entity.id]
     }
 
-    func progress(deltaTime: Real) {
+    func progress(deltaTime: std::Double) {
         self.tick = self.tick + 1
         self.totalTime = self.totalTime + deltaTime
         self.fixedAccumulator = self.fixedAccumulator + deltaTime
     }
 
-    func setFixedTimestep(timestep: Real) {
+    func setFixedTimestep(timestep: std::Double) {
         self.fixedTimestep = timestep
     }
 
-    func consumeFixedStep(): Bool {
+    func consumeFixedStep(): std::Bool {
         if self.fixedAccumulator >= self.fixedTimestep {
             self.fixedAccumulator = self.fixedAccumulator - self.fixedTimestep
             return true
@@ -275,28 +271,28 @@ impl World {
     }
 }
 
-pack<T> Storage {
-    var entities: Array<Entity>
-    var values: Array<T>
-    var added: Array<Bool>
-    var changed: Array<Bool>
-    var revision: Long
+pack Storage<T> {
+    var entities: std::Array<Entity>
+    var values: std::Array<T>
+    var added: std::Array<std::Bool>
+    var changed: std::Array<std::Bool>
+    var revision: std::Long
 }
 
-func<T> storageInit(defaultValue: T): Storage<T> {
-    var entities = arr@[entityInvalid()]
-    var values = arr@[defaultValue]
-    var added = arr@[false]
-    var changed = arr@[false]
+func storageInit<T>(defaultValue: T): Storage<T> {
+    var entities = @std::arr[entityInvalid()]
+    var values = @std::arr[defaultValue]
+    var added = @std::arr[false]
+    var changed = @std::arr[false]
     return Storage<T>(entities, values, added, changed, 0)
 }
 
-func<T> storageIndexOf(store: Storage<T>, entity: Entity): Int {
+func storageIndexOf<T>(store: Storage<T>&, entity: Entity): std::Int {
     if !entity.isValid() {
         return -1
     }
     var i = 0
-    while i < store.entities.length {
+    while i < store.entities.size {
         fin current = store.entities[i]
         if current.isValid() && current.id == entity.id && current.generation == entity.generation {
             return i
@@ -306,11 +302,11 @@ func<T> storageIndexOf(store: Storage<T>, entity: Entity): Int {
     return -1
 }
 
-func<T> storageHas(store: Storage<T>, entity: Entity): Bool {
+func storageHas<T>(store: Storage<T>&, entity: Entity): std::Bool {
     return storageIndexOf<T>(store, entity) >= 0
 }
 
-func<T> storageInsert(store: Storage<T>, entity: Entity, value: T) {
+func storageInsert<T>(store: Storage<T>!, entity: Entity, value: T) {
     fin index = storageIndexOf<T>(store, entity)
     if index >= 0 {
         store.values[index] = value
@@ -325,12 +321,12 @@ func<T> storageInsert(store: Storage<T>, entity: Entity, value: T) {
     store.revision = store.revision + 1
 }
 
-func<T> storageGet(store: Storage<T>, entity: Entity): T {
+func storageGet<T>(store: Storage<T>&, entity: Entity): T {
     fin index = storageIndexOf<T>(store, entity)
     return store.values[index]
 }
 
-func<T> storageGetOrDefault(store: Storage<T>, entity: Entity, defaultValue: T): T {
+func storageGetOrDefault<T>(store: Storage<T>&, entity: Entity, defaultValue: T): T {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
         return defaultValue
@@ -338,7 +334,7 @@ func<T> storageGetOrDefault(store: Storage<T>, entity: Entity, defaultValue: T):
     return store.values[index]
 }
 
-func<T> storageRemove(store: Storage<T>, entity: Entity): Bool {
+func storageRemove<T>(store: Storage<T>!, entity: Entity): std::Bool {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
         return false
@@ -350,29 +346,29 @@ func<T> storageRemove(store: Storage<T>, entity: Entity): Bool {
     return true
 }
 
-func<T> storageWasAdded(store: Storage<T>, entity: Entity): Bool {
+func storageWasAdded<T>(store: Storage<T>&, entity: Entity): std::Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.added[index]
 }
 
-func<T> storageWasChanged(store: Storage<T>, entity: Entity): Bool {
+func storageWasChanged<T>(store: Storage<T>&, entity: Entity): std::Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.changed[index]
 }
 
-func<T> storageClearTracking(store: Storage<T>) {
+func storageClearTracking<T>(store: Storage<T>!) {
     var i = 0
-    while i < store.added.length {
+    while i < store.added.size {
         store.added[i] = false
         store.changed[i] = false
         i = i + 1
     }
 }
 
-func<T> storageCount(store: Storage<T>): Int {
+func storageCount<T>(store: Storage<T>&): std::Int {
     var total = 0
     var i = 0
-    while i < store.entities.length {
+    while i < store.entities.size {
         if store.entities[i].isValid() {
             total = total + 1
         }
@@ -381,103 +377,105 @@ func<T> storageCount(store: Storage<T>): Int {
     return total
 }
 
-func<T> storageEntityAt(store: Storage<T>, index: Int): Entity {
+func storageEntityAt<T>(store: Storage<T>&, index: std::Int): Entity {
     return store.entities[index]
 }
 
-func<T> storageValueAt(store: Storage<T>, index: Int): T {
+func storageValueAt<T>(store: Storage<T>&, index: std::Int): T {
     return store.values[index]
 }
 
-func<T> storageLength(store: Storage<T>): Int {
-    return store.entities.length
+func storageLength<T>(store: Storage<T>&): std::Int {
+    return store.entities.size
 }
 
-func<T> spawnWith(world: World, store: Storage<T>, value: T): Entity {
+func spawnWith<T>(world: World!, store: Storage<T>!, value: T): Entity {
     fin entity = world.spawn()
     storageInsert<T>(store, entity, value)
     return entity
 }
 
-func<T> copyComponent(store: Storage<T>, source: Entity, target: Entity) {
+func copyComponent<T>(store: Storage<T>!, source: Entity, target: Entity) {
     if storageHas<T>(store, source) {
         storageInsert<T>(store, target, storageGet<T>(store, source))
     }
 }
 
-func<T> spawnResourceWith(world: World, store: Storage<T>, name: String, value: T): Entity {
+func spawnResourceWith<T>(world: World!, store: Storage<T>!, name: std::String, value: T): Entity {
     fin entity = world.spawnResource(name)
     storageInsert<T>(store, entity, value)
     return entity
 }
 
 pack QueryFetch {
-    var ok: Bool
+    var ok: std::Bool
     var entity: Entity
-    var error: String
+    var error: std::String
 }
 
 pack QueryCursor {
-    var entities: Array<Entity>
-    var cursor: Int
-    var ok: Bool
-    var error: String
+    var entities: std::Array<Entity>
+    var cursor: std::Int
+    var ok: std::Bool
+    var error: std::String
 }
 
 /**
  * A typed single-result query.
  *
- * The component value remains borrowed from its storage. `deref single`
+ * The component value remains borrowed from its storage. `single.*`
  * exposes it explicitly; the entity is retained for commands and diagnostics.
  */
-@Experimental(sinceAzora: "0.0.4")
-pack<...T> Single where (...T).length >= 1 {
+@std::Experimental(since: "0.0.4")
+pack Single<...T> where (...T).size >= 1 {
     var entity: Entity
     inline for Ty in ...T {
         value: Ty
     }
 }
 
-impl<...T> deref for Single { self& ->
-    return self.value
+impl<...T> Single {
+    oper.* [self: Self&] {
+        return self.value
+    }
 }
 
 /**
- * Heterogeneous ECS query handle produced by `query [...]`.
+ * Heterogeneous ECS query handle, written `Query<A, B>`.
  *
  * The variadic type list is compile-time-only access metadata. Runtime state is
  * one compact entity cursor, so adding component types does not increase the
  * handle's allocation count.
  */
-@Experimental(sinceAzora: "0.0.4")
-pack<...T> Query {
+@std::Experimental(since: "0.0.4")
+pack Query<...T> {
     var cursor: QueryCursor
 }
 
 impl<...T> Query {
-    func reset() { self! ->
+    func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext: Bool = self.cursor.hasNext()
+    prop hasNext[self: Self&]: std::Bool = self.cursor.hasNext()
 
     /**
      * Returns the next matching entity.
      *
      * System-parameter lowering projects this entity into the tuple of borrowed
-     * components requested by `query [...]`.
+     * components requested by the `Query<…>` type arguments.
      */
-    func nextEntity(): Entity { self! ->
+    func nextEntity[self: Self!](): Entity {
         return self.cursor.next()
     }
 }
 
 func queryEmpty(): QueryCursor {
-    return QueryCursor(arr@[entityInvalid()], 1, true, "")
+    return QueryCursor(@std::arr[entityInvalid()], 1, true, "")
 }
 
-func queryError(message: String): QueryCursor {
-    return QueryCursor(arr@[entityInvalid()], 1, false, message)
+func queryError(message: std::String): QueryCursor {
+    return QueryCursor(@std::arr[entityInvalid()], 1, false, message)
 }
 
 impl QueryCursor {
@@ -491,20 +489,20 @@ impl QueryCursor {
         self.cursor = 1
     }
 
-    func markFailed(message: String) {
+    func markFailed(message: std::String) {
         self.ok = false
         self.error = message
     }
 
-    func invalidateAt(index: Int) {
-        if index > 0 && index < self.entities.length {
+    func invalidateAt(index: std::Int) {
+        if index > 0 && index < self.entities.size {
             self.entities[index] = entityInvalid()
         }
     }
 
-    func hasNext(): Bool {
+    func hasNext(): std::Bool {
         var i = self.cursor
-        while i < self.entities.length {
+        while i < self.entities.size {
             if self.entities[i].isValid() {
                 return true
             }
@@ -514,7 +512,7 @@ impl QueryCursor {
     }
 
     func next(): Entity {
-        while self.cursor < self.entities.length {
+        while self.cursor < self.entities.size {
             fin entity = self.entities[self.cursor]
             self.cursor = self.cursor + 1
             if entity.isValid() {
@@ -524,10 +522,10 @@ impl QueryCursor {
         return entityInvalid()
     }
 
-    func count(): Int {
+    func count(): std::Int {
         var total = 0
         var i = 1
-        while i < self.entities.length {
+        while i < self.entities.size {
             if self.entities[i].isValid() {
                 total = total + 1
             }
@@ -536,7 +534,7 @@ impl QueryCursor {
         return total
     }
 
-    func isEmpty(): Bool {
+    func isEmpty(): std::Bool {
         return self.count() <= 0
     }
 
@@ -544,7 +542,7 @@ impl QueryCursor {
         var found = entityInvalid()
         var total = 0
         var i = 1
-        while i < self.entities.length {
+        while i < self.entities.size {
             fin entity = self.entities[i]
             if entity.isValid() {
                 found = entity
@@ -562,7 +560,7 @@ impl QueryCursor {
     }
 }
 
-func queryAll(world: World, includeResources: Bool): QueryCursor {
+func queryAll(world: World&, includeResources: std::Bool): QueryCursor {
     var query = queryEmpty()
     var i = 0
     while i < world.entityCount {
@@ -575,17 +573,17 @@ func queryAll(world: World, includeResources: Bool): QueryCursor {
     return query
 }
 
-func queryBroad(world: World): QueryCursor {
+func queryBroad(world: World&): QueryCursor {
     return queryAll(world, true)
 }
 
-func queryScene(world: World): QueryCursor {
+func queryScene(world: World&): QueryCursor {
     return queryAll(world, false)
 }
 
-func queryRetainAlive(query: QueryCursor, world: World) {
+func queryRetainAlive(query: QueryCursor!, world: World&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && !world.isAlive(entity) {
             query.invalidateAt(i)
@@ -594,9 +592,9 @@ func queryRetainAlive(query: QueryCursor, world: World) {
     }
 }
 
-func queryRetainResources(query: QueryCursor, world: World) {
+func queryRetainResources(query: QueryCursor!, world: World&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && !world.isResource(entity) {
             query.invalidateAt(i)
@@ -605,9 +603,9 @@ func queryRetainResources(query: QueryCursor, world: World) {
     }
 }
 
-func queryRetainScene(query: QueryCursor, world: World) {
+func queryRetainScene(query: QueryCursor!, world: World&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && world.isResource(entity) {
             query.invalidateAt(i)
@@ -616,10 +614,10 @@ func queryRetainScene(query: QueryCursor, world: World) {
     }
 }
 
-func<T> queryFromStorage(world: World, store: Storage<T>, includeResources: Bool): QueryCursor {
+func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: std::Bool): QueryCursor {
     var query = queryEmpty()
     var i = 0
-    while i < store.entities.length {
+    while i < store.entities.size {
         fin entity = store.entities[i]
         if entity.isValid() && world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
             query.add(entity)
@@ -629,9 +627,9 @@ func<T> queryFromStorage(world: World, store: Storage<T>, includeResources: Bool
     return query
 }
 
-func<T> queryWith(query: QueryCursor, store: Storage<T>) {
+func queryWith<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && !storageHas<T>(store, entity) {
             query.invalidateAt(i)
@@ -640,9 +638,9 @@ func<T> queryWith(query: QueryCursor, store: Storage<T>) {
     }
 }
 
-func<T> queryWithout(query: QueryCursor, store: Storage<T>) {
+func queryWithout<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && storageHas<T>(store, entity) {
             query.invalidateAt(i)
@@ -651,9 +649,9 @@ func<T> queryWithout(query: QueryCursor, store: Storage<T>) {
     }
 }
 
-func<T> queryAdded(query: QueryCursor, store: Storage<T>) {
+func queryAdded<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && !storageWasAdded<T>(store, entity) {
             query.invalidateAt(i)
@@ -662,9 +660,9 @@ func<T> queryAdded(query: QueryCursor, store: Storage<T>) {
     }
 }
 
-func<T> queryChanged(query: QueryCursor, store: Storage<T>) {
+func queryChanged<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
-    while i < query.entities.length {
+    while i < query.entities.size {
         fin entity = query.entities[i]
         if entity.isValid() && !storageWasChanged<T>(store, entity) {
             query.invalidateAt(i)
@@ -673,34 +671,34 @@ func<T> queryChanged(query: QueryCursor, store: Storage<T>) {
     }
 }
 
-func<T> queryResources(world: World, store: Storage<T>): QueryCursor {
+func queryResources<T>(world: World&, store: Storage<T>&): QueryCursor {
     var query = queryFromStorage<T>(world, store, true)
     queryRetainResources(query, world)
     return query
 }
 
 pack QueryAccess {
-    var system: String
-    var reads: Array<String>
-    var writes: Array<String>
-    var withs: Array<String>
-    var withouts: Array<String>
-    var added: Array<String>
-    var changed: Array<String>
-    var broad: Bool
-    var includeResources: Bool
-    var single: Bool
-    var valid: Bool
-    var error: String
+    var system: std::String
+    var reads: std::Array<std::String>
+    var writes: std::Array<std::String>
+    var withs: std::Array<std::String>
+    var withouts: std::Array<std::String>
+    var added: std::Array<std::String>
+    var changed: std::Array<std::String>
+    var broad: std::Bool
+    var includeResources: std::Bool
+    var single: std::Bool
+    var valid: std::Bool
+    var error: std::String
 }
 
-func queryAccessInit(system: String): QueryAccess {
-    return QueryAccess(system, arr@[""], arr@[""], arr@[""], arr@[""], arr@[""], arr@[""], false, false, false, true, "")
+func queryAccessInit(system: std::String): QueryAccess {
+    return QueryAccess(system, @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], false, false, false, true, "")
 }
 
-func queryNameListHas(list: Array<String>, name: String): Bool {
+func queryNameListHas(list: std::Array<std::String>, name: std::String): std::Bool {
     var i = 1
-    while i < list.length {
+    while i < list.size {
         if list[i] == name {
             return true
         }
@@ -709,9 +707,9 @@ func queryNameListHas(list: Array<String>, name: String): Bool {
     return false
 }
 
-func queryNameListsOverlap(left: Array<String>, right: Array<String>): Bool {
+func queryNameListsOverlap(left: std::Array<std::String>, right: std::Array<std::String>): std::Bool {
     var i = 1
-    while i < left.length {
+    while i < left.size {
         if queryNameListHas(right, left[i]) {
             return true
         }
@@ -720,61 +718,61 @@ func queryNameListsOverlap(left: Array<String>, right: Array<String>): Bool {
     return false
 }
 
-func queryAccessRead(access: QueryAccess, component: String) {
+func queryAccessRead(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.reads, component) {
         access.reads.add(component)
     }
 }
 
-func queryAccessWrite(access: QueryAccess, component: String) {
+func queryAccessWrite(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.writes, component) {
         access.writes.add(component)
     }
 }
 
-func queryAccessWith(access: QueryAccess, component: String) {
+func queryAccessWith(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.withs, component) {
         access.withs.add(component)
     }
 }
 
-func queryAccessWithout(access: QueryAccess, component: String) {
+func queryAccessWithout(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.withouts, component) {
         access.withouts.add(component)
     }
 }
 
-func queryAccessAdded(access: QueryAccess, component: String) {
+func queryAccessAdded(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.added, component) {
         access.added.add(component)
     }
 }
 
-func queryAccessChanged(access: QueryAccess, component: String) {
+func queryAccessChanged(access: QueryAccess!, component: std::String) {
     if component != "" && !queryNameListHas(access.changed, component) {
         access.changed.add(component)
     }
 }
 
-func queryAccessBroad(access: QueryAccess, includeResources: Bool) {
+func queryAccessBroad(access: QueryAccess!, includeResources: std::Bool) {
     access.broad = true
     access.includeResources = includeResources
 }
 
-func queryAccessSingle(access: QueryAccess) {
+func queryAccessSingle(access: QueryAccess!) {
     access.single = true
 }
 
-func queryAccessFail(access: QueryAccess, message: String) {
+func queryAccessFail(access: QueryAccess!, message: std::String) {
     access.valid = false
     access.error = message
 }
 
-func queryAccessDisjoint(left: QueryAccess, right: QueryAccess): Bool {
+func queryAccessDisjoint(left: QueryAccess&, right: QueryAccess&): std::Bool {
     return queryNameListsOverlap(left.withs, right.withouts) || queryNameListsOverlap(right.withs, left.withouts)
 }
 
-func queryAccessConflicts(left: QueryAccess, right: QueryAccess): Bool {
+func queryAccessConflicts(left: QueryAccess&, right: QueryAccess&): std::Bool {
     if queryAccessDisjoint(left, right) {
         return false
     }
@@ -790,80 +788,80 @@ func queryAccessConflicts(left: QueryAccess, right: QueryAccess): Bool {
     return false
 }
 
-pack<T> ResourceCell {
-    var hasValue: Bool
+pack ResourceCell<T> {
+    var hasValue: std::Bool
     var value: T
-    var revision: Int
+    var revision: std::Int
 }
 
-func<T> resourceInit(defaultValue: T): ResourceCell<T> {
+func resourceInit<T>(defaultValue: T): ResourceCell<T> {
     return ResourceCell<T>(false, defaultValue, 0)
 }
 
-func<T> resourceExists(resource: ResourceCell<T>): Bool {
+func resourceExists<T>(resource: ResourceCell<T>&): std::Bool {
     return resource.hasValue
 }
 
-func<T> resourceSet(resource: ResourceCell<T>, value: T) {
+func resourceSet<T>(resource: ResourceCell<T>!, value: T) {
     resource.value = value
     resource.hasValue = true
     resource.revision = resource.revision + 1
 }
 
-func<T> resourceGet(resource: ResourceCell<T>): T {
+func resourceGet<T>(resource: ResourceCell<T>&): T {
     return resource.value
 }
 
-func<T> resourceGetOrDefault(resource: ResourceCell<T>, defaultValue: T): T {
+func resourceGetOrDefault<T>(resource: ResourceCell<T>&, defaultValue: T): T {
     if resource.hasValue {
         return resource.value
     }
     return defaultValue
 }
 
-pack<T> EventQueue {
-    var events: Array<T>
-    var cursor: Int
+pack EventQueue<T> {
+    var events: std::Array<T>
+    var cursor: std::Int
 }
 
-func<T> eventQueueInit(defaultEvent: T): EventQueue<T> {
-    var events = arr@[defaultEvent]
+func eventQueueInit<T>(defaultEvent: T): EventQueue<T> {
+    var events = @std::arr[defaultEvent]
     return EventQueue<T>(events, 1)
 }
 
-func<T> eventSend(queue: EventQueue<T>, event: T) {
+func eventSend<T>(queue: EventQueue<T>!, event: T) {
     queue.events.add(event)
 }
 
-func<T> eventLength(queue: EventQueue<T>): Int {
-    return queue.events.length - queue.cursor
+func eventLength<T>(queue: EventQueue<T>&): std::Int {
+    return queue.events.size - queue.cursor
 }
 
-func<T> eventIsEmpty(queue: EventQueue<T>): Bool {
+func eventIsEmpty<T>(queue: EventQueue<T>&): std::Bool {
     return eventLength<T>(queue) <= 0
 }
 
-func<T> eventPeek(queue: EventQueue<T>, index: Int): T {
+func eventPeek<T>(queue: EventQueue<T>&, index: std::Int): T {
     return queue.events[queue.cursor + index]
 }
 
-func<T> eventHasNext(queue: EventQueue<T>): Bool {
-    return queue.cursor < queue.events.length
+func eventHasNext<T>(queue: EventQueue<T>&): std::Bool {
+    return queue.cursor < queue.events.size
 }
 
-func<T> eventNext(queue: EventQueue<T>): T {
+func eventNext<T>(queue: EventQueue<T>!): T {
     fin event = queue.events[queue.cursor]
     queue.cursor = queue.cursor + 1
     return event
 }
 
 pack CommandBuffer {
-    var despawns: Array<Entity>
-    var cursor: Int
+    var despawns: std::Array<Entity>
+    var cursor: std::Int
 }
 
 func commandBufferInit(): CommandBuffer {
-    var despawns = arr@[entityInvalid()]
+    var despawns = @std::arr[entityInvalid()]
     return CommandBuffer(despawns, 1)
 }
 
@@ -873,89 +871,474 @@ impl CommandBuffer {
     }
 
     func apply(world: World) {
-        while self.cursor < self.despawns.length {
+        while self.cursor < self.despawns.size {
             world.despawn(self.despawns[self.cursor])
             self.cursor = self.cursor + 1
         }
     }
 }
 
-/** Callable ABI shared by LLVM and WebAssembly system schedules. */
-typealias SystemCallback = Func(World!, Time&) -> Unit
+/**
+ * One `@System` function, as the scheduler sees it.
+ *
+ * Every field here is read off the decorator — nothing is passed at a
+ * registration call site, because there is no registration call site. The
+ * decorator is the only place a system's place in the frame is written down,
+ * which is what stops the two from drifting apart.
+ */
+@std::Experimental(since: "0.0.4")
+pack ScheduledSystem {
+    /** The function's own name, as `runBefore`/`runAfter` spell it. */
+    fin name: std::String
+    fin phase: SystemPhase
+    fin order: std::Int
+    /** Comma-separated names of systems (or sets) this one must precede. */
+    fin runBefore: std::String
+    /** Comma-separated names of systems (or sets) this one must follow. */
+    fin runAfter: std::String
+    fin inSet: std::String
+    /** Cleared to skip the system without removing its decorator. */
+    var enabled: std::Bool
+}
 
 /**
- * One compiled system plus its static ECS access declaration.
+ * True when [name] appears in the comma-separated [list].
  *
- * The scheduler never discovers access at runtime. Parameter lowering builds
- * `access` from `res`, `query`, `with`, and `without` before code generation.
+ * Matching is exact per segment, so `"input"` does not match `"input_debug"` —
+ * a substring test would silently create ordering edges nobody asked for.
+ * Surrounding spaces are ignored so `"input, physics"` reads naturally.
  */
-@Experimental(sinceAzora: "0.0.4")
-pack ScheduledSystem {
-    fin name: String
-    fin phase: SystemPhase
-    fin order: Int
-    fin access: QueryAccess
-    fin callback: SystemCallback
-}
-
-/** Deterministic, conflict-aware system schedule. */
-@Experimental(sinceAzora: "0.0.4")
-pack Schedule {
-    var systems: Array<ScheduledSystem>
-    var size: Int
-}
-
-func scheduleInit(capacity: Int = 64): Schedule {
-    assert capacity >= 0 { "schedule capacity must be non-negative" }
-    return Schedule(Array::fill<ScheduledSystem>(capacity), 0)
-}
-
-impl Schedule {
-    /** Adds a system while retaining stable phase/order registration order. */
-    func add(system: ScheduledSystem) { self! ->
-        assert self.size < self.systems.size { "system schedule capacity exceeded" }
-        var insertAt = self.size
-        var i = 0
-        while i < self.size {
-            fin current = self.systems[i]
-            if system.phase == current.phase && system.order < current.order {
-                insertAt = i
-                i = self.size
-            } else {
-                i = i + 1
-            }
-        }
-        var move = self.size
-        while move > insertAt {
-            self.systems[move] = self.systems[move - 1]
-            move = move - 1
-        }
-        self.systems[insertAt] = system
-        self.size = self.size + 1
+func systemNameListed(list: std::String, name: std::String): std::Bool {
+    if list == "" || name == "" {
+        return false
     }
+    var start = 0
+    var i = 0
+    while i <= list.size {
+        if i == list.size || list[i] == ',' {
+            var from = start
+            var to = i
+            while from < to && list[from] == ' ' {
+                from = from + 1
+            }
+            while to > from && list[to - 1] == ' ' {
+                to = to - 1
+            }
+            if to - from == name.size {
+                var matched = true
+                var k = 0
+                while k < name.size {
+                    if list[from + k] != name[k] {
+                        matched = false
+                        k = name.size
+                    } else {
+                        k = k + 1
+                    }
+                }
+                if matched {
+                    return true
+                }
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return false
+}
 
-    /**
-     * Executes one phase deterministically.
-     *
-     * Native hosts may submit conflict-free ranges to the engine jobs package;
-     * this baseline path is allocation-free and identical in LLVM and WASM.
-     */
-    func run(phase: SystemPhase, world: World!, time: Time&) {
+/**
+ * The position of [phase] in the frame.
+ *
+ * Phases are absolute: every `.PreUpdate` system runs before every `.Update`
+ * one, whatever the ordering constraints say. Constraints only order systems
+ * *within* a phase, so a stray `runAfter` cannot pull rendering into the middle
+ * of simulation.
+ */
+func systemPhaseRank(phase: SystemPhase): std::Int {
+    return when phase {
+        SystemPhase.Startup -> 0
+        SystemPhase.PreUpdate -> 1
+        SystemPhase.Update -> 2
+        SystemPhase.PostUpdate -> 3
+        SystemPhase.FixedUpdate -> 4
+        SystemPhase.Render -> 5
+        SystemPhase.Last -> 6
+    }
+}
+
+/**
+ * The frame's systems and the order they run in.
+ *
+ * `resolved` holds indices into `systems` in execution order. It is computed
+ * once by [systemPlan] rather than per frame, because the constraints come from
+ * decorators and so cannot change while the program runs.
+ *
+ * The index of a system in `systems` is also its position in the compile-time
+ * enumeration of `@System` functions — that correspondence is what lets
+ * [runPhase] dispatch to the right function from a plain integer. See the note
+ * on [systemPlan].
+ */
+@std::Experimental(since: "0.0.4")
+pack SystemPlan {
+    var systems: std::Array<ScheduledSystem>
+    var count: std::Int
+    var resolved: std::Array<std::Int>
+    var resolvedCount: std::Int
+    /** Set when the constraints contradict each other. */
+    var cyclic: std::Bool
+    var cycleReport: std::String
+}
+
+/** Records one decorated system. Called only by the [systemPlan] expansion. */
+func systemPlanDeclare(
+    plan: SystemPlan!,
+    name: std::String,
+    phase: SystemPhase,
+    order: std::Int,
+    runBefore: std::String,
+    runAfter: std::String,
+    inSet: std::String
+) {
+    plan.systems.add(ScheduledSystem(name, phase, order, runBefore, runAfter, inSet, true))
+    plan.count = plan.count + 1
+}
+
+impl SystemPlan {
+    /** The index of the system called [name], or `-1`. */
+    func indexOf(name: std::String): std::Int {
         var i = 0
-        while i < self.size {
-            fin system = self.systems[i]
-            if system.phase == phase {
-                system.callback(world, time)
+        while i < self.count {
+            if self.systems[i].name == name {
+                return i
             }
             i = i + 1
         }
+        return -1
     }
 
-    /** True when two registered systems may execute concurrently. */
-    func canRunParallel(left: Int, right: Int): Bool {
-        assert left >= 0 && left < self.size { "left system index out of bounds" }
-        assert right >= 0 && right < self.size { "right system index out of bounds" }
-        return !queryAccessConflicts(self.systems[left].access, self.systems[right].access)
+    /**
+     * Enables or disables a system, returning false if no system has that name.
+     *
+     * The decorator says where a system runs; whether it runs at all is a
+     * runtime decision, so this is the one part of a system's schedule that is
+     * not fixed at compile time.
+     */
+    func setEnabled(name: std::String, enabled: std::Bool): std::Bool {
+        fin found = self.indexOf(name)
+        if found < 0 {
+            return false
+        }
+        self.systems[found].enabled = enabled
+        return true
+    }
+
+    /**
+     * True when the system at [earlier] must run before the one at [later].
+     *
+     * A constraint counts from either end — one system saying "before you" and
+     * the other saying "after me" are the same edge — and naming a set
+     * constrains every member of it, so two packages can order their sets
+     * without knowing each other's system names.
+     */
+    func constrains(earlier: std::Int, later: std::Int): std::Bool {
+        fin a = self.systems[earlier]
+        fin b = self.systems[later]
+        if a.phase != b.phase {
+            return false
+        }
+        if systemNameListed(a.runBefore, b.name) || systemNameListed(b.runAfter, a.name) {
+            return true
+        }
+        if b.inSet != "" && systemNameListed(a.runBefore, b.inSet) {
+            return true
+        }
+        if a.inSet != "" && systemNameListed(b.runAfter, a.inSet) {
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Orders the systems: phase-major, then by the declared constraints.
+     *
+     * A stable topological sort. Among the systems whose predecessors are all
+     * placed, the lowest `order` wins and enumeration order breaks the rest.
+     * Stability matters — a schedule that reshuffles between runs turns an
+     * ordering bug into one that only shows up sometimes.
+     *
+     * Contradictory constraints cannot be satisfied, so the remaining systems
+     * are left in enumeration order and `cyclic` records the fact. Degrading to
+     * "runs in the order you declared it" keeps the frame running; dropping the
+     * systems instead would make a typo look like a physics bug.
+     */
+    func resolve() {
+        self.cyclic = false
+        self.cycleReport = ""
+        self.resolvedCount = 0
+
+        var placed: std::Array<std::Bool> = std::Array::fill<std::Bool>(self.count)
+        var i = 0
+        while i < self.count {
+            placed[i] = false
+            i = i + 1
+        }
+
+        var remaining = self.count
+        while remaining > 0 {
+            var choice = -1
+            var candidate = 0
+            while candidate < self.count {
+                if !placed[candidate] {
+                    // Ready when nothing still unplaced has to come first.
+                    var ready = true
+                    var other = 0
+                    while other < self.count {
+                        if !placed[other] && other != candidate && self.constrains(other, candidate) {
+                            ready = false
+                            other = self.count
+                        } else {
+                            other = other + 1
+                        }
+                    }
+                    if ready && choice < 0 {
+                        choice = candidate
+                    } else {
+                        if ready {
+                            fin here = systemPhaseRank(self.systems[candidate].phase)
+                            fin best = systemPhaseRank(self.systems[choice].phase)
+                            if here < best {
+                                choice = candidate
+                            } else {
+                                if here == best && self.systems[candidate].order < self.systems[choice].order {
+                                    choice = candidate
+                                }
+                            }
+                        }
+                    }
+                }
+                candidate = candidate + 1
+            }
+
+            if choice < 0 {
+                // Every remaining system waits on another one.
+                self.cyclic = true
+                self.cycleReport = "system ordering has a cycle"
+                var leftover = 0
+                while leftover < self.count {
+                    if !placed[leftover] {
+                        self.resolved[self.resolvedCount] = leftover
+                        self.resolvedCount = self.resolvedCount + 1
+                        placed[leftover] = true
+                    }
+                    leftover = leftover + 1
+                }
+                remaining = 0
+            } else {
+                self.resolved[self.resolvedCount] = choice
+                self.resolvedCount = self.resolvedCount + 1
+                placed[choice] = true
+                remaining = remaining - 1
+            }
+        }
+    }
+
+    /** The names of [phase]'s systems, in the order they will run. */
+    func orderOf(phase: SystemPhase): std::Array<std::String> {
+        var names = @std::arr[""]
+        var i = 0
+        while i < self.resolvedCount {
+            fin system = self.systems[self.resolved[i]]
+            if system.phase == phase {
+                names.add(system.name)
+            }
+            i = i + 1
+        }
+        return names
+    }
+}
+
+/**
+ * The schedule, built from every `@System` function in the program.
+ *
+ * There is no registration: `std::reflect<*>.withDeco<System>` enumerates the
+ * decorated functions at compile time, and each one's decorator supplies its
+ * phase, order and ordering constraints. Adding a system to the frame is
+ * writing `@System` above it.
+ *
+ * ## The index correspondence
+ *
+ * This function and [runPhase] both unroll the same compile-time enumeration,
+ * in the same order, so the *n*-th system recorded here is the *n*-th call site
+ * emitted there. That is what lets the resolved order — a list of integers —
+ * dispatch to functions without any function values, which is why the schedule
+ * lowers the same way on the interpreter, WebAssembly and LLVM.
+ * Both loops must therefore stay literally identical.
+ *
+ * Build it once and keep it; the ordering is fixed at compile time and cannot
+ * change while the program runs.
+ */
+@std::Experimental(since: "0.0.4")
+func systemPlan(): SystemPlan {
+    var plan = SystemPlan(
+        std::Array::fill<ScheduledSystem>(0),
+        0,
+        std::Array::fill<std::Int>(0),
+        0,
+        false,
+        ""
+    )
+
+    inline for S in std::reflect<*>.withDeco<System> {
+        systemPlanDeclare(
+            plan,
+            std::reflect<S>.declName,
+            std::reflect<S>.decoMeta<System>.phase,
+            std::reflect<S>.decoMeta<System>.order,
+            std::reflect<S>.decoMeta<System>.runBefore,
+            std::reflect<S>.decoMeta<System>.runAfter,
+            std::reflect<S>.decoMeta<System>.inSet
+        )
+        plan.resolved.add(0)
+    }
+
+    plan.resolve()
+    return plan
+}
+
+/**
+ * Runs [phase]'s systems, in the resolved order.
+ *
+ * The inner loop walks every system to find the one whose turn it is. That is
+ * quadratic in the system count, but it is an integer comparison per step and
+ * the alternative — an indirect call through a stored function — is what this
+ * design exists to avoid. See [systemPlan] for why the index identifies the
+ * function.
+ */
+@std::Experimental(since: "0.0.4")
+func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
+    var step = 0
+    while step < plan.resolvedCount {
+        fin due = plan.resolved[step]
+        if plan.systems[due].phase == phase && plan.systems[due].enabled {
+            var cursor = 0
+            inline for S in std::reflect<*>.withDeco<System> {
+                if cursor == due {
+                    S(world)
+                }
+                cursor = cursor + 1
+            }
+        }
+        step = step + 1
+    }
+}
+
+/**
+ * Runs one whole frame: every phase, in order.
+ *
+ * `.Startup` is included, so a caller that wants it to happen once must disable
+ * those systems afterwards — [SystemPlan.setEnabled] — rather than this
+ * deciding on their behalf.
+ */
+@std::Experimental(since: "0.0.4")
+func runSystems(plan: SystemPlan&, world: World!) {
+    runPhase(plan, SystemPhase.Startup, world)
+    runPhase(plan, SystemPhase.PreUpdate, world)
+    runPhase(plan, SystemPhase.Update, world)
+    runPhase(plan, SystemPhase.PostUpdate, world)
+    runPhase(plan, SystemPhase.FixedUpdate, world)
+    runPhase(plan, SystemPhase.Render, world)
+    runPhase(plan, SystemPhase.Last, world)
+}
+
+/** An empty plan, for tests and for hosts that build a schedule by hand. */
+func systemPlanEmpty(): SystemPlan {
+    return SystemPlan(std::Array::fill<ScheduledSystem>(0), 0, std::Array::fill<std::Int>(0), 0, false, "")
+}
+
+test "constraints order systems regardless of declaration order" {
+    var plan = systemPlanEmpty()
+    // Declared back to front, exactly as a program might.
+    systemPlanDeclare(plan, "render", SystemPhase.Update, 0, "", "physics", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "physics", SystemPhase.Update, 0, "", "input", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "input", SystemPhase.Update, 0, "", "", "")
+    plan.resolved.add(0)
+    plan.resolve()
+
+    assert !plan.cyclic { "three chained constraints are satisfiable" }
+    fin order = plan.orderOf(SystemPhase.Update)
+    assert order[1] == "input" { "input must run first, not last as declared" }
+    assert order[2] == "physics" { "physics must follow input" }
+    assert order[3] == "render" { "render must follow physics" }
+}
+
+test "a phase runs whole, whatever the constraints say" {
+    var plan = systemPlanEmpty()
+    // `draw` renders but asks to follow a system in a later phase; the phase
+    // boundary must win, or rendering would drift out of its slot.
+    systemPlanDeclare(plan, "draw", SystemPhase.Render, 0, "", "cleanup", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "cleanup", SystemPhase.Last, 0, "", "", "")
+    plan.resolved.add(0)
+    plan.resolve()
+
+    assert !plan.cyclic { "a cross-phase constraint is not a cycle" }
+    assert plan.systems[plan.resolved[0]].name == "draw" { "render precedes last" }
+    assert plan.systems[plan.resolved[1]].name == "cleanup" { "last comes after render" }
+}
+
+test "order breaks ties no constraint settles" {
+    var plan = systemPlanEmpty()
+    systemPlanDeclare(plan, "late", SystemPhase.Update, 10, "", "", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "early", SystemPhase.Update, 1, "", "", "")
+    plan.resolved.add(0)
+    plan.resolve()
+
+    assert plan.systems[plan.resolved[0]].name == "early" { "the lower order wins" }
+}
+
+test "naming a set orders every system in it" {
+    var plan = systemPlanEmpty()
+    systemPlanDeclare(plan, "hud", SystemPhase.Update, 0, "", "sim", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "movement", SystemPhase.Update, 0, "", "", "sim")
+    plan.resolved.add(0)
+    plan.resolve()
+
+    assert plan.systems[plan.resolved[0]].name == "movement" {
+        "following a set must mean following its members"
+    }
+}
+
+test "contradictory constraints degrade to declaration order" {
+    var plan = systemPlanEmpty()
+    systemPlanDeclare(plan, "a", SystemPhase.Update, 0, "", "b", "")
+    plan.resolved.add(0)
+    systemPlanDeclare(plan, "b", SystemPhase.Update, 0, "", "a", "")
+    plan.resolved.add(0)
+    plan.resolve()
+
+    assert plan.cyclic { "a two-system cycle must be reported" }
+    assert plan.resolvedCount == 2 { "both systems must still run" }
+    assert plan.systems[plan.resolved[0]].name == "a" { "the fallback is declaration order" }
+}
+
+test "a name is matched against whole list entries, not substrings" {
+    assert systemNameListed("input, physics", "physics") { "a spaced entry must match" }
+    assert systemNameListed("input,physics", "input") { "the first entry must match" }
+    assert !systemNameListed("input_debug", "input") { "a prefix must not match" }
+    assert !systemNameListed("", "input") { "an empty list matches nothing" }
+    assert !systemNameListed("input", "") { "an empty name matches nothing" }
+}
+
+test "phases order the frame regardless of constraints" {
+    assert systemPhaseRank(SystemPhase.Startup) < systemPhaseRank(SystemPhase.Update) {
+        "startup must precede update"
+    }
+    assert systemPhaseRank(SystemPhase.Update) < systemPhaseRank(SystemPhase.Render) {
+        "update must precede render"
     }
 }
 

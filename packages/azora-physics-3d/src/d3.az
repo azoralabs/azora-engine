@@ -1,0 +1,764 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/physics/d3/d3
+ *
+ * Rigid-body physics in space: shapes, contacts, swept queries, ray casts and
+ * the components an ECS scene assembles a body from.
+ *
+ * Everything dimension-neutral — body kinds, materials, layers, damping,
+ * sleeping, force modes — comes from `engine.physics.core`, exactly as it does
+ * for `engine.physics.d2`. This package adds the third axis: [Collider3D]
+ * shapes, the [Contact3D] manifold, and inertia about three axes rather than
+ * one.
+ *
+ * As in the plane, every moving query is swept rather than sampled, so a body
+ * travelling further than its own size in a step still stops at the first thing
+ * it meets.
+ *
+ * @since 0.0.4
+ */
+module engine.physics.d3
+
+import std.container.array
+import engine.core
+import engine.ecs
+import engine.math.vec
+import engine.physics.core
+
+// ── Shapes ──────────────────────────────────────────────────────────────
+
+/** The shape family a 3D collider takes. */
+enum ColliderShape3D {
+    /** An axis-aligned box, described by its half extents. */
+    Box
+    /** A sphere, described by its radius. */
+    Sphere
+    /** A vertical capsule: a cylinder with hemispherical caps. */
+    Capsule
+}
+
+/** A 3D collider attached at an offset from its body. */
+@Component
+pack Collider3D {
+    var shape: ColliderShape3D
+    /** Half extents, for a box and for a capsule's cylinder. */
+    var halfExtents: Vec3
+    /** Radius, for a sphere and for a capsule's caps. */
+    var radius: std::Double
+    var offset: Vec3
+    var layers: CollisionLayers
+    var sensor: std::Bool
+}
+
+/** An axis-aligned box in world space. */
+pack Aabb3D {
+    var min: Vec3
+    var max: Vec3
+}
+
+// ── Body components ─────────────────────────────────────────────────────
+
+/** Where a body is, how it is turned, and how big it is drawn. */
+@Component
+pack Transform3D {
+    var position: Vec3
+    /** Euler rotation in radians. */
+    var rotation: Vec3
+    var scale: Vec3
+}
+
+/** How fast a body is moving and spinning. */
+@Component
+pack Velocity3D {
+    var linear: Vec3
+    var angular: Vec3
+}
+
+/** Force and torque accumulated since the last substep. */
+@Component
+pack Forces3D {
+    var force: Vec3
+    var torque: Vec3
+}
+
+/**
+ * A body's kind and its derived inverse mass and inertia.
+ *
+ * Inertia is diagonal: a full inertia tensor buys accuracy that a game whose
+ * colliders are boxes, spheres and capsules cannot express in the first place.
+ */
+@Component
+pack RigidBody3D {
+    var kind: RigidBodyKind
+    var inverseMass: std::Double
+    var inverseInertia: Vec3
+    var fixedRotation: std::Bool
+}
+
+/** The gravity a 3D world pulls with. */
+@Resource
+pack Gravity3D {
+    var value: Vec3
+}
+
+// ── Results ─────────────────────────────────────────────────────────────
+
+/** A contact between two shapes; `normal` separates A from B. */
+pack Contact3D {
+    var normal: Vec3
+    var point: Vec3
+    var penetration: std::Double
+    var sensor: std::Bool
+}
+
+/** Whether two shapes touch. */
+variant enum Overlap3D {
+    Touching(contact: Contact3D)
+    Separate
+}
+
+/** What a swept shape ran into. */
+variant enum Sweep3D {
+    /** `t` is the fraction of the requested motion completed before contact. */
+    Blocked(t: std::Double, normal: Vec3, point: Vec3)
+    Clear
+}
+
+/** What a ray met. */
+variant enum RayHit3D {
+    Hit(t: std::Double, normal: Vec3, point: Vec3)
+    Miss
+}
+
+// ── Constructors ────────────────────────────────────────────────────────
+
+func aabb3d(min: Vec3, max: Vec3): Aabb3D {
+    return Aabb3D(min, max)
+}
+
+/** The box of [size] centred on [center]. */
+func aabbAround3d(center: Vec3, size: Vec3): Aabb3D {
+    fin half = size.scale(0.5)
+    return Aabb3D(center - half, center + half)
+}
+
+impl Aabb3D {
+    func size(): Vec3 {
+        return self.max - self.min
+    }
+
+    func center(): Vec3 {
+        return (self.min + self.max).scale(0.5)
+    }
+
+    func halfExtents(): Vec3 {
+        return self.size().scale(0.5)
+    }
+
+    func overlaps(other: Aabb3D): std::Bool {
+        return self.min.x < other.max.x && other.min.x < self.max.x &&
+            self.min.y < other.max.y && other.min.y < self.max.y &&
+            self.min.z < other.max.z && other.min.z < self.max.z
+    }
+
+    func contains(point: Vec3): std::Bool {
+        return point.x >= self.min.x && point.x <= self.max.x &&
+            point.y >= self.min.y && point.y <= self.max.y &&
+            point.z >= self.min.z && point.z <= self.max.z
+    }
+
+    func translate(delta: Vec3): Aabb3D {
+        return Aabb3D(self.min + delta, self.max + delta)
+    }
+
+    func expand(amount: Vec3): Aabb3D {
+        return Aabb3D(self.min - amount, self.max + amount)
+    }
+
+    /** The box covering this one and where it would be after [motion]. */
+    func sweptBy(motion: Vec3): Aabb3D {
+        return Aabb3D(
+            Vec3(
+                realMinOf(self.min.x, self.min.x + motion.x),
+                realMinOf(self.min.y, self.min.y + motion.y),
+                realMinOf(self.min.z, self.min.z + motion.z)
+            ),
+            Vec3(
+                realMaxOf(self.max.x, self.max.x + motion.x),
+                realMaxOf(self.max.y, self.max.y + motion.y),
+                realMaxOf(self.max.z, self.max.z + motion.z)
+            )
+        )
+    }
+
+    func union(other: Aabb3D): Aabb3D {
+        return Aabb3D(
+            Vec3(
+                realMinOf(self.min.x, other.min.x),
+                realMinOf(self.min.y, other.min.y),
+                realMinOf(self.min.z, other.min.z)
+            ),
+            Vec3(
+                realMaxOf(self.max.x, other.max.x),
+                realMaxOf(self.max.y, other.max.y),
+                realMaxOf(self.max.z, other.max.z)
+            )
+        )
+    }
+}
+
+impl Aabb3D {
+    /** Moves the box by [delta]. */
+    oper+ [self: Self&](delta: Vec3): Aabb3D {
+        return self.translate(delta)
+    }
+}
+
+func boxCollider3d(halfExtents: Vec3): Collider3D {
+    return Collider3D(ColliderShape3D.Box, halfExtents, 0.0, vec3Zero(), allLayers(), false)
+}
+
+func sphereCollider3d(radius: std::Double): Collider3D {
+    return Collider3D(ColliderShape3D.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), allLayers(), false)
+}
+
+/** A vertical capsule [halfHeight] tall through the centre, with caps of [radius]. */
+func capsuleCollider3d(radius: std::Double, halfHeight: std::Double): Collider3D {
+    return Collider3D(
+        ColliderShape3D.Capsule,
+        Vec3(radius, halfHeight, radius),
+        radius,
+        vec3Zero(),
+        allLayers(),
+        false
+    )
+}
+
+/** [collider] moved to sit at [offset] from its body. */
+func colliderAt3d(collider: Collider3D, offset: Vec3): Collider3D {
+    return Collider3D(collider.shape, collider.halfExtents, collider.radius, offset, collider.layers, collider.sensor)
+}
+
+/** [collider] restricted to the given layers. */
+func colliderOn3d(collider: Collider3D, layers: CollisionLayers): Collider3D {
+    return Collider3D(collider.shape, collider.halfExtents, collider.radius, collider.offset, layers, collider.sensor)
+}
+
+/** [collider] turned into a trigger volume that reports but does not resolve. */
+func colliderAsSensor3d(collider: Collider3D): Collider3D {
+    return Collider3D(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
+}
+
+/** The box half-extents a collider is treated as for a box-vs-box test. */
+func boxHalfOf3d(collider: Collider3D): Vec3 {
+    return when collider.shape {
+        ColliderShape3D.Sphere -> Vec3(collider.radius, collider.radius, collider.radius)
+        ColliderShape3D.Capsule -> Vec3(
+            collider.radius,
+            collider.halfExtents.y + collider.radius,
+            collider.radius
+        )
+        else -> collider.halfExtents
+    }
+}
+
+/** The world-space bounding box of [collider] on a body at [position]. */
+func colliderBounds3d(collider: Collider3D, position: Vec3): Aabb3D {
+    fin center = position + collider.offset
+    fin half = boxHalfOf3d(collider)
+    return Aabb3D(center - half, center + half)
+}
+
+func transform3d(position: Vec3): Transform3D {
+    return Transform3D(position, vec3Zero(), Vec3(1.0, 1.0, 1.0))
+}
+
+func velocity3d(linear: Vec3): Velocity3D {
+    return Velocity3D(linear, vec3Zero())
+}
+
+func forces3d(): Forces3D {
+    return Forces3D(vec3Zero(), vec3Zero())
+}
+
+/**
+ * The diagonal moment of inertia of [collider] at [mass].
+ *
+ * A sphere is uniform about every axis; a box and a capsule are not, which is
+ * why a tall body resists tipping differently from how it resists spinning.
+ */
+func inertiaOf3d(collider: Collider3D, mass: std::Double): Vec3 {
+    return when collider.shape {
+        ColliderShape3D.Sphere -> {
+            fin i = realMaxOf(0.4 * mass * collider.radius * collider.radius, 0.000001)
+            Vec3(i, i, i)
+        }
+        else -> {
+            fin half = boxHalfOf3d(collider)
+            fin w = half.x * 2.0
+            fin h = half.y * 2.0
+            fin d = half.z * 2.0
+            Vec3(
+                realMaxOf(mass * (h * h + d * d) / 12.0, 0.000001),
+                realMaxOf(mass * (w * w + d * d) / 12.0, 0.000001),
+                realMaxOf(mass * (w * w + h * h) / 12.0, 0.000001)
+            )
+        }
+    }
+}
+
+/** A rigid body of [kind] and [mass], with inertia derived from [collider]. */
+func rigidBody3d(kind: RigidBodyKind, collider: Collider3D, mass: std::Double = 1.0, fixedRotation: std::Bool = false): RigidBody3D {
+    fin inverseMass = inverseMassFor(kind, mass)
+    var inverseInertia = vec3Zero()
+    if inverseMass > 0.0 && !fixedRotation {
+        fin inertia = inertiaOf3d(collider, mass)
+        inverseInertia = Vec3(1.0 / inertia.x, 1.0 / inertia.y, 1.0 / inertia.z)
+    }
+    return RigidBody3D(kind, inverseMass, inverseInertia, fixedRotation)
+}
+
+func gravity3d(value: Vec3 = Vec3(0.0, -9.81, 0.0)): Gravity3D {
+    return Gravity3D(value)
+}
+
+// ── Contacts ────────────────────────────────────────────────────────────
+
+/**
+ * The contact between two boxes, or [Overlap3D.Separate].
+ *
+ * As in the plane, the axis with the *smallest* overlap is the one to resolve
+ * along: any other axis moves the body further than it has to.
+ */
+func boxContact3d(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Overlap3D {
+    fin delta = centerA - centerB
+    fin overlapX = halfA.x + halfB.x - absReal(delta.x)
+    fin overlapY = halfA.y + halfB.y - absReal(delta.y)
+    fin overlapZ = halfA.z + halfB.z - absReal(delta.z)
+
+    if overlapX <= 0.0 || overlapY <= 0.0 || overlapZ <= 0.0 {
+        return Overlap3D.Separate
+    }
+
+    var normal = Vec3(realSign(delta.x), 0.0, 0.0)
+    var penetration = overlapX
+    if overlapY < penetration {
+        normal = Vec3(0.0, realSign(delta.y), 0.0)
+        penetration = overlapY
+    }
+    if overlapZ < penetration {
+        normal = Vec3(0.0, 0.0, realSign(delta.z))
+        penetration = overlapZ
+    }
+    return Overlap3D.Touching(
+        Contact3D(normal, centerA - normal.scale(penetration * 0.5), penetration, false)
+    )
+}
+
+/** The contact between two spheres, or [Overlap3D.Separate]. */
+func sphereContact3d(centerA: Vec3, radiusA: std::Double, centerB: Vec3, radiusB: std::Double): Overlap3D {
+    fin delta = centerA - centerB
+    fin reach = radiusA + radiusB
+    fin distanceSquared = delta.dot(delta)
+    if distanceSquared >= reach * reach {
+        return Overlap3D.Separate
+    }
+    // Coincident centres have no direction to separate along, so one is chosen
+    // rather than dividing by zero.
+    if distanceSquared < 0.0000001 {
+        return Overlap3D.Touching(Contact3D(Vec3(1.0, 0.0, 0.0), centerA, reach, false))
+    }
+    fin distance = sqrt(distanceSquared)
+    fin normal = delta.scale(1.0 / distance)
+    return Overlap3D.Touching(
+        Contact3D(normal, centerA - normal.scale(radiusA), reach - distance, false)
+    )
+}
+
+/** The contact between a sphere and a box, or [Overlap3D.Separate]. */
+func sphereBoxContact3d(sphereCenter: Vec3, radius: std::Double, boxCenter: Vec3, boxHalf: Vec3): Overlap3D {
+    fin closest = Vec3(
+        realClampTo(sphereCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
+        realClampTo(sphereCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y),
+        realClampTo(sphereCenter.z, boxCenter.z - boxHalf.z, boxCenter.z + boxHalf.z)
+    )
+    fin delta = sphereCenter - closest
+    fin distanceSquared = delta.dot(delta)
+    if distanceSquared >= radius * radius {
+        return Overlap3D.Separate
+    }
+    // A centre inside the box has no closest surface point, so the box-box axis
+    // test takes over.
+    if distanceSquared < 0.0000001 {
+        return boxContact3d(sphereCenter, Vec3(radius, radius, radius), boxCenter, boxHalf)
+    }
+    fin distance = sqrt(distanceSquared)
+    return Overlap3D.Touching(
+        Contact3D(delta.scale(1.0 / distance), closest, radius - distance, false)
+    )
+}
+
+/** [overlap] with its normal reversed, for a test performed the other way round. */
+func flipOverlap3d(overlap: Overlap3D): Overlap3D {
+    return when overlap {
+        Overlap3D.Touching(contact) -> Overlap3D.Touching(
+            Contact3D(contact.normal.scale(-1.0), contact.point, contact.penetration, contact.sensor)
+        )
+        else -> Overlap3D.Separate
+    }
+}
+
+/** [overlap] tagged as a sensor contact. */
+func markSensor3d(overlap: Overlap3D, sensor: std::Bool): Overlap3D {
+    return when overlap {
+        Overlap3D.Touching(contact) -> Overlap3D.Touching(
+            Contact3D(contact.normal, contact.point, contact.penetration, sensor)
+        )
+        else -> Overlap3D.Separate
+    }
+}
+
+/** The contact between two colliders on bodies at [positionA] and [positionB]. */
+func colliderContact3d(
+    positionA: Vec3,
+    colliderA: Collider3D,
+    positionB: Vec3,
+    colliderB: Collider3D
+): Overlap3D {
+    if !layersInteract(colliderA.layers, colliderB.layers) {
+        return Overlap3D.Separate
+    }
+    fin centerA = positionA + colliderA.offset
+    fin centerB = positionB + colliderB.offset
+    fin sensor = colliderA.sensor || colliderB.sensor
+
+    fin found = when colliderA.shape {
+        ColliderShape3D.Sphere -> when colliderB.shape {
+            ColliderShape3D.Sphere -> sphereContact3d(centerA, colliderA.radius, centerB, colliderB.radius)
+            else -> sphereBoxContact3d(centerA, colliderA.radius, centerB, boxHalfOf3d(colliderB))
+        }
+        else -> when colliderB.shape {
+            ColliderShape3D.Sphere -> flipOverlap3d(
+                sphereBoxContact3d(centerB, colliderB.radius, centerA, boxHalfOf3d(colliderA))
+            )
+            else -> boxContact3d(centerA, boxHalfOf3d(colliderA), centerB, boxHalfOf3d(colliderB))
+        }
+    }
+    return markSensor3d(found, sensor)
+}
+
+/** True when [overlap] found a contact. */
+func overlapTouching3d(overlap: Overlap3D): std::Bool {
+    return when overlap {
+        Overlap3D.Touching(contact) -> true
+        else -> false
+    }
+}
+
+/** The contact of [overlap], or a zero contact when the shapes were apart. */
+func overlapContact3d(overlap: Overlap3D): Contact3D {
+    return when overlap {
+        Overlap3D.Touching(contact) -> contact
+        else -> Contact3D(vec3Zero(), vec3Zero(), 0.0, false)
+    }
+}
+
+// ── Swept queries ───────────────────────────────────────────────────────
+
+/**
+ * Sweeps the box [moving] by [motion] against the static box [target].
+ *
+ * The slab method in three axes: the entry and exit times on each are found,
+ * and a hit is the latest entry provided it precedes the earliest exit.
+ */
+func sweepBox3d(moving: Aabb3D, motion: Vec3, target: Aabb3D): Sweep3D {
+    // Already overlapping: there is no entry time to find, and reporting a
+    // sweep of zero would wedge the body instead of letting the solver push it
+    // out along the contact normal.
+    if moving.overlaps(target) {
+        return Sweep3D.Clear
+    }
+
+    var entryX = 0.0
+    var exitX = 1.0
+    if motion.x == 0.0 {
+        if moving.max.x <= target.min.x || moving.min.x >= target.max.x {
+            return Sweep3D.Clear
+        }
+    } else {
+        fin near = (target.min.x - moving.max.x) / motion.x
+        fin far = (target.max.x - moving.min.x) / motion.x
+        entryX = realMinOf(near, far)
+        exitX = realMaxOf(near, far)
+    }
+
+    var entryY = 0.0
+    var exitY = 1.0
+    if motion.y == 0.0 {
+        if moving.max.y <= target.min.y || moving.min.y >= target.max.y {
+            return Sweep3D.Clear
+        }
+    } else {
+        fin near = (target.min.y - moving.max.y) / motion.y
+        fin far = (target.max.y - moving.min.y) / motion.y
+        entryY = realMinOf(near, far)
+        exitY = realMaxOf(near, far)
+    }
+
+    var entryZ = 0.0
+    var exitZ = 1.0
+    if motion.z == 0.0 {
+        if moving.max.z <= target.min.z || moving.min.z >= target.max.z {
+            return Sweep3D.Clear
+        }
+    } else {
+        fin near = (target.min.z - moving.max.z) / motion.z
+        fin far = (target.max.z - moving.min.z) / motion.z
+        entryZ = realMinOf(near, far)
+        exitZ = realMaxOf(near, far)
+    }
+
+    fin entry = realMaxOf(entryX, realMaxOf(entryY, entryZ))
+    fin exit = realMinOf(exitX, realMinOf(exitY, exitZ))
+
+    if entry > exit || entry < 0.0 || entry > 1.0 {
+        return Sweep3D.Clear
+    }
+
+    // The axis that entered last is the face that was struck.
+    var normal = Vec3(0.0 - realSign(motion.x), 0.0, 0.0)
+    if entryY >= entryX && entryY >= entryZ {
+        normal = Vec3(0.0, 0.0 - realSign(motion.y), 0.0)
+    }
+    if entryZ >= entryX && entryZ >= entryY {
+        normal = Vec3(0.0, 0.0, 0.0 - realSign(motion.z))
+    }
+    return Sweep3D.Blocked(entry, normal, moving.center() + motion.scale(entry))
+}
+
+/** True when [sweep] was interrupted. */
+func sweepBlocked3d(sweep: Sweep3D): std::Bool {
+    return when sweep {
+        Sweep3D.Blocked(t, normal, point) -> true
+        else -> false
+    }
+}
+
+/** The safe fraction of the motion [sweep] permits. */
+func sweepFraction3d(sweep: Sweep3D): std::Double {
+    return when sweep {
+        Sweep3D.Blocked(t, normal, point) -> t
+        else -> 1.0
+    }
+}
+
+/** The surface normal [sweep] struck, or zero. */
+func sweepNormal3d(sweep: Sweep3D): Vec3 {
+    return when sweep {
+        Sweep3D.Blocked(t, normal, point) -> normal
+        else -> vec3Zero()
+    }
+}
+
+/**
+ * Casts the ray `origin + direction * t` for `t` in `0 .. 1` against [target].
+ *
+ * The direction is not normalised and `t` is a fraction of it, so casting from
+ * A to B is `rayBox3d(a, b - a, target)` with no length to compute.
+ */
+func rayBox3d(origin: Vec3, direction: Vec3, target: Aabb3D): RayHit3D {
+    return when sweepBox3d(Aabb3D(origin, origin), direction, target) {
+        Sweep3D.Blocked(t, normal, point) -> RayHit3D.Hit(t, normal, origin + direction.scale(t))
+        else -> RayHit3D.Miss
+    }
+}
+
+/** Casts a ray against a sphere. */
+func raySphere3d(origin: Vec3, direction: Vec3, center: Vec3, radius: std::Double): RayHit3D {
+    fin toCenter = origin - center
+    fin a = direction.dot(direction)
+    if a <= 0.0 {
+        return RayHit3D.Miss
+    }
+    fin b = 2.0 * toCenter.dot(direction)
+    fin c = toCenter.dot(toCenter) - radius * radius
+    fin discriminant = b * b - 4.0 * a * c
+    if discriminant < 0.0 {
+        return RayHit3D.Miss
+    }
+    fin root = sqrt(discriminant)
+    // The nearer root is the entry point; a negative one means the ray started
+    // inside, in which case the exit is the first surface it meets.
+    var t = (0.0 - b - root) / (2.0 * a)
+    if t < 0.0 {
+        t = (0.0 - b + root) / (2.0 * a)
+    }
+    if t < 0.0 || t > 1.0 {
+        return RayHit3D.Miss
+    }
+    fin point = origin + direction.scale(t)
+    return RayHit3D.Hit(t, (point - center).normalized, point)
+}
+
+/** True when [hit] met something. */
+func rayHit3d(hit: RayHit3D): std::Bool {
+    return when hit {
+        RayHit3D.Hit(t, normal, point) -> true
+        else -> false
+    }
+}
+
+/** The fraction of the ray travelled before the hit, or `-1`. */
+func rayFraction3d(hit: RayHit3D): std::Double {
+    return when hit {
+        RayHit3D.Hit(t, normal, point) -> t
+        else -> -1.0
+    }
+}
+
+// ── Response ────────────────────────────────────────────────────────────
+
+/** The velocity left after sliding along a surface with [normal]. */
+func slide3d(velocity: Vec3, normal: Vec3): Vec3 {
+    fin into = velocity.dot(normal)
+    if into >= 0.0 {
+        return velocity
+    }
+    return velocity - normal.scale(into)
+}
+
+/** The velocity left after bouncing off [normal] with the given restitution. */
+func bounce3d(velocity: Vec3, normal: Vec3, restitution: std::Double): Vec3 {
+    fin into = velocity.dot(normal)
+    if into >= 0.0 {
+        return velocity
+    }
+    return velocity - normal.scale(into * (1.0 + realClamp01(restitution)))
+}
+
+/** Applies [amount] to a body's velocity under [mode]. */
+func applyToVelocity3d(velocity: Velocity3D, amount: Vec3, mode: ForceMode, inverseMass: std::Double, dt: std::Double) {
+    velocity.linear = velocity.linear + amount.scale(forceScale(mode, inverseMass, dt))
+}
+
+/** Applies gravity to [velocity] for one substep. */
+func applyGravity3d(velocity: Velocity3D, gravity: Gravity3D, scale: GravityScale, dt: std::Double) {
+    velocity.linear = velocity.linear + gravity.value.scale(scale.value * dt)
+}
+
+/** Decays [velocity] by [drag] over one substep. */
+func applyDamping3d(velocity: Velocity3D, drag: Damping, dt: std::Double) {
+    velocity.linear = velocity.linear.scale(realClamp01(1.0 - drag.linear * dt))
+    velocity.angular = velocity.angular.scale(realClamp01(1.0 - drag.angular * dt))
+}
+
+/**
+ * Separates two overlapping bodies along the contact normal.
+ *
+ * Correction is shared in proportion to inverse mass and only a fraction of the
+ * penetration is removed per step, so a stack settles instead of exploding.
+ */
+func resolvePenetration3d(
+    positionA: Vec3,
+    inverseMassA: std::Double,
+    inverseMassB: std::Double,
+    contact: Contact3D,
+    settings: PhysicsSettings
+): Vec3 {
+    fin total = inverseMassA + inverseMassB
+    if total <= 0.0 || contact.sensor {
+        return positionA
+    }
+    fin depth = realMaxOf(contact.penetration - settings.contactSlop, 0.0)
+    return positionA + contact.normal.scale(depth * settings.correctionRate / total * inverseMassA)
+}
+
+test "box contacts resolve along the shallowest axis" {
+    // Overlapping by 2 in x and much more in y and z.
+    when boxContact3d(Vec3(0.0, 0.0, 0.0), Vec3(5.0, 5.0, 5.0), Vec3(8.0, 1.0, 1.0), Vec3(5.0, 5.0, 5.0)) {
+        Overlap3D.Touching(contact) -> {
+            assert contact.normal.x < 0.0 { "the shallowest axis must be the one resolved along" }
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
+                "the penetration must be the overlap on that axis"
+            }
+        }
+        Overlap3D.Separate() -> { assert false { "overlapping boxes must report a contact" } }
+    }
+    assert !overlapTouching3d(
+        boxContact3d(Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0), Vec3(50.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
+    ) { "boxes far apart must not report a contact" }
+}
+
+test "sphere contacts measure from the surfaces" {
+    when sphereContact3d(Vec3(0.0, 0.0, 0.0), 5.0, Vec3(8.0, 0.0, 0.0), 5.0) {
+        Overlap3D.Touching(contact) -> {
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
+                "two 5-radius spheres 8 apart overlap by 2"
+            }
+            assert contact.normal.x < -0.99 { "the normal must separate A from B" }
+        }
+        Overlap3D.Separate() -> { assert false { "overlapping spheres must report a contact" } }
+    }
+    assert overlapTouching3d(sphereContact3d(vec3Zero(), 1.0, vec3Zero(), 1.0)) {
+        "coincident spheres must still produce a contact rather than dividing by zero"
+    }
+}
+
+test "a sweep stops a fast box at the first thing it meets" {
+    fin body = aabbAround3d(Vec3(0.0, 0.0, 0.0), Vec3(10.0, 10.0, 10.0))
+    fin wall = aabbAround3d(Vec3(105.0, 0.0, 0.0), Vec3(10.0, 100.0, 100.0))
+
+    when sweepBox3d(body, Vec3(1000.0, 0.0, 0.0), wall) {
+        Sweep3D.Blocked(t, normal, point) -> {
+            assert t > 0.094 && t < 0.096 { "the box must stop where the wall is, not where it aimed" }
+            assert normal.x < -0.99 { "the normal must face back along the motion" }
+        }
+        Sweep3D.Clear() -> { assert false { "a fast box must not tunnel through a wall" } }
+    }
+    assert !sweepBlocked3d(sweepBox3d(body, Vec3(0.0, 0.0, 1000.0), wall)) {
+        "a sweep that misses the wall must be clear"
+    }
+}
+
+test "rays hit boxes and spheres where the geometry says" {
+    fin wall = aabbAround3d(Vec3(55.0, 0.0, 0.0), Vec3(10.0, 100.0, 100.0))
+    when rayBox3d(Vec3(0.0, 0.0, 0.0), Vec3(100.0, 0.0, 0.0), wall) {
+        RayHit3D.Hit(t, normal, point) -> {
+            assert t > 0.49 && t < 0.51 { "the ray must hit the near face at 50 units" }
+            assert normal.x < -0.99 { "the normal must face the ray" }
+        }
+        RayHit3D.Miss() -> { assert false { "a ray into a wall must hit" } }
+    }
+
+    when raySphere3d(Vec3(0.0, 0.0, 0.0), Vec3(100.0, 0.0, 0.0), Vec3(50.0, 0.0, 0.0), 10.0) {
+        RayHit3D.Hit(t, normal, point) -> {
+            assert t > 0.39 && t < 0.41 { "the ray must enter the sphere at 40 units" }
+            assert normal.x < -0.99 { "the surface normal must face the ray" }
+        }
+        RayHit3D.Miss() -> { assert false { "a ray into a sphere must hit" } }
+    }
+    assert !rayHit3d(raySphere3d(vec3Zero(), Vec3(100.0, 0.0, 0.0), Vec3(50.0, 90.0, 0.0), 10.0)) {
+        "a ray passing wide of a sphere must miss"
+    }
+}
+
+test "inertia distinguishes the axes a shape resists turning about" {
+    fin uniform = inertiaOf3d(sphereCollider3d(2.0), 3.0)
+    assert absReal(uniform.x - uniform.y) < 0.000001 && absReal(uniform.y - uniform.z) < 0.000001 {
+        "a sphere must resist rotation equally about every axis"
+    }
+
+    fin tall = inertiaOf3d(boxCollider3d(Vec3(1.0, 10.0, 1.0)), 1.0)
+    assert tall.y < tall.x && tall.y < tall.z {
+        "a tall box must spin about its long axis more easily than it tips"
+    }
+
+    fin body = rigidBody3d(RigidBodyKind.Dynamic, boxCollider3d(Vec3(1.0, 1.0, 1.0)), 2.0, true)
+    assert body.inverseInertia.x == 0.0 { "a fixed-rotation body must not respond to torque" }
+    assert body.inverseMass > 0.49 { "a fixed-rotation body must still move" }
+}

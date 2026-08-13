@@ -20,7 +20,7 @@ module engine.core
  * Systems in one phase may run in parallel when their ECS access sets do not
  * conflict. A phase completes before the next phase begins.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 enum SystemPhase {
     Startup
     PreUpdate
@@ -32,28 +32,66 @@ enum SystemPhase {
 }
 
 /** Marks a pack or enum as ECS component data. */
-@Experimental(sinceAzora: "0.0.4")
-deco Component for [.Pack, .Enum]
+@std::Experimental(since: "0.0.4")
+annot Component for [.Pack, .Enum]
 
 /**
- * Marks a function or task as an engine system.
+ * Marks a function as an engine system, which is all it takes to schedule it.
+ *
+ * The engine finds `@System` functions by compile-time reflection, so there is
+ * no registration step and nothing to keep in step with this decorator — what
+ * is written here *is* the schedule. A scheduled system takes the world and
+ * nothing else: `func movement(world: World!)`.
+ *
+ * Ordering is declared rather than implied by declaration order. `runBefore`
+ * and `runAfter` name other systems and are resolved into a topological order
+ * once, which is what lets two packages each contribute systems without either
+ * knowing where the other sits in the frame. `order` is the tie-break among
+ * systems no constraint separates.
  *
  * @param phase Schedule phase in which the system executes.
- * @param order Stable order among systems that cannot run concurrently.
+ * @param order Stable tie-break among systems no constraint separates.
+ * @param runBefore Comma-separated names of systems this one must precede.
+ * @param runAfter Comma-separated names of systems this one must follow.
+ * @param inSet Name of the system set this belongs to; sets order as a unit.
  */
-@Experimental(sinceAzora: "0.0.4")
-deco System for [.Func, .Task] {
+@std::Experimental(since: "0.0.4")
+annot System for .Func {
     fin phase: SystemPhase = SystemPhase.Update
-    fin order: Int = 0
+    fin order: std::Int = 0
+    fin runBefore: std::String = ""
+    fin runAfter: std::String = ""
+    fin inSet: std::String = ""
 }
 
+/**
+ * Marks a pack as an ECS event.
+ *
+ * An event is written by one system and read by any number of others, and
+ * survives exactly one frame past the one it was sent in — long enough for a
+ * reader scheduled earlier in the frame to still see it, short enough that a
+ * queue nobody drains cannot grow without bound.
+ */
+@std::Experimental(since: "0.0.4")
+annot Event for [.Pack, .Enum]
+
+/**
+ * Marks a pack as an ECS relationship between two entities.
+ *
+ * A relation is directed and indexed both ways, so "who is my parent" and "who
+ * are my children" are both constant-time without either side storing a list
+ * the other has to keep in step.
+ */
+@std::Experimental(since: "0.0.4")
+annot Relation for .Pack
+
 /** Marks a pack as application-wide ECS resource data. */
-@Experimental(sinceAzora: "0.0.4")
-deco Resource for .Pack
+@std::Experimental(since: "0.0.4")
+annot Resource for .Pack
 
 /** Marks a function parameter whose component access is query-derived. */
-@Experimental(sinceAzora: "0.0.4")
-deco Query for .Param
+@std::Experimental(since: "0.0.4")
+annot Query for .Param
 
 /**
  * Frame clock injected into systems through `time: res Time`.
@@ -61,16 +99,16 @@ deco Query for .Param
  * `deltaSecs` is the clamped variable timestep. `fixedDeltaSecs` is the
  * deterministic simulation step used by `.FixedUpdate`.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 pack Time {
-    var deltaSecs: Real
-    var elapsedSecs: Real
-    var fixedDeltaSecs: Real
-    var frame: Long
+    var deltaSecs: std::Double
+    var elapsedSecs: std::Double
+    var fixedDeltaSecs: std::Double
+    var frame: std::Long
 }
 
 /** Creates a clock with a 60 Hz fixed timestep. */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 func timeInit(): Time {
     return Time(0.0, 0.0, 1.0 / 60.0, 0L)
 }
@@ -82,7 +120,7 @@ impl Time {
      * Large deltas are clamped to 250 ms so a paused debugger or suspended tab
      * cannot destabilize physics when execution resumes.
      */
-    func advance(deltaSecs: Real) { self! ->
+    func advance[self: Self!](deltaSecs: std::Double) {
         var clamped = deltaSecs
         if clamped < 0.0 {
             clamped = 0.0
@@ -96,7 +134,7 @@ impl Time {
     }
 
     /** Replaces the deterministic fixed timestep. */
-    func setFixedDelta(seconds: Real) { self! ->
+    func setFixedDelta[self: Self!](seconds: std::Double) {
         assert seconds > 0.0 { "fixed timestep must be positive" }
         self.fixedDeltaSecs = seconds
     }
@@ -108,30 +146,30 @@ impl Time {
  * Reads are allocation-free. Writes increment `revision`, allowing systems and
  * UI hosts to skip work when the observed value did not change.
  */
-@Experimental(sinceAzora: "0.0.4")
-pack<T> Signal {
+@std::Experimental(since: "0.0.4")
+pack Signal<T> {
     var value: T
-    var revision: Long
+    var revision: std::Long
 }
 
-func<T> signalInit(value: T): Signal<T> {
+func signalInit<T>(value: T): Signal<T> {
     return Signal<T>(value, 0L)
 }
 
-func<T> signalGet(signal: Signal<T>&): T {
+func signalGet<T>(signal: Signal<T>&): T {
     return signal.value
 }
 
-func<T> signalSet(signal: Signal<T>!, value: T) {
+func signalSet<T>(signal: Signal<T>!, value: T) {
     signal.value = value
     signal.revision = signal.revision + 1
 }
 
-func<T> signalVersion(signal: Signal<T>&): Long {
+func signalVersion<T>(signal: Signal<T>&): std::Long {
     return signal.revision
 }
 
-func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool {
+func signalChangedSince<T>(signal: Signal<T>&, version: std::Long): std::Bool {
     return signal.revision != version
 }
 
@@ -141,29 +179,33 @@ func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool {
  * Subsystems increment `loadedModules` during installation. The scheduler uses
  * `frameIndex` and `worldRevision` as cheap change tokens.
  */
-solo EngineRegistry {
-    var loadedModules: Int = 0
-    var frameIndex: Long = 0
-    var worldRevision: Long = 0
+solo pack EngineRegistry {
+    var loadedModules: std::Int = 0
+    var frameIndex: std::Long = 0
+    var worldRevision: std::Long = 0
+}
 
-    func markModuleLoaded() {
+impl EngineRegistry {
+    func markModuleLoaded[self: Self!]() {
         self.loadedModules = self.loadedModules + 1
     }
 
-    func nextFrame() {
+    func nextFrame[self: Self!]() {
         self.frameIndex = self.frameIndex + 1
     }
 
-    func markWorldChanged() {
+    func markWorldChanged[self: Self!]() {
         self.worldRevision = self.worldRevision + 1
     }
 }
 
 /** Shared frame clock resolved by `inject EngineClock`. */
-solo EngineClock {
+solo pack EngineClock {
     var value: Time = timeInit()
+}
 
-    func advance(deltaSecs: Real) {
+impl EngineClock {
+    func advance[self: Self!](deltaSecs: std::Double) {
         self.value.advance(deltaSecs)
     }
 }
@@ -174,7 +216,7 @@ solo EngineClock {
  * Higher-level wraps compose this one and register platform, input, renderer,
  * ECS, and UI services without dynamic plugin objects.
  */
-wrap AzEngine {
+graph AzEngine {
     solo EngineRegistry
     solo EngineClock
 }

@@ -13,18 +13,18 @@ module game
 
 import engine
 
-bridge C {
-    func arc4random_uniform(bound: Int): Int
+bridge .C {
+    func @foreignName("arc4random_uniform")(bound: std::Int): std::Int
 }
 
-fin PLATFORM_COUNT = 12
-fin PLAYER_SIZE = 34.0
+fin platformCount = 12
+fin playerSize = 34.0
 
 /// Re-seeds platform [i] to start after [prevEnd], stepping from [prevY].
-func regenPlatform(px: Array<Real>, py: Array<Real>, pw: Array<Real>, i: Int, prevEnd: Real, prevY: Real) {
-    fin gap = 50.0 + (arc4random_uniform(70) as Real)
-    fin w = 130.0 + (arc4random_uniform(150) as Real)
-    var y = prevY + (arc4random_uniform(170) as Real) - 85.0
+func regenPlatform(px: std::Array<std::Double>, py: std::Array<std::Double>, pw: std::Array<std::Double>, i: std::Int, prevEnd: std::Double, prevY: std::Double) {
+    fin gap = 50.0 + (arc4randomUniform(70) as std::Double)
+    fin w = 130.0 + (arc4randomUniform(150) as std::Double)
+    var y = prevY + (arc4randomUniform(170) as std::Double) - 85.0
     if y < 240.0 {
         y = 240.0
     }
@@ -36,13 +36,13 @@ func regenPlatform(px: Array<Real>, py: Array<Real>, pw: Array<Real>, i: Int, pr
     pw[i] = w
 }
 
-func resetLevel(px: Array<Real>, py: Array<Real>, pw: Array<Real>) {
+func resetLevel(px: std::Array<std::Double>, py: std::Array<std::Double>, pw: std::Array<std::Double>) {
     // A wide, safe starting platform, then a procedural chain.
     px[0] = -100.0
     py[0] = 440.0
     pw[0] = 480.0
     var i = 1
-    while i < PLATFORM_COUNT {
+    while i < platformCount {
         regenPlatform(px, py, pw, i, px[i - 1] + pw[i - 1], py[i - 1])
         i = i + 1
     }
@@ -55,9 +55,9 @@ func main() {
     }
     app.setClearColor(0.36, 0.56, 0.78) // sky
 
-    var px = arr@[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    var py = arr@[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    var pw = arr@[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var px = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var py = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var pw = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     resetLevel(px, py, pw)
 
     var playerX = 60.0
@@ -69,16 +69,16 @@ func main() {
 
     while app.frame() {
         fin dt = app.deltaTime()
-        fin w = app.width() as Real
-        fin h = app.height() as Real
+        fin w = app.width() as std::Double
+        fin h = app.height() as std::Double
 
         if alive {
             // ── Controls ──
             var target = 0.0
-            if app.keyDown(KEY_D) || app.keyDown(KEY_RIGHT) {
+            if app.keyDown(keyD) || app.keyDown(keyArrowRight) {
                 target = 250.0
             }
-            if app.keyDown(KEY_A) || app.keyDown(KEY_LEFT) {
+            if app.keyDown(keyA) || app.keyDown(keyArrowLeft) {
                 target = -180.0
             }
             velX = velX + (target - velX) * 10.0 * dt
@@ -91,11 +91,11 @@ func main() {
             // Land on platforms (only while falling).
             var grounded = false
             var i = 0
-            while i < PLATFORM_COUNT {
-                fin bottom = playerY + PLAYER_SIZE
+            while i < platformCount {
+                fin bottom = playerY + playerSize
                 if velY >= 0.0 && bottom >= py[i] - 2.0 && bottom <= py[i] + 16.0 {
-                    if playerX + PLAYER_SIZE > px[i] && playerX < px[i] + pw[i] {
-                        playerY = py[i] - PLAYER_SIZE
+                    if playerX + playerSize > px[i] && playerX < px[i] + pw[i] {
+                        playerY = py[i] - playerSize
                         velY = 0.0
                         grounded = true
                     }
@@ -103,7 +103,7 @@ func main() {
                 i = i + 1
             }
 
-            if grounded && (app.keyPressed(KEY_SPACE) || app.keyPressed(KEY_UP)) {
+            if grounded && (app.keyPressed(keySpace) || app.keyPressed(keyArrowUp)) {
                 velY = -620.0
             }
 
@@ -116,14 +116,14 @@ func main() {
             fin camLeft = playerX - 260.0
             var rightmost = 0.0
             var j = 0
-            while j < PLATFORM_COUNT {
+            while j < platformCount {
                 if px[j] + pw[j] > rightmost {
                     rightmost = px[j] + pw[j]
                 }
                 j = j + 1
             }
             var k = 0
-            while k < PLATFORM_COUNT {
+            while k < platformCount {
                 if px[k] + pw[k] < camLeft - 80.0 {
                     regenPlatform(px, py, pw, k, rightmost, py[k])
                     rightmost = px[k] + pw[k]
@@ -131,12 +131,12 @@ func main() {
                 k = k + 1
             }
 
-            fin dist = (playerX / 10.0) as Int
+            fin dist = (playerX / 10.0) as std::Int
             if dist > best {
                 best = dist
             }
         } else {
-            if app.keyPressed(KEY_ENTER) {
+            if app.keyPressed(keyEnter) {
                 resetLevel(px, py, pw)
                 playerX = 60.0
                 playerY = 300.0
@@ -154,12 +154,12 @@ func main() {
         var c = 0
         while c < 4 {
             fin span = w + 320.0
-            var cx = (c as Real) * 330.0 + 60.0 - camX * 0.35
-            cx = cx - (((cx / span) as Int) as Real) * span
+            var cx = (c as std::Double) * 330.0 + 60.0 - camX * 0.35
+            cx = cx - (((cx / span) as std::Int) as std::Double) * span
             if cx < 0.0 {
                 cx = cx + span
             }
-            fin cy = 60.0 + (c as Real) * 42.0
+            fin cy = 60.0 + (c as std::Double) * 42.0
             app.uiRect(cx - 160.0, cy, 120.0, 26.0, 1.0, 1.0, 1.0, 0.55)
             app.uiRect(cx - 130.0, cy - 14.0, 60.0, 20.0, 1.0, 1.0, 1.0, 0.45)
             c = c + 1
@@ -167,7 +167,7 @@ func main() {
 
         // Platforms: grass top + earth body.
         var d = 0
-        while d < PLATFORM_COUNT {
+        while d < platformCount {
             fin sx = px[d] - camX
             if sx < w && sx + pw[d] > 0.0 {
                 app.uiRect(sx, py[d], pw[d], 14.0, 0.30, 0.72, 0.35, 1.0)
@@ -177,7 +177,7 @@ func main() {
         }
 
         // Player.
-        app.uiRect(playerX - camX, playerY, PLAYER_SIZE, PLAYER_SIZE, 0.95, 0.55, 0.15, 1.0)
+        app.uiRect(playerX - camX, playerY, playerSize, playerSize, 0.95, 0.55, 0.15, 1.0)
         app.uiRect(playerX - camX + 20.0, playerY + 8.0, 7.0, 7.0, 0.1, 0.1, 0.1, 1.0) // eye
 
         // ── HUD ──
@@ -188,7 +188,7 @@ func main() {
             app.uiTitle("YOU FELL — press ENTER to try again", h * 0.42, 24.0)
         }
 
-        if app.keyPressed(KEY_ESCAPE) {
+        if app.keyPressed(keyEscape) {
             app.quit()
         }
         app.present()

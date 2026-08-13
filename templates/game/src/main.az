@@ -6,10 +6,9 @@
 //   arrow keys  look around
 //   ESC         quit
 //
-// Built the Bevy way: subsystems come from `defaultPlugins()`, and the game's
-// own logic is a `Plugin` that registers a `GameSystem` running each frame.
-// Runs natively (compiled via LLVM); the engine — including its Metal
-// renderer — is written in the Azora language.
+// The engine host owns the ECS world, clock and schedule; the game's own logic
+// is a `GameSystem` registered to run each frame. Runs natively (compiled via
+// LLVM); the engine — including its Metal renderer — is written in Azora.
 
 module game
 
@@ -24,11 +23,11 @@ pack Scene {
     var cam: Camera
     var cube: Mesh
     var ground: Mesh
-    var ready: Bool
+    var ready: std::Bool
 }
 
 impl GameSystem for Scene {
-    func run(app: mut ref App) {
+    func run(app: App!) {
         self! ->
         if !self.ready {
             self.cube = app.meshCube(1.0)
@@ -49,7 +48,7 @@ impl GameSystem for Scene {
 
         app.uiText("WASD move   Q/E up-down   arrows look   ESC quit", 16.0, 16.0, 13.0)
 
-        if app.keyPressed(KEY_ESCAPE) {
+        if app.keyPressed(keyEscape) {
             app.quit()
         }
     }
@@ -57,19 +56,9 @@ impl GameSystem for Scene {
 
 // ── The game plugin ──────────────────────────────────────────────────────
 
-pack GamePlugin
-impl Plugin for GamePlugin {
-    func name(): String { self& -> return "GamePlugin" }
-    func build(engine: mut ref Engine) {
-        self! ->
-        engine.addUpdateSystem(Scene(cameraDefault(), Mesh(0L, 0), Mesh(0L, 0), false) as GameSystem)
-    }
-}
-
 func main() {
     var e = engine("__AZORA_PROJECT_NAME__", 1280, 720)
     e.setClearColor(0.06, 0.07, 0.09)
-    e.addPlugins(defaultPlugins())
-    e.addPlugin(GamePlugin() as Plugin)
+    e.addUpdateSystem(Scene(cameraDefault(), Mesh(0L, 0), Mesh(0L, 0), false) as GameSystem)
     e.run()
 }

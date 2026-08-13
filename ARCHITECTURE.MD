@@ -229,7 +229,7 @@ tree. It reads state through the same accessors as a system (`res`, `query`,
 /// (proposed) Immutable UI node — the cross-backend generalization of
 /// engine.ui.dom.DomNode. The Web backend lowers View → DomNode; the GPU backend
 /// lowers View → draw commands; the TUI backend lowers View → cells.
-@Experimental(sinceAzora: "0.0.5")
+@Experimental(since: "0.0.5")
 pack View {
     fin kind: ViewKind            // Text | Box | Row | Column | Image | Canvas | Host
     fin modifier: Modifier

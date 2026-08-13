@@ -18,7 +18,7 @@ case "$OS" in
         echo "azora-engine runtime: building FFI shim (macOS)"
         "$CC" -O2 -dynamiclib \
             "$SCRIPT_DIR/src/ffi/az_ffi.c" \
-            -lobjc \
+            -lobjc -lm \
             -install_name @rpath/libazora_runtime.dylib \
             -o "$OUT_DIR/libazora_runtime.dylib"
         echo "→ $OUT_DIR/libazora_runtime.dylib"
@@ -27,6 +27,7 @@ case "$OS" in
         echo "azora-engine runtime: building FFI shim ($OS) — platform renderer (Vulkan) planned"
         "$CC" -O2 -shared -fPIC \
             "$SCRIPT_DIR/src/ffi/az_ffi.c" \
+            -lm \
             -o "$OUT_DIR/libazora_runtime.so"
         echo "→ $OUT_DIR/libazora_runtime.so"
         ;;

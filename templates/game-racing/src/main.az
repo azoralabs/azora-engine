@@ -15,16 +15,16 @@ import engine
 // A car: kinematic body driven by throttle/steer each frame.
 pack Car {
     var pos: Vec3
-    var yaw: Real
-    var speed: Real
-    var wheelSpin: Real
-    var wheelSteer: Real
+    var yaw: std::Double
+    var speed: std::Double
+    var wheelSpin: std::Double
+    var wheelSteer: std::Double
     var color: Color
-    var isPlayer: Bool
+    var isPlayer: std::Bool
     var collider: Collider
-    var routeIndex: Int
-    var waypointIndex: Int
-    var targetSpeed: Real
+    var routeIndex: std::Int
+    var waypointIndex: std::Int
+    var targetSpeed: std::Double
 }
 
 // A static piece of the city (building or road tile).
@@ -32,52 +32,52 @@ pack Prop {
     var pos: Vec3
     var scale: Vec3
     var color: Color
-    var solid: Bool
+    var solid: std::Bool
     var collider: Collider
 }
 
 /** A closed, ordered lane path used by autonomous traffic. */
 pack TrafficRoute {
-    var points: Array<Vec3>
+    var points: std::Array<Vec3>
 }
 
 /** Shared traffic timing keeps intersections deterministic. */
 pack TrafficSimulation {
-    var elapsed: Real
-    var crashCooldown: Real
+    var elapsed: std::Double
+    var crashCooldown: std::Double
 }
 
 /** Slowly moving sky geometry shared by the presentation layer. */
 pack Cloud {
     var pos: Vec3
     var scale: Vec3
-    var speed: Real
+    var speed: std::Double
 }
 
 // ── Tuning ────────────────────────────────────────────────────────────────
 
-fin MAX_SPEED = 30.0
-fin REVERSE_SPEED = 8.0
+fin maxSpeed = 30.0
+fin reverseSpeed = 8.0
 fin ACCEL = 20.0
 fin BRAKE = 36.0
 fin FRICTION = 7.0
-fin STEER_RATE = 2.1
-fin BLOCK_STEP = 24.0
-fin BLOCK_SURFACE = 15.5
-fin LANE_OFFSET = 2.2
-fin CITY_BLOCKS = 1000
-fin CITY_HALF_BLOCKS = 500
-fin CITY_LIMIT = 11990.0
-fin STREAM_RADIUS = 5
+fin steerRate = 2.1
+fin blockStep = 24.0
+fin blockSurface = 15.5
+fin laneOffset = 2.2
+fin cityBlocks = 1000
+fin cityHalfBlocks = 500
+fin cityLimit = 11990.0
+fin streamRadius = 5
 
-func absReal(x: Real): Real {
+func absReal(x: std::Double): std::Double {
     if x < 0.0 {
         return 0.0 - x
     }
     return x
 }
 
-func signReal(x: Real): Real {
+func signReal(x: std::Double): std::Double {
     if x > 0.0 {
         return 1.0
     }
@@ -87,7 +87,7 @@ func signReal(x: Real): Real {
     return 0.0
 }
 
-func clampReal(x: Real, lo: Real, hi: Real): Real {
+func clampReal(x: std::Double, lo: std::Double, hi: std::Double): std::Double {
     if x < lo {
         return lo
     }
@@ -123,7 +123,7 @@ impl Car {
 
     // Advance one frame. `throttle` in [-1, 1] (negative = reverse/brake),
     // `steer` in [-1, 1] (positive = left).
-    func drive(throttle: Real, steer: Real, dt: Real) {
+    func drive(throttle: std::Double, steer: std::Double, dt: std::Double) {
         if throttle > 0.0 {
             self.speed = self.speed + throttle * ACCEL * dt
         } else {
@@ -147,7 +147,7 @@ impl Car {
                 self.speed = 0.0
             }
         }
-        self.speed = clampReal(self.speed, 0.0 - REVERSE_SPEED, MAX_SPEED)
+        self.speed = clampReal(self.speed, 0.0 - reverseSpeed, maxSpeed)
 
         // A bicycle steering model: the front axle turns smoothly, and yaw is
         // derived from steering angle, wheelbase, and signed road speed.
@@ -164,12 +164,12 @@ impl Car {
         self.wheelSpin = self.wheelSpin + (self.speed * dt) / 0.48
 
         // Keep cars inside the city; a wall stops them dead.
-        if absReal(self.pos.x) > CITY_LIMIT {
-            self.pos.x = clampReal(self.pos.x, 0.0 - CITY_LIMIT, CITY_LIMIT)
+        if absReal(self.pos.x) > cityLimit {
+            self.pos.x = clampReal(self.pos.x, 0.0 - cityLimit, cityLimit)
             self.speed = 0.0
         }
-        if absReal(self.pos.z) > CITY_LIMIT {
-            self.pos.z = clampReal(self.pos.z, 0.0 - CITY_LIMIT, CITY_LIMIT)
+        if absReal(self.pos.z) > cityLimit {
+            self.pos.z = clampReal(self.pos.z, 0.0 - cityLimit, cityLimit)
             self.speed = 0.0
         }
     }
@@ -177,24 +177,24 @@ impl Car {
 
 // ── City construction ─────────────────────────────────────────────────────
 
-func addCityPiece(world: World, props: Storage<Prop>, pos: Vec3, scale: Vec3, color: Color, solid: Bool) {
+func addCityPiece(world: World, props: Storage<Prop>, pos: Vec3, scale: Vec3, color: Color, solid: std::Bool) {
     spawnWith<Prop>(world, props, Prop(pos, scale, color, solid, engine::physics::box(scale.scale(0.5))))
 }
 
-func addTree(world: World, props: Storage<Prop>, x: Real, z: Real, height: Real) {
+func addTree(world: World, props: Storage<Prop>, x: std::Double, z: std::Double, height: std::Double) {
     addCityPiece(world, props, Vec3(x, height * 0.28, z), Vec3(0.42, height * 0.56, 0.42), colorRgb(0.30, 0.18, 0.09), true)
     addCityPiece(world, props, Vec3(x, height * 0.72, z), Vec3(2.2, height * 0.58, 2.2), colorRgb(0.18, 0.48, 0.22), false)
 }
 
-func addStreetLamp(world: World, props: Storage<Prop>, x: Real, z: Real) {
+func addStreetLamp(world: World, props: Storage<Prop>, x: std::Double, z: std::Double) {
     addCityPiece(world, props, Vec3(x, 1.55, z), Vec3(0.13, 3.1, 0.13), colorRgb(0.12, 0.13, 0.15), false)
     addCityPiece(world, props, Vec3(x, 3.15, z), Vec3(0.48, 0.18, 0.48), colorRgb(1.0, 0.82, 0.38), false)
 }
 
-func addCrosswalk(world: World, props: Storage<Prop>, x: Real, z: Real, alongX: Bool) {
+func addCrosswalk(world: World, props: Storage<Prop>, x: std::Double, z: std::Double, alongX: std::Bool) {
     var stripe = -4
     while stripe <= 4 {
-        fin offset = (stripe as Real) * 0.72
+        fin offset = (stripe as std::Double) * 0.72
         if alongX {
             addCityPiece(world, props, Vec3(x + offset, 0.045, z), Vec3(0.46, 0.05, 3.8), colorRgb(0.88, 0.90, 0.92), false)
         } else {
@@ -214,7 +214,7 @@ func buildRoadMarkings(world: World, props: Storage<Prop>) {
             addCityPiece(world, props, Vec3(dash, 0.035, road), Vec3(3.6, 0.04, 0.16), colorRgb(0.95, 0.76, 0.18), false)
             dash = dash + 8.0
         }
-        road = road + BLOCK_STEP
+        road = road + blockStep
     }
 
     // Crosswalks protect all four approaches to the central pedestrian plaza.
@@ -224,19 +224,19 @@ func buildRoadMarkings(world: World, props: Storage<Prop>) {
     addCrosswalk(world, props, -7.2, 12.0, false)
 }
 
-func buildDowntownBlock(world: World, props: Storage<Prop>, gx: Int, gz: Int) {
-    fin cx = (gx as Real) * BLOCK_STEP
-    fin cz = (gz as Real) * BLOCK_STEP
-    fin variation = ((((gx * 7 + gz * 3) % 5) + 5) % 5) as Real
-    fin h1 = 7.0 + absReal((gx as Real) + (gz as Real)) * 1.25 + variation * 1.45
+func buildDowntownBlock(world: World, props: Storage<Prop>, gx: std::Int, gz: std::Int) {
+    fin cx = (gx as std::Double) * blockStep
+    fin cz = (gz as std::Double) * blockStep
+    fin variation = ((((gx * 7 + gz * 3) % 5) + 5) % 5) as std::Double
+    fin h1 = 7.0 + absReal((gx as std::Double) + (gz as std::Double)) * 1.25 + variation * 1.45
     fin h2 = 5.5 + variation * 1.10
-    fin shade = 0.31 + (((((gx + gz + 8) % 4) + 4) % 4) as Real) * 0.095
+    fin shade = 0.31 + (((((gx + gz + 8) % 4) + 4) % 4) as std::Double) * 0.095
     fin wall = colorRgb(shade * 1.08, shade, shade * 0.90)
     fin wall2 = colorRgb(shade * 0.82, shade * 0.88, shade * 1.02)
     fin glass = colorRgb(0.10, 0.27 + variation * 0.018, 0.38 + variation * 0.02)
 
     // A generous pavement wraps two independent buildings on every block.
-    addCityPiece(world, props, Vec3(cx, 0.10, cz), Vec3(BLOCK_SURFACE, 0.20, BLOCK_SURFACE), colorRgb(0.49, 0.51, 0.53), false)
+    addCityPiece(world, props, Vec3(cx, 0.10, cz), Vec3(blockSurface, 0.20, blockSurface), colorRgb(0.49, 0.51, 0.53), false)
     addCityPiece(world, props, Vec3(cx - 3.55, h1 * 0.5 + 0.20, cz), Vec3(6.25, h1, 11.8), wall, true)
     addCityPiece(world, props, Vec3(cx + 3.55, h2 * 0.5 + 0.20, cz), Vec3(6.25, h2, 11.8), wall2, true)
 
@@ -276,8 +276,8 @@ func buildPark(world: World, props: Storage<Prop>) {
 
     var tree = -4
     while tree <= 4 {
-        fin tx = cx + (tree as Real) * 4.0
-        addTree(world, props, tx, cz - 6.1, 3.4 + (((tree + 4) % 3) as Real) * 0.45)
+        fin tx = cx + (tree as std::Double) * 4.0
+        addTree(world, props, tx, cz - 6.1, 3.4 + (((tree + 4) % 3) as std::Double) * 0.45)
         addTree(world, props, tx, cz + 6.1, 3.7)
         tree = tree + 1
     }
@@ -297,7 +297,7 @@ func buildMuseum(world: World, props: Storage<Prop>) {
 
     var column = -4
     while column <= 4 {
-        fin x = cx + (column as Real) * 2.4
+        fin x = cx + (column as std::Double) * 2.4
         addCityPiece(world, props, Vec3(x, 3.0, cz + 4.75), Vec3(0.55, 5.3, 0.55), colorRgb(0.88, 0.86, 0.79), false)
         column = column + 1
     }
@@ -325,7 +325,7 @@ func buildSoccerGround(world: World, props: Storage<Prop>) {
 func buildRiverAndBridge(world: World, props: Storage<Prop>) {
     fin riverZ = -48.0
     fin stone = colorRgb(0.43, 0.45, 0.47)
-    fin bankWidth = CITY_LIMIT - 16.0
+    fin bankWidth = cityLimit - 16.0
     fin bankCenter = 16.0 + bankWidth * 0.5
 
     // Solid embankments keep vehicles out of the water except at the bridge.
@@ -366,13 +366,13 @@ func buildTrainStation(world: World, props: Storage<Prop>) {
     addCityPiece(world, props, Vec3(cx, 0.30, cz + 22.0), Vec3(62.0, 0.55, 3.0), colorRgb(0.48, 0.49, 0.50), true)
     var rail = 0
     while rail < 4 {
-        fin rz = cz + 16.0 + (rail as Real) * 2.0
+        fin rz = cz + 16.0 + (rail as std::Double) * 2.0
         addCityPiece(world, props, Vec3(0.0, 0.16, rz), Vec3(720.0, 0.16, 0.13), steel, false)
         rail = rail + 1
     }
     var sleeper = -30
     while sleeper <= 30 {
-        fin sx = (sleeper as Real) * 8.0
+        fin sx = (sleeper as std::Double) * 8.0
         addCityPiece(world, props, Vec3(sx, 0.10, cz + 19.0), Vec3(0.34, 0.12, 9.0), colorRgb(0.32, 0.22, 0.14), false)
         sleeper = sleeper + 1
     }
@@ -401,7 +401,7 @@ func buildMall(world: World, props: Storage<Prop>) {
     // Parking aisles and pedestrian islands organize the public frontage.
     var bay = -6
     while bay <= 6 {
-        fin bx = cx + (bay as Real) * 3.4
+        fin bx = cx + (bay as std::Double) * 3.4
         addCityPiece(world, props, Vec3(bx, 0.14, cz - 17.0), Vec3(0.10, 0.05, 7.0), colorRgb(0.90, 0.90, 0.84), false)
         bay = bay + 1
     }
@@ -431,7 +431,7 @@ func buildCivicQuarter(world: World, props: Storage<Prop>) {
     addCityPiece(world, props, Vec3(cx, 16.0, cz), Vec3(1.1, 2.5, 1.1), colorRgb(0.25, 0.28, 0.32), false)
     var column = -4
     while column <= 4 {
-        addCityPiece(world, props, Vec3((column as Real) * 2.7, 3.0, cz - 9.6), Vec3(0.48, 5.5, 0.48), colorRgb(0.90, 0.87, 0.79), false)
+        addCityPiece(world, props, Vec3((column as std::Double) * 2.7, 3.0, cz - 9.6), Vec3(0.48, 5.5, 0.48), colorRgb(0.90, 0.87, 0.79), false)
         column = column + 1
     }
 }
@@ -446,7 +446,7 @@ func buildObservationTower(world: World, props: Storage<Prop>) {
     addCityPiece(world, props, Vec3(cx, 45.0, cz), Vec3(0.45, 8.0, 0.45), colorRgb(0.88, 0.35, 0.18), false)
 }
 
-func isLandmarkBlock(gx: Int, gz: Int): Bool {
+func isLandmarkBlock(gx: std::Int, gz: std::Int): std::Bool {
     if gz == -2 { return true }
     if gx == 0 && gz == 0 { return true }
     if (gx == -2 || gx == -1) && gz == -1 { return true }
@@ -479,17 +479,17 @@ func buildCity(world: World, props: Storage<Prop>) {
 // ── Input ─────────────────────────────────────────────────────────────────
 
 pack DriveInput {
-    var throttle: Real
-    var steer: Real
+    var throttle: std::Double
+    var steer: std::Double
 }
 
 // True while the pointer is held down inside the rectangle (unlike `button`,
 // which fires once per click) — the basis for hold-to-drive touch pedals.
-func padHeld(app: App, x: Real, y: Real, w: Real, h: Real): Bool {
-    return app.hovered(x, y, w, h) && app.mouseDown(MOUSE_LEFT)
+func padHeld(app: App, x: std::Double, y: std::Double, w: std::Double, h: std::Double): std::Bool {
+    return app.hovered(x, y, w, h) && app.mouseDown(mouseLeft)
 }
 
-func drawPad(app: App, label: String, x: Real, y: Real, w: Real, h: Real, r: Real, g: Real, b: Real): Bool {
+func drawPad(app: App, label: std::String, x: std::Double, y: std::Double, w: std::Double, h: std::Double, r: std::Double, g: std::Double, b: std::Double): std::Bool {
     fin held = padHeld(app, x, y, w, h)
     var br = r
     var bg = g
@@ -508,8 +508,8 @@ func drawPad(app: App, label: String, x: Real, y: Real, w: Real, h: Real, r: Rea
 }
 
 func drawDrivePads(app: App) {
-    fin bottom = (app.height() as Real) - 96.0
-    fin rx = (app.width() as Real) - 190.0
+    fin bottom = (app.height() as std::Double) - 96.0
+    fin rx = (app.width() as std::Double) - 190.0
     drawPad(app, "<", 24.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96)
     drawPad(app, ">", 112.0, bottom, 78.0, 78.0, 0.24, 0.52, 0.96)
     drawPad(app, "BRAKE", rx, bottom, 78.0, 78.0, 0.90, 0.30, 0.30)
@@ -521,21 +521,21 @@ func gatherInput(app: App): DriveInput {
     var throttle = 0.0
     var steer = 0.0
 
-    if app.keyDown(KEY_UP) || app.keyDown(KEY_W) { throttle = throttle + 1.0 }
-    if app.keyDown(KEY_DOWN) || app.keyDown(KEY_S) { throttle = throttle - 1.0 }
-    if app.keyDown(KEY_LEFT) || app.keyDown(KEY_A) { steer = steer + 1.0 }
-    if app.keyDown(KEY_RIGHT) || app.keyDown(KEY_D) { steer = steer - 1.0 }
+    if app.keyDown(keyArrowUp) || app.keyDown(keyW) { throttle = throttle + 1.0 }
+    if app.keyDown(keyArrowDown) || app.keyDown(keyS) { throttle = throttle - 1.0 }
+    if app.keyDown(keyArrowLeft) || app.keyDown(keyA) { steer = steer + 1.0 }
+    if app.keyDown(keyArrowRight) || app.keyDown(keyD) { steer = steer - 1.0 }
 
     if app.controllerConnected(0) {
-        throttle = throttle + app.controllerButtonValue(0, GAMEPAD_RIGHT_TRIGGER)
-        throttle = throttle - app.controllerButtonValue(0, GAMEPAD_LEFT_TRIGGER)
-        steer = steer - app.controllerAxis(0, GAMEPAD_LEFT_X)
+        throttle = throttle + app.controllerButtonValue(0, gamepadRightTrigger)
+        throttle = throttle - app.controllerButtonValue(0, gamepadLeftTrigger)
+        steer = steer - app.controllerAxis(0, gamepadLeftX)
     }
 
-    fin bottom = (app.height() as Real) - 96.0
+    fin bottom = (app.height() as std::Double) - 96.0
     if padHeld(app, 24.0, bottom, 78.0, 78.0) { steer = steer + 1.0 }
     if padHeld(app, 112.0, bottom, 78.0, 78.0) { steer = steer - 1.0 }
-    fin rx = (app.width() as Real) - 190.0
+    fin rx = (app.width() as std::Double) - 190.0
     if padHeld(app, rx, bottom, 78.0, 78.0) { throttle = throttle - 1.0 }
     if padHeld(app, rx + 88.0, bottom, 78.0, 78.0) { throttle = throttle + 1.0 }
 
@@ -544,10 +544,10 @@ func gatherInput(app: App): DriveInput {
 
 // ── Systems ───────────────────────────────────────────────────────────────
 
-func buildTrafficRoutes(): Array<TrafficRoute> {
-    return arr@[
-        TrafficRoute(arr@[vec3Zero()]),
-        TrafficRoute(arr@[
+func buildTrafficRoutes(): std::Array<TrafficRoute> {
+    return @std::arr[
+        TrafficRoute(@std::arr[vec3Zero()]),
+        TrafficRoute(@std::arr[
             Vec3(-57.8, 0.35, -62.2),
             Vec3(57.8, 0.35, -62.2),
             Vec3(62.2, 0.35, -57.8),
@@ -557,7 +557,7 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
             Vec3(-62.2, 0.35, 57.8),
             Vec3(-62.2, 0.35, -57.8)
         ]),
-        TrafficRoute(arr@[
+        TrafficRoute(@std::arr[
             Vec3(-81.8, 0.35, -14.2),
             Vec3(81.8, 0.35, -14.2),
             Vec3(86.2, 0.35, -9.8),
@@ -567,7 +567,7 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
             Vec3(-86.2, 0.35, 9.8),
             Vec3(-86.2, 0.35, -9.8)
         ]),
-        TrafficRoute(arr@[
+        TrafficRoute(@std::arr[
             Vec3(-14.2, 0.35, 81.8),
             Vec3(-14.2, 0.35, -81.8),
             Vec3(-9.8, 0.35, -86.2),
@@ -577,7 +577,7 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
             Vec3(9.8, 0.35, 86.2),
             Vec3(-9.8, 0.35, 86.2)
         ]),
-        TrafficRoute(arr@[
+        TrafficRoute(@std::arr[
             Vec3(-33.8, 0.35, -38.2),
             Vec3(33.8, 0.35, -38.2),
             Vec3(38.2, 0.35, -33.8),
@@ -587,7 +587,7 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
             Vec3(-38.2, 0.35, 33.8),
             Vec3(-38.2, 0.35, -33.8)
         ]),
-        TrafficRoute(arr@[
+        TrafficRoute(@std::arr[
             Vec3(-129.8, 0.35, 38.2),
             Vec3(129.8, 0.35, 38.2),
             Vec3(134.2, 0.35, 42.2),
@@ -597,7 +597,7 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
             Vec3(-134.2, 0.35, 125.8),
             Vec3(-134.2, 0.35, 42.2)
         ]),
-        TrafficRoute(arr@[
+        TrafficRoute(@std::arr[
             Vec3(-129.8, 0.35, -86.2),
             Vec3(129.8, 0.35, -86.2),
             Vec3(134.2, 0.35, -81.8),
@@ -610,27 +610,27 @@ func buildTrafficRoutes(): Array<TrafficRoute> {
     ]
 }
 
-func flatDistance(a: Vec3, b: Vec3): Real {
+func flatDistance(a: Vec3, b: Vec3): std::Double {
     fin dx = a.x - b.x
     fin dz = a.z - b.z
     return sqrt(dx * dx + dz * dz)
 }
 
-func nearestBlockCoord(value: Real): Int {
-    fin scaled = value / BLOCK_STEP
+func nearestBlockCoord(value: std::Double): std::Int {
+    fin scaled = value / blockStep
     if scaled >= 0.0 {
-        return (scaled + 0.5) as Int
+        return (scaled + 0.5) as std::Int
     }
-    return (scaled - 0.5) as Int
+    return (scaled - 0.5) as std::Int
 }
 
-func blockVariation(gx: Int, gz: Int): Real {
-    return (((((gx * 17 + gz * 29) % 7) + 7) % 7) as Real)
+func blockVariation(gx: std::Int, gz: std::Int): std::Double {
+    return (((((gx * 17 + gz * 29) % 7) + 7) % 7) as std::Double)
 }
 
-func streamedBuildingHeight(gx: Int, gz: Int, second: Bool): Real {
+func streamedBuildingHeight(gx: std::Int, gz: std::Int, second: std::Bool): std::Double {
     fin variation = blockVariation(gx, gz)
-    fin centerDistance = absReal(gx as Real) + absReal(gz as Real)
+    fin centerDistance = absReal(gx as std::Double) + absReal(gz as std::Double)
     var height = 7.0 + variation * 1.65
     if centerDistance < 12.0 {
         height = height + (12.0 - centerDistance) * 0.72
@@ -645,7 +645,7 @@ func carRight(car: Car): Vec3 {
     return Vec3(cos(car.yaw), 0.0, 0.0 - sin(car.yaw))
 }
 
-func cardinalYaw(from: Vec3, to: Vec3): Real {
+func cardinalYaw(from: Vec3, to: Vec3): std::Double {
     fin dx = to.x - from.x
     fin dz = to.z - from.z
     if absReal(dx) > absReal(dz) {
@@ -656,7 +656,7 @@ func cardinalYaw(from: Vec3, to: Vec3): Real {
     return 0.0
 }
 
-func trafficHasCarAhead(car: Car, cars: Storage<Car>, selfIndex: Int): Bool {
+func trafficHasCarAhead(car: Car, cars: Storage<Car>, selfIndex: std::Int): std::Bool {
     var i = 1
     while i < storageLength<Car>(cars) {
         if i != selfIndex && storageEntityAt<Car>(cars, i).isValid() {
@@ -676,19 +676,19 @@ func trafficHasCarAhead(car: Car, cars: Storage<Car>, selfIndex: Int): Bool {
     return false
 }
 
-func signalIsRed(car: Car, route: TrafficRoute, elapsed: Real): Bool {
+func signalIsRed(car: Car, route: TrafficRoute, elapsed: std::Double): std::Bool {
     fin target = route.points[car.waypointIndex]
     if flatDistance(car.pos, target) > 7.0 { return false }
-    fin phase = ((elapsed / 6.0) as Int) % 2
+    fin phase = ((elapsed / 6.0) as std::Int) % 2
     return phase != (car.routeIndex % 2)
 }
 
-func driveTrafficCar(car: Car, cars: Storage<Car>, routes: Array<TrafficRoute>, selfIndex: Int, elapsed: Real, dt: Real) {
+func driveTrafficCar(car: Car, cars: Storage<Car>, routes: std::Array<TrafficRoute>, selfIndex: std::Int, elapsed: std::Double, dt: std::Double) {
     fin route: TrafficRoute = routes[car.routeIndex]
     var target = route.points[car.waypointIndex]
     if flatDistance(car.pos, target) < 3.0 {
         car.waypointIndex = car.waypointIndex + 1
-        if car.waypointIndex >= route.points.length {
+        if car.waypointIndex >= route.points.size {
             car.waypointIndex = 0
         }
         target = route.points[car.waypointIndex]
@@ -712,12 +712,12 @@ func driveTrafficCar(car: Car, cars: Storage<Car>, routes: Array<TrafficRoute>, 
 func streamedBuildingContact(car: Car): Contact {
     fin gx = nearestBlockCoord(car.pos.x)
     fin gz = nearestBlockCoord(car.pos.z)
-    if gx <= (0 - CITY_HALF_BLOCKS) || gx >= CITY_HALF_BLOCKS { return engine::physics::noContact() }
-    if gz <= (0 - CITY_HALF_BLOCKS) || gz >= CITY_HALF_BLOCKS { return engine::physics::noContact() }
+    if gx <= (0 - cityHalfBlocks) || gx >= cityHalfBlocks { return engine::physics::noContact() }
+    if gz <= (0 - cityHalfBlocks) || gz >= cityHalfBlocks { return engine::physics::noContact() }
     if isLandmarkBlock(gx, gz) { return engine::physics::noContact() }
 
-    fin cx = (gx as Real) * BLOCK_STEP
-    fin cz = (gz as Real) * BLOCK_STEP
+    fin cx = (gx as std::Double) * blockStep
+    fin cz = (gz as std::Double) * blockStep
     fin h1 = streamedBuildingHeight(gx, gz, false)
     fin h2 = streamedBuildingHeight(gx, gz, true)
     fin scale1 = Vec3(6.25, h1, 11.8)
@@ -754,7 +754,7 @@ func buildingContact(car: Car, props: Storage<Prop>): Contact {
     return engine::physics::noContact()
 }
 
-func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
+func trafficContact(car: Car, cars: Storage<Car>, selfIndex: std::Int): Contact {
     var i = 1
     while i < storageLength<Car>(cars) {
         if i != selfIndex && storageEntityAt<Car>(cars, i).isValid() {
@@ -770,7 +770,7 @@ func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
     return engine::physics::noContact()
 }
 
-func resolveCarContacts(car: Car, cars: Storage<Car>, props: Storage<Prop>, selfIndex: Int): Bool {
+func resolveCarContacts(car: Car, cars: Storage<Car>, props: Storage<Prop>, selfIndex: std::Int): std::Bool {
     fin city = buildingContact(car, props)
     if city.hit {
         fin correction = city.normal.scale(city.penetration + 0.02)
@@ -799,7 +799,7 @@ func resolveCarContacts(car: Car, cars: Storage<Car>, props: Storage<Prop>, self
     return false
 }
 
-func advanceCars(cars: Storage<Car>, routes: Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: Real) {
+func advanceCars(cars: Storage<Car>, routes: std::Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: std::Double) {
     traffic.elapsed = traffic.elapsed + dt
     var i = 1
     while i < storageLength<Car>(cars) {
@@ -816,7 +816,7 @@ func advanceCars(cars: Storage<Car>, routes: Array<TrafficRoute>, traffic: Traff
     }
 }
 
-func solveCarContacts(cars: Storage<Car>, props: Storage<Prop>): Bool {
+func solveCarContacts(cars: Storage<Car>, props: Storage<Prop>): std::Bool {
     var playerCrashed = false
     var i = 1
     while i < storageLength<Car>(cars) {
@@ -834,7 +834,7 @@ func solveCarContacts(cars: Storage<Car>, props: Storage<Prop>): Bool {
 }
 
 // Movement and collision are separate deterministic simulation phases.
-func simulateCars(cars: Storage<Car>, props: Storage<Prop>, routes: Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: Real): Bool {
+func simulateCars(cars: Storage<Car>, props: Storage<Prop>, routes: std::Array<TrafficRoute>, traffic: TrafficSimulation, input: DriveInput, dt: std::Double): std::Bool {
     advanceCars(cars, routes, traffic, input, dt)
     if traffic.crashCooldown > 0.0 {
         traffic.crashCooldown = traffic.crashCooldown - dt
@@ -847,7 +847,7 @@ func simulateCars(cars: Storage<Car>, props: Storage<Prop>, routes: Array<Traffi
     return false
 }
 
-func districtName(pos: Vec3): String {
+func districtName(pos: Vec3): std::String {
     if pos.x > 66.0 && pos.x < 126.0 && pos.z > 78.0 && pos.z < 124.0 { return "Grand Central Station" }
     if pos.x < -64.0 && pos.x > -128.0 && pos.z > 46.0 && pos.z < 96.0 { return "Metropolitan Mall" }
     if pos.x < -88.0 && pos.x > -136.0 && pos.z < -54.0 && pos.z > -90.0 { return "Riverside Aquarium" }
@@ -893,13 +893,13 @@ func queueCity(queue: RenderQueue, cube: Mesh, props: Storage<Prop>) {
     }
 }
 
-func queueStreamedBlock(queue: RenderQueue, cube: Mesh, gx: Int, gz: Int) {
+func queueStreamedBlock(queue: RenderQueue, cube: Mesh, gx: std::Int, gz: std::Int) {
     if isLandmarkBlock(gx, gz) { return }
-    if gx <= (0 - CITY_HALF_BLOCKS) || gx >= CITY_HALF_BLOCKS { return }
-    if gz <= (0 - CITY_HALF_BLOCKS) || gz >= CITY_HALF_BLOCKS { return }
+    if gx <= (0 - cityHalfBlocks) || gx >= cityHalfBlocks { return }
+    if gz <= (0 - cityHalfBlocks) || gz >= cityHalfBlocks { return }
 
-    fin cx = (gx as Real) * BLOCK_STEP
-    fin cz = (gz as Real) * BLOCK_STEP
+    fin cx = (gx as std::Double) * blockStep
+    fin cz = (gz as std::Double) * blockStep
     fin variation = blockVariation(gx, gz)
     fin h1 = streamedBuildingHeight(gx, gz, false)
     fin h2 = streamedBuildingHeight(gx, gz, true)
@@ -908,7 +908,7 @@ func queueStreamedBlock(queue: RenderQueue, cube: Mesh, gx: Int, gz: Int) {
     fin wall2 = colorRgb(shade * 0.82, shade * 0.91, shade * 1.08)
     fin glass = colorRgb(0.08, 0.25 + variation * 0.014, 0.36 + variation * 0.018)
 
-    pushCube(queue, cube, Vec3(cx, 0.10, cz), vec3Zero(), Vec3(BLOCK_SURFACE, 0.20, BLOCK_SURFACE), colorRgb(0.49, 0.51, 0.53))
+    pushCube(queue, cube, Vec3(cx, 0.10, cz), vec3Zero(), Vec3(blockSurface, 0.20, blockSurface), colorRgb(0.49, 0.51, 0.53))
 
     // Cheap projected geometry gives every streamed building a stable shadow.
     pushCube(queue, cube, Vec3(cx - 4.0, 0.026, cz + 0.8), vec3Zero(), Vec3(6.45, 0.025, 12.1), colorRgb(0.075, 0.08, 0.09))
@@ -927,10 +927,10 @@ func queueStreamedBlock(queue: RenderQueue, cube: Mesh, gx: Int, gz: Int) {
 func queueStreamedCity(queue: RenderQueue, cube: Mesh, focus: Vec3) {
     fin centerX = nearestBlockCoord(focus.x)
     fin centerZ = nearestBlockCoord(focus.z)
-    var gx = centerX - STREAM_RADIUS
-    while gx <= centerX + STREAM_RADIUS {
-        var gz = centerZ - STREAM_RADIUS
-        while gz <= centerZ + STREAM_RADIUS {
+    var gx = centerX - streamRadius
+    while gx <= centerX + streamRadius {
+        var gz = centerZ - streamRadius
+        while gz <= centerZ + streamRadius {
             queueStreamedBlock(queue, cube, gx, gz)
             gz = gz + 1
         }
@@ -938,8 +938,8 @@ func queueStreamedCity(queue: RenderQueue, cube: Mesh, focus: Vec3) {
     }
 }
 
-func buildClouds(): Array<Cloud> {
-    return arr@[
+func buildClouds(): std::Array<Cloud> {
+    return @std::arr[
         Cloud(vec3Zero(), Vec3(1.0, 1.0, 1.0), 0.0),
         Cloud(Vec3(-72.0, 30.0, -62.0), Vec3(14.0, 2.4, 6.0), 1.4),
         Cloud(Vec3(-20.0, 35.0, -88.0), Vec3(18.0, 3.1, 7.0), 1.0),
@@ -949,14 +949,14 @@ func buildClouds(): Array<Cloud> {
     ]
 }
 
-func updateAndRenderSky(queue: RenderQueue, cube: Mesh, sun: Mesh, clouds: Array<Cloud>, focus: Vec3, dt: Real) {
+func updateAndRenderSky(queue: RenderQueue, cube: Mesh, sun: Mesh, clouds: std::Array<Cloud>, focus: Vec3, dt: std::Double) {
     queue.add(
         sun,
         Transform3d(focus + Vec3(52.0, 48.0, -88.0), Vec3(0.0, 0.0, 0.0), Vec3(6.0, 6.0, 6.0)),
         materialColor(colorRgb(1.0, 0.73, 0.18))
     )
     var i = 1
-    while i < clouds.length {
+    while i < clouds.size {
         fin cloud: Cloud = clouds[i]
         cloud.pos.x = cloud.pos.x + cloud.speed * dt
         if cloud.pos.x > 110.0 {
@@ -969,17 +969,17 @@ func updateAndRenderSky(queue: RenderQueue, cube: Mesh, sun: Mesh, clouds: Array
     }
 }
 
-func renderRiver(queue: RenderQueue, cube: Mesh, elapsed: Real, focus: Vec3) {
+func renderRiver(queue: RenderQueue, cube: Mesh, elapsed: std::Double, focus: Vec3) {
     if absReal(focus.z + 48.0) > 180.0 { return }
     var strip = -7
     while strip <= 7 {
-        fin phase = elapsed * 1.8 + (strip as Real) * 0.72
+        fin phase = elapsed * 1.8 + (strip as std::Double) * 0.72
         fin wave = sin(phase) * 0.07
         fin blue = 0.52 + sin(phase * 0.73) * 0.05
         pushCube(
             queue,
             cube,
-            Vec3(focus.x, 0.04 + wave, -48.0 + (strip as Real)),
+            Vec3(focus.x, 0.04 + wave, -48.0 + (strip as std::Double)),
             vec3Zero(),
             Vec3(360.0, 0.08, 1.08),
             colorRgb(0.08, 0.30, blue)
@@ -988,12 +988,12 @@ func renderRiver(queue: RenderQueue, cube: Mesh, elapsed: Real, focus: Vec3) {
     }
 }
 
-func carPoint(car: Car, x: Real, y: Real, z: Real): Vec3 {
+func carPoint(car: Car, x: std::Double, y: std::Double, z: std::Double): Vec3 {
     fin right = Vec3(cos(car.yaw), 0.0, 0.0 - sin(car.yaw))
     return car.pos + right.scale(x) + Vec3(0.0, y, 0.0) + car.forward().scale(z)
 }
 
-func pushWheel(queue: RenderQueue, wheel: Mesh, car: Car, x: Real, z: Real, steering: Real) {
+func pushWheel(queue: RenderQueue, wheel: Mesh, car: Car, x: std::Double, z: std::Double, steering: std::Double) {
     fin wheelPos = carPoint(car, x, -0.18, z)
     fin wheelRot = Vec3(car.wheelSpin, car.yaw + steering, 0.0)
     queue.add(wheel, Transform3d(wheelPos, wheelRot, Vec3(1.0, 1.0, 1.0)), materialColor(colorRgb(0.035, 0.04, 0.045)))
@@ -1053,7 +1053,7 @@ func playerCarOf(cars: Storage<Car>): Car {
     return storageValueAt<Car>(cars, 1)
 }
 
-task main() {
+async func main() {
     var app = appInit("__AZORA_PROJECT_NAME__ — Azora Racing", 1280, 720)
     if !app.ok {
         return
@@ -1072,7 +1072,7 @@ task main() {
     fin cube = app.meshCube(1.0)
     fin wheel = app.meshCylinder(0.48, 0.34, 14)
     fin sun = app.meshCylinder(1.0, 0.8, 24)
-    fin ground = app.meshGrid(CITY_LIMIT, 64)
+    fin ground = app.meshGrid(cityLimit, 64)
 
     var world = worldInit()
     var props = storageInit<Prop>(Prop(
@@ -1111,18 +1111,18 @@ task main() {
     while a < 30 {
         fin routeIndex = (a % 6) + 1
         fin route: TrafficRoute = routes[routeIndex]
-        fin pointIndex = ((a / 6) * 2) % route.points.length
-        fin nextIndex = (pointIndex + 1) % route.points.length
+        fin pointIndex = ((a / 6) * 2) % route.points.size
+        fin nextIndex = (pointIndex + 1) % route.points.size
         fin trafficPos = route.points[pointIndex]
         fin trafficYaw = cardinalYaw(trafficPos, route.points[nextIndex])
-        fin red = 0.25 + ((a % 5) as Real) * 0.13
-        fin green = 0.34 + (((a + 2) % 4) as Real) * 0.12
-        fin blue = 0.38 + (((a + 4) % 5) as Real) * 0.11
+        fin red = 0.25 + ((a % 5) as std::Double) * 0.13
+        fin green = 0.34 + (((a + 2) % 4) as std::Double) * 0.12
+        fin blue = 0.38 + (((a + 4) % 5) as std::Double) * 0.11
         fin col = colorRgb(red, green, blue)
         spawnWith<Car>(world, cars, Car(
             trafficPos,
             trafficYaw,
-            3.5 + ((a % 3) as Real),
+            3.5 + ((a % 3) as std::Double),
             0.0,
             0.0,
             col,
@@ -1130,7 +1130,7 @@ task main() {
             engine::physics::box(Vec3(0.95, 0.65, 1.8)),
             routeIndex,
             nextIndex,
-            8.0 + ((a % 4) as Real) * 0.65
+            8.0 + ((a % 4) as std::Double) * 0.65
         ))
         a = a + 1
     }
@@ -1140,7 +1140,7 @@ task main() {
     queueCity(staticQueue, cube, props)
 
     while app.frame() {
-        zone alloc {
+        realm alloc {
             fin dt = app.deltaTime()
             world.progress(dt)
 
@@ -1148,7 +1148,7 @@ task main() {
             fin crashed = simulateCars(cars, props, routes, traffic, input, dt)
 
             fin player = playerCarOf(cars)
-            engine::audio::updateEngine(audio, absReal(player.speed), input.throttle, MAX_SPEED)
+            engine::audio::updateEngine(audio, absReal(player.speed), input.throttle, maxSpeed)
             if crashed {
                 engine::audio::playCrash(audio, clampReal(absReal(player.speed) / 12.0, 0.25, 1.0))
             }
@@ -1169,7 +1169,7 @@ task main() {
             app.uiText(districtName(player.pos), 20.0, 52.0, 15.0)
             app.uiText("WASD / arrows / gamepad / touch - ESC to quit", 20.0, 76.0, 13.0)
 
-            if app.keyPressed(KEY_ESCAPE) {
+            if app.keyPressed(keyEscape) {
                 app.quit()
             }
             app.present()

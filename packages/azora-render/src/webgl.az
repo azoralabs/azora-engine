@@ -10,7 +10,7 @@ import std.math
 import engine.shaders
 
 /**
- * @file engine/render/az_web_render
+ * @file engine/render/azWebRender
  *
  * Universal immediate rendering API for Azora Engine 0.0.4.
  *
@@ -18,9 +18,9 @@ import engine.shaders
  * selects the device implementation for the compilation target: WebGL for
  * WebAssembly, Metal on Apple native targets, and Vulkan on supported native
  * targets. Device bridge functions below are an internal compiler/backend ABI;
- * they are not an application-facing JavaScript API.
+ * they are not an application-facing browser API.
  *
- * Applications own their lifetime with `task main`, await [nextFrame] inside
+ * Applications own their lifetime with `async func main`, await [nextFrame] inside
  * an ordinary Azora `loop`, record commands, and call [present]. WebAssembly
  * JSPI suspends that task at the browser repaint boundary without moving the
  * loop into host code. Native runners use the same lifecycle.
@@ -28,9 +28,9 @@ import engine.shaders
  * @since 0.0.4
  */
 
-friend zone engine {
+realm engine {
     /** Rendering device selected for the current compilation target. */
-    @Experimental(sinceAzora: "0.0.4")
+    @std::Experimental(since: "0.0.4")
     enum RenderBackend {
         Metal,
         Vulkan,
@@ -38,7 +38,7 @@ friend zone engine {
     }
 
     /** Dimensionality of the active rendering surface. */
-    @Experimental(sinceAzora: "0.0.4")
+    @std::Experimental(since: "0.0.4")
     enum RenderMode {
         TwoD,
         ThreeD
@@ -48,92 +48,92 @@ friend zone engine {
      * Internal WebAssembly device ABI. The WebGL backend implements these as
      * typed WASM imports; public engine behavior remains in Azora below.
      */
-    bridge [.JavaScript, .WebAssembly] {
-        func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
-        func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
-        func engineWebNextFrame(): Real
-        func engineWebPresent(): Unit
-        func engineWebClear(r: Real, g: Real, b: Real): Unit
-        func engineWebRect(x: Real, y: Real, width: Real, height: Real, r: Real, g: Real, b: Real, a: Real): Unit
-        func engineWebCircle(x: Real, y: Real, radius: Real, r: Real, g: Real, b: Real, a: Real): Unit
-        func engineWebCubeAt(x: Real, y: Real, z: Real, size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real): Unit
-        func engineWebCamera(distance: Real, fov: Real): Unit
-        func engineWebLog(message: String): Unit
+    bridge [.WebAssembly] {
+        func engineWebOpen2d(width: std::Int, height: std::Int, vertexShader: std::String, fragmentShader: std::String): std::Unit
+        func engineWebOpen3d(width: std::Int, height: std::Int, vertexShader: std::String, fragmentShader: std::String): std::Unit
+        func engineWebNextFrame(): std::Double
+        func engineWebPresent(): std::Unit
+        func engineWebClear(r: std::Double, g: std::Double, b: std::Double): std::Unit
+        func engineWebRect(x: std::Double, y: std::Double, width: std::Double, height: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double): std::Unit
+        func engineWebCircle(x: std::Double, y: std::Double, radius: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double): std::Unit
+        func engineWebCubeAt(x: std::Double, y: std::Double, z: std::Double, size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double): std::Unit
+        func engineWebCamera(distance: std::Double, fov: std::Double): std::Unit
+        func engineWebLog(message: std::String): std::Unit
     }
 
     /** Returns the rendering backend used by a WebAssembly build. */
-    @Experimental(sinceAzora: "0.0.4")
-    prop renderBackend: RenderBackend = RenderBackend.WebGL
+    @std::Experimental(since: "0.0.4")
+    prop renderBackend[self: Self&]: RenderBackend = RenderBackend.WebGL
 
     /** Opens a resolution-independent 2D surface. Call once from `main`. */
-    @Experimental(sinceAzora: "0.0.4")
-    func run2d(width: Int, height: Int) {
+    @std::Experimental(since: "0.0.4")
+    func run2d(width: std::Int, height: std::Int) {
         engineWebOpen2d(width, height, webgl2dVertexShaderSource(), webgl2dFragmentShaderSource())
     }
 
     /** Opens a hardware-accelerated 3D surface. Call once from `main`. */
-    @Experimental(sinceAzora: "0.0.4")
-    func run3d(width: Int, height: Int) {
+    @std::Experimental(since: "0.0.4")
+    func run3d(width: std::Int, height: std::Int) {
         engineWebOpen3d(width, height, webgl3dVertexShaderSource(), webgl3dFragmentShaderSource())
     }
 
     /** Suspends the current task until the display is ready for another frame. */
-    @Experimental(sinceAzora: "0.0.4")
-    task nextFrame(): Real {
+    @std::Experimental(since: "0.0.4")
+    async func nextFrame(): std::Double {
         return engineWebNextFrame()
     }
 
     /** Submits the commands recorded since [nextFrame] to the active device. */
-    @Experimental(sinceAzora: "0.0.4")
+    @std::Experimental(since: "0.0.4")
     func present() {
         engineWebPresent()
     }
 
     /** Clears the active frame with a linear RGB color. */
-    @Experimental(sinceAzora: "0.0.4")
-    func clear(r: Real, g: Real, b: Real) {
+    @std::Experimental(since: "0.0.4")
+    func clear(r: std::Double, g: std::Double, b: std::Double) {
         engineWebClear(r, g, b)
     }
 
     /** Draws a filled rectangle in logical 2D coordinates. */
-    @Experimental(sinceAzora: "0.0.4")
-    func rect(x: Real, y: Real, width: Real, height: Real, r: Real, g: Real, b: Real, a: Real = 1.0) {
+    @std::Experimental(since: "0.0.4")
+    func rect(x: std::Double, y: std::Double, width: std::Double, height: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double = 1.0) {
         engineWebRect(x, y, width, height, r, g, b, a)
     }
 
     /** Draws a filled circle in logical 2D coordinates. */
-    @Experimental(sinceAzora: "0.0.4")
-    func circle(x: Real, y: Real, radius: Real, r: Real, g: Real, b: Real, a: Real = 1.0) {
+    @std::Experimental(since: "0.0.4")
+    func circle(x: std::Double, y: std::Double, radius: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double = 1.0) {
         engineWebCircle(x, y, radius, r, g, b, a)
     }
 
     /** Draws or updates a lit cube. Rotation angles are radians. */
-    @Experimental(sinceAzora: "0.0.4")
-    func cube(size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real) {
+    @std::Experimental(since: "0.0.4")
+    func cube(size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double) {
         engineWebCubeAt(0.0, 0.0, 0.0, size, rotateX, rotateY, rotateZ, r, g, b)
     }
 
     /** Draws or updates a lit cube at the given world-space position. */
-    @Experimental(sinceAzora: "0.0.4")
-    func cubeAt(x: Real, y: Real, z: Real, size: Real, rotateX: Real, rotateY: Real, rotateZ: Real, r: Real, g: Real, b: Real) {
+    @std::Experimental(since: "0.0.4")
+    func cubeAt(x: std::Double, y: std::Double, z: std::Double, size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double) {
         engineWebCubeAt(x, y, z, size, rotateX, rotateY, rotateZ, r, g, b)
     }
 
     /** Configures the perspective camera for the active 3D surface. */
-    @Experimental(sinceAzora: "0.0.4")
-    func camera(distance: Real, fov: Real = 48.0) {
+    @std::Experimental(since: "0.0.4")
+    func camera(distance: std::Double, fov: std::Double = 48.0) {
         engineWebCamera(distance, fov)
     }
 
     /** Returns a smooth sine wave for procedural animation. */
-    @Experimental(sinceAzora: "0.0.4")
-    func wave(time: Real, amplitude: Real = 1.0, speed: Real = 1.0): Real {
-        return std::math::sin(time * speed) * amplitude
+    @std::Experimental(since: "0.0.4")
+    func wave(time: std::Double, amplitude: std::Double = 1.0, speed: std::Double = 1.0): std::Double {
+        return std::sin(time * speed) * amplitude
     }
 
     /** Writes a message to the engine console. */
-    @Experimental(sinceAzora: "0.0.4")
-    func log(message: String) {
+    @std::Experimental(since: "0.0.4")
+    func log(message: std::String) {
         engineWebLog(message)
     }
 }

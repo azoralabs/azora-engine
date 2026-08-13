@@ -1,0 +1,292 @@
+// Azora Engine — 3D math library.
+//
+// Vec3 and Mat4 are value types in spirit: every operation returns a new
+// instance (packs are reference types at runtime, so shared mutation is
+// avoided by convention here).
+//
+// Mat4 is row-major with translation in m03/m13/m23; the native runtime
+// converts to the GPU layout when a matrix crosses the FFI boundary.
+
+module engine.math.vec
+
+import std.math
+import std.convert
+import std.error
+import std.reflection
+
+error MathError {
+    DivisionByZero
+    ZeroLength
+}
+
+@std::Experimental(since: "0.0.1")
+pack Vec<T, N: std::Int> where T is Number && N in 2..4 {
+    var x: T = 0
+    var y: T = 0
+    var z: T = 0 where N >= 3
+    var w: T = 0 where N == 4
+}
+
+impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
+    ctor [self: Self!](all: T) {
+        inline for f in std::reflect<Self>.fields {
+            self.${f.name} = all
+        }
+    }
+
+    inline for op in @std::arr["+", "-", "*", "/", "%"] {
+        inline fin assignOp = "${op}="
+        inline fin zeroDivisorFails = (op == "/" || op == "%") && T is Integer
+
+        oper $op [self: Self&](rhs: Self&): Self
+        inline if zeroDivisorFails { inline "?! MathError" } {
+            inline if zeroDivisorFails {
+                inline for f in std::reflect<Self>.fields {
+                    if rhs.${f.name} == 0 { return .DivisionByZero }
+                }
+            }
+            return Self(
+                inline for f in std::reflect<Self>.fields {
+                    self.${f.name} $op rhs.${f.name}
+                }
+            )
+        }
+
+        oper $op [self: Self&](rhs: T&): Self
+        inline if zeroDivisorFails { inline "?! MathError" } {
+            inline if zeroDivisorFails {
+                if rhs == 0 { return .DivisionByZero }
+            }
+            return Self(
+                inline for f in std::reflect<Self>.fields {
+                    self.${f.name} $op rhs
+                }
+            )
+        }
+
+        oper $assignOp [self: Self!](rhs: Self&)
+        inline if zeroDivisorFails { inline "?! MathError" } {
+            inline if zeroDivisorFails {
+                inline for f in std::reflect<Self>.fields {
+                    if rhs.${f.name} == 0 { return .DivisionByZero }
+                }
+            }
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $assignOp rhs.${f.name}
+            }
+        }
+
+        oper $assignOp [self: Self!](rhs: T&)
+        inline if zeroDivisorFails { inline "?! MathError" } {
+            inline if zeroDivisorFails {
+                if rhs == 0 { return .DivisionByZero }
+            }
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $assignOp rhs
+            }
+        }
+    }
+
+    inline for op in @std::arr["&", "|", "^"] {
+        inline fin assignOp = "${op}="
+
+        oper $op [self: Self&](rhs: Self&): Self where T is Integer = Self(
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $op rhs.${f.name}
+            }
+        )
+
+        oper $op [self: Self&](rhs: T&): Self where T is Integer = Self(
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $op rhs
+            }
+        )
+
+        oper $assignOp [self: Self!](rhs: Self&) where T is Integer {
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $assignOp rhs.${f.name}
+            }
+        }
+
+        oper $assignOp [self: Self!](rhs: T&) where T is Integer {
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $assignOp rhs
+            }
+        }
+    }
+
+    oper+ [self: Self&]: Self = self
+
+    oper- [self: Self&]: Self where T is SignedNumber = Self(
+        inline for f in std::reflect<Self>.fields {
+            -self.${f.name}
+        }
+    )
+
+    oper~ [self: Self&]: Self where T is Integer = Self(
+        inline for f in std::reflect<Self>.fields {
+            ~self.${f.name}
+        }
+    )
+
+    inline for op in @std::arr["<<", ">>"] {
+        inline fin assignOp = "${op}="
+
+        oper $op [self: Self&](rhs: std::Int&): Self where T is Integer = Self(
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $op rhs
+            }
+        )
+
+        oper $assignOp [self: Self!](rhs: std::Int&) where T is Integer {
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} $assignOp rhs
+            }
+        }
+    }
+
+    inline for ref in @std::arr["&", "!"] {
+        oper[] [self: Self$ref](index: std::Int): T$ref ?! IndexError {
+            inline for f in std::reflect<Self>.fields with i {
+                if index == i { return self.${f.name}$ref }
+            }
+            return .OutOfBounds(index, N)
+        }
+    }
+
+    oper.. [self: Self&](rhs: Self&) by Self::one
+
+    oper reverse.. [self: Self&](rhs: Self&) by Self::one
+
+    oper as<U> [self: Vec<U, N>&] = Self(
+        inline for f in std::reflect<Vec<U, N>>.fields {
+            self.${f.name} as T
+        }
+    )
+
+    /**
+     * Vector magnitude.
+     */
+    prop length[self: Self&]: std::Double = std::sqrt(self.lengthSquared)
+
+    prop lengthSquared[self: Self&]: std::Double {
+        var result: std::Double = 0
+        inline for f in std::reflect<Self>.fields {
+            fin value = self.${f.name} as std::Double
+            result += value * value
+        }
+        return result
+    }
+
+    /**
+     * The dot product with [rhs].
+     *
+     * Accumulated in `Double` for the same reason [lengthSquared] is: the sum of
+     * products overflows a narrow element type long before the result would.
+     */
+    func dot[self: Self&](rhs: Self&): std::Double {
+        var result: std::Double = 0
+        inline for f in std::reflect<Self>.fields {
+            result += (self.${f.name} as std::Double) * (rhs.${f.name} as std::Double)
+        }
+        return result
+    }
+
+    func distanceTo[self: Self&](other: Self&): std::Double {
+        return (self - other).length
+    }
+
+    /**
+     * Returns a normalized copy.
+     */
+    prop normalized[self: Self&]: Self ?! MathError where T is FloatingPoint {
+        if self.length == 0 { return .ZeroLength }
+        return Self(
+            inline for f in std::reflect<Self>.fields {
+                self.${f.name} / self.length as T
+            }
+        )
+    }
+
+    /**
+     * Normalizes this vector in place.
+     */
+    func normalize[self: Self!]() ?! MathError where T is FloatingPoint {
+        fin length = self.length
+        if length == 0 { return .ZeroLength }
+        fin divisor = length as T
+        inline for f in std::reflect<Self>.fields {
+            self.${f.name} /= divisor
+        }
+    }
+
+    func perpendicular[self: Self&](): Self where T is SignedNumber && N == 2 {
+        return Self(-self.y, self.x)
+    }
+
+    /**
+     * Three-dimensional cross product.
+     */
+    func cross[self: Self&](rhs: Self&): Self where N == 3 {
+        return Self(
+            self.y * rhs.z - self.z * rhs.y,
+            self.z * rhs.x - self.x * rhs.z,
+            self.x * rhs.y - self.y * rhs.x
+        )
+    }
+}
+
+inline for op in @std::arr["+", "-", "*", "/", "%"] {
+    inline for Ty in Numbers {
+        inline fin zeroDivisorFails = (op == "/" || op == "%") && Ty is Integer
+
+        oper $op <N: std::Int>[self: Ty&](rhs: Vec<Ty, N>&): Vec<Ty, N>
+        inline if zeroDivisorFails { inline "?! MathError" }
+        where N in 2..4 {
+            inline if zeroDivisorFails {
+                inline for f in std::reflect<Vec<Ty, N>>.fields {
+                    if rhs.${f.name} == 0 { return .DivisionByZero }
+                }
+            }
+            return Vec<Ty, N>(
+                inline for f in std::reflect<Vec<Ty, N>>.fields {
+                    self $op rhs.${f.name}
+                }
+            )
+        }
+    }
+}
+
+inline for Ty in Numbers {
+    oper as<N: std::Int> [self: Ty&]: Vec<Ty, N> where N in 2..4 {
+        return Vec<Ty, N>(self)
+    }
+}
+
+impl Vec<T, N>:: {
+    inline func axis<I: std::Int>(value: T = 1): Vec<T, N> where I in 0..<N {
+        return Vec<T, N>(
+            inline for i in 0..<N {
+                if i == I { value } else { 0 as T }
+            }
+        )
+    }
+
+    fin zero = Vec<T, N>(0 as T)
+    fin one = Vec<T, N>(1 as T)
+    fin right = axis<0>()
+    fin up = axis<1>()
+    inline if N >= 3 { fin forward = axis<2>() }
+}
+
+impl Vec<T, N>:: where T is SignedNumber {
+    fin left = axis<0>(-1 as T)
+    fin down = axis<1>(-1 as T)
+    inline if N >= 3 { fin back = axis<2>(-1 as T) }
+}
+
+inline for [t, Ty] in [@std::arr["i", "u", "f", ""], [std::Int, std::UInt, std::Float, std::Double]] {
+    inline for i in 2..4 {
+        typealias Vec$i$t = Vec<Ty, i>
+    }
+}

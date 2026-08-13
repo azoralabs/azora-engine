@@ -5,52 +5,50 @@
  */
 
 /**
- * Engine application, schedule, and dependency-injected plugin composition.
+ * Engine application host: the ECS world, the frame clock, and the system
+ * schedule, driven over a platform window.
  *
- * Default plugins are `solo` services registered by `DefaultEnginePlugins`.
- * There is no runtime array of boxed plugin objects on the primary path.
- * Existing object-style plugins remain accepted as a compatibility adapter.
+ * There is no plugin graph. Subsystems are ordinary modules a game imports
+ * directly, screens are a navigation back stack, and behaviour is ECS systems
+ * on a schedule — so there is nothing for a plugin registry to configure, and
+ * no service-locator indirection between a game and the engine it calls.
+ *
+ * A game may use this host, or drive `appInit` and `app.frame()` itself when it
+ * wants the frame loop in its own hands; both are first-class.
  */
 module engine.app
 
-import std.container
+import std.container.array
 import engine.core
 import engine.ecs
 import engine.platform
 
-/** Compatibility contract for existing object-style frame systems. */
+/** A per-frame callback for games that keep logic outside the ECS schedule. */
 spec GameSystem {
-    func run(app: App!)
+    func run[self: Self&](app: App!)
 }
-
-/** Compatibility contract for third-party plugins not yet migrated to DI. */
-spec Plugin {
-    func name(): String
-    func build(engine: Engine!)
-}
-
-/** Marker passed to `addPlugins(defaultPlugins())`. */
-pack DefaultPluginSet
 
 /**
- * Owns platform configuration, ECS world, frame clock, and system schedule.
+ * Owns the ECS world, frame clock, and system schedule for a game.
+ *
+ * Construct with [engine], register systems, then call [run].
  */
 pack Engine {
-    var title: String
-    var width: Int
-    var height: Int
-    var clearR: Real
-    var clearG: Real
-    var clearB: Real
+    var title: std::String
+    var width: std::Int
+    var height: std::Int
+    var clearR: std::Double
+    var clearG: std::Double
+    var clearB: std::Double
     var world: World
     var time: Time
-    var schedule: Schedule
-    var startup: Array<GameSystem>
-    var update: Array<GameSystem>
-    var pluginsInstalled: Bool
+    var plan: SystemPlan
+    var startup: std::Array<GameSystem>
+    var update: std::Array<GameSystem>
 }
 
-func engine(title: String, width: Int, height: Int): Engine {
+/** Creates an engine host with an empty world and schedule. */
+func engine(title: std::String, width: std::Int, height: std::Int): Engine {
     return Engine(
         title,
         width,
@@ -60,125 +58,47 @@ func engine(title: String, width: Int, height: Int): Engine {
         0.09,
         worldInit(),
         timeInit(),
-        scheduleInit(),
-        Array::fill<GameSystem>(0),
-        Array::fill<GameSystem>(0),
-        false
+        systemPlan(),
+        std::Array::fill<GameSystem>(0),
+        std::Array::fill<GameSystem>(0)
     )
 }
 
-/** Window/platform service in the default DI graph. */
-solo WindowPlugin {
-    func install(engine: Engine!) {
-        inject EngineRegistry.markModuleLoaded()
-    }
-}
-
-/** Typed keyboard, pointer, touch, and controller service. */
-solo InputPlugin {
-    func install(engine: Engine!) {
-        inject EngineRegistry.markModuleLoaded()
-    }
-}
-
-/** Render graph and GPU service. */
-solo RenderPlugin {
-    func install(engine: Engine!) {
-        inject EngineRegistry.markModuleLoaded()
-    }
-}
-
-/** Reactive UI, VDOM, and navigation service. */
-solo UiPlugin {
-    func install(engine: Engine!) {
-        inject EngineRegistry.markModuleLoaded()
-    }
-}
-
-/**
- * Bevy-style default plugin composition expressed with language DI.
- *
- * Applications may define another wrap with a different service set; compile
- * time registration keeps LLVM/WASM startup deterministic.
- */
-wrap DefaultEnginePlugins {
-    solo EngineRegistry
-    solo EngineClock
-    solo WindowPlugin
-    solo InputPlugin
-    solo RenderPlugin
-    solo UiPlugin
-}
-
-func defaultPlugins(): DefaultPluginSet {
-    return DefaultPluginSet()
-}
-
 impl Engine {
-    func setClearColor(r: Real, g: Real, b: Real): Engine! { self! ->
+    func setClearColor[self: Self!](r: std::Double, g: std::Double, b: std::Double): Engine! {
         self.clearR = r
         self.clearG = g
         self.clearB = b
         return self
     }
 
-    /**
-     * Installs the default DI services once.
-     *
-     * The marker parameter preserves builder ergonomics without allocating a
-     * plugin group or performing virtual dispatch.
-     */
-    func addPlugins(plugins: DefaultPluginSet): Engine! { self! ->
-        if !self.pluginsInstalled {
-            inject WindowPlugin.install(self)
-            inject InputPlugin.install(self)
-            inject RenderPlugin.install(self)
-            inject UiPlugin.install(self)
-            self.pluginsInstalled = true
-        }
-        return self
-    }
-
-    /** Compatibility adapter for an object-style external plugin. */
-    func addPlugin(plugin: Plugin): Engine! { self! ->
-        plugin.build(self)
-        return self
-    }
-
-    /** Registers a statically described ECS system. */
-    func addSystem(system: ScheduledSystem): Engine! { self! ->
-        self.schedule.add(system)
-        return self
-    }
-
-    func addStartupSystem(system: GameSystem): Engine! { self! ->
+    /** Registers a callback to run once, before the first frame. */
+    func addStartupSystem[self: Self!](system: GameSystem): Engine! {
         self.startup.add(system)
         return self
     }
 
-    func addUpdateSystem(system: GameSystem): Engine! { self! ->
+    /** Registers a callback to run every frame. */
+    func addUpdateSystem[self: Self!](system: GameSystem): Engine! {
         self.update.add(system)
         return self
     }
 
     /**
-     * Opens the platform app and executes the complete phase schedule.
+     * Opens the window and runs the complete phase schedule until it closes.
      *
-     * `.FixedUpdate` consumes the world's fixed-step accumulator; all other
-     * phases run exactly once per rendered frame.
+     * `.FixedUpdate` drains the world's fixed-step accumulator, so simulation
+     * stays deterministic regardless of frame rate; every other phase runs
+     * exactly once per rendered frame.
      */
-    func run() { self! ->
-        if !self.pluginsInstalled {
-            self.addPlugins(defaultPlugins())
-        }
-
+    func run[self: Self!]() {
         var app = appInit(self.title, self.width, self.height)
         if !app.ok {
             return
         }
         app.setClearColor(self.clearR, self.clearG, self.clearB)
 
-        self.schedule.run(SystemPhase.Startup, self.world, self.time)
+        runPhase(self.plan, SystemPhase.Startup, self.world)
         for system in self.startup {
             system.run(app)
         }
@@ -186,23 +106,21 @@ impl Engine {
         while app.frame() {
             self.time.advance(app.deltaTime())
             self.world.progress(self.time.deltaSecs)
-            inject EngineClock.value = self.time
-            inject EngineRegistry.nextFrame()
 
-            self.schedule.run(SystemPhase.PreUpdate, self.world, self.time)
-            self.schedule.run(SystemPhase.Update, self.world, self.time)
+            runPhase(self.plan, SystemPhase.PreUpdate, self.world)
+            runPhase(self.plan, SystemPhase.Update, self.world)
             for system in self.update {
                 system.run(app)
             }
-            self.schedule.run(SystemPhase.PostUpdate, self.world, self.time)
+            runPhase(self.plan, SystemPhase.PostUpdate, self.world)
 
             while self.world.consumeFixedStep() {
-                self.schedule.run(SystemPhase.FixedUpdate, self.world, self.time)
+                runPhase(self.plan, SystemPhase.FixedUpdate, self.world)
             }
 
-            self.schedule.run(SystemPhase.Render, self.world, self.time)
+            runPhase(self.plan, SystemPhase.Render, self.world)
             app.present()
-            self.schedule.run(SystemPhase.Last, self.world, self.time)
+            runPhase(self.plan, SystemPhase.Last, self.world)
         }
         app.shutdown()
     }

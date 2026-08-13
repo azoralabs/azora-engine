@@ -1,0 +1,307 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * Bitmap fonts: fixed-cell glyph strips described by a small text manifest.
+ *
+ * A font is an image of equal-sized glyph cells laid out left to right, plus a
+ * string naming the character each cell holds. That is the shape used by most
+ * 2D game art, and it is what lets a game keep its original typography rather
+ * than substituting a system font that will not match the artwork.
+ *
+ * The manifest is `key: value` lines, each key prefixed with `*`:
+ *
+ * ```
+ * *image:         ScandicSmall.bmp
+ * *image x:       1
+ * *image y:       0
+ * *letters:       abcdefghijklmnopqrstuvwxyz0123456789.!?
+ * *letter width:  8
+ * *letter height: 10
+ * ```
+ */
+module engine.font
+
+import std.io
+import std.string
+import engine.io
+import engine.image
+import engine.platform
+import engine.gpu.draw
+
+/** Number of character codes a font can map. */
+fin charCodes = 128
+
+/**
+ * Palette index reserved as the colour key.
+ *
+ * Palettized game art marks transparency with a reserved index rather than an
+ * alpha channel; in this artwork it is the light blue at the top of the
+ * palette. Keying the wrong index leaves every glyph sitting on an opaque block.
+ */
+fin colorKeyIndex = 255
+
+/**
+ * A loaded bitmap font.
+ *
+ * `offsets` holds the x pixel offset of each character's cell in the strip,
+ * indexed by ASCII code, or -1 where the font has no glyph.
+ */
+@std::Experimental(since: "0.0.4")
+pack BitmapFont {
+    var image: Image
+    var texture: std::Long
+    var cellWidth: std::Int
+    var cellHeight: std::Int
+    var sourceY: std::Int
+    var offsets: std::Array<std::Int>
+    var ready: std::Bool
+}
+
+/** The font returned when loading fails; drawing with it is a no-op. */
+@std::Experimental(since: "0.0.4")
+func fontEmpty(): BitmapFont {
+    return BitmapFont(imageEmpty(), 0L, 0, 0, 0, std::Array::fill<std::Int>(0), false)
+}
+
+/**
+ * Reads the value of `*key:` from a font manifest.
+ *
+ * Values are separated from the key by whitespace of any width, so everything
+ * after the colon is taken and trimmed rather than split on a fixed column.
+ */
+func manifestValue(text: std::String, key: std::String): std::String {
+    fin marker = "*" + key + ":"
+    fin at = std::strIndexOf(text, marker)
+    if at < 0 {
+        return ""
+    }
+    fin from = at + std::strLength(marker)
+    var end = from
+    fin total = std::strLength(text)
+    while end < total && std::strSlice(text, end, end + 1) != "\n" {
+        end = end + 1
+    }
+    return trimBlanks(std::strSlice(text, from, end))
+}
+
+/**
+ * Strips leading and trailing spaces, tabs and carriage returns.
+ *
+ * These manifests separate key from value with tabs, and `strTrim` only removes
+ * spaces — leaving a tab in a filename, which then fails to open.
+ */
+func trimBlanks(text: std::String): std::String {
+    fin length = std::strLength(text)
+    var start = 0
+    while start < length && isBlank(std::strSlice(text, start, start + 1)) {
+        start = start + 1
+    }
+    var end = length
+    while end > start && isBlank(std::strSlice(text, end - 1, end)) {
+        end = end - 1
+    }
+    return std::strSlice(text, start, end)
+}
+
+/// Whether a one-character string is a space, tab or carriage return.
+func isBlank(ch: std::String): std::Bool {
+    return ch == " " || ch == "\t" || ch == "\r"
+}
+
+/** Reads a numeric manifest value, or [fallback] when absent or malformed. */
+func manifestInt(text: std::String, key: std::String, fallback: std::Int): std::Int {
+    fin raw = manifestValue(text, key)
+    if raw == "" {
+        return fallback
+    }
+    var digits = 0
+    var i = 0
+    fin length = std::strLength(raw)
+    while i < length {
+        fin ch = std::strSlice(raw, i, i + 1)
+        fin code = asciiCodeOf(ch)
+        if code < 48 || code > 57 {
+            return digits
+        }
+        digits = digits * 10 + (code - 48)
+        i = i + 1
+    }
+    if length == 0 {
+        return fallback
+    }
+    return digits
+}
+
+/** The ASCII code of a one-character string, or -1. */
+func asciiCodeOf(ch: std::String): std::Int {
+    var code = 32
+    while code < 127 {
+        if asciiChar(code) == ch {
+            return code
+        }
+        code = code + 1
+    }
+    return -1
+}
+
+/** Byte offset of a manifest value, preserving legacy non-ASCII glyph bytes. */
+func manifestByteValueStart(blob: Blob, key: std::String): std::Int {
+    fin marker = "*" + key + ":"
+    var at = 0
+    while at < blob.size {
+        if blob.matches(at, marker) {
+            var value = at + std::strLength(marker)
+            while value < blob.size &&
+                (blob.u8(value) == 32 || blob.u8(value) == 9) {
+                value = value + 1
+            }
+            return value
+        }
+        while at < blob.size && blob.u8(at) != 10 {
+            at = at + 1
+        }
+        at = at + 1
+    }
+    return -1
+}
+
+/**
+ * Loads the font described by the manifest at [manifestPath].
+ *
+ * The glyph image is resolved next to the manifest, and its palette index 0 is
+ * made transparent — palettized art reserves an index as the colour key rather
+ * than carrying an alpha channel, so without this every glyph would draw on an
+ * opaque block.
+ */
+@std::Experimental(since: "0.0.4")
+func loadBitmapFont(app: App, directory: std::String, manifestFile: std::String): BitmapFont {
+    var manifestBlob = readFile(directory + "/" + manifestFile)
+    if !manifestBlob.ok() {
+        return fontEmpty()
+    }
+    fin manifest = manifestBlob.text(0, manifestBlob.size)
+
+    fin imageName = manifestValue(manifest, "image")
+    if imageName == "" {
+        manifestBlob.release()
+        return fontEmpty()
+    }
+    fin cellWidth = manifestInt(manifest, "letter width", 8)
+    fin cellHeight = manifestInt(manifest, "letter height", 10)
+    fin imageX = manifestInt(manifest, "image x", 0)
+    fin imageY = manifestInt(manifest, "image y", 0)
+    fin lettersStart = manifestByteValueStart(manifestBlob, "letters")
+
+    var blob = readFile(directory + "/" + imageName)
+    if !blob.ok() {
+        manifestBlob.release()
+        return fontEmpty()
+    }
+    var image = decode(blob)
+    blob.release()
+    if !image.ok() {
+        manifestBlob.release()
+        return fontEmpty()
+    }
+    image.setColorKey(colorKeyIndex)
+    image.applyPalette()
+
+    fin texture = app.newTexture(image.width, image.height, image.pixels)
+    var offsets: std::Array<std::Int> = std::Array::fill<std::Int>(charCodes)
+    var code = 0
+    while code < charCodes {
+        offsets[code] = -1
+        code = code + 1
+    }
+
+    // The original manifests are byte-oriented and may contain legacy
+    // Scandinavian glyphs between ASCII letters and digits. Walk the raw
+    // bytes so unsupported characters still retain their cells and cannot
+    // shift every following glyph.
+    var glyph = 0
+    var letterAt = lettersStart
+    while letterAt >= 0 && letterAt < manifestBlob.size &&
+        manifestBlob.u8(letterAt) != 10 &&
+        manifestBlob.u8(letterAt) != 13 {
+        fin letterCode = manifestBlob.u8(letterAt)
+        fin offset = imageX + glyph * cellWidth
+        if letterCode >= 0 && letterCode < charCodes {
+            offsets[letterCode] = offset
+            if letterCode >= 65 && letterCode <= 90 {
+                offsets[letterCode + 32] = offset
+            }
+            if letterCode >= 97 && letterCode <= 122 {
+                offsets[letterCode - 32] = offset
+            }
+        }
+        glyph = glyph + 1
+        letterAt = letterAt + 1
+    }
+    manifestBlob.release()
+
+    return BitmapFont(
+        image, texture, cellWidth, cellHeight, imageY, offsets, texture != 0L
+    )
+}
+
+impl BitmapFont {
+
+    /** The width in pixels [text] occupies at scale 1. */
+    func measure(text: std::String): std::Int {
+        return std::strLength(text) * self.cellWidth
+    }
+
+    /**
+     * Draws [text] with its top-left corner at (`x`, `y`), scaled by [scale].
+     *
+     * Characters with no glyph advance the cursor without drawing, so spaces
+     * and unsupported punctuation keep the layout aligned.
+     */
+    func draw(app: App, text: std::String, x: std::Double, y: std::Double, scale: std::Double) {
+        if !self.ready {
+            return
+        }
+        fin width = (self.cellWidth as std::Double) * scale
+        fin height = (self.cellHeight as std::Double) * scale
+        var cursor = x
+        var i = 0
+        fin length = std::strLength(text)
+        while i < length {
+            fin code = asciiCodeOf(std::strSlice(text, i, i + 1))
+            i = i + 1
+            if code < 0 || code >= charCodes {
+                cursor = cursor + width
+                continue
+            }
+            fin offset = self.offsets[code]
+            if offset < 0 {
+                cursor = cursor + width
+                continue
+            }
+            app.drawSpriteRegion(
+                self.texture, self.image.width, self.image.height,
+                offset, self.sourceY, self.cellWidth, self.cellHeight,
+                cursor, y, width, height
+            )
+            cursor = cursor + width
+        }
+    }
+
+    /** Draws [text] horizontally centred on [centerX]. */
+    func drawCentered(app: App, text: std::String, centerX: std::Double, y: std::Double, scale: std::Double) {
+        fin width = (self.measure(text) as std::Double) * scale
+        self.draw(app, text, centerX - width * 0.5, y, scale)
+    }
+
+    /** Releases the font's GPU texture and pixels. */
+    func release[self: Self!](app: App) {
+        app.releaseTexture(self.texture)
+        self.image.release()
+        self.texture = 0L
+        self.ready = false
+    }
+}

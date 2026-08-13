@@ -1,0 +1,81 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/tilemap
+ *
+ * Complete tilemap facade: `import engine.tilemap` brings in the lattices, the
+ * storage, the tileset, the ECS tiles, collision, loading and drawing.
+ *
+ * ## What this package is
+ *
+ * A tilemap is a lattice, a stack of dense layers on it, and a tileset the
+ * layers draw from. Square, isometric (diamond and staggered) and hexagonal
+ * lattices are all supported, in every coordinate system a tile editor exports,
+ * and everything above `engine.tilemap.coords` is written against the geometry
+ * rather than against a particular lattice — so a map changes shape by changing
+ * one field.
+ *
+ * ## A map in six lines
+ *
+ * ```azora
+ * import engine.tilemap
+ *
+ * var tiles = tileSetFromAtlas("terrain",
+ *     tileAtlasLoadOrEmpty(app, "assets/terrain.bmp", 16, 16))
+ * tiles.addTraitsRange(0, 15, traitSolid)
+ *
+ * var level = tilemapSquare("level", 64, 64, 16.0, 16.0, tiles)
+ * layerFill(level.layers[0], 3)
+ *
+ * fin camera = cameraForApp(app, Vec2(512.0, 512.0), 2.0)
+ * drawTilemap(app, level, camera, app.timeNow())
+ * ```
+ *
+ * ## Where things live
+ *
+ * - `engine.tilemap.types` — coordinates, sizes, colours, flags, faults
+ * - `engine.tilemap.hex` — hex algebra: axial, cube and the four offset systems
+ * - `engine.tilemap.coords` — the geometry: tile to world, world to tile, culling
+ * - `engine.tilemap.storage` — dense layers and the cell-to-entity index
+ * - `engine.tilemap.atlas` — tile sheets and multi-sheet index spaces
+ * - `engine.tilemap.anim` — animated tiles, resolved from the clock
+ * - `engine.tilemap.tileset` — artwork plus per-tile traits
+ * - `engine.tilemap.map` — the map: geometry, layers, tileset
+ * - `engine.tilemap.neighbor` — who touches whom, on any lattice
+ * - `engine.tilemap.collide` — overlap, swept movement and rays, on `engine.physics.d2`
+ * - `engine.tilemap.load` — comma-separated and packed binary layers
+ * - `engine.tilemap.draw` — the camera and the renderer
+ * - `engine.tilemap.ecs` — per-tile entities and the systems that sync them
+ *
+ * ## Failure
+ *
+ * Anything that can be refused returns `T ?! TilemapFault`: an off-map write, a
+ * malformed level file, a tile index the tileset does not contain. Propagate it
+ * with `try`, handle it with `try { … } catch { … }`, or take a default with
+ * `expr catch fallback`.
+ *
+ * Results with more than one *valid* answer stay tagged unions, because they are
+ * not failures: [TileLookup] distinguishes an empty cell from an off-map one,
+ * and [TilePick], [TileEntity], [AtlasPick] and [TileRayHit] read the same way.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap
+
+exposed import engine.tilemap.types
+exposed import engine.tilemap.hex
+exposed import engine.tilemap.coords
+exposed import engine.tilemap.storage
+exposed import engine.tilemap.atlas
+exposed import engine.tilemap.anim
+exposed import engine.tilemap.tileset
+exposed import engine.tilemap.map
+exposed import engine.tilemap.neighbor
+exposed import engine.tilemap.collide
+exposed import engine.tilemap.load
+exposed import engine.tilemap.draw
+exposed import engine.tilemap.ecs

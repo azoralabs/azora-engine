@@ -1,0 +1,924 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/types
+ *
+ * The shared vocabulary of the tilemap package: coordinates, sizes, colours,
+ * per-cell flags, per-tile traits, and the lattice and anchor descriptions
+ * every other module is written against.
+ *
+ * ## Coordinate space
+ *
+ * Tile space is integer `(x, y)` with **x growing right and y growing down**,
+ * matching the engine's 2D drawing space (origin top-left). Row 0 is therefore
+ * the top row of a map, which is how tile editors export their layers — nothing
+ * between the file on disk and the pixels on screen has to flip.
+ *
+ * World space is real-valued and uses the same orientation. It is *not* screen
+ * space: a camera maps world to screen, so a map scrolls and zooms without its
+ * tile data being touched.
+ *
+ * Before anchoring, the **centre** of tile `(0, 0)` sits at world `(0, 0)`.
+ * [TilemapAnchor] then shifts the whole lattice so a chosen point of the map's
+ * bounding box lands on the tilemap's own position.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.types
+
+import std.container.array
+
+bridge .C {
+    func floor(x: std::Double): std::Double
+    func ceil(x: std::Double): std::Double
+    func fabs(x: std::Double): std::Double
+}
+
+// ── Sentinels and bit layouts ───────────────────────────────────────────
+
+/**
+ * The value stored in a cell that holds no tile.
+ *
+ * Empty is `-1` rather than `0` because `0` is a perfectly ordinary tile index
+ * in every tileset, and reserving it would waste the first tile of the atlas.
+ */
+fin tileEmpty = -1
+
+/** Cell flag: the tile is mirrored horizontally when drawn. */
+fin cellFlipX = 1
+/** Cell flag: the tile is mirrored vertically when drawn. */
+fin cellFlipY = 2
+/**
+ * Cell flag: the tile is mirrored along its anti-diagonal when drawn.
+ *
+ * Combined with [cellFlipX] and [cellFlipY] this expresses the eight
+ * symmetries of a square, which is exactly what Tiled stores in the three high
+ * bits of a global tile id.
+ */
+fin cellFlipD = 4
+/** Cell flag: the tile is skipped by the renderer but still occupies the cell. */
+fin cellHidden = 8
+
+/** The first cell-flag bit reserved for games; bits below this are engine-owned. */
+fin cellUserShift = 8
+
+/** Trait: the tile blocks movement from every side. */
+fin traitSolid = 1
+/** Trait: the tile blocks movement downward only — a jump-through platform. */
+fin traitOneWay = 2
+/** Trait: the tile can be climbed. */
+fin traitLadder = 4
+/** Trait: the tile is a fluid volume. */
+fin traitWater = 8
+/** Trait: the tile damages whatever overlaps it. */
+fin traitHazard = 16
+/** Trait: the tile may be removed by gameplay. */
+fin traitDestructible = 32
+/** Trait: the tile is a slope rising toward the right. */
+fin traitSlopeRight = 64
+/** Trait: the tile is a slope rising toward the left. */
+fin traitSlopeLeft = 128
+/** Trait: the tile animates, so the drawn index comes from the animation set. */
+fin traitAnimated = 256
+
+/** The first trait bit reserved for games; bits below this are engine-owned. */
+fin traitUserShift = 16
+
+/** The packed tint of a cell that is not individually tinted. */
+fin tileTintNone = -1
+
+// ── Lattices ────────────────────────────────────────────────────────────
+
+/** How an isometric lattice indexes its tiles. */
+enum IsoCoordSystem {
+    /**
+     * Diamond: `+x` runs down-right and `+y` runs down-left, so a rectangular
+     * map is drawn as a rhombus.
+     */
+    Diamond
+    /**
+     * Staggered: rows stay horizontal and every odd row is shoved half a tile
+     * right, so a rectangular map stays rectangular.
+     */
+    Staggered
+}
+
+/**
+ * How integer coordinates index a hex lattice.
+ *
+ * These name a coordinate *system*, not a shape: every `Row*` member is
+ * pointy-top and every `Column*` member is flat-top. [Row] and [Column] are
+ * axial, where the second axis is skewed and hex algebra is cheap; the
+ * `Even`/`Odd` members are offset systems, where every line is straight and
+ * alternating lines are shoved half a hex sideways. Offset systems are what
+ * tile editors export and what a rectangular array indexes naturally, which is
+ * why both exist and why `engine.tilemap.hex` converts between them.
+ */
+enum HexCoordSystem {
+    /** Pointy-top, axial: `y` is the skewed axis. */
+    Row
+    /** Pointy-top, offset: even rows shoved right. */
+    RowEven
+    /** Pointy-top, offset: odd rows shoved right. */
+    RowOdd
+    /** Flat-top, axial: `x` is the skewed axis. */
+    Column
+    /** Flat-top, offset: even columns shoved down. */
+    ColumnEven
+    /** Flat-top, offset: odd columns shoved down. */
+    ColumnOdd
+}
+
+/**
+ * The lattice a tilemap's coordinates are laid out on.
+ *
+ * The coordinate system travels with the variant rather than sitting in a
+ * separate field, so a square map cannot be given a hex coordinate system and
+ * every `when` over a map's kind is handed exactly the data that kind needs.
+ */
+variant enum TilemapKind {
+    /** Axis-aligned squares. */
+    Square
+    /** Isometric tiles indexed by [system]. */
+    Isometric(system: IsoCoordSystem)
+    /** Hexagons indexed by [system]. */
+    Hexagon(system: HexCoordSystem)
+}
+
+/**
+ * Which point of a map's bounding box lands on the tilemap's position.
+ *
+ * [Origin] leaves the lattice unshifted, so tile `(0, 0)`'s centre is the
+ * tilemap position. Every other variant is stated in the engine's y-down world
+ * space, so [TopLeft] puts the map's top-left corner on the tilemap position —
+ * the arrangement a 2D game normally wants.
+ */
+variant enum TilemapAnchor {
+    /** No shift: tile `(0, 0)`'s centre is the tilemap position. */
+    Origin
+    TopLeft
+    TopCenter
+    TopRight
+    CenterLeft
+    Center
+    CenterRight
+    BottomLeft
+    BottomCenter
+    BottomRight
+    /**
+     * An arbitrary point of the bounding box, as fractions of its extent.
+     *
+     * `(0, 0)` is the top-left corner and `(1, 1)` the bottom-right, so values
+     * outside `0 .. 1` anchor outside the map — which is how a map is offset by
+     * a multiple of its own size for wrapping or for stacked parallax bands.
+     */
+    Custom(x: std::Double, y: std::Double)
+}
+
+// ── Faults and lookups ──────────────────────────────────────────────────
+
+/**
+ * Everything that can go wrong inside the tilemap package.
+ *
+ * Fallible operations return a result `slot` carrying one of these rather than
+ * raising: a malformed level file or an off-map write is an ordinary thing for
+ * a game to inspect and report, not an unwind. Every variant is a value, so a
+ * result can be stored, logged and compared long after the call that made it.
+ */
+error TilemapFault {
+    /** A tile coordinate fell outside the map. */
+    OutOfBounds,
+    /** A map or layer was declared with a non-positive extent. */
+    EmptySize,
+    /** Two things that had to agree on a size did not. */
+    SizeMismatch,
+    /** Source data did not parse. */
+    MalformedSource,
+    /** Source data parsed but is in a form this package does not read. */
+    UnsupportedFormat,
+    /** Source data ended in the middle of a record. */
+    Truncated,
+    /** A texture was required and none was supplied. */
+    MissingTexture,
+    /** A tile index addressed a tile the tileset does not contain. */
+    UnknownTile,
+    /** A file could not be read or written. */
+    IoFailed
+}
+
+/**
+ * The result of reading one cell.
+ *
+ * An empty cell and an off-map cell are different answers to different
+ * questions — one means "nothing is here", the other "here is not a place" —
+ * and collapsing both into `-1` is how off-by-one bugs at map edges survive.
+ */
+variant enum TileLookup {
+    /** A tile is present, with its cell flags and packed tint. */
+    Tile(index: std::Int, flags: std::Int, tint: std::Int)
+    /** The cell is inside the map and holds no tile. */
+    Empty
+    /** The coordinate is outside the map. */
+    OutOfBounds
+}
+
+/** The tile index of [lookup], or [tileEmpty] when it holds no tile. */
+func tileLookupIndex(lookup: TileLookup): std::Int {
+    when lookup {
+        TileLookup.Tile(index, flags, tint) -> { return index }
+        else -> { return tileEmpty }
+    }
+    return tileEmpty
+}
+
+/** The cell flags of [lookup], or `0` when it holds no tile. */
+func tileLookupFlags(lookup: TileLookup): std::Int {
+    when lookup {
+        TileLookup.Tile(index, flags, tint) -> { return flags }
+        else -> { return 0 }
+    }
+    return 0
+}
+
+/** The packed tint of [lookup], or [tileTintNone] when it holds no tile. */
+func tileLookupTint(lookup: TileLookup): std::Int {
+    when lookup {
+        TileLookup.Tile(index, flags, tint) -> { return tint }
+        else -> { return tileTintNone }
+    }
+    return tileTintNone
+}
+
+/** True when [lookup] found a tile. */
+func tileLookupPresent(lookup: TileLookup): std::Bool {
+    when lookup {
+        TileLookup.Tile(index, flags, tint) -> { return true }
+        else -> { return false }
+    }
+    return false
+}
+
+/** True when [lookup] addressed a cell outside the map. */
+func tileLookupOffMap(lookup: TileLookup): std::Bool {
+    when lookup {
+        TileLookup.OutOfBounds() -> { return true }
+        else -> { return false }
+    }
+    return false
+}
+
+// ── Coordinates ─────────────────────────────────────────────────────────
+
+/** An integer position in tile space. */
+pack TilePos {
+    var x: std::Int
+    var y: std::Int
+}
+
+/** A real position in world space. */
+pack WorldPos {
+    var x: std::Double
+    var y: std::Double
+}
+
+/**
+ * An inclusive rectangle in tile space, covering `minX .. maxX` by
+ * `minY .. maxY`.
+ *
+ * A rectangle is empty when either extent runs backwards, which is how the
+ * culling and fill helpers say "nothing to do" without a second flag.
+ */
+pack TileRect {
+    var minX: std::Int
+    var minY: std::Int
+    var maxX: std::Int
+    var maxY: std::Int
+}
+
+/** An axis-aligned rectangle in world space. */
+pack WorldRect {
+    var minX: std::Double
+    var minY: std::Double
+    var maxX: std::Double
+    var maxY: std::Double
+}
+
+/** A map's extent in tiles. */
+pack TilemapSize {
+    var x: std::Int
+    var y: std::Int
+}
+
+/** The size one tile is drawn at, in world units. */
+pack TileSize {
+    var x: std::Double
+    var y: std::Double
+}
+
+/**
+ * The lattice step between neighbouring tile centres, in world units.
+ *
+ * Usually equal to the tile size, and deliberately separate from it: a tileset
+ * whose art overhangs its cell — grass poking into the tile above — draws
+ * larger than it steps, and hexagons step by three quarters of their width or
+ * height depending on orientation.
+ */
+pack GridSize {
+    var x: std::Double
+    var y: std::Double
+}
+
+/** A straight RGBA colour with components in `0.0 .. 1.0`. */
+pack TileColor {
+    var r: std::Double
+    var g: std::Double
+    var b: std::Double
+    var a: std::Double
+}
+
+/** The eight square symmetries as three independent mirrors. */
+pack TileFlip {
+    var x: std::Bool
+    var y: std::Bool
+    var d: std::Bool
+}
+
+// ── Constructors ────────────────────────────────────────────────────────
+
+func tilePos(x: std::Int, y: std::Int): TilePos {
+    return TilePos(x, y)
+}
+
+func worldPos(x: std::Double, y: std::Double): WorldPos {
+    return WorldPos(x, y)
+}
+
+func tilemapSize(x: std::Int, y: std::Int): TilemapSize {
+    return TilemapSize(x, y)
+}
+
+func tileSize(x: std::Double, y: std::Double): TileSize {
+    return TileSize(x, y)
+}
+
+func gridSize(x: std::Double, y: std::Double): GridSize {
+    return GridSize(x, y)
+}
+
+/** A grid whose step equals the tile size — the square-map default. */
+func gridSizeFromTile(size: TileSize): GridSize {
+    return GridSize(size.x, size.y)
+}
+
+func tileRect(minX: std::Int, minY: std::Int, maxX: std::Int, maxY: std::Int): TileRect {
+    return TileRect(minX, minY, maxX, maxY)
+}
+
+/** The empty tile rectangle; every containment test on it is false. */
+func tileRectEmpty(): TileRect {
+    return TileRect(0, 0, -1, -1)
+}
+
+func worldRect(minX: std::Double, minY: std::Double, maxX: std::Double, maxY: std::Double): WorldRect {
+    return WorldRect(minX, minY, maxX, maxY)
+}
+
+/** A world rectangle from its top-left corner and its size. */
+func worldRectAt(x: std::Double, y: std::Double, width: std::Double, height: std::Double): WorldRect {
+    return WorldRect(x, y, x + width, y + height)
+}
+
+func tileColor(r: std::Double, g: std::Double, b: std::Double, a: std::Double): TileColor {
+    return TileColor(r, g, b, a)
+}
+
+/** Opaque white: the tint that leaves tileset art unchanged. */
+func tileColorWhite(): TileColor {
+    return TileColor(1.0, 1.0, 1.0, 1.0)
+}
+
+func tileFlipNone(): TileFlip {
+    return TileFlip(false, false, false)
+}
+
+func tileFlip(x: std::Bool, y: std::Bool, d: std::Bool): TileFlip {
+    return TileFlip(x, y, d)
+}
+
+// ── Scalar helpers ──────────────────────────────────────────────────────
+//
+// Tile maths runs over negative coordinates constantly — a camera left of the
+// map, an axial hex axis, a neighbour above row 0 — and truncating division
+// breaks every one of those. These helpers floor instead, so the lattice stays
+// uniform across the origin.
+
+/** Integer division that rounds toward negative infinity. */
+func tileFloorDiv(a: std::Int, b: std::Int): std::Int {
+    var q = a / b
+    if (a % b != 0) && ((a < 0) != (b < 0)) {
+        q = q - 1
+    }
+    return q
+}
+
+/** The non-negative remainder of `a / b` for positive `b`. */
+func tileFloorMod(a: std::Int, b: std::Int): std::Int {
+    fin r = a % b
+    if r < 0 {
+        return r + b
+    }
+    return r
+}
+
+func intMin(a: std::Int, b: std::Int): std::Int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func intMax(a: std::Int, b: std::Int): std::Int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func intClamp(value: std::Int, low: std::Int, high: std::Int): std::Int {
+    if value < low {
+        return low
+    }
+    if value > high {
+        return high
+    }
+    return value
+}
+
+func intAbs(value: std::Int): std::Int {
+    if value < 0 {
+        return 0 - value
+    }
+    return value
+}
+
+/** True when [value] is odd, for negative values as well as positive ones. */
+func intIsOdd(value: std::Int): std::Bool {
+    return tileFloorMod(value, 2) == 1
+}
+
+func realMin(a: std::Double, b: std::Double): std::Double {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func realMax(a: std::Double, b: std::Double): std::Double {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func realClamp(value: std::Double, low: std::Double, high: std::Double): std::Double {
+    if value < low {
+        return low
+    }
+    if value > high {
+        return high
+    }
+    return value
+}
+
+func realAbs(value: std::Double): std::Double {
+    return fabs(value)
+}
+
+/** The largest integer not greater than [value]. */
+func realFloorToInt(value: std::Double): std::Int {
+    return floor(value) as std::Int
+}
+
+/** The smallest integer not less than [value]. */
+func realCeilToInt(value: std::Double): std::Int {
+    return ceil(value) as std::Int
+}
+
+/** [value] rounded half away from zero. */
+func realRoundToInt(value: std::Double): std::Int {
+    if value < 0.0 {
+        return 0 - (floor(0.5 - value) as std::Int)
+    }
+    return floor(value + 0.5) as std::Int
+}
+
+// ── Flag helpers ────────────────────────────────────────────────────────
+
+/** True when every bit of [mask] is set in [flags]. */
+func flagsAll(flags: std::Int, mask: std::Int): std::Bool {
+    return (flags & mask) == mask
+}
+
+/** True when any bit of [mask] is set in [flags]. */
+func flagsAny(flags: std::Int, mask: std::Int): std::Bool {
+    return (flags & mask) != 0
+}
+
+func flagsSet(flags: std::Int, mask: std::Int): std::Int {
+    return flags | mask
+}
+
+func flagsClear(flags: std::Int, mask: std::Int): std::Int {
+    return flags & (0 - 1 - mask)
+}
+
+func flagsToggle(flags: std::Int, mask: std::Int): std::Int {
+    return flags ^ mask
+}
+
+/** Packs a game's own flag value into the bits above [cellUserShift]. */
+func cellUserFlags(value: std::Int): std::Int {
+    return value << cellUserShift
+}
+
+/** Reads back the game-owned bits of a cell's flags. */
+func cellUserValue(flags: std::Int): std::Int {
+    return flags >> cellUserShift
+}
+
+/** Packs a game's own trait value into the bits above [traitUserShift]. */
+func traitUserFlags(value: std::Int): std::Int {
+    return value << traitUserShift
+}
+
+/** Reads back the game-owned bits of a tile's traits. */
+func traitUserValue(traits: std::Int): std::Int {
+    return traits >> traitUserShift
+}
+
+/** The cell flags describing [mirrors]. */
+func tileFlipToFlags(mirrors: TileFlip): std::Int {
+    var flags = 0
+    if (mirrors.x) {
+        flags = flags | cellFlipX
+    }
+    if (mirrors.y) {
+        flags = flags | cellFlipY
+    }
+    if (mirrors.d) {
+        flags = flags | cellFlipD
+    }
+    return flags
+}
+
+/** The mirrors encoded in [flags]. */
+func tileFlipFromFlags(flags: std::Int): TileFlip {
+    return TileFlip(
+        (flags & cellFlipX) != 0,
+        (flags & cellFlipY) != 0,
+        (flags & cellFlipD) != 0
+    )
+}
+
+// ── Colour packing ──────────────────────────────────────────────────────
+//
+// A per-cell tint is stored as one packed integer rather than four reals. A
+// large map has millions of cells and almost none of them are tinted, so the
+// plane stays four bytes per cell and unpacking happens only for cells that are
+// actually drawn.
+
+/** Packs a colour into `0xAARRGGBB`. */
+func tileColorPack(color: TileColor): std::Int {
+    fin r = (realClamp(color.r, 0.0, 1.0) * 255.0 + 0.5) as std::Int
+    fin g = (realClamp(color.g, 0.0, 1.0) * 255.0 + 0.5) as std::Int
+    fin b = (realClamp(color.b, 0.0, 1.0) * 255.0 + 0.5) as std::Int
+    fin a = (realClamp(color.a, 0.0, 1.0) * 255.0 + 0.5) as std::Int
+    return (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/** Unpacks a `0xAARRGGBB` value written by [tileColorPack]. */
+func tileColorUnpack(packed: std::Int): TileColor {
+    return TileColor(
+        (((packed >> 16) & 0xFF) as std::Double) / 255.0,
+        (((packed >> 8) & 0xFF) as std::Double) / 255.0,
+        ((packed & 0xFF) as std::Double) / 255.0,
+        (((packed >> 24) & 0xFF) as std::Double) / 255.0
+    )
+}
+
+/** Multiplies two tints — how a cell tint layers over a layer tint. */
+func tileColorModulate(a: TileColor, b: TileColor): TileColor {
+    return TileColor(a.r * b.r, a.g * b.g, a.b * b.b, a.a * b.a)
+}
+
+/** [color] with its alpha scaled by [opacity]. */
+func tileColorFade(color: TileColor, opacity: std::Double): TileColor {
+    return TileColor(color.r, color.g, color.b, color.a * opacity)
+}
+
+// ── Positions and rectangles ────────────────────────────────────────────
+
+impl TilePos {
+    /** True when both coordinates match [other]. */
+    func same(other: TilePos): std::Bool {
+        return self.x == other.x && self.y == other.y
+    }
+
+    /** This position moved by [dx], [dy]. */
+    func offset(dx: std::Int, dy: std::Int): TilePos {
+        return TilePos(self.x + dx, self.y + dy)
+    }
+
+    /** The Manhattan distance to [other]: the step count on a 4-way square grid. */
+    func manhattan(other: TilePos): std::Int {
+        return intAbs(self.x - other.x) + intAbs(self.y - other.y)
+    }
+
+    /** The Chebyshev distance to [other]: the step count on an 8-way square grid. */
+    func chebyshev(other: TilePos): std::Int {
+        return intMax(intAbs(self.x - other.x), intAbs(self.y - other.y))
+    }
+
+    /** The row-major index of this position in a map [width] tiles across. */
+    func linearIndex(width: std::Int): std::Int {
+        return self.y * width + self.x
+    }
+}
+
+impl WorldPos {
+    func plus(other: WorldPos): WorldPos {
+        return WorldPos(self.x + other.x, self.y + other.y)
+    }
+
+    func minus(other: WorldPos): WorldPos {
+        return WorldPos(self.x - other.x, self.y - other.y)
+    }
+
+    func scale(k: std::Double): WorldPos {
+        return WorldPos(self.x * k, self.y * k)
+    }
+
+    /** The squared distance to [other]; comparing squares avoids a square root. */
+    func distanceSquared(other: WorldPos): std::Double {
+        fin dx = self.x - other.x
+        fin dy = self.y - other.y
+        return dx * dx + dy * dy
+    }
+}
+
+impl TilemapSize {
+    /** The number of cells in a map of this size. */
+    func count(): std::Int {
+        return self.x * self.y
+    }
+
+    /** True when [pos] addresses a cell inside a map of this size. */
+    func contains(pos: TilePos): std::Bool {
+        return pos.x >= 0 && pos.y >= 0 && pos.x < self.x && pos.y < self.y
+    }
+
+    /** True when both extents are positive. */
+    func isValid(): std::Bool {
+        return self.x > 0 && self.y > 0
+    }
+
+    /** The rectangle covering every cell of a map of this size. */
+    func rect(): TileRect {
+        return TileRect(0, 0, self.x - 1, self.y - 1)
+    }
+}
+
+impl TileRect {
+    /** True when the rectangle covers no cell at all. */
+    func isEmpty(): std::Bool {
+        return self.maxX < self.minX || self.maxY < self.minY
+    }
+
+    func width(): std::Int {
+        if self.isEmpty() {
+            return 0
+        }
+        return self.maxX - self.minX + 1
+    }
+
+    func height(): std::Int {
+        if self.isEmpty() {
+            return 0
+        }
+        return self.maxY - self.minY + 1
+    }
+
+    /** The number of cells the rectangle covers. */
+    func area(): std::Int {
+        return self.width() * self.height()
+    }
+
+    func contains(pos: TilePos): std::Bool {
+        return pos.x >= self.minX && pos.x <= self.maxX &&
+            pos.y >= self.minY && pos.y <= self.maxY
+    }
+
+    /** The overlap with [other], possibly empty. */
+    func intersect(other: TileRect): TileRect {
+        return TileRect(
+            intMax(self.minX, other.minX),
+            intMax(self.minY, other.minY),
+            intMin(self.maxX, other.maxX),
+            intMin(self.maxY, other.maxY)
+        )
+    }
+
+    /** The smallest rectangle covering both this one and [other]. */
+    func union(other: TileRect): TileRect {
+        if self.isEmpty() {
+            return other
+        }
+        if other.isEmpty() {
+            return self
+        }
+        return TileRect(
+            intMin(self.minX, other.minX),
+            intMin(self.minY, other.minY),
+            intMax(self.maxX, other.maxX),
+            intMax(self.maxY, other.maxY)
+        )
+    }
+
+    /** This rectangle grown by [amount] cells on every side. */
+    func expand(amount: std::Int): TileRect {
+        if self.isEmpty() {
+            return self
+        }
+        return TileRect(
+            self.minX - amount,
+            self.minY - amount,
+            self.maxX + amount,
+            self.maxY + amount
+        )
+    }
+
+    /** This rectangle clipped to a map of [size]. */
+    func clampTo(size: TilemapSize): TileRect {
+        return self.intersect(TileRect(0, 0, size.x - 1, size.y - 1))
+    }
+}
+
+impl WorldRect {
+    func width(): std::Double {
+        return self.maxX - self.minX
+    }
+
+    func height(): std::Double {
+        return self.maxY - self.minY
+    }
+
+    func center(): WorldPos {
+        return WorldPos((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
+    }
+
+    func contains(point: WorldPos): std::Bool {
+        return point.x >= self.minX && point.x <= self.maxX &&
+            point.y >= self.minY && point.y <= self.maxY
+    }
+
+    /** True when the two rectangles share any area. */
+    func overlaps(other: WorldRect): std::Bool {
+        return self.minX < other.maxX && other.minX < self.maxX &&
+            self.minY < other.maxY && other.minY < self.maxY
+    }
+
+    /** This rectangle grown by [x] horizontally and [y] vertically. */
+    func expand(x: std::Double, y: std::Double): WorldRect {
+        return WorldRect(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
+    }
+
+    /** This rectangle moved by [dx], [dy]. */
+    func translate(dx: std::Double, dy: std::Double): WorldRect {
+        return WorldRect(self.minX + dx, self.minY + dy, self.maxX + dx, self.maxY + dy)
+    }
+
+    func union(other: WorldRect): WorldRect {
+        return WorldRect(
+            realMin(self.minX, other.minX),
+            realMin(self.minY, other.minY),
+            realMax(self.maxX, other.maxX),
+            realMax(self.maxY, other.maxY)
+        )
+    }
+}
+
+// ── Anchors ─────────────────────────────────────────────────────────────
+
+/**
+ * Where in a map's bounding box [anchor] points, as fractions of the box.
+ *
+ * `(0, 0)` is the top-left corner and `(1, 1)` the bottom-right.
+ * [TilemapAnchor.Origin] has no fraction — it suppresses the shift entirely —
+ * and reports `(0, 0)`; callers distinguish it with [anchorShifts].
+ */
+func anchorFraction(anchor: TilemapAnchor): WorldPos {
+    when anchor {
+        TilemapAnchor.Origin() -> { return WorldPos(0.0, 0.0) }
+        TilemapAnchor.TopLeft() -> { return WorldPos(0.0, 0.0) }
+        TilemapAnchor.TopCenter() -> { return WorldPos(0.5, 0.0) }
+        TilemapAnchor.TopRight() -> { return WorldPos(1.0, 0.0) }
+        TilemapAnchor.CenterLeft() -> { return WorldPos(0.0, 0.5) }
+        TilemapAnchor.Center() -> { return WorldPos(0.5, 0.5) }
+        TilemapAnchor.CenterRight() -> { return WorldPos(1.0, 0.5) }
+        TilemapAnchor.BottomLeft() -> { return WorldPos(0.0, 1.0) }
+        TilemapAnchor.BottomCenter() -> { return WorldPos(0.5, 1.0) }
+        TilemapAnchor.BottomRight() -> { return WorldPos(1.0, 1.0) }
+        TilemapAnchor.Custom(x, y) -> { return WorldPos(x, y) }
+    }
+    return WorldPos(0.0, 0.0)
+}
+
+/** False only for [TilemapAnchor.Origin], which leaves the lattice unshifted. */
+func anchorShifts(anchor: TilemapAnchor): std::Bool {
+    when anchor {
+        TilemapAnchor.Origin() -> { return false }
+        else -> { return true }
+    }
+    return true
+}
+
+// ── Dense integer grids ─────────────────────────────────────────────────
+//
+// Every grid in the package is one flat, row-major `std::Array<Int>`. Keeping the
+// allocation to a single block per plane is what lets a 512x512 map be a few
+// megabytes of contiguous memory instead of a quarter of a million objects.
+
+/** Allocates a row-major `width * height` plane filled with [value]. */
+func intGridFill(width: std::Int, height: std::Int, value: std::Int): std::Array<std::Int> {
+    fin count = intMax(width * height, 0)
+    var cells: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+    var i = 0
+    while i < count {
+        cells[i] = value
+        i = i + 1
+    }
+    return cells
+}
+
+/** Overwrites every cell of [cells] with [value]. */
+func intGridClear(cells: std::Array<std::Int>, value: std::Int) {
+    var i = 0
+    while i < cells.size {
+        cells[i] = value
+        i = i + 1
+    }
+}
+
+/** Copies [count] cells of [source] into a fresh plane of [capacity] cells. */
+func intGridResize(source: std::Array<std::Int>, count: std::Int, capacity: std::Int, value: std::Int): std::Array<std::Int> {
+    var grown: std::Array<std::Int> = std::Array::fill<std::Int>(intMax(capacity, 0))
+    var i = 0
+    while i < grown.size {
+        if i < count && i < source.size {
+            grown[i] = source[i]
+        } else {
+            grown[i] = value
+        }
+        i = i + 1
+    }
+    return grown
+}
+
+test "floor division and modulo stay uniform across the origin" {
+    assert tileFloorDiv(-1, 16) == -1 { "a coordinate just left of the map must land in tile -1" }
+    assert tileFloorDiv(-16, 16) == -1 { "the last cell of tile -1 must not spill into tile 0" }
+    assert tileFloorDiv(15, 16) == 0 { "positive division must be unchanged" }
+    assert tileFloorMod(-1, 16) == 15 { "the remainder must stay non-negative" }
+    assert intIsOdd(-1) { "parity must be defined for negative rows, not just positive ones" }
+}
+
+test "tile rectangles intersect and clamp" {
+    fin rect = tileRect(2, 2, 8, 8).intersect(tileRect(5, 0, 20, 5))
+    assert rect.minX == 5 && rect.maxX == 8 && rect.minY == 2 && rect.maxY == 5 {
+        "intersection must keep the tighter bound on every side"
+    }
+    assert rect.area() == 16 { "a 4x4 overlap must report 16 cells" }
+    assert tileRect(0, 0, 4, 4).intersect(tileRect(9, 9, 12, 12)).isEmpty() {
+        "disjoint rectangles must produce an empty result, not a negative one"
+    }
+}
+
+test "colour packing survives a round trip" {
+    fin color = tileColorUnpack(tileColorPack(tileColor(1.0, 0.5, 0.0, 0.25)))
+    assert color.r > 0.99 && color.b < 0.01 { "saturated channels must round-trip exactly" }
+    assert color.g > 0.49 && color.g < 0.51 { "a half-intensity channel must stay near 0.5" }
+    assert color.a > 0.24 && color.a < 0.26 { "alpha must survive the round trip" }
+}
+
+test "a lookup distinguishes an empty cell from an absent one" {
+    assert !tileLookupPresent(TileLookup.Empty) { "an empty cell holds no tile" }
+    assert !tileLookupOffMap(TileLookup.Empty) { "an empty cell is still on the map" }
+    assert tileLookupOffMap(TileLookup.OutOfBounds) { "an off-map read must be distinguishable" }
+    assert tileLookupIndex(TileLookup.Tile(7, 0, tileTintNone)) == 7 {
+        "a present tile must report its index"
+    }
+}

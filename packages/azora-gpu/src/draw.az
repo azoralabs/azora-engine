@@ -1,0 +1,551 @@
+// Azora Engine - GPU drawing API on top of `App`.
+//
+// `App` (engine.platform) owns an `AzGpu` (engine.gpu), so the drawing calls
+// that take an `App` sit above both rather than inside the device layer -
+// keeping engine.gpu free of any edge back to engine.platform.
+
+module engine.gpu.draw
+
+import std.io
+import engine.objc
+import engine.gpu
+import engine.platform
+import engine.math.mat
+import engine.shaders
+import std.math
+import engine.io
+
+// ── Meshes & 3D drawing ─────────────────────────────────────────────────
+
+func writeMeshVertex(bytes: std::Long, off: std::Long, x: std::Double, y: std::Double, z: std::Double, nx: std::Double, ny: std::Double, nz: std::Double): std::Long {
+    azPokeF32(bytes, off, x)
+    azPokeF32(bytes, off + 4L, y)
+    azPokeF32(bytes, off + 8L, z)
+    azPokeF32(bytes, off + 12L, nx)
+    azPokeF32(bytes, off + 16L, ny)
+    azPokeF32(bytes, off + 20L, nz)
+    return off + 24L
+}
+
+impl App {
+
+    /// Creates a cube mesh with the given edge length.
+    func meshCube(size: std::Double): Mesh {
+        fin h = size * 0.5
+        // Per-face normals; tangent/bitangent derived per face.
+        fin nx = @std::arr[0.0, 0.0, -1.0, 1.0, 0.0, 0.0]
+        fin ny = @std::arr[0.0, 0.0, 0.0, 0.0, 1.0, -1.0]
+        fin nz = @std::arr[1.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+        // Two CCW triangles per face in (tangent, bitangent) space.
+        fin cu = @std::arr[-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+        fin cv = @std::arr[-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+
+        fin bytes = azAlloc(864L) // 36 verts × 6 floats × 4 bytes
+        var off = 0L
+        var face = 0
+        while face < 6 {
+            fin fnx = nx[face]
+            fin fny = ny[face]
+            fin fnz = nz[face]
+            // tangent: any axis not parallel to the normal
+            var tx = 0.0
+            var ty = 1.0
+            var tz = 0.0
+            if fny > 0.5 || fny < -0.5 {
+                tx = 1.0
+                ty = 0.0
+            }
+            // bitangent = n × t, tangent = b × n (orthonormal basis)
+            fin bvx = fny * tz - fnz * ty
+            fin bvy = fnz * tx - fnx * tz
+            fin bvz = fnx * ty - fny * tx
+            fin ttx = bvy * fnz - bvz * fny
+            fin tty = bvz * fnx - bvx * fnz
+            fin ttz = bvx * fny - bvy * fnx
+
+            var c = 0
+            while c < 6 {
+                fin u = cu[c]
+                fin v = cv[c]
+                azPokeF32(bytes, off, (fnx + ttx * u + bvx * v) * h)
+                azPokeF32(bytes, off + 4L, (fny + tty * u + bvy * v) * h)
+                azPokeF32(bytes, off + 8L, (fnz + ttz * u + bvz * v) * h)
+                azPokeF32(bytes, off + 12L, fnx)
+                azPokeF32(bytes, off + 16L, fny)
+                azPokeF32(bytes, off + 20L, fnz)
+                off = off + 24L
+                c = c + 1
+            }
+            face = face + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, 864L, 0L)
+        azFree(bytes)
+        return Mesh(buffer, 36)
+    }
+
+    /**
+     * Creates a faceted cylinder whose axle lies on local X.
+     *
+     * The X-axis orientation makes the primitive directly useful for vehicle
+     * wheels: X rotation spins the wheel and Y rotation steers it.
+     */
+    func meshCylinder(radius: std::Double, length: std::Double, segments: std::Int = 16): Mesh {
+        var sides = segments
+        if sides < 3 { sides = 3 }
+        if sides > 64 { sides = 64 }
+        fin vertexCount = sides * 12
+        fin total = (vertexCount * 24) as std::Long
+        fin bytes = azAlloc(total)
+        fin half = length * 0.5
+        fin step = std::PI * 2.0 / (sides as std::Double)
+        var off = 0L
+        var segment = 0
+        while segment < sides {
+            fin a0 = (segment as std::Double) * step
+            fin a1 = ((segment + 1) as std::Double) * step
+            fin ny0 = std::cos(a0)
+            fin nz0 = std::sin(a0)
+            fin ny1 = std::cos(a1)
+            fin nz1 = std::sin(a1)
+            fin y0 = ny0 * radius
+            fin z0 = nz0 * radius
+            fin y1 = ny1 * radius
+            fin z1 = nz1 * radius
+
+            // Side quad, split into two triangles with radial normals.
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, 0.0, ny1, nz1)
+
+            // End caps use one triangle per segment and flat axle normals.
+            off = writeMeshVertex(bytes, off, 0.0 - half, 0.0, 0.0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, 0.0, 0.0, 1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, y0, z0, 1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 1.0, 0.0, 0.0)
+            segment = segment + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, 0L)
+        azFree(bytes)
+        return Mesh(buffer, vertexCount)
+    }
+
+    /// Creates a flat grid mesh in the XZ plane (`extent` half-size, `divisions` cells per side).
+    func meshGrid(extent: std::Double, divisions: std::Int): Mesh {
+        var divs = divisions
+        if divs < 1 {
+            divs = 1
+        }
+        if divs > 64 {
+            divs = 64
+        }
+        fin vertCount = divs * divs * 6
+        fin total = (vertCount * 24) as std::Long
+        fin bytes = azAlloc(total)
+        fin step = 2.0 * extent / (divs as std::Double)
+        fin origin = 0.0 - extent
+
+        // Quad corners in cell space.
+        fin qu = @std::arr[0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
+        fin qv = @std::arr[0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+
+        var off = 0L
+        var i = 0
+        while i < divs {
+            var j = 0
+            while j < divs {
+                fin x0 = origin + (i as std::Double) * step
+                fin z0 = origin + (j as std::Double) * step
+                var c = 0
+                while c < 6 {
+                    azPokeF32(bytes, off, x0 + qu[c] * step)
+                    azPokeF32(bytes, off + 4L, 0.0)
+                    azPokeF32(bytes, off + 8L, z0 + qv[c] * step)
+                    azPokeF32(bytes, off + 12L, 0.0)
+                    azPokeF32(bytes, off + 16L, 1.0)
+                    azPokeF32(bytes, off + 20L, 0.0)
+                    off = off + 24L
+                    c = c + 1
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+
+        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, 0L)
+        azFree(bytes)
+        return Mesh(buffer, vertCount)
+    }
+
+    /// Draws a mesh with a model transform and base color (simple lambert shading).
+    func drawMesh(mesh: Mesh, model: Mat4, r: std::Double, g: std::Double, b: std::Double) {
+        var gpu = self.gpu
+        if !gpu.hasEncoder || mesh.buffer == 0L {
+            return
+        }
+        if gpu.mode != 0 {
+            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe3d)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+            gpu.mode = 0
+        }
+
+        // Uniforms: viewProj (64) + model (64) + color (16) + light (16) = 160 bytes.
+        azCopy(gpu.scratch, gpu.viewProj, 64L)
+        pokeMat4(gpu.scratch, 64L, model)
+        azPokeF32(gpu.scratch, 128L, r)
+        azPokeF32(gpu.scratch, 132L, g)
+        azPokeF32(gpu.scratch, 136L, b)
+        azPokeF32(gpu.scratch, 140L, 1.0)
+        azPokeF32(gpu.scratch, 144L, gpu.lightX)
+        azPokeF32(gpu.scratch, 148L, gpu.lightY)
+        azPokeF32(gpu.scratch, 152L, gpu.lightZ)
+        azPokeF32(gpu.scratch, 156L, gpu.ambient)
+
+        send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0L, 0L)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, mesh.count as std::Long)
+    }
+
+    /// Directional light for subsequent 3D draws. Values are normalized.
+    func setLightDirection(x: std::Double, y: std::Double, z: std::Double) {
+        fin len = std::sqrt(x * x + y * y + z * z)
+        if len < 0.000001 {
+            self.gpu.lightX = 0.5
+            self.gpu.lightY = 0.8
+            self.gpu.lightZ = 0.3
+            return
+        }
+        self.gpu.lightX = x / len
+        self.gpu.lightY = y / len
+        self.gpu.lightZ = z / len
+    }
+
+    /// Ambient light amount clamped into 0..1.
+    func setAmbientLight(value: std::Double) {
+        var v = value
+        if v < 0.0 { v = 0.0 }
+        if v > 1.0 { v = 1.0 }
+        self.gpu.ambient = v
+    }
+
+    // ── 2D drawing (window points, origin top-left) ─────────────────────
+
+    /// Filled rectangle (components 0..1).
+    func uiRect(x: std::Double, y: std::Double, w: std::Double, h: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double) {
+        self.drawQuad2d(x, y, w, h, 0.0, 0.0, 1.0, 1.0, r, g, b, a, 0L)
+    }
+
+    /**
+     * Uploads `width` x `height` RGBA8 pixels as a GPU texture.
+     *
+     * `pixels` points at tightly packed, top-row-first bytes — the layout the
+     * image decoder produces — so no row conversion happens here. Returns 0 when
+     * the texture cannot be created, which callers treat as "draw nothing"
+     * rather than as a fatal error.
+     *
+     * The returned texture is owned by the caller and stays alive until
+     * [releaseTexture]. It is *not* autoreleased, because a sprite atlas must
+     * survive many frames; only the per-frame text textures are transient.
+     */
+    func newTexture(width: std::Int, height: std::Int, pixels: std::Long): std::Long {
+        if width <= 0 || height <= 0 || pixels == 0L {
+            return 0L
+        }
+        fin pw = width as std::Long
+        fin ph = height as std::Long
+        // 70 = MTLPixelFormatRGBA8Unorm.
+        fin descriptor = send4(
+            cls("MTLTextureDescriptor"),
+            sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+            70L, pw, ph, 0L
+        )
+        fin tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), descriptor)
+        if tex == 0L {
+            return 0L
+        }
+        fin unused = azSendRegion(
+            tex,
+            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
+            0L, 0L, 0L, pw, ph, 1L, 0L, pixels, pw * 4L
+        )
+        return tex
+    }
+
+    /**
+     * Re-uploads pixels into an existing texture.
+     *
+     * Palette animation rewrites the same image every frame, so reusing one
+     * texture avoids allocating and freeing a GPU resource per frame.
+     */
+    func updateTexture(tex: std::Long, width: std::Int, height: std::Int, pixels: std::Long) {
+        if tex == 0L || width <= 0 || height <= 0 || pixels == 0L {
+            return
+        }
+        fin pw = width as std::Long
+        fin unused = azSendRegion(
+            tex,
+            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
+            0L, 0L, 0L, pw, height as std::Long, 1L, 0L, pixels, pw * 4L
+        )
+    }
+
+    /// Releases a texture created by [newTexture].
+    func releaseTexture(tex: std::Long) {
+        if tex != 0L {
+            fin unused = send0(tex, sel("release"))
+        }
+    }
+
+    /// Draws a whole texture into the rectangle at (`x`, `y`), unmodulated.
+    func drawSprite(tex: std::Long, x: std::Double, y: std::Double, w: std::Double, h: std::Double) {
+        self.drawImageQuad(x, y, w, h, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, tex)
+    }
+
+    /**
+     * Draws a sub-rectangle mirrored horizontally.
+     *
+     * Swapping the horizontal texture coordinates costs nothing and avoids
+     * storing a second, flipped copy of every sprite sheet.
+     */
+    func drawSpriteRegionFlipped(
+        tex: std::Long, texWidth: std::Int, texHeight: std::Int,
+        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int,
+        x: std::Double, y: std::Double, w: std::Double, h: std::Double
+    ) {
+        if texWidth <= 0 || texHeight <= 0 {
+            return
+        }
+        fin tw = texWidth as std::Double
+        fin th = texHeight as std::Double
+        self.drawImageQuad(
+            x, y, w, h,
+            ((srcX + srcW) as std::Double) / tw, (srcY as std::Double) / th,
+            (srcX as std::Double) / tw, ((srcY + srcH) as std::Double) / th,
+            1.0, 1.0, 1.0, 1.0, tex
+        )
+    }
+
+    /**
+     * Draws the sub-rectangle of `tex` given in *pixels* into the rectangle at
+     * (`x`, `y`).
+     *
+     * Sprite sheets are authored in pixel coordinates, so the conversion to UVs
+     * belongs here rather than at every call site.
+     */
+    func drawSpriteRegion(
+        tex: std::Long, texWidth: std::Int, texHeight: std::Int,
+        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int,
+        x: std::Double, y: std::Double, w: std::Double, h: std::Double
+    ) {
+        if texWidth <= 0 || texHeight <= 0 {
+            return
+        }
+        fin tw = texWidth as std::Double
+        fin th = texHeight as std::Double
+        self.drawImageQuad(
+            x, y, w, h,
+            (srcX as std::Double) / tw, (srcY as std::Double) / th,
+            ((srcX + srcW) as std::Double) / tw, ((srcY + srcH) as std::Double) / th,
+            1.0, 1.0, 1.0, 1.0, tex
+        )
+    }
+
+    /**
+     * Draws a 2D quad, sampling `tex` as a glyph coverage mask.
+     *
+     * Text rasterizes to an alpha mask tinted by the vertex colour, which is
+     * what this mode expresses. Full-colour artwork needs [drawImageQuad].
+     */
+    func drawQuad2d(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long) {
+        var mode = 0.0
+        if tex != 0L {
+            mode = 1.0
+        }
+        self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
+    }
+
+    /**
+     * Draws a 2D quad, sampling `tex` for colour as well as alpha.
+     *
+     * This is the mode images want: the texture supplies the pixels and the
+     * vertex colour tints them, so passing white draws the artwork unchanged.
+     */
+    func drawImageQuad(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long) {
+        var mode = 0.0
+        if tex != 0L {
+            mode = 2.0
+        }
+        self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
+    }
+
+    func drawQuad2dMode(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long, texMode: std::Double) {
+        var gpu = self.gpu
+        if !gpu.hasEncoder {
+            return
+        }
+        if gpu.mode != 1 {
+            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe2d)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
+            gpu.mode = 1
+        }
+
+        fin s = gpu.scale
+        fin x0 = x * s
+        fin y0 = y * s
+        fin x1 = (x + w) * s
+        fin y1 = (y + h) * s
+
+        // 6 vertices × (pos2, uv2, rgba4) into scratch.
+        fin p = gpu.scratch
+        pokeVert2d(p, 0L, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 32L, x1, y0, u1, v0, r, g, b, a)
+        pokeVert2d(p, 64L, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 96L, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 128L, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 160L, x0, y1, u0, v1, r, g, b, a)
+
+        // U2 uniforms: viewport (2 floats) + useTex + pad.
+        azPokeF32(p, 192L, gpu.depthW as std::Double)
+        azPokeF32(p, 196L, gpu.depthH as std::Double)
+        azPokeF32(p, 200L, texMode)
+        azPokeF32(p, 204L, 0.0)
+
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, 192L, 0L)
+        fin up = p + 192L
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, 16L, 1L)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, 16L, 1L)
+        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, 0L)
+        if tex != 0L {
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), tex, 0L)
+        }
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, 6L)
+    }
+
+    // ── Text (CoreText rasterization → textured quad) ───────────────────
+
+    /// Text at (x, y) with an explicit color.
+    func uiTextColored(text: std::String, x: std::Double, y: std::Double, size: std::Double, r: std::Double, g: std::Double, b: std::Double) {
+        if !self.gpu.hasEncoder {
+            return
+        }
+        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        if line == 0L {
+            return
+        }
+        fin widthPts = azPeekF64(self.gpu.scratch, 3840L)
+        fin ascent = azPeekF64(self.gpu.scratch, 3848L)
+        fin descent = azPeekF64(self.gpu.scratch, 3856L)
+        fin heightPts = ascent + descent
+        if widthPts < 0.5 || heightPts < 0.5 {
+            CFRelease(line)
+            return
+        }
+
+        fin s = self.gpu.scale
+        fin pw = (widthPts * s) as std::Long + 1L
+        fin ph = (heightPts * s) as std::Long + 1L
+
+        // Rasterize white text into an RGBA bitmap (tinted by the quad color).
+        fin space = CGColorSpaceCreateDeviceRGB()
+        fin ctx = CGBitmapContextCreate(0L, pw, ph, 8L, pw * 4L, space, 1)
+        if ctx != 0L {
+            CGContextScaleCTM(ctx, s, s)
+            CGContextSetTextPosition(ctx, 0.0, descent)
+            CTLineDraw(line, ctx)
+
+            fin data = CGBitmapContextGetData(ctx)
+            fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 70L, pw, ph, 0L)
+            var tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), td)
+            if tex != 0L {
+                fin unused0 = azSendRegion(tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0L, 0L, 0L, pw, ph, 1L, 0L, data, pw * 4L)
+                // The encoder retains the texture; autorelease frees it after present.
+                tex = send0(tex, sel("autorelease"))
+                // Bitmap rows are top-first, matching top-left-origin UVs.
+                self.drawQuad2d(x, y, widthPts, heightPts, 0.0, 0.0, 1.0, 1.0, r, g, b, 1.0, tex)
+            }
+            CGContextRelease(ctx)
+        }
+        CGColorSpaceRelease(space)
+        CFRelease(line)
+    }
+
+    /// Measured width in points of `text` at font `size`.
+    func uiTextWidth(text: std::String, size: std::Double): std::Double {
+        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        if line == 0L {
+            return 0.0
+        }
+        fin w = azPeekF64(self.gpu.scratch, 3840L)
+        CFRelease(line)
+        return w
+    }
+
+    /// Measured line height in points of font `size`.
+    func uiTextHeight(size: std::Double): std::Double {
+        fin line = ctLineCreate("Ag", size, self.gpu.scratch)
+        if line == 0L {
+            return size
+        }
+        fin h = azPeekF64(self.gpu.scratch, 3848L) + azPeekF64(self.gpu.scratch, 3856L)
+        CFRelease(line)
+        return h
+    }
+}
+
+/// Writes one 2D vertex (pos2, uv2, rgba4 — 8 floats) at [off].
+func pokeVert2d(p: std::Long, off: std::Long, x: std::Double, y: std::Double, u: std::Double, v: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double) {
+    azPokeF32(p, off, x)
+    azPokeF32(p, off + 4L, y)
+    azPokeF32(p, off + 8L, u)
+    azPokeF32(p, off + 12L, v)
+    azPokeF32(p, off + 16L, r)
+    azPokeF32(p, off + 20L, g)
+    azPokeF32(p, off + 24L, b)
+    azPokeF32(p, off + 28L, a)
+}
+
+/// Builds a CTLine for [text] at [size] (system font, white). Writes width /
+/// ascent / descent as doubles at scratch offsets 3840/3848/3856.
+/// Caller releases the returned line with CFRelease.
+func ctLineCreate(text: std::String, size: std::Double, scratch: std::Long): std::Long {
+    fin utf8 = 134217984 // kCFStringEncodingUTF8
+    fin cfText = CFStringCreateWithCString(0L, text, utf8)
+    if cfText == 0L {
+        return 0L
+    }
+    fin fontName = CFStringCreateWithCString(0L, "Helvetica", utf8)
+    fin font = CTFontCreateWithName(fontName, size, 0L)
+    fin white = CGColorCreateGenericRGB(1.0, 1.0, 1.0, 1.0)
+
+    // Attributes: { kCTFontAttributeName: font, kCTForegroundColorAttributeName: white }
+    azPoke64(scratch, 3872L, globalObject("kCTFontAttributeName"))
+    azPoke64(scratch, 3880L, globalObject("kCTForegroundColorAttributeName"))
+    azPoke64(scratch, 3888L, font)
+    azPoke64(scratch, 3896L, white)
+    fin attrs = CFDictionaryCreate(
+        0L, scratch + 3872L, scratch + 3888L, 2L,
+        azSym("kCFTypeDictionaryKeyCallBacks"),
+        azSym("kCFTypeDictionaryValueCallBacks")
+    )
+
+    fin attrText = CFAttributedStringCreate(0L, cfText, attrs)
+    fin line = CTLineCreateWithAttributedString(attrText)
+
+    fin w = CTLineGetTypographicBounds(line, scratch + 3848L, scratch + 3856L, scratch + 3864L)
+    azPokeF64(scratch, 3840L, w)
+
+    CFRelease(attrText)
+    CFRelease(attrs)
+    CGColorRelease(white)
+    CFRelease(font)
+    CFRelease(fontName)
+    CFRelease(cfText)
+    return line
+}

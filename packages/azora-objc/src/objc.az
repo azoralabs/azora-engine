@@ -11,96 +11,84 @@
 
 module engine.objc
 
-bridge C {
+import engine.io
+
+bridge .C {
     // Objective-C runtime
-    func objc_getClass(name: String): Long
-    func sel_registerName(name: String): Long
-    func objc_msgSend(target: Long, selector: Long, a: Long, b: Long, c: Long, d: Long, e: Long, f: Long, g: Long, h: Long): Long
-    func objc_autoreleasePoolPush(): Long
-    func objc_autoreleasePoolPop(pool: Long)
+    func @foreignName("objc_getClass")(name: std::String): std::Long
+    func @foreignName("sel_registerName")(name: std::String): std::Long
+    func @foreignName("objc_msgSend")(target: std::Long, selector: std::Long, a: std::Long, b: std::Long, c: std::Long, d: std::Long, e: std::Long, f: std::Long, g: std::Long, h: std::Long): std::Long
+    func @foreignName("objc_autoreleasePoolPush")(): std::Long
+    func @foreignName("objc_autoreleasePoolPop")(pool: std::Long)
 
     // msgSend trampolines for double / by-value-struct signatures (az_ffi.c)
-    func az_send_d0(target: Long, selector: Long): Real
-    func az_send_float0(target: Long, selector: Long): Real
-    func az_send_float1(target: Long, selector: Long, a: Real): Long
-    func az_send_f1(target: Long, selector: Long, a: Real): Long
-    func az_send_f2(target: Long, selector: Long, a: Real, b: Real): Long
-    func az_send_quad(target: Long, selector: Long, a: Real, b: Real, c: Real, d: Real): Long
-    func az_send_quad_i3(target: Long, selector: Long, a: Real, b: Real, c: Real, d: Real, i1: Long, i2: Long, i3: Long): Long
-    func az_send_pair(target: Long, selector: Long, x: Real, y: Real): Long
-    func az_send_out_quad(target: Long, selector: Long, out4: Long)
-    func az_send_out_pair(target: Long, selector: Long, out2: Long)
-    func az_send_region(target: Long, selector: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long, bytes: Long, bytesPerRow: Long): Long
-    func az_get_region(target: Long, selector: Long, bytes: Long, bytesPerRow: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long)
-
-    // Raw memory (az_ffi.c)
-    func az_alloc(n: Long): Long
-    func az_free(p: Long)
-    func az_copy(dst: Long, src: Long, n: Long)
-    func az_peek64(p: Long, off: Long): Long
-    func az_peek32(p: Long, off: Long): Int
-    func az_peek8(p: Long, off: Long): Int
-    func az_peek_f64(p: Long, off: Long): Real
-    func az_poke64(p: Long, off: Long, v: Long)
-    func az_poke32(p: Long, off: Long, v: Int)
-    func az_poke8(p: Long, off: Long, v: Int)
-    func az_poke_f32(p: Long, off: Long, v: Real)
-    func az_poke_f64(p: Long, off: Long, v: Real)
+    func @foreignName("az_send_d0")(target: std::Long, selector: std::Long): std::Double
+    func @foreignName("az_send_float0")(target: std::Long, selector: std::Long): std::Double
+    func @foreignName("az_send_float1")(target: std::Long, selector: std::Long, a: std::Double): std::Long
+    func @foreignName("az_send_f1")(target: std::Long, selector: std::Long, a: std::Double): std::Long
+    func @foreignName("az_send_f2")(target: std::Long, selector: std::Long, a: std::Double, b: std::Double): std::Long
+    func @foreignName("az_send_quad")(target: std::Long, selector: std::Long, a: std::Double, b: std::Double, c: std::Double, d: std::Double): std::Long
+    func @foreignName("az_send_quad_i3")(target: std::Long, selector: std::Long, a: std::Double, b: std::Double, c: std::Double, d: std::Double, i1: std::Long, i2: std::Long, i3: std::Long): std::Long
+    func @foreignName("az_send_pair")(target: std::Long, selector: std::Long, x: std::Double, y: std::Double): std::Long
+    func @foreignName("az_send_out_quad")(target: std::Long, selector: std::Long, out4: std::Long)
+    func @foreignName("az_send_out_pair")(target: std::Long, selector: std::Long, out2: std::Long)
+    func @foreignName("az_send_region")(target: std::Long, selector: std::Long, x: std::Long, y: std::Long, z: std::Long, w: std::Long, h: std::Long, d: std::Long, mip: std::Long, bytes: std::Long, bytesPerRow: std::Long): std::Long
+    func @foreignName("az_get_region")(target: std::Long, selector: std::Long, bytes: std::Long, bytesPerRow: std::Long, x: std::Long, y: std::Long, z: std::Long, w: std::Long, h: std::Long, d: std::Long, mip: std::Long)
 
     // Exported symbols/constants (dlsym)
-    func az_sym(name: String): Long
+    func @foreignName("az_sym")(name: std::String): std::Long
 }
 
 // ── Message-send helpers ────────────────────────────────────────────────
 
-func cls(name: String): Long {
-    return objc_getClass(name)
+func cls(name: std::String): std::Long {
+    return objcGetClass(name)
 }
 
-func sel(name: String): Long {
-    return sel_registerName(name)
+func sel(name: std::String): std::Long {
+    return selRegisterName(name)
 }
 
-func send0(o: Long, s: Long): Long {
-    return objc_msgSend(o, s, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
+func send0(o: std::Long, s: std::Long): std::Long {
+    return objcMsgSend(o, s, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
 }
 
-func send1(o: Long, s: Long, a: Long): Long {
-    return objc_msgSend(o, s, a, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
+func send1(o: std::Long, s: std::Long, a: std::Long): std::Long {
+    return objcMsgSend(o, s, a, 0L, 0L, 0L, 0L, 0L, 0L, 0L)
 }
 
-func send2(o: Long, s: Long, a: Long, b: Long): Long {
-    return objc_msgSend(o, s, a, b, 0L, 0L, 0L, 0L, 0L, 0L)
+func send2(o: std::Long, s: std::Long, a: std::Long, b: std::Long): std::Long {
+    return objcMsgSend(o, s, a, b, 0L, 0L, 0L, 0L, 0L, 0L)
 }
 
-func send3(o: Long, s: Long, a: Long, b: Long, c: Long): Long {
-    return objc_msgSend(o, s, a, b, c, 0L, 0L, 0L, 0L, 0L)
+func send3(o: std::Long, s: std::Long, a: std::Long, b: std::Long, c: std::Long): std::Long {
+    return objcMsgSend(o, s, a, b, c, 0L, 0L, 0L, 0L, 0L)
 }
 
-func send4(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long): Long {
-    return objc_msgSend(o, s, a, b, c, d, 0L, 0L, 0L, 0L)
+func send4(o: std::Long, s: std::Long, a: std::Long, b: std::Long, c: std::Long, d: std::Long): std::Long {
+    return objcMsgSend(o, s, a, b, c, d, 0L, 0L, 0L, 0L)
 }
 
 /// `[[Cls alloc] init]`
-func newObject(className: String): Long {
+func newObject(className: std::String): std::Long {
     return send0(send0(cls(className), sel("alloc")), sel("init"))
 }
 
 /// An NSString from an Azora string (autoreleased).
-func nsString(text: String): Long {
-    return send1(cls("NSString"), sel("stringWithUTF8String:"), text as Long)
+func nsString(text: std::String): std::Long {
+    return send1(cls("NSString"), sel("stringWithUTF8String:"), text as std::Long)
 }
 
 /// The UTF-8 contents of an NSString as an Azora string.
-func nsStringText(nsStr: Long): String {
-    return send0(nsStr, sel("UTF8String")) as String
+func nsStringText(nsStr: std::Long): std::String {
+    return send0(nsStr, sel("UTF8String")) as std::String
 }
 
 /// Reads an exported object constant (e.g. NSDefaultRunLoopMode).
-func globalObject(symbolName: String): Long {
-    fin addr = az_sym(symbolName)
+func globalObject(symbolName: std::String): std::Long {
+    fin addr = azSym(symbolName)
     if addr == 0L {
         return 0L
     }
-    return az_peek64(addr, 0L)
+    return azPeek64(addr, 0L)
 }

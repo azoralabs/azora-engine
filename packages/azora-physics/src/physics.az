@@ -7,7 +7,7 @@
 module engine.physics
 
 import std.container.*
-import engine.math
+import engine.math.vec
 
 /**
  * @file engine/physics/physics
@@ -34,75 +34,75 @@ enum ColliderShape {
 
 /** Bit masks controlling broad-phase pair filtering. */
 pack CollisionLayers {
-    var memberships: Int
-    var filters: Int
+    var memberships: std::Int
+    var filters: std::Int
 }
 
 /** Surface response shared by all contacts involving a body. */
 pack PhysicsMaterial {
-    var friction: Real
-    var restitution: Real
+    var friction: std::Double
+    var restitution: std::Double
 }
 
 /** Box or sphere geometry attached at an offset from a body. */
 pack Collider {
     var shape: ColliderShape
     var halfExtents: Vec3
-    var radius: Real
+    var radius: std::Double
     var offset: Vec3
     var layers: CollisionLayers
-    var sensor: Bool
+    var sensor: std::Bool
 }
 
 /** Runtime body state. Static and kinematic bodies have zero inverse mass. */
 pack PhysicsBody {
-    var id: Int
+    var id: std::Int
     var kind: RigidBodyKind
     var position: Vec3
     var velocity: Vec3
     var force: Vec3
-    var inverseMass: Real
+    var inverseMass: std::Double
     var collider: Collider
     var material: PhysicsMaterial
-    var awake: Bool
+    var awake: std::Bool
 }
 
 /** A contact normal points in the direction that moves body A out of body B. */
 pack Contact {
-    var hit: Bool
-    var bodyA: Int
-    var bodyB: Int
+    var hit: std::Bool
+    var bodyA: std::Int
+    var bodyB: std::Int
     var normal: Vec3
     var point: Vec3
-    var penetration: Real
-    var sensor: Bool
+    var penetration: std::Double
+    var sensor: std::Bool
 }
 
 /** A fixed-substep physics world with stable body identifiers. */
 pack PhysicsWorld {
-    var bodies: Array<PhysicsBody>
-    var contacts: Array<Contact>
+    var bodies: std::Array<PhysicsBody>
+    var contacts: std::Array<Contact>
     var gravity: Vec3
-    var substeps: Int
-    var nextId: Int
+    var substeps: std::Int
+    var nextId: std::Int
 }
 
-friend zone engine::physics {
-    fin ALL_LAYERS = -1
+realm engine::physics {
+    fin allLayers = -1
 
     func layersAll(): CollisionLayers {
-        return CollisionLayers(ALL_LAYERS, ALL_LAYERS)
+        return CollisionLayers(allLayers, allLayers)
     }
 
-    func layers(memberships: Int, filters: Int): CollisionLayers {
+    func layers(memberships: std::Int, filters: std::Int): CollisionLayers {
         return CollisionLayers(memberships, filters)
     }
 
-    func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool {
+    func layersInteract(a: CollisionLayers, b: CollisionLayers): std::Bool {
         return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
     }
 
-    func material(friction: Real = 0.65, restitution: Real = 0.05): PhysicsMaterial {
+    func material(friction: std::Double = 0.65, restitution: std::Double = 0.05): PhysicsMaterial {
         return PhysicsMaterial(clamp(friction, 0.0, 1.0), clamp(restitution, 0.0, 1.0))
     }
 
@@ -110,7 +110,7 @@ friend zone engine::physics {
         return Collider(ColliderShape.Box, halfExtents, 0.0, vec3Zero(), layersAll(), false)
     }
 
-    func sphere(radius: Real): Collider {
+    func sphere(radius: std::Double): Collider {
         return Collider(ColliderShape.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), layersAll(), false)
     }
 
@@ -126,7 +126,7 @@ friend zone engine::physics {
         return Collider(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
     }
 
-    func body(kind: RigidBodyKind, position: Vec3, collider: Collider, mass: Real = 1.0): PhysicsBody {
+    func body(kind: RigidBodyKind, position: Vec3, collider: Collider, mass: std::Double = 1.0): PhysicsBody {
         var inverseMass = 0.0
         if kind == RigidBodyKind.Dynamic && mass > 0.0 {
             inverseMass = 1.0 / mass
@@ -138,7 +138,7 @@ friend zone engine::physics {
         return body(RigidBodyKind.Static, position, collider)
     }
 
-    func dynamicBody(position: Vec3, collider: Collider, mass: Real = 1.0): PhysicsBody {
+    func dynamicBody(position: Vec3, collider: Collider, mass: std::Double = 1.0): PhysicsBody {
         return body(RigidBodyKind.Dynamic, position, collider, mass)
     }
 
@@ -175,12 +175,12 @@ friend zone engine::physics {
         return Contact(true, -1, -1, normal, centerA - normal.scale(penetration * 0.5), penetration, false)
     }
 
-    func aabbOverlaps(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Bool {
+    func aabbOverlaps(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): std::Bool {
         return aabbContact(centerA, halfA, centerB, halfB).hit
     }
 
     /** Sphere-sphere contact, including coincident centers. */
-    func sphereContact(centerA: Vec3, radiusA: Real, centerB: Vec3, radiusB: Real): Contact {
+    func sphereContact(centerA: Vec3, radiusA: std::Double, centerB: Vec3, radiusB: std::Double): Contact {
         fin delta = centerA - centerB
         fin radius = radiusA + radiusB
         fin distanceSquared = delta.dot(delta)
@@ -196,7 +196,7 @@ friend zone engine::physics {
     }
 
     /** Sphere-box contact. The normal moves the sphere out of the box. */
-    func sphereAabbContact(sphereCenter: Vec3, radius: Real, boxCenter: Vec3, boxHalf: Vec3): Contact {
+    func sphereAabbContact(sphereCenter: Vec3, radius: std::Double, boxCenter: Vec3, boxHalf: Vec3): Contact {
         fin closest = Vec3(
             clamp(sphereCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
             clamp(sphereCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y),
@@ -243,29 +243,29 @@ friend zone engine::physics {
         return contact
     }
 
-    func world(gravity: Vec3 = Vec3(0.0, -9.81, 0.0), substeps: Int = 4): PhysicsWorld {
+    func world(gravity: Vec3 = Vec3(0.0, -9.81, 0.0), substeps: std::Int = 4): PhysicsWorld {
         var steps = substeps
         if steps < 1 { steps = 1 }
         if steps > 16 { steps = 16 }
         return PhysicsWorld(
-            arr@[body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
-            arr@[noContact()],
+            @std::arr[body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
+            @std::arr[noContact()],
             gravity,
             steps,
             1
         )
     }
 
-    func addBody(world: PhysicsWorld, value: PhysicsBody): Int {
+    func addBody(world: PhysicsWorld, value: PhysicsBody): std::Int {
         value.id = world.nextId
         world.nextId = world.nextId + 1
         world.bodies.add(value)
         return value.id
     }
 
-    func bodyById(world: PhysicsWorld, id: Int): PhysicsBody {
+    func bodyById(world: PhysicsWorld, id: std::Int): PhysicsBody {
         var i = 1
-        while i < world.bodies.length {
+        while i < world.bodies.size {
             fin value: PhysicsBody = world.bodies[i]
             if value.id == id { return value }
             i = i + 1
@@ -280,11 +280,11 @@ friend zone engine::physics {
         }
     }
 
-    func step(world: PhysicsWorld, deltaTime: Real) {
+    func step(world: PhysicsWorld, deltaTime: std::Double) {
         var dt = deltaTime
         if dt < 0.0 { dt = 0.0 }
         if dt > 0.1 { dt = 0.1 }
-        fin substep = dt / (world.substeps as Real)
+        fin substep = dt / (world.substeps as std::Double)
         var iteration = 0
         while iteration < world.substeps {
             integrate(world, substep)
@@ -293,9 +293,9 @@ friend zone engine::physics {
         }
     }
 
-    func integrate(world: PhysicsWorld, dt: Real) {
+    func integrate(world: PhysicsWorld, dt: std::Double) {
         var i = 1
-        while i < world.bodies.length {
+        while i < world.bodies.size {
             fin value: PhysicsBody = world.bodies[i]
             if value.kind == RigidBodyKind.Dynamic && value.awake {
                 fin acceleration = world.gravity + value.force.scale(value.inverseMass)
@@ -312,11 +312,11 @@ friend zone engine::physics {
     }
 
     func collide(world: PhysicsWorld) {
-        world.contacts = arr@[noContact()]
+        world.contacts = @std::arr[noContact()]
         var i = 1
-        while i < world.bodies.length {
+        while i < world.bodies.size {
             var j = i + 1
-            while j < world.bodies.length {
+            while j < world.bodies.size {
                 fin a: PhysicsBody = world.bodies[i]
                 fin b: PhysicsBody = world.bodies[j]
                 if a.kind != RigidBodyKind.Static || b.kind != RigidBodyKind.Static {
@@ -356,23 +356,23 @@ friend zone engine::physics {
         if inverseB > 0.0 { b.velocity = b.velocity - impulse.scale(inverseB) }
     }
 
-    func clamp(value: Real, lo: Real, hi: Real): Real {
+    func clamp(value: std::Double, lo: std::Double, hi: std::Double): std::Double {
         if value < lo { return lo }
         if value > hi { return hi }
         return value
     }
 
-    func abs(value: Real): Real {
+    func abs(value: std::Double): std::Double {
         if value < 0.0 { return 0.0 - value }
         return value
     }
 
-    func sign(value: Real): Real {
+    func sign(value: std::Double): std::Double {
         if value < 0.0 { return -1.0 }
         return 1.0
     }
 
-    func min(a: Real, b: Real): Real {
+    func min(a: std::Double, b: std::Double): std::Double {
         if a < b { return a }
         return b
     }
@@ -445,7 +445,7 @@ test "dynamic body is separated from a static body" {
     engine::physics::step(world, 0.016)
     fin dynamic = engine::physics::bodyById(world, dynamicId)
     assert dynamic.position.x <= -0.5 { "contact solver must remove box penetration" }
-    assert world.contacts.length == 2 { "world must retain its sentinel and one collision contact" }
+    assert world.contacts.size == 2 { "world must retain its sentinel and one collision contact" }
 }
 
 test .All "physics"

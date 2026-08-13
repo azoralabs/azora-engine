@@ -1,0 +1,373 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/load
+ *
+ * Reading layers in from disk and writing them back out: comma-separated tile
+ * ids, packed binary planes, and the global tile ids tile editors export.
+ *
+ * ## Global tile ids
+ *
+ * Tiled and the editors that follow it number tiles from `1` across every
+ * tileset in a map, reserving `0` for an empty cell, and pack the three mirror
+ * flags into the top bits of the same integer. [decodeGid] undoes all of that
+ * in one place, so nothing downstream has to know that a cell holding `2147483651`
+ * is really tile `2` drawn mirrored.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.load
+
+import std.container.array
+import std.string.string
+import engine.io
+import engine.tilemap.types
+import engine.tilemap.storage
+
+/** The ASCII code of a one-character string, or `-1`. */
+func asciiCodeOf(ch: std::String): std::Int {
+    var code = 32
+    while code < 127 {
+        if asciiChar(code) == ch {
+            return code
+        }
+        code = code + 1
+    }
+    return -1
+}
+
+/** Tiled's horizontal-mirror bit. */
+inline fin gidFlipX = 0x80000000
+/** Tiled's vertical-mirror bit. */
+inline fin gidFlipY = 0x40000000
+/** Tiled's anti-diagonal mirror bit. */
+inline fin gidFlipD = 0x20000000
+/** Everything below the mirror bits: the tile id itself. */
+inline fin gidIndexMask = 0x1FFFFFFF
+
+/** A decoded global tile id: the tile, and the cell flags that go with it. */
+pack GidCell {
+    var index: std::Int
+    var flags: std::Int
+}
+
+// ── Global tile ids ─────────────────────────────────────────────────────
+
+/**
+ * Splits a global tile id into a tile index and cell flags.
+ *
+ * A `0` id means an empty cell; every other id is one greater than the tile it
+ * names, so the `- 1` here is what keeps the rest of the package's indices
+ * zero-based.
+ */
+func decodeGid(gid: std::Int): GidCell {
+    fin raw = gid & gidIndexMask
+    if raw == 0 {
+        return GidCell(tileEmpty, 0)
+    }
+    var flags = 0
+    if (gid & gidFlipX) != 0 {
+        flags = flags | cellFlipX
+    }
+    if (gid & gidFlipY) != 0 {
+        flags = flags | cellFlipY
+    }
+    if (gid & gidFlipD) != 0 {
+        flags = flags | cellFlipD
+    }
+    return GidCell(raw - 1, flags)
+}
+
+/** Packs a tile index and cell flags back into a global tile id. */
+func encodeGid(index: std::Int, flags: std::Int): std::Int {
+    if index == tileEmpty {
+        return 0
+    }
+    var gid = (index + 1) & gidIndexMask
+    if flagsAny(flags, cellFlipX) {
+        gid = gid | gidFlipX
+    }
+    if flagsAny(flags, cellFlipY) {
+        gid = gid | gidFlipY
+    }
+    if flagsAny(flags, cellFlipD) {
+        gid = gid | gidFlipD
+    }
+    return gid
+}
+
+// ── Comma-separated layers ──────────────────────────────────────────────
+
+/**
+ * Reads a layer from comma-separated global tile ids.
+ *
+ * Whitespace, line breaks and a trailing separator are all tolerated, because
+ * every editor writes them slightly differently and a level that fails to load
+ * over a stray newline is a bad trade for a stricter parser.
+ *
+ * The parse runs over the bytes rather than over a decoded string: a large
+ * layer is hundreds of thousands of digits, and building a string per number
+ * would cost more than reading the file did.
+ */
+func layerFromCsv(name: std::String, source: Blob, size: TilemapSize): TileLayer ?! TilemapFault {
+    if !size.isValid() {
+        return .EmptySize
+    }
+    if !source.ok() {
+        return .IoFailed
+    }
+
+    var layer = tileLayerNew(name, size)
+    fin wanted = size.count()
+    var written = 0
+
+    var value = 0
+    var negative = false
+    var reading = false
+    var at = 0
+
+    while at <= source.size {
+        // One past the end flushes a number the source did not terminate.
+        fin byte = if at < source.size { source.u8(at) } else { 44 }
+        fin isDigit = byte >= 48 && byte <= 57
+
+        if isDigit {
+            value = value * 10 + (byte - 48)
+            reading = true
+        } else {
+            if byte == 45 && !reading {
+                negative = true
+                reading = true
+            } else {
+                if reading {
+                    if written >= wanted {
+                        return .SizeMismatch
+                    }
+                    fin signed = if negative { 0 - value } else { value }
+                    fin cell = decodeGid(signed)
+                    fin pos = TilePos(written % size.x, written / size.x)
+                    layerPutFull(layer, pos, cell.index, cell.flags, tileTintNone)
+                    written = written + 1
+                    value = 0
+                    negative = false
+                    reading = false
+                }
+            }
+        }
+        at = at + 1
+    }
+
+    if written < wanted {
+        return .Truncated
+    }
+    return layer
+}
+
+/** Reads a comma-separated layer from the file at [path]. */
+func layerFromCsvFile(name: std::String, path: std::String, size: TilemapSize): TileLayer ?! TilemapFault {
+    var blob = readFile(path)
+    if !blob.ok() {
+        return .IoFailed
+    }
+    // The blob is released either way, so the parse is caught here and the
+    // fault re-raised once the memory is back.
+    var layer = tileLayerNew(name, TilemapSize(1, 1))
+    var failed = false
+    try {
+        layer = layerFromCsv(name, blob, size)
+    } catch {
+        failed = true
+    }
+    blob.release()
+    if failed {
+        return .MalformedSource
+    }
+    return layer
+}
+
+// ── Packed binary layers ────────────────────────────────────────────────
+
+/**
+ * Reads a layer from a packed plane of fixed-width little-endian cells.
+ *
+ * This is the shape a great many older level formats take — one or two bytes
+ * per cell, row-major, no header — and reading it directly avoids converting a
+ * whole level to text just to load it.
+ *
+ * `empty` is the value the source uses for a blank cell, which is rarely the
+ * same as this package's [tileEmpty]: `255` and `0` are both common.
+ */
+func layerFromBytes(
+    name: std::String,
+    source: Blob,
+    offset: std::Int,
+    size: TilemapSize,
+    bytesPerCell: std::Int,
+    empty: std::Int
+): TileLayer ?! TilemapFault {
+    if !size.isValid() {
+        return .EmptySize
+    }
+    if bytesPerCell < 1 || bytesPerCell > 4 {
+        return .UnsupportedFormat
+    }
+    fin needed = size.count() * bytesPerCell
+    if !source.has(offset, needed) {
+        return .Truncated
+    }
+
+    var layer = tileLayerNew(name, size)
+    var cell = 0
+    while cell < size.count() {
+        var value = 0
+        var byte = 0
+        while byte < bytesPerCell {
+            value = value | (source.u8(offset + cell * bytesPerCell + byte) << (byte * 8))
+            byte = byte + 1
+        }
+        fin index = if value == empty { tileEmpty } else { value }
+        layerPut(layer, TilePos(cell % size.x, cell / size.x), index)
+        cell = cell + 1
+    }
+    return layer
+}
+
+// ── Writing ─────────────────────────────────────────────────────────────
+
+/**
+ * Renders a layer as comma-separated global tile ids, one row per line.
+ *
+ * Written for editors and for diffing a level in version control, not for the
+ * hot path: building the text concatenates a string per cell, which is fine for
+ * a save and wasteful in a frame.
+ */
+func layerToCsv(layer: TileLayer&): std::String {
+    var text = ""
+    var y = 0
+    while y < layer.size.y {
+        var row = ""
+        var x = 0
+        while x < layer.size.x {
+            fin pos = TilePos(x, y)
+            fin gid = encodeGid(layerIndexAt(layer, pos), layerFlagsAt(layer, pos))
+            row = if x == 0 { intToText(gid) } else { row + "," + intToText(gid) }
+            x = x + 1
+        }
+        text = text + row + "\n"
+        y = y + 1
+    }
+    return text
+}
+
+/** Writes [layer] to [path] as comma-separated global tile ids. */
+func layerWriteCsv(layer: TileLayer&, path: std::String): std::Bool {
+    return writeTextFile(path, layerToCsv(layer))
+}
+
+/**
+ * Wraps [text] as a [Blob] of its ASCII bytes.
+ *
+ * The CSV reader works over bytes so it never builds a string per number; this
+ * is how a level held in memory as text — one just written, or one embedded in
+ * the program — is handed to it without a detour through the filesystem.
+ */
+func textBlob(text: std::String): Blob {
+    fin length = std::strLength(text)
+    if length <= 0 {
+        return blobEmpty()
+    }
+    fin data = azAlloc(length as std::Long)
+    if data == 0L {
+        return blobEmpty()
+    }
+    var i = 0
+    while i < length {
+        azPoke8(data, i as std::Long, asciiCodeOf(std::strSlice(text, i, i + 1)))
+        i = i + 1
+    }
+    return Blob(data, length)
+}
+
+/**
+ * The decimal text of [value].
+ *
+ * The standard conversion goes through string interpolation, which is fine for
+ * the occasional number; this exists so the CSV writer is not the only reason
+ * this module reaches for it.
+ */
+func intToText(value: std::Int): std::String {
+    return "${value}"
+}
+
+test "global tile ids round-trip through their mirror bits" {
+    fin plain = decodeGid(1)
+    assert plain.index == 0 && plain.flags == 0 { "a global id is one greater than its tile" }
+    assert decodeGid(0).index == tileEmpty { "id zero means an empty cell" }
+
+    fin mirrored = decodeGid(3 | gidFlipX | gidFlipD)
+    assert mirrored.index == 2 { "the mirror bits must not leak into the index" }
+    assert flagsAny(mirrored.flags, cellFlipX) && flagsAny(mirrored.flags, cellFlipD) {
+        "both mirrors must survive decoding"
+    }
+    assert !flagsAny(mirrored.flags, cellFlipY) { "an unset mirror must stay unset" }
+
+    assert encodeGid(2, cellFlipX | cellFlipD) == (3 | gidFlipX | gidFlipD) {
+        "encoding must be the exact inverse of decoding"
+    }
+    assert encodeGid(tileEmpty, 0) == 0 { "an empty cell must encode as zero" }
+}
+
+test "a comma-separated layer loads whatever an editor wrote" {
+    // Deliberately ragged: newlines, spaces and a trailing separator.
+    fin source = textBlob("1,2,0,\n 4, 0 ,3,\n")
+    fin layer = layerFromCsv("ground", source, TilemapSize(3, 2)) catch tileLayerNew("", TilemapSize(1, 1))
+    assert layerIndexAt(layer, TilePos(0, 0)) == 0 { "id 1 is tile 0" }
+    assert layerIndexAt(layer, TilePos(1, 0)) == 1 { "id 2 is tile 1" }
+    assert layerIndexAt(layer, TilePos(2, 0)) == tileEmpty { "id 0 is an empty cell" }
+    assert layerIndexAt(layer, TilePos(0, 1)) == 3 { "the second row must follow the first" }
+    assert layerIndexAt(layer, TilePos(2, 1)) == 2 { "the last cell must be read" }
+    assert layerCount(layer) == 4 { "the two empty cells must not be counted" }
+    source.release()
+}
+
+test "a short or over-long source is refused rather than half-loaded" {
+    fin short = textBlob("1,2,3")
+    var truncated = false
+    try {
+        layerFromCsv("ground", short, TilemapSize(4, 4))
+    } catch {
+        truncated = true
+    }
+    assert truncated { "a source with too few cells must fail" }
+    short.release()
+
+    fin long = textBlob("1,2,3,4,5")
+    var overrun = false
+    try {
+        layerFromCsv("ground", long, TilemapSize(2, 2))
+    } catch {
+        overrun = true
+    }
+    assert overrun { "a source with too many cells must fail rather than silently truncate" }
+    long.release()
+}
+
+test "a layer survives a round trip through comma-separated text" {
+    var layer = tileLayerNew("ground", TilemapSize(3, 2))
+    layerPut(layer, TilePos(0, 0), 4)
+    layerSetFlip(layer, TilePos(0, 0), tileFlip(true, false, false)) catch { }
+    layerPut(layer, TilePos(2, 1), 7)
+
+    fin text = layerToCsv(layer)
+    fin blob = textBlob(text)
+    fin copy = layerFromCsv("copy", blob, TilemapSize(3, 2)) catch tileLayerNew("", TilemapSize(1, 1))
+    assert layerIndexAt(copy, TilePos(0, 0)) == 4 { "the tile index must survive the round trip" }
+    assert layerFlipAt(copy, TilePos(0, 0)).x { "the mirror must survive the round trip" }
+    assert layerIndexAt(copy, TilePos(2, 1)) == 7 { "the last cell must survive" }
+    assert layerIndexAt(copy, TilePos(1, 1)) == tileEmpty { "empty cells must stay empty" }
+    blob.release()
+}

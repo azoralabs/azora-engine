@@ -1,0 +1,1038 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/animation/core/core
+ *
+ * The dimension-neutral half of animation: keyframes, tracks, clips, players,
+ * timelines, blend weights and events.
+ *
+ * Nothing here knows what is being animated. A keyframe holds a time and a
+ * value, a track holds keyframes, a clip holds a duration and a loop mode, and
+ * a player holds a position in that clip — none of which changes between a
+ * sprite's frame index, a 2D colour and a 3D bone. The dimensional packages add
+ * the values and the sampling; this one owns the *timing*, which is where
+ * animation bugs actually live.
+ *
+ * ## Time is sampled, not stepped
+ *
+ * A player advances a clock and everything else is derived from it. Nothing
+ * accumulates a frame index or mutates a keyframe, so scrubbing a timeline
+ * backwards, playing at a fraction of speed, or evaluating the same clip twice
+ * for two blended layers all give exactly the answer the clock implies.
+ *
+ * @since 0.0.4
+ */
+module engine.animation.core
+
+import std.container.array
+import engine.core
+
+/** Times closer together than this are treated as the same instant. */
+inline fin animEpsilon = 0.000001
+
+// ── Vocabulary ──────────────────────────────────────────────────────────
+
+/** How a value moves between two keyframes. */
+enum Interpolation {
+    /** Hold the earlier keyframe until the later one is reached. */
+    Step
+    Linear
+    /** Slow at the start. */
+    EaseIn
+    /** Slow at the end. */
+    EaseOut
+    /** Slow at both ends — the default for anything a person will look at. */
+    EaseInOut
+    /** Smoothstep: continuous in the first derivative at both keyframes. */
+    Smooth
+}
+
+/** What a clip does when it reaches its end. */
+enum LoopMode {
+    /** Stop, and report [PlaybackState.Finished]. */
+    Once
+    /** Jump back to the start. */
+    Repeat
+    /** Play back down to the start, then up again. */
+    PingPong
+    /** Hold the final pose forever without reporting finished. */
+    ClampForever
+}
+
+/** Where a player is in its clip. */
+enum PlaybackState {
+    Stopped
+    Playing
+    Paused
+    Finished
+}
+
+/** How a direction of travel is reported for a ping-pong clip. */
+enum PlaybackDirection {
+    Forward
+    Backward
+}
+
+/** Everything animation can refuse to do. */
+error AnimationFault {
+    /** A clip was given a non-positive duration. */
+    BadDuration,
+    /** A track holds no keyframes to sample. */
+    EmptyTrack,
+    /** Keyframes were added out of order. */
+    UnsortedKeyframes,
+    /** A track, clip or bone name resolved to nothing. */
+    UnknownTarget,
+    /** A blend weight was outside `0 .. 1`. */
+    BadWeight,
+    /** A skeleton's bone hierarchy has a cycle or a bad parent. */
+    BadHierarchy
+}
+
+// ── Keyframes and tracks ────────────────────────────────────────────────
+
+/**
+ * One value at one time.
+ *
+ * The interpolation belongs to the keyframe rather than to the track, because
+ * it describes how the curve *leaves* this key: a pose that snaps into place
+ * and then eases out of it is one track with two different modes.
+ */
+pack Keyframe<T> {
+    var time: std::Double
+    var value: T
+    var interpolation: Interpolation
+}
+
+/**
+ * A named, time-ordered run of keyframes.
+ *
+ * Keys are kept sorted by [trackInsert], so sampling is a search rather than a
+ * scan and a track built out of order still plays in order.
+ *
+ * `T` must be a pointer-shaped type — a pack such as `Vec2` or `Vec3`, an `Int`,
+ * or a `String`. Scalar curves use [RealTrack] instead: the LLVM backend
+ * currently lowers a generic type parameter to a pointer slot and does not box a
+ * `Real` into it, so `Track<Real>` miscompiles rather than merely being slow.
+ */
+pack Track<T> {
+    var name: std::String
+    var keys: std::Array<Keyframe<T>>
+    var count: std::Int
+}
+
+/** A named moment in a clip that gameplay can react to. */
+pack AnimationEvent {
+    var time: std::Double
+    var name: std::String
+    /** A game-defined payload — a sound id, a damage value, a spawn index. */
+    var payload: std::Int
+}
+
+/**
+ * The timing of an animation, independent of what it animates.
+ *
+ * A clip is shared and immutable in spirit: many players can be positioned in
+ * the same clip at once, which is what makes a crowd of characters on the same
+ * walk cycle cost one clip and many clocks.
+ */
+pack AnimationClip {
+    var name: std::String
+    var duration: std::Double
+    var loopMode: LoopMode
+    var events: std::Array<AnimationEvent>
+    var eventCount: std::Int
+}
+
+/** How strongly one animation contributes to a blend. */
+@Component
+pack BlendWeight {
+    var value: std::Double
+}
+
+/**
+ * A clock positioned in a clip.
+ *
+ * The player is the only mutable part of playing an animation, and it is small
+ * enough to be a component on any entity that needs one.
+ */
+@Component
+pack AnimationPlayer {
+    var clip: AnimationClip
+    /** Seconds elapsed, before looping is applied. */
+    var elapsed: std::Double
+    var speed: std::Double
+    var state: PlaybackState
+    var weight: BlendWeight
+    /** Where the previous advance left the clock, for event windows. */
+    var previous: std::Double
+}
+
+/**
+ * An ordered set of players advanced together.
+ *
+ * A timeline is what a cutscene, a combo or a layered character rig is: several
+ * clips running on one clock, so pausing or rescaling time affects all of them
+ * at once and they cannot drift apart.
+ */
+pack Timeline {
+    var name: std::String
+    var players: std::Array<AnimationPlayer>
+    var count: std::Int
+    /** Multiplies every player's own speed. */
+    var timeScale: std::Double
+    var state: PlaybackState
+}
+
+/** Whether an event fired in the window a player just crossed. */
+variant enum EventFire {
+    Fired(name: std::String, payload: std::Int, at: std::Double)
+    Silent
+}
+
+// ── Easing ──────────────────────────────────────────────────────────────
+
+/**
+ * Reshapes a normalised `0 .. 1` position according to [mode].
+ *
+ * Every curve here is expressible in the reshaped parameter alone, which is
+ * what lets one linear blend serve every value type: the dimensional packages
+ * only have to know how to mix two values, never how to ease between them.
+ */
+func easeFactor(t: std::Double, mode: Interpolation): std::Double {
+    fin clamped = animClamp01(t)
+    return when mode {
+        Interpolation.Step -> if clamped >= 1.0 { 1.0 } else { 0.0 }
+        Interpolation.Linear -> clamped
+        Interpolation.EaseIn -> clamped * clamped
+        Interpolation.EaseOut -> clamped * (2.0 - clamped)
+        Interpolation.Smooth -> clamped * clamped * (3.0 - 2.0 * clamped)
+        else -> easeInOut(clamped)
+    }
+}
+
+/** Two quadratics meeting at the halfway point: slow at both ends. */
+func easeInOut(t: std::Double): std::Double {
+    if t < 0.5 {
+        return 2.0 * t * t
+    }
+    fin shifted = t - 1.0
+    return 1.0 - 2.0 * shifted * shifted
+}
+
+/** Linear interpolation between two reals. */
+func lerpReal(a: std::Double, b: std::Double, t: std::Double): std::Double {
+    return a + (b - a) * t
+}
+
+/** Interpolation between two reals, eased by [mode]. */
+func interpolateReal(a: std::Double, b: std::Double, t: std::Double, mode: Interpolation): std::Double {
+    return lerpReal(a, b, easeFactor(t, mode))
+}
+
+func animClamp01(value: std::Double): std::Double {
+    return when true {
+        value < 0.0 -> 0.0
+        value > 1.0 -> 1.0
+        else -> value
+    }
+}
+
+func animMax(a: std::Double, b: std::Double): std::Double {
+    return if a > b { a } else { b }
+}
+
+func animMin(a: std::Double, b: std::Double): std::Double {
+    return if a < b { a } else { b }
+}
+
+func animAbs(value: std::Double): std::Double {
+    return if value < 0.0 { 0.0 - value } else { value }
+}
+
+/**
+ * The non-negative remainder of `value / period`.
+ *
+ * Playing a clip backwards drives the clock negative, and a truncating
+ * remainder would fold that onto the wrong end of the loop.
+ */
+func animWrap(value: std::Double, period: std::Double): std::Double {
+    if period <= animEpsilon {
+        return 0.0
+    }
+    var wrapped = value - (((value / period) as std::Int) as std::Double) * period
+    if wrapped < 0.0 {
+        wrapped = wrapped + period
+    }
+    return wrapped
+}
+
+// ── Tracks ──────────────────────────────────────────────────────────────
+
+/** An empty track with room for [capacity] keyframes. */
+func trackNew<T>(name: std::String, capacity: std::Int): Track<T> {
+    var keys: std::Array<Keyframe<T>> = std::Array::fill<Keyframe<T>>(animCapacity(capacity))
+    return Track<T>(name, keys, 0)
+}
+
+func animCapacity(capacity: std::Int): std::Int {
+    return if capacity > 0 { capacity } else { 0 }
+}
+
+/**
+ * Inserts [key] at its place in time, keeping the track sorted.
+ *
+ * Insertion rather than appending means a track assembled from several sources —
+ * a base pose, an override pass, a hand-tweaked key — plays correctly without
+ * the caller having to sort anything.
+ */
+func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): std::Int {
+    if track.count >= track.keys.size {
+        fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
+        var grown: std::Array<Keyframe<T>> = std::Array::fill<Keyframe<T>>(room)
+        var i = 0
+        while i < track.count {
+            grown[i] = track.keys[i]
+            i = i + 1
+        }
+        track.keys = grown
+    }
+
+    var at = track.count
+    var scan = 0
+    while scan < track.count {
+        if track.keys[scan].time > key.time {
+            at = scan
+            scan = track.count
+        } else {
+            scan = scan + 1
+        }
+    }
+
+    var move = track.count
+    while move > at {
+        track.keys[move] = track.keys[move - 1]
+        move = move - 1
+    }
+    track.keys[at] = key
+    track.count = track.count + 1
+    return at
+}
+
+/** Adds a keyframe at [time] holding [value]. */
+func trackKey<T>(track: Track<T>!, time: std::Double, value: T, mode: Interpolation): std::Int {
+    return trackInsert<T>(track, Keyframe<T>(time, value, mode))
+}
+
+/** The keyframe at [index], or the first one when the index is out of range. */
+func trackAt<T>(track: Track<T>&, index: std::Int): Keyframe<T> {
+    fin safe = when true {
+        track.count <= 0 -> 0
+        index < 0 -> 0
+        index >= track.count -> track.count - 1
+        else -> index
+    }
+    return track.keys[safe]
+}
+
+/** The time of the track's last keyframe. */
+func trackDuration<T>(track: Track<T>&): std::Double {
+    if track.count <= 0 {
+        return 0.0
+    }
+    return track.keys[track.count - 1].time
+}
+
+func trackIsEmpty<T>(track: Track<T>&): std::Bool {
+    return track.count <= 0
+}
+
+/**
+ * Where [time] falls in a track: the two keys around it and how far between.
+ *
+ * Returning the span rather than a value is what keeps this module free of any
+ * knowledge of what is being animated — the caller mixes its own two values
+ * using the factor computed here, which already has the easing folded in.
+ */
+pack TrackSpan {
+    var fromIndex: std::Int
+    var toIndex: std::Int
+    /** Eased position between the two keys, `0 .. 1`. */
+    var factor: std::Double
+    var valid: std::Bool
+}
+
+/** The span [time] falls in, on a track sorted by [trackInsert]. */
+func trackSpanAt<T>(track: Track<T>&, time: std::Double): TrackSpan {
+    if track.count <= 0 {
+        return TrackSpan(0, 0, 0.0, false)
+    }
+    if track.count == 1 || time <= track.keys[0].time {
+        return TrackSpan(0, 0, 0.0, true)
+    }
+    fin last = track.count - 1
+    if time >= track.keys[last].time {
+        return TrackSpan(last, last, 0.0, true)
+    }
+
+    // Binary search: a long track sampled every frame should not be a scan.
+    var low = 0
+    var high = last
+    while high - low > 1 {
+        fin middle = (low + high) / 2
+        if track.keys[middle].time <= time {
+            low = middle
+        } else {
+            high = middle
+        }
+    }
+
+    fin start = track.keys[low]
+    fin end = track.keys[high]
+    fin span = end.time - start.time
+    fin raw = if span <= animEpsilon { 0.0 } else { (time - start.time) / span }
+    return TrackSpan(low, high, easeFactor(raw, start.interpolation), true)
+}
+
+// ── Scalar tracks ───────────────────────────────────────────────────────
+//
+// A curve over plain numbers is the single most common track there is — an
+// alpha fade, a volume ramp, a shake amplitude — so it gets a concrete type
+// rather than a generic one. See [Track] for why `Track<Real>` is not an
+// option today.
+
+/** One real value at one time. */
+pack RealKeyframe {
+    var time: std::Double
+    var value: std::Double
+    var interpolation: Interpolation
+}
+
+/** A named, time-ordered run of real keyframes. */
+pack RealTrack {
+    var name: std::String
+    var keys: std::Array<RealKeyframe>
+    var count: std::Int
+}
+
+/** An empty scalar track with room for [capacity] keyframes. */
+func realTrackNew(name: std::String, capacity: std::Int): RealTrack {
+    var keys: std::Array<RealKeyframe> = std::Array::fill<RealKeyframe>(animCapacity(capacity))
+    return RealTrack(name, keys, 0)
+}
+
+/** Inserts a key at its place in time, keeping the track sorted. */
+func realTrackKey(track: RealTrack!, time: std::Double, value: std::Double, mode: Interpolation): std::Int {
+    if track.count >= track.keys.size {
+        fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
+        var grown: std::Array<RealKeyframe> = std::Array::fill<RealKeyframe>(room)
+        var i = 0
+        while i < track.count {
+            grown[i] = track.keys[i]
+            i = i + 1
+        }
+        track.keys = grown
+    }
+
+    var at = track.count
+    var scan = 0
+    while scan < track.count {
+        if track.keys[scan].time > time {
+            at = scan
+            scan = track.count
+        } else {
+            scan = scan + 1
+        }
+    }
+    var move = track.count
+    while move > at {
+        track.keys[move] = track.keys[move - 1]
+        move = move - 1
+    }
+    track.keys[at] = RealKeyframe(time, value, mode)
+    track.count = track.count + 1
+    return at
+}
+
+/** The key at [index], or the nearest end key. */
+func realTrackAt(track: RealTrack&, index: std::Int): RealKeyframe {
+    fin safe = when true {
+        track.count <= 0 -> 0
+        index < 0 -> 0
+        index >= track.count -> track.count - 1
+        else -> index
+    }
+    return track.keys[safe]
+}
+
+/** The time of the track's last keyframe. */
+func realTrackDuration(track: RealTrack&): std::Double {
+    if track.count <= 0 {
+        return 0.0
+    }
+    return track.keys[track.count - 1].time
+}
+
+/** The span [time] falls in, on a sorted scalar track. */
+func realTrackSpanAt(track: RealTrack&, time: std::Double): TrackSpan {
+    if track.count <= 0 {
+        return TrackSpan(0, 0, 0.0, false)
+    }
+    if track.count == 1 || time <= track.keys[0].time {
+        return TrackSpan(0, 0, 0.0, true)
+    }
+    fin last = track.count - 1
+    if time >= track.keys[last].time {
+        return TrackSpan(last, last, 0.0, true)
+    }
+
+    var low = 0
+    var high = last
+    while high - low > 1 {
+        fin middle = (low + high) / 2
+        if track.keys[middle].time <= time {
+            low = middle
+        } else {
+            high = middle
+        }
+    }
+
+    fin start = track.keys[low]
+    fin end = track.keys[high]
+    fin span = end.time - start.time
+    fin raw = if span <= animEpsilon { 0.0 } else { (time - start.time) / span }
+    return TrackSpan(low, high, easeFactor(raw, start.interpolation), true)
+}
+
+/** Samples a scalar track at [time]. */
+func sampleReal(track: RealTrack&, time: std::Double): std::Double {
+    fin span = realTrackSpanAt(track, time)
+    if !span.valid {
+        return 0.0
+    }
+    return lerpReal(
+        track.keys[span.fromIndex].value,
+        track.keys[span.toIndex].value,
+        span.factor
+    )
+}
+
+// ── Clips ───────────────────────────────────────────────────────────────
+
+/** A clip of [duration] seconds. */
+func animationClip(name: std::String, duration: std::Double, loopMode: LoopMode): AnimationClip {
+    var events: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(0)
+    return AnimationClip(name, animMax(duration, 0.0), loopMode, events, 0)
+}
+
+/** Adds an event at [time], keeping the event list sorted. */
+func clipEvent(clip: AnimationClip!, time: std::Double, name: std::String, payload: std::Int): std::Int {
+    if clip.eventCount >= clip.events.size {
+        fin room = if clip.events.size * 2 > 4 { clip.events.size * 2 } else { 4 }
+        var grown: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(room)
+        var i = 0
+        while i < clip.eventCount {
+            grown[i] = clip.events[i]
+            i = i + 1
+        }
+        clip.events = grown
+    }
+
+    var at = clip.eventCount
+    var scan = 0
+    while scan < clip.eventCount {
+        if clip.events[scan].time > time {
+            at = scan
+            scan = clip.eventCount
+        } else {
+            scan = scan + 1
+        }
+    }
+    var move = clip.eventCount
+    while move > at {
+        clip.events[move] = clip.events[move - 1]
+        move = move - 1
+    }
+    clip.events[at] = AnimationEvent(time, name, payload)
+    clip.eventCount = clip.eventCount + 1
+    return at
+}
+
+/**
+ * The time within the clip that [elapsed] seconds corresponds to.
+ *
+ * This is where every loop mode is resolved, so nothing downstream has to know
+ * whether a clip repeats: it asks what the pose is *now* and gets an answer in
+ * `0 .. duration`.
+ */
+func clipLocalTime(clip: AnimationClip&, elapsed: std::Double): std::Double {
+    if clip.duration <= animEpsilon {
+        return 0.0
+    }
+    return when clip.loopMode {
+        LoopMode.Repeat -> animWrap(elapsed, clip.duration)
+        LoopMode.PingPong -> pingPongTime(elapsed, clip.duration)
+        else -> animHold(elapsed, clip.duration)
+    }
+}
+
+/**
+ * [elapsed] folded onto an out-and-back cycle of [duration].
+ *
+ * A full cycle is twice the duration, and the second half is the first half
+ * read in reverse — which is what makes the motion reverse rather than snap
+ * back to the start.
+ */
+func pingPongTime(elapsed: std::Double, duration: std::Double): std::Double {
+    fin phase = animWrap(elapsed, duration * 2.0)
+    return if phase <= duration { phase } else { duration * 2.0 - phase }
+}
+
+/** [elapsed] held inside `0 .. duration`, for the non-looping modes. */
+func animHold(elapsed: std::Double, duration: std::Double): std::Double {
+    return when true {
+        elapsed < 0.0 -> 0.0
+        elapsed > duration -> duration
+        else -> elapsed
+    }
+}
+
+/** Which way a ping-pong clip is travelling at [elapsed]. */
+func clipDirection(clip: AnimationClip&, elapsed: std::Double): PlaybackDirection {
+    if clip.duration <= animEpsilon {
+        return PlaybackDirection.Forward
+    }
+    return when clip.loopMode {
+        LoopMode.PingPong -> if animWrap(elapsed, clip.duration * 2.0) <= clip.duration {
+            PlaybackDirection.Forward
+        } else {
+            PlaybackDirection.Backward
+        }
+        else -> PlaybackDirection.Forward
+    }
+}
+
+/** True when a clip started at zero has run past its end. */
+func clipHasEnded(clip: AnimationClip&, elapsed: std::Double): std::Bool {
+    return when clip.loopMode {
+        LoopMode.Once -> elapsed >= clip.duration
+        else -> false
+    }
+}
+
+/** The clip's progress as a `0 .. 1` fraction. */
+func clipProgress(clip: AnimationClip&, elapsed: std::Double): std::Double {
+    if clip.duration <= animEpsilon {
+        return 1.0
+    }
+    return animClamp01(clipLocalTime(clip, elapsed) / clip.duration)
+}
+
+// ── Players ─────────────────────────────────────────────────────────────
+
+/** A player positioned at the start of [clip], stopped. */
+func animationPlayer(clip: AnimationClip): AnimationPlayer {
+    return AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Stopped, BlendWeight(1.0), 0.0)
+}
+
+/** A player positioned at the start of [clip], already playing. */
+func playingPlayer(clip: AnimationClip): AnimationPlayer {
+    return AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
+}
+
+func blendWeight(value: std::Double): BlendWeight {
+    return BlendWeight(animClamp01(value))
+}
+
+impl AnimationPlayer {
+    /** Starts, or restarts, playback from the beginning. */
+    func play() {
+        self.elapsed = 0.0
+        self.previous = 0.0
+        self.state = PlaybackState.Playing
+    }
+
+    /** Resumes without rewinding. */
+    func resume() {
+        if self.state != PlaybackState.Playing {
+            self.state = PlaybackState.Playing
+        }
+    }
+
+    func pause() {
+        if self.state == PlaybackState.Playing {
+            self.state = PlaybackState.Paused
+        }
+    }
+
+    /** Stops and rewinds. */
+    func stop() {
+        self.elapsed = 0.0
+        self.previous = 0.0
+        self.state = PlaybackState.Stopped
+    }
+
+    /** Moves the clock to [time] without playing, for scrubbing a timeline. */
+    func seek(time: std::Double) {
+        self.previous = self.elapsed
+        self.elapsed = animMax(time, 0.0)
+    }
+
+    /** The time within the clip the player is currently at. */
+    func localTime(): std::Double {
+        return clipLocalTime(self.clip, self.elapsed)
+    }
+
+    /** The player's progress through its clip, `0 .. 1`. */
+    func progress(): std::Double {
+        return clipProgress(self.clip, self.elapsed)
+    }
+
+    func direction(): PlaybackDirection {
+        return clipDirection(self.clip, self.elapsed)
+    }
+
+    /** True while the player is contributing to a blend. */
+    func isActive(): std::Bool {
+        return self.state == PlaybackState.Playing && self.weight.value > 0.0
+    }
+
+    /**
+     * Advances the clock by [dt] seconds and reports the resulting state.
+     *
+     * A paused or stopped player ignores the delta entirely rather than
+     * accumulating it, so resuming continues from where it left off instead of
+     * jumping forward by however long it was paused.
+     */
+    func advance(dt: std::Double): PlaybackState {
+        if self.state != PlaybackState.Playing {
+            return self.state
+        }
+        self.previous = self.elapsed
+        self.elapsed = self.elapsed + dt * self.speed
+        if clipHasEnded(self.clip, self.elapsed) {
+            self.elapsed = self.clip.duration
+            self.state = PlaybackState.Finished
+        }
+        return self.state
+    }
+}
+
+/**
+ * The first event the player crossed on its last [advance].
+ *
+ * Events are reported from the window between the previous clock and the
+ * current one, so one is never missed by a long frame and never fired twice by
+ * a short one — the two failures that make animation-driven sound and damage
+ * unreliable.
+ */
+func playerEvent(player: AnimationPlayer&): EventFire {
+    fin clip = player.clip
+    if clip.eventCount <= 0 || player.elapsed <= player.previous {
+        return EventFire.Silent
+    }
+    // A frame long enough to cover the whole clip crosses every event, and does
+    // so without the local times differing — one full period lands back on the
+    // instant it started from, which a plain window comparison reads as no
+    // movement at all.
+    fin wholeClip = player.elapsed - player.previous >= clip.duration
+    fin from = clipLocalTime(clip, player.previous)
+    fin to = clipLocalTime(clip, player.elapsed)
+
+    var i = 0
+    while i < clip.eventCount {
+        fin event = clip.events[i]
+        fin crossed = when true {
+            wholeClip -> true
+            to >= from -> event.time > from && event.time <= to
+            // The clip wrapped, so the window is two pieces: the tail of the
+            // clip and the head of the next pass.
+            else -> event.time > from || event.time <= to
+        }
+        if crossed {
+            return EventFire.Fired(event.name, event.payload, event.time)
+        }
+        i = i + 1
+    }
+    return EventFire.Silent
+}
+
+/** True when [fire] reported an event. */
+func eventFired(fire: EventFire): std::Bool {
+    return when fire {
+        EventFire.Fired(name, payload, at) -> true
+        else -> false
+    }
+}
+
+/** The name of a fired event, or the empty string. */
+func eventName(fire: EventFire): std::String {
+    return when fire {
+        EventFire.Fired(name, payload, at) -> name
+        else -> ""
+    }
+}
+
+// ── Timelines ───────────────────────────────────────────────────────────
+
+/** An empty timeline with room for [capacity] players. */
+func timelineNew(name: std::String, capacity: std::Int): Timeline {
+    var players: std::Array<AnimationPlayer> = std::Array::fill<AnimationPlayer>(animCapacity(capacity))
+    return Timeline(name, players, 0, 1.0, PlaybackState.Stopped)
+}
+
+impl Timeline {
+    /** Appends [player] and returns its index. */
+    func add(player: AnimationPlayer): std::Int {
+        if self.count >= self.players.size {
+            fin room = if self.players.size * 2 > 4 { self.players.size * 2 } else { 4 }
+            var grown: std::Array<AnimationPlayer> = std::Array::fill<AnimationPlayer>(room)
+            var i = 0
+            while i < self.count {
+                grown[i] = self.players[i]
+                i = i + 1
+            }
+            self.players = grown
+        }
+        self.players[self.count] = player
+        self.count = self.count + 1
+        return self.count - 1
+    }
+
+    /** The player at [index], or the first one. */
+    func at(index: std::Int): AnimationPlayer {
+        fin safe = when true {
+            self.count <= 0 -> 0
+            index < 0 -> 0
+            index >= self.count -> self.count - 1
+            else -> index
+        }
+        return self.players[safe]
+    }
+
+    /** Starts every player from the beginning. */
+    func play() {
+        for i in 0..(self.count - 1) {
+            self.players[i].play()
+        }
+        self.state = PlaybackState.Playing
+    }
+
+    func pause() {
+        for i in 0..(self.count - 1) {
+            self.players[i].pause()
+        }
+        self.state = PlaybackState.Paused
+    }
+
+    func resume() {
+        for i in 0..(self.count - 1) {
+            self.players[i].resume()
+        }
+        self.state = PlaybackState.Playing
+    }
+
+    func stop() {
+        for i in 0..(self.count - 1) {
+            self.players[i].stop()
+        }
+        self.state = PlaybackState.Stopped
+    }
+
+    /**
+     * Advances every player by [dt], scaled by the timeline's own rate.
+     *
+     * The timeline reports finished only when every one of its players has,
+     * which is what lets a cutscene wait for its longest clip without the
+     * caller tracking them individually.
+     */
+    func advance(dt: std::Double): PlaybackState {
+        if self.state != PlaybackState.Playing {
+            return self.state
+        }
+        var allDone = true
+        for i in 0..(self.count - 1) {
+            if self.players[i].advance(dt * self.timeScale) != PlaybackState.Finished {
+                allDone = false
+            }
+        }
+        if allDone && self.count > 0 {
+            self.state = PlaybackState.Finished
+        }
+        return self.state
+    }
+
+    /** The longest clip on the timeline. */
+    func duration(): std::Double {
+        var longest = 0.0
+        for i in 0..(self.count - 1) {
+            longest = animMax(longest, self.players[i].clip.duration)
+        }
+        return longest
+    }
+}
+
+// ── Blending ────────────────────────────────────────────────────────────
+
+/**
+ * Normalises a set of blend weights so they sum to one.
+ *
+ * Weights that do not sum to one darken or brighten a blend rather than mixing
+ * it, which shows up as a pose that sags toward the origin — so normalising is
+ * done once here rather than being remembered at every blend site.
+ */
+func normalizeWeights(weights: std::Array<std::Double>, count: std::Int) {
+    var total = 0.0
+    for i in 0..(count - 1) {
+        total = total + animMax(weights[i], 0.0)
+    }
+    if total <= animEpsilon {
+        return
+    }
+    for i in 0..(count - 1) {
+        weights[i] = animMax(weights[i], 0.0) / total
+    }
+}
+
+/** The contribution of [player] to a blend, `0` when it is not active. */
+func playerContribution(player: AnimationPlayer&): std::Double {
+    return if player.isActive() { player.weight.value } else { 0.0 }
+}
+
+test "easing keeps its endpoints and bends in between" {
+    for mode in 0..0 {
+        assert easeFactor(0.0, Interpolation.Linear) == 0.0 { "every curve must start at zero" }
+    }
+    assert easeFactor(1.0, Interpolation.EaseInOut) == 1.0 { "every curve must end at one" }
+    assert easeFactor(0.5, Interpolation.Linear) == 0.5 { "linear must not bend" }
+    assert easeFactor(0.5, Interpolation.EaseIn) < 0.5 { "ease-in must lag at the midpoint" }
+    assert easeFactor(0.5, Interpolation.EaseOut) > 0.5 { "ease-out must lead at the midpoint" }
+    assert easeFactor(0.4, Interpolation.Step) == 0.0 { "a step must hold until it arrives" }
+    assert easeFactor(2.0, Interpolation.Linear) == 1.0 { "an over-run position must clamp" }
+}
+
+test "a track stays sorted however it is built" {
+    var track = realTrackNew("height", 4)
+    realTrackKey(track, 2.0, 20.0, Interpolation.Linear)
+    realTrackKey(track, 0.0, 0.0, Interpolation.Linear)
+    realTrackKey(track, 1.0, 10.0, Interpolation.Linear)
+
+    assert track.count == 3 { "every key must be kept" }
+    assert realTrackAt(track, 0).time == 0.0 { "the earliest key must sort first" }
+    assert realTrackAt(track, 2).time == 2.0 { "the latest key must sort last" }
+    assert realTrackDuration(track) == 2.0 { "a track is as long as its last key" }
+
+    assert sampleReal(track, 0.5) == 5.0 { "sampling must interpolate between keys" }
+    assert sampleReal(track, 1.5) == 15.0 { "sampling must find the right span" }
+    assert sampleReal(track, -1.0) == 0.0 { "sampling before the start must hold the first key" }
+    assert sampleReal(track, 99.0) == 20.0 { "sampling past the end must hold the last key" }
+}
+
+test "loop modes resolve the clock the way their names promise" {
+    fin once = animationClip("once", 2.0, LoopMode.Once)
+    assert clipLocalTime(once, 3.0) == 2.0 { "a one-shot clip must hold its end" }
+    assert clipHasEnded(once, 2.5) { "a one-shot clip must report finishing" }
+
+    fin repeat = animationClip("repeat", 2.0, LoopMode.Repeat)
+    assert animAbs(clipLocalTime(repeat, 5.0) - 1.0) < 0.001 { "a repeating clip must wrap" }
+    assert !clipHasEnded(repeat, 99.0) { "a repeating clip never finishes" }
+
+    fin pingPong = animationClip("pingpong", 2.0, LoopMode.PingPong)
+    assert animAbs(clipLocalTime(pingPong, 1.0) - 1.0) < 0.001 { "a ping-pong must climb on the way out" }
+    assert animAbs(clipLocalTime(pingPong, 3.0) - 1.0) < 0.001 { "a ping-pong must descend on the way back" }
+    assert clipDirection(pingPong, 3.0) == PlaybackDirection.Backward {
+        "the direction must reverse on the return leg"
+    }
+}
+
+test "a player only advances while it is playing" {
+    var player = animationPlayer(animationClip("walk", 2.0, LoopMode.Repeat))
+    player.advance(1.0)
+    assert player.elapsed == 0.0 { "a stopped player must ignore time" }
+
+    player.play()
+    player.advance(0.5)
+    assert animAbs(player.elapsed - 0.5) < 0.001 { "a playing player must advance" }
+
+    player.pause()
+    player.advance(10.0)
+    assert animAbs(player.elapsed - 0.5) < 0.001 { "a paused player must not accumulate the pause" }
+
+    player.resume()
+    player.advance(0.5)
+    assert animAbs(player.elapsed - 1.0) < 0.001 { "resuming must continue from where it stopped" }
+    assert animAbs(player.progress() - 0.5) < 0.001 { "progress must follow the clock" }
+
+    player.speed = 2.0
+    player.advance(0.5)
+    assert animAbs(player.elapsed - 2.0) < 0.001 { "speed must scale the delta" }
+}
+
+test "a one-shot player reports finishing exactly once it is over" {
+    var player = playingPlayer(animationClip("attack", 1.0, LoopMode.Once))
+    assert player.advance(0.5) == PlaybackState.Playing { "a clip half over is still playing" }
+    assert player.advance(1.0) == PlaybackState.Finished { "a clip run past its end must finish" }
+    assert player.elapsed == 1.0 { "a finished clip must rest exactly on its end" }
+    assert player.advance(5.0) == PlaybackState.Finished { "a finished clip must stay finished" }
+}
+
+test "events fire once, in the window the clock crossed" {
+    var clip = animationClip("swing", 1.0, LoopMode.Repeat)
+    clipEvent(clip, 0.5, "hit", 7)
+
+    var player = playingPlayer(take clip)
+    assert !eventFired(playerEvent(player)) { "no event has been crossed yet" }
+
+    player.advance(0.6)
+    fin fired = playerEvent(player)
+    assert eventFired(fired) { "crossing the event's time must fire it" }
+    assert eventName(fired) == "hit" { "the event must report its own name" }
+
+    player.advance(0.2)
+    assert !eventFired(playerEvent(player)) { "an event already passed must not fire again" }
+
+    // A frame long enough to wrap the clip must still catch the event.
+    player.advance(1.0)
+    assert eventFired(playerEvent(player)) { "a long frame must not skip an event" }
+}
+
+test "a timeline drives its players as one" {
+    var timeline = timelineNew("cutscene", 2)
+    timeline.add(playingPlayer(animationClip("pan", 1.0, LoopMode.Once)))
+    timeline.add(playingPlayer(animationClip("fade", 3.0, LoopMode.Once)))
+    timeline.play()
+
+    assert animAbs(timeline.duration() - 3.0) < 0.001 { "a timeline is as long as its longest clip" }
+    assert timeline.advance(1.5) == PlaybackState.Playing {
+        "a timeline is still playing while any clip is"
+    }
+    assert timeline.advance(2.0) == PlaybackState.Finished {
+        "a timeline finishes only once every clip has"
+    }
+
+    timeline.timeScale = 0.5
+    timeline.play()
+    timeline.advance(1.0)
+    assert animAbs(timeline.at(0).elapsed - 0.5) < 0.001 { "the time scale must reach every player" }
+}
+
+test "weights normalise to one" {
+    var weights: std::Array<std::Double> = std::Array::fill<std::Double>(3)
+    weights[0] = 1.0
+    weights[1] = 2.0
+    weights[2] = 1.0
+    normalizeWeights(weights, 3)
+    assert animAbs(weights[0] - 0.25) < 0.001 && animAbs(weights[1] - 0.5) < 0.001 {
+        "weights must be scaled to sum to one"
+    }
+
+    var zeroed: std::Array<std::Double> = std::Array::fill<std::Double>(2)
+    zeroed[0] = 0.0
+    zeroed[1] = 0.0
+    normalizeWeights(zeroed, 2)
+    assert zeroed[0] == 0.0 { "an all-zero blend must be left alone rather than dividing by zero" }
+}

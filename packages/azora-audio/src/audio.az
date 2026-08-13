@@ -7,7 +7,8 @@
 module engine.audio
 
 import engine.objc
-import engine.math
+import engine.io
+import std.math
 
 /**
  * @file engine/audio/audio
@@ -18,121 +19,121 @@ import engine.math
  */
 
 pack AudioScene {
-    var soundtrack: Long
-    var engineLoop: Long
-    var crashEffect: Long
-    var running: Bool
+    var soundtrack: std::Long
+    var engineLoop: std::Long
+    var crashEffect: std::Long
+    var running: std::Bool
 }
 
-friend zone engine::audio {
-    fin SAMPLE_RATE = 22050
+realm engine::audio {
+    fin sampleRate = 22050
     fin SOUNDTRACK = 0
-    fin ENGINE_LOOP = 1
-    fin CRASH_EFFECT = 2
+    fin engineLoop = 1
+    fin crashEffect = 2
 
-    func clamp(value: Real, lo: Real, hi: Real): Real {
+    func clamp(value: std::Double, lo: std::Double, hi: std::Double): std::Double {
         if value < lo { return lo }
         if value > hi { return hi }
         return value
     }
 
-    func pokeWaveHeader(bytes: Long, dataSize: Int) {
-        az_poke8(bytes, 0L, 82)
-        az_poke8(bytes, 1L, 73)
-        az_poke8(bytes, 2L, 70)
-        az_poke8(bytes, 3L, 70)
-        az_poke32(bytes, 4L, dataSize + 36)
-        az_poke8(bytes, 8L, 87)
-        az_poke8(bytes, 9L, 65)
-        az_poke8(bytes, 10L, 86)
-        az_poke8(bytes, 11L, 69)
-        az_poke8(bytes, 12L, 102)
-        az_poke8(bytes, 13L, 109)
-        az_poke8(bytes, 14L, 116)
-        az_poke8(bytes, 15L, 32)
-        az_poke32(bytes, 16L, 16)
-        az_poke8(bytes, 20L, 1)
-        az_poke8(bytes, 21L, 0)
-        az_poke8(bytes, 22L, 1)
-        az_poke8(bytes, 23L, 0)
-        az_poke32(bytes, 24L, SAMPLE_RATE)
-        az_poke32(bytes, 28L, SAMPLE_RATE * 2)
-        az_poke8(bytes, 32L, 2)
-        az_poke8(bytes, 33L, 0)
-        az_poke8(bytes, 34L, 16)
-        az_poke8(bytes, 35L, 0)
-        az_poke8(bytes, 36L, 100)
-        az_poke8(bytes, 37L, 97)
-        az_poke8(bytes, 38L, 116)
-        az_poke8(bytes, 39L, 97)
-        az_poke32(bytes, 40L, dataSize)
+    func pokeWaveHeader(bytes: std::Long, dataSize: std::Int) {
+        azPoke8(bytes, 0L, 82)
+        azPoke8(bytes, 1L, 73)
+        azPoke8(bytes, 2L, 70)
+        azPoke8(bytes, 3L, 70)
+        azPoke32(bytes, 4L, dataSize + 36)
+        azPoke8(bytes, 8L, 87)
+        azPoke8(bytes, 9L, 65)
+        azPoke8(bytes, 10L, 86)
+        azPoke8(bytes, 11L, 69)
+        azPoke8(bytes, 12L, 102)
+        azPoke8(bytes, 13L, 109)
+        azPoke8(bytes, 14L, 116)
+        azPoke8(bytes, 15L, 32)
+        azPoke32(bytes, 16L, 16)
+        azPoke8(bytes, 20L, 1)
+        azPoke8(bytes, 21L, 0)
+        azPoke8(bytes, 22L, 1)
+        azPoke8(bytes, 23L, 0)
+        azPoke32(bytes, 24L, sampleRate)
+        azPoke32(bytes, 28L, sampleRate * 2)
+        azPoke8(bytes, 32L, 2)
+        azPoke8(bytes, 33L, 0)
+        azPoke8(bytes, 34L, 16)
+        azPoke8(bytes, 35L, 0)
+        azPoke8(bytes, 36L, 100)
+        azPoke8(bytes, 37L, 97)
+        azPoke8(bytes, 38L, 116)
+        azPoke8(bytes, 39L, 97)
+        azPoke32(bytes, 40L, dataSize)
     }
 
-    func pokeSample(bytes: Long, frame: Int, value: Real) {
-        var sample = (clamp(value, -1.0, 1.0) * 28000.0) as Int
+    func pokeSample(bytes: std::Long, frame: std::Int, value: std::Double) {
+        var sample = (clamp(value, -1.0, 1.0) * 28000.0) as std::Int
         if sample < 0 { sample = sample + 65536 }
-        fin offset = 44L + (frame * 2) as Long
-        az_poke8(bytes, offset, sample % 256)
-        az_poke8(bytes, offset + 1L, (sample / 256) % 256)
+        fin offset = 44L + (frame * 2) as std::Long
+        azPoke8(bytes, offset, sample % 256)
+        azPoke8(bytes, offset + 1L, (sample / 256) % 256)
     }
 
-    func soundtrackSample(frame: Int): Real {
-        fin t = (frame as Real) / (SAMPLE_RATE as Real)
-        fin section = (frame / (SAMPLE_RATE * 2)) % 4
+    func soundtrackSample(frame: std::Int): std::Double {
+        fin t = (frame as std::Double) / (sampleRate as std::Double)
+        fin section = (frame / (sampleRate * 2)) % 4
         var root = 55.0
         if section == 1 { root = 65.41 }
         if section == 2 { root = 73.42 }
         if section == 3 { root = 49.0 }
-        var chord = sin(t * PI * 2.0 * root) * 0.34
-        chord = chord + sin(t * PI * 2.0 * root * 1.5) * 0.18
-        chord = chord + sin(t * PI * 2.0 * root * 2.0) * 0.11
-        fin beatFrame = frame % (SAMPLE_RATE / 2)
+        var chord = std::sin(t * std::PI * 2.0 * root) * 0.34
+        chord = chord + std::sin(t * std::PI * 2.0 * root * 1.5) * 0.18
+        chord = chord + std::sin(t * std::PI * 2.0 * root * 2.0) * 0.11
+        fin beatFrame = frame % (sampleRate / 2)
         var beat = 0.0
         if beatFrame < 1500 {
-            fin envelope = 1.0 - (beatFrame as Real) / 1500.0
-            beat = sin(t * PI * 2.0 * 44.0) * envelope * 0.30
+            fin envelope = 1.0 - (beatFrame as std::Double) / 1500.0
+            beat = std::sin(t * std::PI * 2.0 * 44.0) * envelope * 0.30
         }
         return (chord + beat) * 0.62
     }
 
-    func engineSample(frame: Int): Real {
-        fin t = (frame as Real) / (SAMPLE_RATE as Real)
-        fin fundamental = sin(t * PI * 2.0 * 78.0) * 0.48
-        fin combustion = sin(t * PI * 2.0 * 156.0) * 0.24
-        fin mechanical = sin(t * PI * 2.0 * 312.0) * 0.10
+    func engineSample(frame: std::Int): std::Double {
+        fin t = (frame as std::Double) / (sampleRate as std::Double)
+        fin fundamental = std::sin(t * std::PI * 2.0 * 78.0) * 0.48
+        fin combustion = std::sin(t * std::PI * 2.0 * 156.0) * 0.24
+        fin mechanical = std::sin(t * std::PI * 2.0 * 312.0) * 0.10
         return fundamental + combustion + mechanical
     }
 
-    func crashSample(frame: Int, frameCount: Int): Real {
-        fin t = (frame as Real) / (frameCount as Real)
-        fin noise = ((((frame * 97) % 200) - 100) as Real) / 100.0
-        fin metal = sin((frame as Real) * 0.37) * 0.35
+    func crashSample(frame: std::Int, frameCount: std::Int): std::Double {
+        fin t = (frame as std::Double) / (frameCount as std::Double)
+        fin noise = ((((frame * 97) % 200) - 100) as std::Double) / 100.0
+        fin metal = std::sin((frame as std::Double) * 0.37) * 0.35
         fin envelope = (1.0 - t) * (1.0 - t)
         return (noise * 0.72 + metal) * envelope
     }
 
-    func wavePlayer(kind: Int): Long {
-        var frameCount = SAMPLE_RATE
-        if kind == SOUNDTRACK { frameCount = SAMPLE_RATE * 8 }
-        if kind == CRASH_EFFECT { frameCount = (SAMPLE_RATE * 45) / 100 }
+    func wavePlayer(kind: std::Int): std::Long {
+        var frameCount = sampleRate
+        if kind == SOUNDTRACK { frameCount = sampleRate * 8 }
+        if kind == crashEffect { frameCount = (sampleRate * 45) / 100 }
         fin dataSize = frameCount * 2
         fin totalSize = dataSize + 44
-        fin bytes = az_alloc(totalSize as Long)
+        fin bytes = azAlloc(totalSize as std::Long)
         pokeWaveHeader(bytes, dataSize)
 
         var frame = 0
         while frame < frameCount {
             var sample = 0.0
             if kind == SOUNDTRACK { sample = soundtrackSample(frame) }
-            if kind == ENGINE_LOOP { sample = engineSample(frame) }
-            if kind == CRASH_EFFECT { sample = crashSample(frame, frameCount) }
+            if kind == engineLoop { sample = engineSample(frame) }
+            if kind == crashEffect { sample = crashSample(frame, frameCount) }
             pokeSample(bytes, frame, sample)
             frame = frame + 1
         }
 
-        fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as Long)
+        fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as std::Long)
         fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, 0L)
-        az_free(bytes)
+        azFree(bytes)
         if player != 0L {
             send1(player, sel("setEnableRate:"), 1L)
             send0(player, sel("prepareToPlay"))
@@ -141,38 +142,38 @@ friend zone engine::audio {
     }
 
     func scene(): AudioScene {
-        return AudioScene(wavePlayer(SOUNDTRACK), wavePlayer(ENGINE_LOOP), wavePlayer(CRASH_EFFECT), false)
+        return AudioScene(wavePlayer(SOUNDTRACK), wavePlayer(engineLoop), wavePlayer(crashEffect), false)
     }
 
     func start(scene: AudioScene) {
         if scene.soundtrack != 0L {
             send1(scene.soundtrack, sel("setNumberOfLoops:"), 1000000L)
-            fin volume = az_send_float1(scene.soundtrack, sel("setVolume:"), 0.20)
+            fin volume = azSendFloat1(scene.soundtrack, sel("setVolume:"), 0.20)
             send0(scene.soundtrack, sel("play"))
         }
         if scene.engineLoop != 0L {
             send1(scene.engineLoop, sel("setNumberOfLoops:"), 1000000L)
-            fin volume = az_send_float1(scene.engineLoop, sel("setVolume:"), 0.0)
-            fin rate = az_send_float1(scene.engineLoop, sel("setRate:"), 0.72)
+            fin volume = azSendFloat1(scene.engineLoop, sel("setVolume:"), 0.0)
+            fin rate = azSendFloat1(scene.engineLoop, sel("setRate:"), 0.72)
             send0(scene.engineLoop, sel("play"))
         }
         scene.running = true
     }
 
-    func updateEngine(scene: AudioScene, speed: Real, throttle: Real, maxSpeed: Real) {
+    func updateEngine(scene: AudioScene, speed: std::Double, throttle: std::Double, maxSpeed: std::Double) {
         if !scene.running || scene.engineLoop == 0L { return }
         fin speedRatio = clamp(speed / maxSpeed, 0.0, 1.0)
         fin load = clamp(throttle, 0.0, 1.0)
         fin volume = clamp(0.035 + speedRatio * 0.34 + load * 0.22, 0.0, 0.58)
         fin rate = 0.72 + speedRatio * 1.20 + load * 0.16
-        fin unusedVolume = az_send_float1(scene.engineLoop, sel("setVolume:"), volume)
-        fin unusedRate = az_send_float1(scene.engineLoop, sel("setRate:"), rate)
+        fin unusedVolume = azSendFloat1(scene.engineLoop, sel("setVolume:"), volume)
+        fin unusedRate = azSendFloat1(scene.engineLoop, sel("setRate:"), rate)
     }
 
-    func playCrash(scene: AudioScene, strength: Real) {
+    func playCrash(scene: AudioScene, strength: std::Double) {
         if scene.crashEffect == 0L { return }
-        fin restart = az_send_f1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
-        fin volume = az_send_float1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
+        fin restart = azSendF1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
+        fin volume = azSendFloat1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
         send0(scene.crashEffect, sel("play"))
     }
 
@@ -181,5 +182,131 @@ friend zone engine::audio {
         if scene.engineLoop != 0L { send0(scene.engineLoop, sel("stop")) }
         if scene.crashEffect != 0L { send0(scene.crashEffect, sel("stop")) }
         scene.running = false
+    }
+}
+
+// ── Sample playback ──────────────────────────────────────────────────────
+
+/**
+ * A decoded sound held in memory and ready to play.
+ *
+ * The platform decoder handles the container, so any format it understands —
+ * WAV, AIFF, MP3, AAC — loads through the same call. Tracker modules do not
+ * decode this way and are rendered to PCM first; see [soundFromPcm].
+ */
+@std::Experimental(since: "0.0.4")
+pack Sound {
+    var player: std::Long
+    var ready: std::Bool
+}
+
+/** The sound returned when loading fails; every operation on it is a no-op. */
+@std::Experimental(since: "0.0.4")
+func soundEmpty(): Sound {
+    return Sound(0L, false)
+}
+
+/**
+ * Builds a player from encoded audio already in memory.
+ *
+ * Takes the bytes rather than a path so callers can decode from an archive, a
+ * network buffer, or PCM they rendered themselves, without staging a temp file.
+ */
+@std::Experimental(since: "0.0.4")
+func soundFromBytes(bytes: std::Long, length: std::Int): Sound {
+    if bytes == 0L || length <= 0 {
+        return soundEmpty()
+    }
+    fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, length as std::Long)
+    if data == 0L {
+        return soundEmpty()
+    }
+    fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, 0L)
+    if player == 0L {
+        return soundEmpty()
+    }
+    send1(player, sel("setEnableRate:"), 1L)
+    send0(player, sel("prepareToPlay"))
+    return Sound(player, true)
+}
+
+/** Loads an encoded sound file from disk. */
+@std::Experimental(since: "0.0.4")
+func loadSound(path: std::String): Sound {
+    var blob = readFile(path)
+    if !blob.ok() {
+        return soundEmpty()
+    }
+    fin sound = soundFromBytes(blob.data, blob.size)
+    blob.release()
+    return sound
+}
+
+impl Sound {
+
+    /** Plays from the start, once. */
+    func play() {
+        if !self.ready {
+            return
+        }
+        fin rewind = azSendF1(self.player, sel("setCurrentTime:"), 0.0)
+        send1(self.player, sel("setNumberOfLoops:"), 0L)
+        send0(self.player, sel("play"))
+    }
+
+    /**
+     * Plays continuously until stopped.
+     *
+     * Background music is expressed as an effectively unbounded loop count
+     * rather than by restarting on completion, so there is no gap at the seam.
+     */
+    func playLooping() {
+        if !self.ready {
+            return
+        }
+        send1(self.player, sel("setNumberOfLoops:"), -1L)
+        send0(self.player, sel("play"))
+    }
+
+    /** Stops playback and rewinds. */
+    func stop() {
+        if !self.ready {
+            return
+        }
+        send0(self.player, sel("stop"))
+        fin rewind = azSendF1(self.player, sel("setCurrentTime:"), 0.0)
+    }
+
+    /** Sets the volume, 0.0 silent to 1.0 full. */
+    func setVolume(volume: std::Double) {
+        if !self.ready {
+            return
+        }
+        var level = volume
+        if level < 0.0 {
+            level = 0.0
+        }
+        if level > 1.0 {
+            level = 1.0
+        }
+        fin applied = azSendFloat1(self.player, sel("setVolume:"), level)
+    }
+
+    /** Whether the sound is currently playing. */
+    func isPlaying(): std::Bool {
+        if !self.ready {
+            return false
+        }
+        return send0(self.player, sel("isPlaying")) != 0L
+    }
+
+    /** Releases the underlying player. */
+    func release[self: Self!]() {
+        if self.ready {
+            send0(self.player, sel("stop"))
+            fin released = send0(self.player, sel("release"))
+        }
+        self.player = 0L
+        self.ready = false
     }
 }

@@ -1,0 +1,384 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/neighbor
+ *
+ * Which cells touch a cell, on whichever lattice the map uses.
+ *
+ * A square cell has four edge neighbours and four corner ones, a hex has six,
+ * and an isometric cell has the square set — its neighbours only *look*
+ * diagonal because the lattice is drawn rotated. Pathfinding, flood fills and
+ * autotiling all want that set without caring which lattice produced it, so
+ * this module answers in tile coordinates and lets the geometry decide.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.neighbor
+
+import std.container.array
+import engine.tilemap.types
+import engine.tilemap.hex
+import engine.tilemap.coords
+
+/**
+ * The eight directions of a square lattice, named in the engine's y-down world
+ * space — so [North] is `y - 1`.
+ */
+enum SquareDirection {
+    North
+    NorthEast
+    East
+    SouthEast
+    South
+    SouthWest
+    West
+    NorthWest
+}
+
+/**
+ * A cell's neighbours, in lattice order.
+ *
+ * The two axes are kept in separate planes and the count is explicit, so the
+ * same value works for a hexagon's six and a square's eight without an
+ * allocation per query.
+ */
+pack Neighbors {
+    var xs: std::Array<std::Int>
+    var ys: std::Array<std::Int>
+    var count: std::Int
+}
+
+/** Room for [capacity] neighbours. */
+func neighborsNew(capacity: std::Int): Neighbors {
+    fin room = intMax(capacity, 0)
+    var xs: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+    var ys: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+    return Neighbors(xs, ys, 0)
+}
+
+impl Neighbors {
+    func add(pos: TilePos) {
+        if self.count >= self.xs.size {
+            fin room = intMax(self.xs.size * 2, 8)
+            self.xs = intGridResize(self.xs, self.count, room, 0)
+            self.ys = intGridResize(self.ys, self.count, room, 0)
+        }
+        self.xs[self.count] = pos.x
+        self.ys[self.count] = pos.y
+        self.count = self.count + 1
+    }
+
+    /** The neighbour at [index], or the origin when out of range. */
+    func at(index: std::Int): TilePos {
+        if index < 0 || index >= self.count {
+            return TilePos(0, 0)
+        }
+        return TilePos(self.xs[index], self.ys[index])
+    }
+
+    /** True when [pos] is among the neighbours. */
+    func contains(pos: TilePos): std::Bool {
+        var i = 0
+        while i < self.count {
+            if self.xs[i] == pos.x && self.ys[i] == pos.y {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    func clear() {
+        self.count = 0
+    }
+}
+
+// ── Square directions ───────────────────────────────────────────────────
+
+/** The step [direction] takes, in tile coordinates. */
+func squareDelta(direction: SquareDirection): TilePos {
+    when direction {
+        SquareDirection.North -> { return TilePos(0, -1) }
+        SquareDirection.NorthEast -> { return TilePos(1, -1) }
+        SquareDirection.East -> { return TilePos(1, 0) }
+        SquareDirection.SouthEast -> { return TilePos(1, 1) }
+        SquareDirection.South -> { return TilePos(0, 1) }
+        SquareDirection.SouthWest -> { return TilePos(-1, 1) }
+        SquareDirection.West -> { return TilePos(-1, 0) }
+        SquareDirection.NorthWest -> { return TilePos(-1, -1) }
+    }
+    return TilePos(0, 0)
+}
+
+/** The direction facing the other way. */
+func squareOpposite(direction: SquareDirection): SquareDirection {
+    when direction {
+        SquareDirection.North -> { return SquareDirection.South }
+        SquareDirection.NorthEast -> { return SquareDirection.SouthWest }
+        SquareDirection.East -> { return SquareDirection.West }
+        SquareDirection.SouthEast -> { return SquareDirection.NorthWest }
+        SquareDirection.South -> { return SquareDirection.North }
+        SquareDirection.SouthWest -> { return SquareDirection.NorthEast }
+        SquareDirection.West -> { return SquareDirection.East }
+        SquareDirection.NorthWest -> { return SquareDirection.SouthEast }
+    }
+    return direction
+}
+
+/** True when [direction] crosses a corner rather than an edge. */
+func squareIsDiagonal(direction: SquareDirection): std::Bool {
+    when direction {
+        SquareDirection.NorthEast -> { return true }
+        SquareDirection.SouthEast -> { return true }
+        SquareDirection.SouthWest -> { return true }
+        SquareDirection.NorthWest -> { return true }
+        else -> { return false }
+    }
+    return false
+}
+
+/** The neighbour of [pos] in [direction]. */
+func squareNeighbor(pos: TilePos, direction: SquareDirection): TilePos {
+    fin delta = squareDelta(direction)
+    return TilePos(pos.x + delta.x, pos.y + delta.y)
+}
+
+/**
+ * The square direction at [index], counted clockwise from north.
+ *
+ * Even indices are edges and odd ones corners, so an edge-only walk is
+ * `index = index + 2` and never has to consult [squareIsDiagonal].
+ */
+func squareDirectionAt(index: std::Int): SquareDirection {
+    fin i = tileFloorMod(index, 8)
+    if i == 0 {
+        return SquareDirection.North
+    }
+    if i == 1 {
+        return SquareDirection.NorthEast
+    }
+    if i == 2 {
+        return SquareDirection.East
+    }
+    if i == 3 {
+        return SquareDirection.SouthEast
+    }
+    if i == 4 {
+        return SquareDirection.South
+    }
+    if i == 5 {
+        return SquareDirection.SouthWest
+    }
+    if i == 6 {
+        return SquareDirection.West
+    }
+    return SquareDirection.NorthWest
+}
+
+// ── Lattice-aware neighbours ────────────────────────────────────────────
+
+/** How many neighbours a cell of this lattice has. */
+func neighborCount(geo: TilemapGeometry, includeDiagonals: std::Bool): std::Int {
+    when geo.kind {
+        TilemapKind.Hexagon(system) -> { return 6 }
+        else -> {
+            if includeDiagonals {
+                return 8
+            }
+            return 4
+        }
+    }
+    return 4
+}
+
+/**
+ * The neighbour of [pos] in direction [index] on this lattice.
+ *
+ * On a hex lattice `index` runs `0 .. 5` in the axial order; elsewhere it runs
+ * `0 .. 7` clockwise from north, or `0 .. 3` over the edges alone when
+ * diagonals are excluded.
+ */
+func neighborAt(geo: TilemapGeometry, pos: TilePos, index: std::Int, includeDiagonals: std::Bool): TilePos {
+    when geo.kind {
+        TilemapKind.Hexagon(system) -> {
+            return hexNeighborAt(pos, system, index)
+        }
+        else -> {
+            if includeDiagonals {
+                return squareNeighbor(pos, squareDirectionAt(index))
+            }
+            return squareNeighbor(pos, squareDirectionAt(tileFloorMod(index, 4) * 2))
+        }
+    }
+    return pos
+}
+
+/** Every neighbour of [pos], whether or not it lies on the map. */
+func neighborsOf(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::Bool): Neighbors {
+    fin total = neighborCount(geo, includeDiagonals)
+    var found = neighborsNew(total)
+    var i = 0
+    while i < total {
+        found.add(neighborAt(geo, pos, i, includeDiagonals))
+        i = i + 1
+    }
+    return found
+}
+
+/** Every neighbour of [pos] that lies on the map. */
+func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::Bool): Neighbors {
+    fin total = neighborCount(geo, includeDiagonals)
+    var found = neighborsNew(total)
+    var i = 0
+    while i < total {
+        fin candidate = neighborAt(geo, pos, i, includeDiagonals)
+        if geo.size.contains(candidate) {
+            found.add(candidate)
+        }
+        i = i + 1
+    }
+    return found
+}
+
+/**
+ * The number of steps from [from] to [to] on this lattice, ignoring obstacles.
+ *
+ * This is the admissible heuristic a pathfinder wants: hex distance on a hex
+ * lattice, Chebyshev where diagonals are allowed, Manhattan where they are not.
+ */
+func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiagonals: std::Bool): std::Int {
+    when geo.kind {
+        TilemapKind.Hexagon(system) -> {
+            return hexDistanceBetween(from, to, system)
+        }
+        else -> {
+            if includeDiagonals {
+                return from.chebyshev(to)
+            }
+            return from.manhattan(to)
+        }
+    }
+    return from.manhattan(to)
+}
+
+/** True when [a] and [b] touch on this lattice. */
+func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonals: std::Bool): std::Bool {
+    if a.same(b) {
+        return false
+    }
+    return neighborsOf(geo, a, includeDiagonals).contains(b)
+}
+
+/**
+ * Every cell within [radius] steps of [center] that lies on the map.
+ *
+ * On a hex lattice this is the hex range; elsewhere it is the square ring set,
+ * which with diagonals is a box and without one is a diamond.
+ */
+func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: std::Int, includeDiagonals: std::Bool): Neighbors {
+    var found = neighborsNew(intMax(radius, 0) * 8 + 1)
+    if radius < 0 {
+        return found
+    }
+    when geo.kind {
+        TilemapKind.Hexagon(system) -> {
+            fin range = hexRange(center, system, radius)
+            var i = 0
+            while i < range.count {
+                fin candidate = range.posAt(i, system)
+                if geo.size.contains(candidate) {
+                    found.add(candidate)
+                }
+                i = i + 1
+            }
+            return found
+        }
+        else -> {
+            var y = center.y - radius
+            while y <= center.y + radius {
+                var x = center.x - radius
+                while x <= center.x + radius {
+                    fin candidate = TilePos(x, y)
+                    fin steps = tileDistance(geo, center, candidate, includeDiagonals)
+                    if steps <= radius && geo.size.contains(candidate) {
+                        found.add(candidate)
+                    }
+                    x = x + 1
+                }
+                y = y + 1
+            }
+            return found
+        }
+    }
+    return found
+}
+
+test "square neighbours step the way the compass says" {
+    fin geo = squareGeometry(8, 8, 16.0, 16.0)
+    fin center = TilePos(3, 3)
+
+    assert squareNeighbor(center, SquareDirection.North).same(TilePos(3, 2)) {
+        "north must decrease y in the engine's y-down space"
+    }
+    assert squareNeighbor(center, SquareDirection.SouthEast).same(TilePos(4, 4)) {
+        "a corner direction must step on both axes"
+    }
+    assert squareOpposite(SquareDirection.NorthWest) == SquareDirection.SouthEast {
+        "opposite directions must cancel"
+    }
+
+    assert neighborsOf(geo, center, false).count == 4 { "an edge-only square cell has four neighbours" }
+    assert neighborsOf(geo, center, true).count == 8 { "a square cell has eight neighbours in all" }
+    assert !neighborsOf(geo, center, false).contains(TilePos(4, 4)) {
+        "excluding diagonals must exclude the corners"
+    }
+}
+
+test "neighbours are clipped to the map at its edges" {
+    fin geo = squareGeometry(8, 8, 16.0, 16.0)
+    assert neighborsWithin(geo, TilePos(0, 0), true).count == 3 {
+        "a corner cell has three neighbours on the map"
+    }
+    assert neighborsWithin(geo, TilePos(0, 3), false).count == 3 {
+        "an edge cell has three edge neighbours on the map"
+    }
+    assert neighborsWithin(geo, TilePos(3, 3), true).count == 8 {
+        "an interior cell keeps all eight"
+    }
+}
+
+test "a hex lattice answers with six neighbours and hex distance" {
+    fin geo = hexGeometry(HexCoordSystem.RowOdd, 8, 8, 32.0, 36.0)
+    fin center = TilePos(3, 3)
+    fin around = neighborsOf(geo, center, true)
+
+    assert around.count == 6 { "a hexagon has six neighbours whatever the diagonal flag says" }
+    var i = 0
+    while i < around.count {
+        assert tileDistance(geo, center, around.at(i), true) == 1 {
+            "every hex neighbour must be one step away"
+        }
+        i = i + 1
+    }
+    assert tilesAdjacent(geo, center, around.at(0), true) { "a neighbour must read as adjacent" }
+    assert !tilesAdjacent(geo, center, center, true) { "a cell is not its own neighbour" }
+}
+
+test "ranges cover the shape the metric implies" {
+    fin square = squareGeometry(16, 16, 16.0, 16.0)
+    assert tilesWithin(square, TilePos(8, 8), 1, true).count == 9 {
+        "a radius-1 box holds the centre and eight neighbours"
+    }
+    assert tilesWithin(square, TilePos(8, 8), 1, false).count == 5 {
+        "a radius-1 diamond holds the centre and four edge neighbours"
+    }
+
+    fin hexes = hexGeometry(HexCoordSystem.RowOdd, 16, 16, 32.0, 36.0)
+    assert tilesWithin(hexes, TilePos(8, 8), 2, true).count == 19 {
+        "a radius-2 hex range holds nineteen cells"
+    }
+}

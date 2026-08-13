@@ -1,0 +1,230 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/tileset
+ *
+ * What a tile *is*: its artwork, its behaviour and its animation, indexed by
+ * tile id rather than by cell.
+ *
+ * Traits belong to the tileset, not to the cell. Every brick wall in a level is
+ * solid for the same reason, so recording that once per tile id costs a few
+ * hundred integers, while recording it per cell costs one per cell and invites
+ * the two copies to disagree. A cell's own flags carry only what genuinely
+ * varies cell by cell — its mirroring, its tint, whether it is hidden.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.tileset
+
+import std.container.array
+import engine.platform
+import engine.tilemap.types
+import engine.tilemap.atlas
+import engine.tilemap.anim
+import engine.gpu.draw
+
+/**
+ * The artwork and behaviour of every tile a map can use.
+ *
+ * `traits` is indexed by global tile id and holds the `TRAIT_*` bits. Ids past
+ * the end of the table read as `0` — no traits — so a tileset that grew after
+ * its trait table was built degrades to inert tiles instead of reading past the
+ * array.
+ */
+pack TileSet {
+    var name: std::String
+    var texture: TilemapTexture
+    var traits: std::Array<std::Int>
+    var animations: TileAnimationSet
+}
+
+/** A tileset over [texture], with every tile inert and unanimated. */
+func tileSetNew(name: std::String, texture: TilemapTexture): TileSet {
+    fin count = intMax(textureTileCount(texture), 0)
+    return TileSet(name, texture, intGridFill(count, 1, 0), tileAnimationSetNew(count))
+}
+
+/** A tileset over a single sheet. */
+func tileSetFromAtlas(name: std::String, atlas: TileAtlas): TileSet {
+    return tileSetNew(name, tilemapTextureSingle(atlas))
+}
+
+impl TileSet {
+    /** The number of tiles the set can address. */
+    func count(): std::Int {
+        return textureTileCount(self.texture)
+    }
+
+    /** True when [index] names a tile of this set. */
+    func owns(index: std::Int): std::Bool {
+        return index >= 0 && index < self.count()
+    }
+
+    /** The trait bits of [index], or `0` for an unknown tile. */
+    func traitsOf(index: std::Int): std::Int {
+        if index < 0 || index >= self.traits.size {
+            return 0
+        }
+        return self.traits[index]
+    }
+
+    /** Replaces the trait bits of [index]. */
+    func setTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+        if index < 0 || index >= self.traits.size {
+            return .UnknownTile
+        }
+        self.traits[index] = traits
+    }
+
+    /** Adds [traits] to the bits of [index]. */
+    func addTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+        try self.setTraits(index, self.traitsOf(index) | traits)
+    }
+
+    /** Removes [traits] from the bits of [index]. */
+    func removeTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+        try self.setTraits(index, flagsClear(self.traitsOf(index), traits))
+    }
+
+    /**
+     * Adds [traits] to every tile of the inclusive id range `first .. last`.
+     *
+     * Tilesets are laid out in runs — a strip of ground, a strip of water — so
+     * marking a run is the operation a game actually performs after loading.
+     */
+    func addTraitsRange(first: std::Int, last: std::Int, traits: std::Int): std::Int {
+        var marked = 0
+        var index = intMax(first, 0)
+        while index <= last && index < self.traits.size {
+            self.traits[index] = self.traits[index] | traits
+            marked = marked + 1
+            index = index + 1
+        }
+        return marked
+    }
+
+    /** True when [index] carries every bit of [mask]. */
+    func hasAll(index: std::Int, mask: std::Int): std::Bool {
+        return flagsAll(self.traitsOf(index), mask)
+    }
+
+    /** True when [index] carries any bit of [mask]. */
+    func hasAny(index: std::Int, mask: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), mask)
+    }
+
+    func isSolid(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitSolid)
+    }
+
+    func isOneWay(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitOneWay)
+    }
+
+    func isLadder(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitLadder)
+    }
+
+    func isWater(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitWater)
+    }
+
+    func isHazard(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitHazard)
+    }
+
+    func isDestructible(index: std::Int): std::Bool {
+        return flagsAny(self.traitsOf(index), traitDestructible)
+    }
+
+    /** The slope direction of [index]: `1` rising right, `-1` rising left, `0` flat. */
+    func slope(index: std::Int): std::Int {
+        fin traits = self.traitsOf(index)
+        if flagsAny(traits, traitSlopeRight) {
+            return 1
+        }
+        if flagsAny(traits, traitSlopeLeft) {
+            return -1
+        }
+        return 0
+    }
+
+    /**
+     * Registers an animation and marks every tile it covers as animated.
+     *
+     * The [traitAnimated] bit lets a renderer or an editor tell at a glance
+     * that a tile is not the still picture it appears to be.
+     */
+    func animate(animation: TileAnimation): std::Int {
+        fin id = self.animations.add(animation)
+        self.addTraitsRange(animation.first, animation.last, traitAnimated)
+        return id
+    }
+
+    /** The tile actually drawn for [index] at [seconds] in cell [pos]. */
+    func resolve(index: std::Int, seconds: std::Double, pos: TilePos): std::Int {
+        return self.animations.resolveAt(index, seconds, pos)
+    }
+
+    /** The sheet and local id backing [index]. */
+    func find(index: std::Int): AtlasPick {
+        return textureFind(self.texture, index)
+    }
+
+    /** True when the set has usable artwork. */
+    func ok(): std::Bool {
+        return textureOk(self.texture)
+    }
+}
+
+/** Releases every GPU texture the tileset owns. */
+func tileSetRelease(app: App, set: TileSet) {
+    textureRelease(app, set.texture)
+}
+
+test "traits are recorded per tile id and read back per tile id" {
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    assert set.count() == 16 { "a 64x64 sheet of 16px tiles holds sixteen tiles" }
+
+    set.addTraitsRange(0, 3, traitSolid)
+    set.addTraits(4, traitWater | traitHazard) catch { }
+
+    assert set.isSolid(0) && set.isSolid(3) { "the whole run must be marked" }
+    assert !set.isSolid(4) { "a tile outside the run must stay inert" }
+    assert set.isWater(4) && set.isHazard(4) { "combined traits must both survive" }
+    assert set.hasAll(4, traitWater | traitHazard) { "hasAll must require every bit" }
+    assert !set.hasAll(4, traitWater | traitSolid) { "hasAll must fail on a missing bit" }
+    assert set.traitsOf(999) == 0 { "an unknown tile must read as inert, not out of bounds" }
+
+    var refused = false
+    try {
+        set.setTraits(999, traitSolid)
+    } catch {
+        refused = true
+    }
+    assert refused { "writing an unknown tile must be refused" }
+}
+
+test "a slope reports the direction it rises in" {
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    set.addTraits(1, traitSolid | traitSlopeRight) catch { }
+    set.addTraits(2, traitSolid | traitSlopeLeft) catch { }
+    assert set.slope(1) == 1 && set.slope(2) == -1 && set.slope(3) == 0 {
+        "slope must distinguish both directions from flat ground"
+    }
+}
+
+test "animating a tileset marks the run and resolves through the clock" {
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    set.animate(tileAnimation(8, 11, 4.0, TileAnimationMode.Repeat))
+
+    assert set.hasAny(8, traitAnimated) && set.hasAny(11, traitAnimated) {
+        "every frame of the run must be marked as animated"
+    }
+    assert set.resolve(8, 0.0, TilePos(0, 0)) >= 8 { "an animated tile must resolve within its run" }
+    assert set.resolve(5, 3.0, TilePos(0, 0)) == 5 { "a still tile must resolve to itself" }
+}

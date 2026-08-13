@@ -1,0 +1,434 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/tilemap/map
+ *
+ * [Tilemap]: a lattice, a stack of layers on it, and the tileset they draw
+ * from.
+ *
+ * Layers are held by one map rather than being separate maps, because a
+ * background, its walls and its foreground detail share a lattice, a position
+ * and a culling pass. Splitting them into independent maps means converting the
+ * same camera rectangle to tiles three times and keeping three geometries in
+ * step by hand. Each layer keeps its own visibility, opacity, tint, parallax
+ * and draw order, which is all a separate map would have bought.
+ *
+ * @since 0.0.4
+ */
+module engine.tilemap.map
+
+import std.container.array
+import engine.platform
+import engine.tilemap.types
+import engine.tilemap.coords
+import engine.tilemap.storage
+import engine.tilemap.atlas
+import engine.tilemap.anim
+import engine.tilemap.tileset
+import engine.gpu.draw
+
+/**
+ * A lattice, its layers and its artwork.
+ *
+ * Every layer must match the map's size; [tilemapAddLayer] enforces that rather
+ * than letting a mismatched layer draw into the wrong cells.
+ */
+pack Tilemap {
+    var name: std::String
+    var geometry: TilemapGeometry
+    var layers: std::Array<TileLayer>
+    var count: std::Int
+    var tiles: TileSet
+    /** Whether the renderer draws the map at all. */
+    var visible: std::Bool
+    /** Map-wide opacity, multiplied into every layer's own. */
+    var opacity: std::Double
+    /** Map-wide tint, multiplied into every layer's own. */
+    var tint: TileColor
+}
+
+/** Where a named layer was found. */
+variant enum LayerPick {
+    Found(index: std::Int, layer: TileLayer)
+    Absent
+}
+
+/** An empty map on [geometry], drawing from [tiles]. */
+func tilemapNew(name: std::String, geometry: TilemapGeometry, tiles: TileSet): Tilemap {
+    var layers: std::Array<TileLayer> = std::Array::fill<TileLayer>(0)
+    return Tilemap(name, geometry, layers, 0, tiles, true, 1.0, tileColorWhite())
+}
+
+/** A square map of [width] x [height] tiles with one empty layer. */
+func tilemapSquare(
+    name: std::String,
+    width: std::Int,
+    height: std::Int,
+    tileWidth: std::Double,
+    tileHeight: std::Double,
+    tiles: TileSet
+): Tilemap {
+    var map = tilemapNew(name, squareGeometry(width, height, tileWidth, tileHeight), take tiles)
+    tilemapAddLayer(map, tileLayerNew("main", TilemapSize(width, height)))
+    return map
+}
+
+impl Tilemap {
+    /** The map's extent in tiles. */
+    func size(): TilemapSize {
+        return self.geometry.size
+    }
+
+    /** The layer at [index], or an empty one-cell layer when the index is unknown. */
+    func layerAt(index: std::Int): TileLayer {
+        if index < 0 || index >= self.count {
+            return tileLayerNew("", TilemapSize(0, 0))
+        }
+        return self.layers[index]
+    }
+
+    /** True when [index] names a layer of this map. */
+    func hasLayer(index: std::Int): std::Bool {
+        return index >= 0 && index < self.count
+    }
+}
+
+/**
+ * Appends [layer], refusing one whose size does not match the map.
+ *
+ * Returns the layer's index, or `-1` when it was refused. A mismatched layer is
+ * refused rather than resized: a layer of the wrong size is nearly always a
+ * loader bug, and quietly padding it turns a loud failure into a level that is
+ * subtly wrong.
+ */
+func tilemapAddLayer(map: Tilemap!, layer: TileLayer): std::Int {
+    if layer.size.x != map.geometry.size.x || layer.size.y != map.geometry.size.y {
+        return -1
+    }
+    if map.count >= map.layers.size {
+        fin room = intMax(map.layers.size * 2, 4)
+        var grown: std::Array<TileLayer> = std::Array::fill<TileLayer>(room)
+        var i = 0
+        while i < map.count {
+            grown[i] = map.layers[i]
+            i = i + 1
+        }
+        map.layers = grown
+    }
+    layer.order = map.count
+    map.layers[map.count] = layer
+    map.count = map.count + 1
+    return map.count - 1
+}
+
+/** Creates and appends an empty layer sized to the map. */
+func tilemapNewLayer(map: Tilemap!, name: std::String): std::Int {
+    return tilemapAddLayer(map, tileLayerNew(name, map.geometry.size))
+}
+
+/** The layer called [name]. */
+func tilemapFindLayer(map: Tilemap&, name: std::String): LayerPick {
+    var i = 0
+    while i < map.count {
+        if map.layers[i].name == name {
+            return LayerPick.Found(i, map.layers[i])
+        }
+        i = i + 1
+    }
+    return LayerPick.Absent
+}
+
+/** The index of the layer called [name], or `-1`. */
+func tilemapLayerIndex(map: Tilemap&, name: std::String): std::Int {
+    when tilemapFindLayer(map, name) {
+        LayerPick.Found(index, layer) -> { return index }
+        else -> { return -1 }
+    }
+    return -1
+}
+
+/** Removes the layer at [index], keeping the order of the rest. */
+func tilemapRemoveLayer(map: Tilemap!, index: std::Int): std::Bool {
+    if index < 0 || index >= map.count {
+        return false
+    }
+    var i = index
+    while i < map.count - 1 {
+        map.layers[i] = map.layers[i + 1]
+        i = i + 1
+    }
+    map.count = map.count - 1
+    var order = 0
+    while order < map.count {
+        map.layers[order].order = order
+        order = order + 1
+    }
+    return true
+}
+
+/**
+ * Sorts the layers by their `order` field, keeping ties in insertion order.
+ *
+ * An insertion sort is deliberate: layer counts are small, and a stable sort
+ * means two layers that share an order do not swap between frames and make the
+ * scene flicker.
+ */
+func tilemapSortLayers(map: Tilemap!) {
+    var i = 1
+    while i < map.count {
+        fin moving = map.layers[i]
+        var j = i - 1
+        while j >= 0 && map.layers[j].order > moving.order {
+            map.layers[j + 1] = map.layers[j]
+            j = j - 1
+        }
+        map.layers[j + 1] = moving
+        i = i + 1
+    }
+}
+
+// ── Cell access ─────────────────────────────────────────────────────────
+
+/** The cell at [pos] of layer [index]. */
+func tilemapLookup(map: Tilemap&, index: std::Int, pos: TilePos): TileLookup {
+    if !map.hasLayer(index) {
+        return TileLookup.OutOfBounds
+    }
+    return layerLookup(map.layers[index], pos)
+}
+
+/** The tile index at [pos] of layer [index], or [tileEmpty]. */
+func tilemapIndexAt(map: Tilemap&, index: std::Int, pos: TilePos): std::Int {
+    if !map.hasLayer(index) {
+        return tileEmpty
+    }
+    return layerIndexAt(map.layers[index], pos)
+}
+
+/** Writes [tile] at [pos] of layer [index]. */
+func tilemapSet(map: Tilemap!, index: std::Int, pos: TilePos, tile: std::Int): std::Unit ?! TilemapFault {
+    if !map.hasLayer(index) {
+        return .OutOfBounds
+    }
+    try layerSet(map.layers[index], pos, tile)
+}
+
+/** Clears [pos] on layer [index]. */
+func tilemapClear(map: Tilemap!, index: std::Int, pos: TilePos): std::Unit ?! TilemapFault {
+    try tilemapSet(map, index, pos, tileEmpty)
+}
+
+/**
+ * The topmost layer holding a tile at [pos], searched from the front.
+ *
+ * This is what a cursor, a pick or a "what am I standing on" query wants: the
+ * tile the player can see, not the ground hidden three layers below it.
+ */
+func tilemapTopLayerAt(map: Tilemap&, pos: TilePos): std::Int {
+    var i = map.count - 1
+    while i >= 0 {
+        if layerHasTile(map.layers[i], pos) {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+/** The topmost tile at [pos] across every layer. */
+func tilemapTopTileAt(map: Tilemap&, pos: TilePos): TileLookup {
+    fin index = tilemapTopLayerAt(map, pos)
+    if index < 0 {
+        if map.geometry.size.contains(pos) {
+            return TileLookup.Empty
+        }
+        return TileLookup.OutOfBounds
+    }
+    return layerLookup(map.layers[index], pos)
+}
+
+/** The union of the trait bits of every tile at [pos], across every layer. */
+func tilemapTraitsAt(map: Tilemap&, pos: TilePos): std::Int {
+    var traits = 0
+    var i = 0
+    while i < map.count {
+        fin tile = layerIndexAt(map.layers[i], pos)
+        if tile != tileEmpty {
+            traits = traits | map.tiles.traitsOf(tile)
+        }
+        i = i + 1
+    }
+    return traits
+}
+
+/** The trait bits of the tile at [pos] on layer [index]. */
+func tilemapLayerTraitsAt(map: Tilemap&, index: std::Int, pos: TilePos): std::Int {
+    fin tile = tilemapIndexAt(map, index, pos)
+    if tile == tileEmpty {
+        return 0
+    }
+    return map.tiles.traitsOf(tile)
+}
+
+/** True when any layer's tile at [pos] carries any bit of [mask]. */
+func tilemapHasTrait(map: Tilemap&, pos: TilePos, mask: std::Int): std::Bool {
+    return flagsAny(tilemapTraitsAt(map, pos), mask)
+}
+
+// ── Geometry passthrough ────────────────────────────────────────────────
+
+/** The world-space centre of tile [pos]. */
+func tilemapTileCenter(map: Tilemap&, pos: TilePos): WorldPos {
+    return tileCenter(map.geometry, pos)
+}
+
+/** The rectangle tile [pos] is drawn into. */
+func tilemapTileQuad(map: Tilemap&, pos: TilePos): WorldRect {
+    return tileQuad(map.geometry, pos)
+}
+
+/** The tile containing the world point [point]. */
+func tilemapWorldToTile(map: Tilemap&, point: WorldPos): TilePos {
+    return worldToTile(map.geometry, point)
+}
+
+/** Where [point] falls, distinguishing a cell of the map from one beyond it. */
+func tilemapPick(map: Tilemap&, point: WorldPos): TilePick {
+    return pickTile(map.geometry, point)
+}
+
+/** The map's world-space bounding box. */
+func tilemapBounds(map: Tilemap&): WorldRect {
+    return map.geometry.bounds
+}
+
+/** The tiles a view rectangle can possibly show. */
+func tilemapVisibleTiles(map: Tilemap&, view: WorldRect): TileRect {
+    return visibleTiles(map.geometry, view)
+}
+
+/** Moves the map and refreshes its cached geometry. */
+func tilemapSetOrigin(map: Tilemap!, origin: WorldPos) {
+    geometrySetOrigin(map.geometry, origin)
+}
+
+/** Re-anchors the map and refreshes its cached geometry. */
+func tilemapSetAnchor(map: Tilemap!, anchor: TilemapAnchor) {
+    geometrySetAnchor(map.geometry, anchor)
+}
+
+/**
+ * Resizes the map and every layer on it.
+ *
+ * Layers are resized together because a map whose layers disagree about their
+ * extent cannot be drawn or queried consistently; doing it in one call is what
+ * keeps them in step.
+ */
+func tilemapResize(map: Tilemap!, size: TilemapSize): std::Unit ?! TilemapFault {
+    if !size.isValid() {
+        return .EmptySize
+    }
+    var i = 0
+    while i < map.count {
+        try layerResize(map.layers[i], size)
+        i = i + 1
+    }
+    geometrySetSize(map.geometry, size)
+}
+
+/** The number of cells holding a tile, across every layer. */
+func tilemapTileCount(map: Tilemap&): std::Int {
+    var total = 0
+    var i = 0
+    while i < map.count {
+        total = total + layerCount(map.layers[i])
+        i = i + 1
+    }
+    return total
+}
+
+/** Releases every GPU resource the map's tileset owns. */
+func tilemapRelease(app: App, map: Tilemap!) {
+    tileSetRelease(app, map.tiles)
+}
+
+test "layers must agree with the map about their size" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+
+    assert tilemapAddLayer(map, tileLayerNew("ground", TilemapSize(8, 8))) == 0 {
+        "a matching layer must be accepted as the first layer"
+    }
+    assert tilemapAddLayer(map, tileLayerNew("wrong", TilemapSize(4, 4))) == -1 {
+        "a layer of the wrong size must be refused, not resized"
+    }
+    assert map.count == 1 { "the refused layer must not have been added" }
+}
+
+test "the topmost tile wins a stacked lookup" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "ground")
+    tilemapNewLayer(map, "walls")
+
+    tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
+    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 0 { "only the ground holds a tile so far" }
+
+    tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
+    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 1 { "the wall layer must win once it has a tile" }
+    assert tileLookupIndex(tilemapTopTileAt(map, TilePos(2, 2))) == 9 {
+        "the topmost tile must be the one reported"
+    }
+    assert tileLookupOffMap(tilemapTopTileAt(map, TilePos(99, 99))) {
+        "a lookup outside the map must say so"
+    }
+}
+
+test "traits gather across the whole stack" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    tiles.addTraits(3, traitWater)
+    tiles.addTraits(9, traitSolid)
+
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "ground")
+    tilemapNewLayer(map, "walls")
+    tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
+    tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
+
+    assert tilemapHasTrait(map, TilePos(2, 2), traitWater) { "the ground's trait must be visible" }
+    assert tilemapHasTrait(map, TilePos(2, 2), traitSolid) { "the wall's trait must be visible" }
+    assert tilemapLayerTraitsAt(map, 0, TilePos(2, 2)) == traitWater {
+        "a single-layer query must not pick up the layer above"
+    }
+    assert !tilemapHasTrait(map, TilePos(5, 5), traitSolid) { "an empty cell carries no traits" }
+}
+
+test "resizing a map carries every layer with it" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
+    tilemapNewLayer(map, "ground")
+    tilemapNewLayer(map, "walls")
+    tilemapSet(map, 0, TilePos(1, 1), 4) catch { }
+
+    var resized = true
+    try {
+        tilemapResize(map, TilemapSize(16, 4))
+    } catch {
+        resized = false
+    }
+    assert resized { "a positive resize must succeed" }
+    assert map.geometry.size.x == 16 && map.geometry.size.y == 4 { "the geometry must adopt the size" }
+    assert map.layers[1].size.x == 16 { "every layer must be resized, not just the first" }
+    assert tilemapIndexAt(map, 0, TilePos(1, 1)) == 4 { "surviving content must keep its place" }
+    var refused = false
+    try {
+        tilemapResize(map, TilemapSize(0, 4))
+    } catch {
+        refused = true
+    }
+    assert refused { "an empty size must be refused" }
+}

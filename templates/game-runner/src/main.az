@@ -13,15 +13,15 @@ module game
 
 import engine
 
-bridge C {
-    func arc4random_uniform(bound: Int): Int
+bridge .C {
+    func @foreignName("arc4random_uniform")(bound: std::Int): std::Int
 }
 
-fin LANE_WIDTH = 2.2
-fin OBSTACLE_COUNT = 10
+fin laneWidth = 2.2
+fin obstacleCount = 10
 
-func laneX(lane: Int): Real {
-    return ((lane - 1) as Real) * LANE_WIDTH
+func laneX(lane: std::Int): std::Double {
+    return ((lane - 1) as std::Double) * laneWidth
 }
 
 func main() {
@@ -35,12 +35,12 @@ func main() {
     fin ground = app.meshGrid(40.0, 40)
 
     // Obstacles: parallel arrays of lane + distance ahead (negative z).
-    var obsLane = arr@[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
-    var obsZ = arr@[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var obsLane = @std::arr[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+    var obsZ = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     var i = 0
-    while i < OBSTACLE_COUNT {
-        obsLane[i] = arc4random_uniform(3)
-        obsZ[i] = -20.0 - (i as Real) * 9.0
+    while i < obstacleCount {
+        obsLane[i] = arc4randomUniform(3)
+        obsZ[i] = -20.0 - (i as std::Double) * 9.0
         i = i + 1
     }
 
@@ -62,17 +62,17 @@ func main() {
 
         if alive {
             // ── Controls ──
-            if app.keyPressed(KEY_A) || app.keyPressed(KEY_LEFT) {
+            if app.keyPressed(keyA) || app.keyPressed(keyArrowLeft) {
                 if lane > 0 {
                     lane = lane - 1
                 }
             }
-            if app.keyPressed(KEY_D) || app.keyPressed(KEY_RIGHT) {
+            if app.keyPressed(keyD) || app.keyPressed(keyArrowRight) {
                 if lane < 2 {
                     lane = lane + 1
                 }
             }
-            if app.keyPressed(KEY_SPACE) && playerY <= 0.51 {
+            if app.keyPressed(keySpace) && playerY <= 0.51 {
                 velY = 8.5
             }
 
@@ -93,11 +93,11 @@ func main() {
 
             // ── Obstacles: approach the player, recycle behind the camera ──
             var o = 0
-            while o < OBSTACLE_COUNT {
+            while o < obstacleCount {
                 obsZ[o] = obsZ[o] + speed * dt
                 if obsZ[o] > 6.0 {
-                    obsZ[o] = -70.0 - (arc4random_uniform(30) as Real)
-                    obsLane[o] = arc4random_uniform(3)
+                    obsZ[o] = -70.0 - (arc4randomUniform(30) as std::Double)
+                    obsLane[o] = arc4randomUniform(3)
                 }
                 // Collision: same lane, close in z, and not jumped over.
                 fin dx = laneX(obsLane[o]) - playerX
@@ -110,11 +110,11 @@ func main() {
                 o = o + 1
             }
         } else {
-            if app.keyPressed(KEY_ENTER) {
+            if app.keyPressed(keyEnter) {
                 var o2 = 0
-                while o2 < OBSTACLE_COUNT {
-                    obsLane[o2] = arc4random_uniform(3)
-                    obsZ[o2] = -20.0 - (o2 as Real) * 9.0
+                while o2 < obstacleCount {
+                    obsLane[o2] = arc4randomUniform(3)
+                    obsZ[o2] = -20.0 - (o2 as std::Double) * 9.0
                     o2 = o2 + 1
                 }
                 lane = 1
@@ -134,13 +134,13 @@ func main() {
         // Track: a dark strip per lane, scrolling markers for motion cue.
         var l = 0
         while l < 3 {
-            fin strip = mat4Mul(mat4Translation(laneX(l), -0.05, -30.0), mat4Scale(LANE_WIDTH - 0.15, 0.1, 80.0))
+            fin strip = mat4Mul(mat4Translation(laneX(l), -0.05, -30.0), mat4Scale(laneWidth - 0.15, 0.1, 80.0))
             app.drawMesh(cube, strip, 0.13, 0.14, 0.18)
             l = l + 1
         }
         var m = 0
         while m < 8 {
-            fin mz = 0.0 - ((distance * 1.0 + (m as Real) * 10.0) - ((((distance + (m as Real) * 10.0) / 80.0) as Int) as Real) * 80.0)
+            fin mz = 0.0 - ((distance * 1.0 + (m as std::Double) * 10.0) - ((((distance + (m as std::Double) * 10.0) / 80.0) as std::Int) as std::Double) * 80.0)
             fin marker = mat4Mul(mat4Translation(0.0, 0.02, mz), mat4Scale(0.2, 0.02, 2.0))
             app.drawMesh(cube, marker, 0.85, 0.85, 0.55)
             m = m + 1
@@ -153,14 +153,14 @@ func main() {
 
         // Obstacles.
         var o3 = 0
-        while o3 < OBSTACLE_COUNT {
+        while o3 < obstacleCount {
             fin t = mat4Mul(mat4Translation(laneX(obsLane[o3]), 0.55, obsZ[o3]), mat4Scale(1.4, 1.1, 1.0))
             app.drawMesh(cube, t, 0.90, 0.25, 0.25)
             o3 = o3 + 1
         }
 
         // ── HUD ──
-        fin score = distance as Int
+        fin score = distance as std::Int
         app.uiText("Score ${score}", 16.0, 14.0, 17.0)
         if !alive {
             app.uiTitle("CRASHED — press ENTER to run again", 300.0, 24.0)
@@ -168,7 +168,7 @@ func main() {
             app.uiText("A/D switch lane   SPACE jump   ESC quit", 16.0, 40.0, 12.0)
         }
 
-        if app.keyPressed(KEY_ESCAPE) {
+        if app.keyPressed(keyEscape) {
             app.quit()
         }
         app.present()

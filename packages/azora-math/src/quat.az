@@ -1,0 +1,160 @@
+module engine.math.quat
+
+import std.math
+import engine.math.vec
+import engine.math.mat
+
+/**
+ * A unit quaternion rotation.
+ *
+ * Skeletal animation blends rotations constantly, and Euler angles cannot be
+ * blended: interpolating them takes the wrong path between poses and loses a
+ * degree of freedom whenever two axes line up. A quaternion interpolates along
+ * the shortest arc and never gimbal-locks, which is why bone rotation is stored
+ * this way rather than as the [Vec3] a transform uses.
+ */
+pack Quat {
+    var x: std::Double
+    var y: std::Double
+    var z: std::Double
+    var w: std::Double
+}
+
+/** The rotation that does nothing. */
+func quatIdentity(): Quat {
+    return Quat(0.0, 0.0, 0.0, 1.0)
+}
+
+func quat(x: std::Double, y: std::Double, z: std::Double, w: std::Double): Quat {
+    return Quat(x, y, z, w)
+}
+
+/** The rotation of [radians] about [axis], which need not be normalised. */
+func quatAxisAngle(axis: Vec3, radians: std::Double): Quat {
+    fin unit = axis.normalized
+    fin half = radians * 0.5
+    fin s = std::sin(half)
+    return Quat(unit.x * s, unit.y * s, unit.z * s, std::cos(half))
+}
+
+/** The rotation of an X-then-Y-then-Z Euler triple, in radians. */
+func quatEuler(pitch: std::Double, yaw: std::Double, roll: std::Double): Quat {
+    fin cp = std::cos(pitch * 0.5)
+    fin sp = std::sin(pitch * 0.5)
+    fin cy = std::cos(yaw * 0.5)
+    fin sy = std::sin(yaw * 0.5)
+    fin cr = std::cos(roll * 0.5)
+    fin sr = std::sin(roll * 0.5)
+    return Quat(
+        sp * cy * cr - cp * sy * sr,
+        cp * sy * cr + sp * cy * sr,
+        cp * cy * sr - sp * sy * cr,
+        cp * cy * cr + sp * sy * sr
+    )
+}
+
+impl Quat {
+    func dot(o: Quat): std::Double {
+        return self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
+    }
+
+    func length(): std::Double {
+        return std::sqrt(self.dot(self))
+    }
+
+    func scale(k: std::Double): Quat {
+        return Quat(self.x * k, self.y * k, self.z * k, self.w * k)
+    }
+
+    func plus(o: Quat): Quat {
+        return Quat(self.x + o.x, self.y + o.y, self.z + o.z, self.w + o.w)
+    }
+
+    /** The inverse rotation, for a unit quaternion. */
+    func conjugate(): Quat {
+        return Quat(0.0 - self.x, 0.0 - self.y, 0.0 - self.z, self.w)
+    }
+
+    prop normalized[self: Self&]: Quat {
+        fin len = self.length()
+        if len < 0.000001 {
+            return quatIdentity()
+        }
+        return self.scale(1.0 / len)
+    }
+
+    /** `self` then [o] — the composition, applied right to left as usual. */
+    func times(o: Quat): Quat {
+        return Quat(
+            self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
+            self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
+            self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w,
+            self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z
+        )
+    }
+
+    /** [point] rotated by this quaternion. */
+    func rotate(point: Vec3): Vec3 {
+        fin u = Vec3(self.x, self.y, self.z)
+        fin uv = u.cross(point)
+        fin uuv = u.cross(uv)
+        return point + uv * (2.0 * self.w) + uuv * 2.0
+    }
+
+    /** The equivalent rotation matrix. */
+    func matrix(): Mat4 {
+        fin xx = self.x * self.x
+        fin yy = self.y * self.y
+        fin zz = self.z * self.z
+        fin xy = self.x * self.y
+        fin xz = self.x * self.z
+        fin yz = self.y * self.z
+        fin wx = self.w * self.x
+        fin wy = self.w * self.y
+        fin wz = self.w * self.z
+        return Mat4(
+            1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0,
+            2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0,
+            2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0,
+            0.0, 0.0, 0.0, 1.0
+        )
+    }
+}
+
+/**
+ * Normalised linear interpolation between two rotations.
+ *
+ * Cheaper than [quatSlerp] and visually identical for the small angles between
+ * adjacent keyframes, which is what an animation track actually interpolates.
+ * The sign fix picks the shorter arc: `q` and `-q` are the same rotation, so
+ * without it a blend can take the long way round.
+ */
+func quatNlerp(a: Quat, b: Quat, t: std::Double): Quat {
+    fin target = if a.dot(b) < 0.0 { b.scale(-1.0) } else { b }
+    return a.scale(1.0 - t).plus(target.scale(t)).normalized
+}
+
+/**
+ * Spherical interpolation between two rotations.
+ *
+ * Constant angular velocity, which matters when the two poses are far apart —
+ * a blend between two whole animations rather than between neighbouring keys.
+ * Falls back to [quatNlerp] when the rotations are nearly equal, where the
+ * division would lose precision.
+ */
+func quatSlerp(a: Quat, b: Quat, t: std::Double): Quat {
+    var cosine = a.dot(b)
+    var target = b
+    if cosine < 0.0 {
+        target = b.scale(-1.0)
+        cosine = 0.0 - cosine
+    }
+    if cosine > 0.9995 {
+        return quatNlerp(a, target, t)
+    }
+    fin angle = std::acos(cosine)
+    fin s = std::sin(angle)
+    fin fromWeight = std::sin((1.0 - t) * angle) / s
+    fin to = std::sin(t * angle) / s
+    return a.scale(fromWeight).plus(target.scale(to)).normalized
+}

@@ -1,0 +1,802 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine/physics/d2/d2
+ *
+ * Rigid-body physics in the plane: shapes, contacts, swept queries, ray casts
+ * and an ECS-facing solver.
+ *
+ * Everything dimension-neutral — body kinds, materials, layers, damping,
+ * sleeping, force modes — comes from `engine.physics.core`. This package adds
+ * the plane: [Collider2D] shapes, the [Contact2D] manifold, and the character
+ * movement that 2D games actually spend their time in.
+ *
+ * ## Swept, not sampled
+ *
+ * Every moving query here is swept. A discrete overlap test that only asks
+ * "does the body's destination intersect anything" lets anything faster than
+ * its own width pass through a wall, and does so only at low frame rates —
+ * which is to say, only on the machines least able to survive it.
+ *
+ * @since 0.0.4
+ */
+module engine.physics.d2
+
+import std.container.array
+import engine.core
+import engine.ecs
+import engine.math.vec
+import engine.physics.core
+
+// ── Shapes ──────────────────────────────────────────────────────────────
+
+/** The shape family a 2D collider takes. */
+enum ColliderShape2D {
+    /** An axis-aligned box, described by its half extents. */
+    Box
+    /** A circle, described by its radius. */
+    Circle
+    /**
+     * A vertical capsule: a box with semicircular caps.
+     *
+     * This is the character shape — it climbs small steps without catching on
+     * their corners, which a box does and a circle overdoes.
+     */
+    Capsule
+}
+
+/**
+ * A 2D collider attached at an offset from its body.
+ *
+ * The three shapes share one pack rather than becoming a `slot`, because a
+ * collider is stored per entity in a dense component store and a tagged union
+ * of three payloads would cost an allocation per body for no expressiveness.
+ */
+@Component
+pack Collider2D {
+    var shape: ColliderShape2D
+    /** Half width and half height, for [ColliderShape2D.Box] and capsule bodies. */
+    var halfExtents: Vec2
+    /** Radius, for [ColliderShape2D.Circle] and capsule caps. */
+    var radius: std::Double
+    /** Offset from the body's position. */
+    var offset: Vec2
+    var layers: CollisionLayers
+    var sensor: std::Bool
+}
+
+/** An axis-aligned rectangle in world space. */
+pack Aabb2D {
+    var minX: std::Double
+    var minY: std::Double
+    var maxX: std::Double
+    var maxY: std::Double
+}
+
+// ── Body components ─────────────────────────────────────────────────────
+
+/** Where a body is, how it is turned, and how big it is drawn. */
+@Component
+pack Transform2D {
+    var position: Vec2
+    var rotation: std::Double
+    var scale: Vec2
+}
+
+/** How fast a body is moving and spinning. */
+@Component
+pack Velocity2D {
+    var linear: Vec2
+    var angular: std::Double
+}
+
+/** Force and torque accumulated since the last substep. */
+@Component
+pack Forces2D {
+    var force: Vec2
+    var torque: std::Double
+}
+
+/** A body's kind and its derived inverse mass and inertia. */
+@Component
+pack RigidBody2D {
+    var kind: RigidBodyKind
+    var inverseMass: std::Double
+    var inverseInertia: std::Double
+    /** Locks rotation — what keeps a platformer character upright. */
+    var fixedRotation: std::Bool
+}
+
+/** The gravity a 2D world pulls with. */
+@Resource
+pack Gravity2D {
+    var value: Vec2
+}
+
+// ── Results ─────────────────────────────────────────────────────────────
+
+/**
+ * A contact between two shapes.
+ *
+ * `normal` points in the direction that separates A from B, and `penetration`
+ * is how far along it they overlap, so resolving is one multiply.
+ */
+pack Contact2D {
+    var normal: Vec2
+    var point: Vec2
+    var penetration: std::Double
+    var sensor: std::Bool
+}
+
+/** Whether two shapes touch. */
+variant enum Overlap2D {
+    Touching(contact: Contact2D)
+    Separate
+}
+
+/** What a swept shape ran into. */
+variant enum Sweep2D {
+    /**
+     * The sweep was interrupted.
+     *
+     * `t` is the fraction of the requested motion completed before contact, so
+     * the safe position is `origin + motion * t`.
+     */
+    Blocked(t: std::Double, normal: Vec2, point: Vec2)
+    /** Nothing was in the way; the whole motion is safe. */
+    Clear
+}
+
+/** What a ray met. */
+variant enum RayHit2D {
+    Hit(t: std::Double, normal: Vec2, point: Vec2)
+    Miss
+}
+
+/** Where a moved body ended up, and what it touched on the way. */
+pack Move2D {
+    var position: Vec2
+    var velocity: Vec2
+    var hitX: std::Bool
+    var hitY: std::Bool
+    var grounded: std::Bool
+    var ceiling: std::Bool
+}
+
+// ── Constructors ────────────────────────────────────────────────────────
+
+func aabb2d(minX: std::Double, minY: std::Double, maxX: std::Double, maxY: std::Double): Aabb2D {
+    return Aabb2D(minX, minY, maxX, maxY)
+}
+
+/** The box of [size] centred on [center]. */
+func aabbAround(center: Vec2, size: Vec2): Aabb2D {
+    fin hx = size.x * 0.5
+    fin hy = size.y * 0.5
+    return Aabb2D(center.x - hx, center.y - hy, center.x + hx, center.y + hy)
+}
+
+/** The box with its top-left corner at ([x], [y]). */
+func aabbAt(x: std::Double, y: std::Double, width: std::Double, height: std::Double): Aabb2D {
+    return Aabb2D(x, y, x + width, y + height)
+}
+
+impl Aabb2D {
+    func width(): std::Double {
+        return self.maxX - self.minX
+    }
+
+    func height(): std::Double {
+        return self.maxY - self.minY
+    }
+
+    func center(): Vec2 {
+        return Vec2((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
+    }
+
+    func halfExtents(): Vec2 {
+        return Vec2(self.width() * 0.5, self.height() * 0.5)
+    }
+
+    func overlaps(other: Aabb2D): std::Bool {
+        return self.minX < other.maxX && other.minX < self.maxX &&
+            self.minY < other.maxY && other.minY < self.maxY
+    }
+
+    func contains(point: Vec2): std::Bool {
+        return point.x >= self.minX && point.x <= self.maxX &&
+            point.y >= self.minY && point.y <= self.maxY
+    }
+
+    func translate(delta: Vec2): Aabb2D {
+        return Aabb2D(self.minX + delta.x, self.minY + delta.y, self.maxX + delta.x, self.maxY + delta.y)
+    }
+
+    func expand(x: std::Double, y: std::Double): Aabb2D {
+        return Aabb2D(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
+    }
+
+    /** The box covering this one and where it would be after [motion]. */
+    func sweptBy(motion: Vec2): Aabb2D {
+        return Aabb2D(
+            realMinOf(self.minX, self.minX + motion.x),
+            realMinOf(self.minY, self.minY + motion.y),
+            realMaxOf(self.maxX, self.maxX + motion.x),
+            realMaxOf(self.maxY, self.maxY + motion.y)
+        )
+    }
+
+    func union(other: Aabb2D): Aabb2D {
+        return Aabb2D(
+            realMinOf(self.minX, other.minX),
+            realMinOf(self.minY, other.minY),
+            realMaxOf(self.maxX, other.maxX),
+            realMaxOf(self.maxY, other.maxY)
+        )
+    }
+}
+
+impl Aabb2D {
+    /** Moves the box by [delta]. */
+    oper+ [self: Self&](delta: Vec2): Aabb2D {
+        return self.translate(delta)
+    }
+}
+
+/** A box collider with the given half extents. */
+func boxCollider(halfExtents: Vec2): Collider2D {
+    return Collider2D(ColliderShape2D.Box, halfExtents, 0.0, vec2Zero(), allLayers(), false)
+}
+
+/** A circle collider of [radius]. */
+func circleCollider(radius: std::Double): Collider2D {
+    return Collider2D(ColliderShape2D.Circle, Vec2(radius, radius), radius, vec2Zero(), allLayers(), false)
+}
+
+/** A vertical capsule [halfHeight] tall through the centre, with caps of [radius]. */
+func capsuleCollider(radius: std::Double, halfHeight: std::Double): Collider2D {
+    return Collider2D(
+        ColliderShape2D.Capsule,
+        Vec2(radius, halfHeight),
+        radius,
+        vec2Zero(),
+        allLayers(),
+        false
+    )
+}
+
+/** [collider] moved to sit at [offset] from its body. */
+func colliderAt(collider: Collider2D, offset: Vec2): Collider2D {
+    return Collider2D(
+        collider.shape,
+        collider.halfExtents,
+        collider.radius,
+        offset,
+        collider.layers,
+        collider.sensor
+    )
+}
+
+/** [collider] restricted to the given layers. */
+func colliderOn(collider: Collider2D, layers: CollisionLayers): Collider2D {
+    return Collider2D(
+        collider.shape,
+        collider.halfExtents,
+        collider.radius,
+        collider.offset,
+        layers,
+        collider.sensor
+    )
+}
+
+/** [collider] turned into a trigger volume that reports but does not resolve. */
+func colliderAsSensor(collider: Collider2D): Collider2D {
+    return Collider2D(
+        collider.shape,
+        collider.halfExtents,
+        collider.radius,
+        collider.offset,
+        collider.layers,
+        true
+    )
+}
+
+/** The world-space bounding box of [collider] on a body at [position]. */
+func colliderBounds(collider: Collider2D, position: Vec2): Aabb2D {
+    fin center = position + collider.offset
+    fin half = when collider.shape {
+        ColliderShape2D.Box -> collider.halfExtents
+        ColliderShape2D.Circle -> Vec2(collider.radius, collider.radius)
+        else -> Vec2(collider.radius, collider.halfExtents.y + collider.radius)
+    }
+    return Aabb2D(center.x - half.x, center.y - half.y, center.x + half.x, center.y + half.y)
+}
+
+func transform2d(position: Vec2): Transform2D {
+    return Transform2D(position, 0.0, Vec2(1.0, 1.0))
+}
+
+func velocity2d(linear: Vec2): Velocity2D {
+    return Velocity2D(linear, 0.0)
+}
+
+func forces2d(): Forces2D {
+    return Forces2D(vec2Zero(), 0.0)
+}
+
+/** A rigid body of [kind] and [mass], with inertia derived from [collider]. */
+func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: std::Double = 1.0, fixedRotation: std::Bool = false): RigidBody2D {
+    fin inverseMass = inverseMassFor(kind, mass)
+    var inverseInertia = 0.0
+    if inverseMass > 0.0 && !fixedRotation {
+        inverseInertia = 1.0 / inertiaOf(collider, mass)
+    }
+    return RigidBody2D(kind, inverseMass, inverseInertia, fixedRotation)
+}
+
+/**
+ * The moment of inertia of [collider] at [mass].
+ *
+ * A capsule is approximated by its bounding box, which is within a few percent
+ * for the aspect ratios characters actually use and avoids an integral whose
+ * accuracy nothing in a 2D game can perceive.
+ */
+func inertiaOf(collider: Collider2D, mass: std::Double): std::Double {
+    return when collider.shape {
+        ColliderShape2D.Circle -> realMaxOf(0.5 * mass * collider.radius * collider.radius, 0.000001)
+        else -> {
+            fin w = collider.halfExtents.x * 2.0
+            fin h = collider.halfExtents.y * 2.0
+            realMaxOf(mass * (w * w + h * h) / 12.0, 0.000001)
+        }
+    }
+}
+
+func gravity2d(value: Vec2 = Vec2(0.0, 900.0)): Gravity2D {
+    return Gravity2D(value)
+}
+
+// ── Contacts ────────────────────────────────────────────────────────────
+
+/**
+ * The contact between two boxes, or [Overlap2D.Separate].
+ *
+ * The separating axis with the *smallest* overlap is the one to resolve along:
+ * pushing out along any other axis moves the body further than it has to and
+ * makes a character climb walls it merely brushed.
+ */
+func boxContact(centerA: Vec2, halfA: Vec2, centerB: Vec2, halfB: Vec2): Overlap2D {
+    fin dx = centerA.x - centerB.x
+    fin dy = centerA.y - centerB.y
+    fin overlapX = halfA.x + halfB.x - absReal(dx)
+    fin overlapY = halfA.y + halfB.y - absReal(dy)
+
+    if overlapX <= 0.0 || overlapY <= 0.0 {
+        return Overlap2D.Separate
+    }
+
+    fin normal = if overlapX < overlapY {
+        Vec2(realSign(dx), 0.0)
+    } else {
+        Vec2(0.0, realSign(dy))
+    }
+    fin penetration = realMinOf(overlapX, overlapY)
+    return Overlap2D.Touching(
+        Contact2D(normal, centerA - normal.scale(penetration * 0.5), penetration, false)
+    )
+}
+
+/** The contact between two circles, or [Overlap2D.Separate]. */
+func circleContact(centerA: Vec2, radiusA: std::Double, centerB: Vec2, radiusB: std::Double): Overlap2D {
+    fin delta = centerA - centerB
+    fin reach = radiusA + radiusB
+    fin distanceSquared = delta.lengthSquared()
+    if distanceSquared >= reach * reach {
+        return Overlap2D.Separate
+    }
+    // Perfectly coincident centres have no direction to separate along, so one
+    // is chosen rather than dividing by zero.
+    if distanceSquared < 0.0000001 {
+        return Overlap2D.Touching(Contact2D(Vec2(1.0, 0.0), centerA, reach, false))
+    }
+    fin distance = sqrt(distanceSquared)
+    fin normal = delta.scale(1.0 / distance)
+    return Overlap2D.Touching(
+        Contact2D(normal, centerA - normal.scale(radiusA), reach - distance, false)
+    )
+}
+
+/** The contact between a circle and a box, or [Overlap2D.Separate]. */
+func circleBoxContact(circleCenter: Vec2, radius: std::Double, boxCenter: Vec2, boxHalf: Vec2): Overlap2D {
+    fin closest = Vec2(
+        realClampTo(circleCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
+        realClampTo(circleCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y)
+    )
+    fin delta = circleCenter - closest
+    fin distanceSquared = delta.lengthSquared()
+    if distanceSquared >= radius * radius {
+        return Overlap2D.Separate
+    }
+    // A centre inside the box has no closest surface point to push from, so the
+    // box-box axis test takes over.
+    if distanceSquared < 0.0000001 {
+        return boxContact(circleCenter, Vec2(radius, radius), boxCenter, boxHalf)
+    }
+    fin distance = sqrt(distanceSquared)
+    return Overlap2D.Touching(
+        Contact2D(delta.scale(1.0 / distance), closest, radius - distance, false)
+    )
+}
+
+/** The contact between two colliders on bodies at [positionA] and [positionB]. */
+func colliderContact(
+    positionA: Vec2,
+    colliderA: Collider2D,
+    positionB: Vec2,
+    colliderB: Collider2D
+): Overlap2D {
+    if !layersInteract(colliderA.layers, colliderB.layers) {
+        return Overlap2D.Separate
+    }
+    fin centerA = positionA + colliderA.offset
+    fin centerB = positionB + colliderB.offset
+    fin sensor = colliderA.sensor || colliderB.sensor
+
+    fin found = when colliderA.shape {
+        ColliderShape2D.Circle -> when colliderB.shape {
+            ColliderShape2D.Circle -> circleContact(centerA, colliderA.radius, centerB, colliderB.radius)
+            else -> circleBoxContact(centerA, colliderA.radius, centerB, boxHalfOf(colliderB))
+        }
+        else -> when colliderB.shape {
+            ColliderShape2D.Circle -> flipOverlap(
+                circleBoxContact(centerB, colliderB.radius, centerA, boxHalfOf(colliderA))
+            )
+            else -> boxContact(centerA, boxHalfOf(colliderA), centerB, boxHalfOf(colliderB))
+        }
+    }
+    return markSensor(found, sensor)
+}
+
+/** The box half-extents a collider is treated as for a box-vs-box test. */
+func boxHalfOf(collider: Collider2D): Vec2 {
+    return when collider.shape {
+        ColliderShape2D.Capsule -> Vec2(collider.radius, collider.halfExtents.y + collider.radius)
+        else -> collider.halfExtents
+    }
+}
+
+/** [overlap] with its normal reversed, for a test performed the other way round. */
+func flipOverlap(overlap: Overlap2D): Overlap2D {
+    return when overlap {
+        Overlap2D.Touching(contact) -> Overlap2D.Touching(
+            Contact2D(contact.normal.scale(-1.0), contact.point, contact.penetration, contact.sensor)
+        )
+        else -> Overlap2D.Separate
+    }
+}
+
+/** [overlap] tagged as a sensor contact. */
+func markSensor(overlap: Overlap2D, sensor: std::Bool): Overlap2D {
+    return when overlap {
+        Overlap2D.Touching(contact) -> Overlap2D.Touching(
+            Contact2D(contact.normal, contact.point, contact.penetration, sensor)
+        )
+        else -> Overlap2D.Separate
+    }
+}
+
+/** True when [overlap] found a contact. */
+func overlapTouching(overlap: Overlap2D): std::Bool {
+    return when overlap {
+        Overlap2D.Touching(contact) -> true
+        else -> false
+    }
+}
+
+/** The contact of [overlap], or a zero contact when the shapes were apart. */
+func overlapContact(overlap: Overlap2D): Contact2D {
+    return when overlap {
+        Overlap2D.Touching(contact) -> contact
+        else -> Contact2D(vec2Zero(), vec2Zero(), 0.0, false)
+    }
+}
+
+// ── Swept queries ───────────────────────────────────────────────────────
+
+/**
+ * Sweeps the box [moving] by [motion] against the static box [target].
+ *
+ * This is the slab method: the entry and exit times on each axis are found, and
+ * a hit is the latest entry, provided it precedes the earliest exit. Because it
+ * solves for a time rather than sampling positions, a box moving a hundred
+ * times its own width in one step still stops at the first thing it meets.
+ */
+func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
+    // Already overlapping: there is no entry time to find, and reporting a
+    // sweep of zero would wedge the body instead of letting the solver push it
+    // out along the contact normal.
+    if moving.overlaps(target) {
+        return Sweep2D.Clear
+    }
+
+    var entryX = 0.0
+    var exitX = 1.0
+    if motion.x == 0.0 {
+        if moving.maxX <= target.minX || moving.minX >= target.maxX {
+            return Sweep2D.Clear
+        }
+    } else {
+        fin near = (target.minX - moving.maxX) / motion.x
+        fin far = (target.maxX - moving.minX) / motion.x
+        entryX = realMinOf(near, far)
+        exitX = realMaxOf(near, far)
+    }
+
+    var entryY = 0.0
+    var exitY = 1.0
+    if motion.y == 0.0 {
+        if moving.maxY <= target.minY || moving.minY >= target.maxY {
+            return Sweep2D.Clear
+        }
+    } else {
+        fin near = (target.minY - moving.maxY) / motion.y
+        fin far = (target.maxY - moving.minY) / motion.y
+        entryY = realMinOf(near, far)
+        exitY = realMaxOf(near, far)
+    }
+
+    fin entry = realMaxOf(entryX, entryY)
+    fin exit = realMinOf(exitX, exitY)
+
+    // An interval ending at time zero belongs entirely behind the motion.
+    // This is the touching-and-separating case: a character standing exactly
+    // on a floor and jumping upward must not immediately hit that floor as a
+    // ceiling. Motion into the same touching surface still has `exit > 0` and
+    // remains blocked at `entry == 0`.
+    if entry > exit || exit <= 0.0 || entry < 0.0 || entry > 1.0 {
+        return Sweep2D.Clear
+    }
+
+    // The axis that entered last is the face that was struck.
+    fin normal = if entryX > entryY {
+        Vec2(0.0 - realSign(motion.x), 0.0)
+    } else {
+        Vec2(0.0, 0.0 - realSign(motion.y))
+    }
+    fin contactPoint = moving.center() + motion.scale(entry)
+    return Sweep2D.Blocked(entry, normal, contactPoint)
+}
+
+/** True when [sweep] was interrupted. */
+func sweepBlocked(sweep: Sweep2D): std::Bool {
+    return when sweep {
+        Sweep2D.Blocked(t, normal, point) -> true
+        else -> false
+    }
+}
+
+/** The safe fraction of the motion [sweep] permits. */
+func sweepFraction(sweep: Sweep2D): std::Double {
+    return when sweep {
+        Sweep2D.Blocked(t, normal, point) -> t
+        else -> 1.0
+    }
+}
+
+/** The surface normal [sweep] struck, or zero. */
+func sweepNormal(sweep: Sweep2D): Vec2 {
+    return when sweep {
+        Sweep2D.Blocked(t, normal, point) -> normal
+        else -> vec2Zero()
+    }
+}
+
+/**
+ * Casts the ray `origin + direction * t` for `t` in `0 .. 1` against [target].
+ *
+ * The direction is not normalised and `t` is a fraction of it, so casting from
+ * A to B is `rayBox(a, b - a, target)` with no length to compute.
+ */
+func rayBox(origin: Vec2, direction: Vec2, target: Aabb2D): RayHit2D {
+    return when sweepBox(Aabb2D(origin.x, origin.y, origin.x, origin.y), direction, target) {
+        Sweep2D.Blocked(t, normal, point) -> RayHit2D.Hit(t, normal, origin + direction.scale(t))
+        else -> RayHit2D.Miss
+    }
+}
+
+/** True when [hit] met something. */
+func rayHit(hit: RayHit2D): std::Bool {
+    return when hit {
+        RayHit2D.Hit(t, normal, point) -> true
+        else -> false
+    }
+}
+
+/** The fraction of the ray travelled before the hit, or `-1`. */
+func rayFraction(hit: RayHit2D): std::Double {
+    return when hit {
+        RayHit2D.Hit(t, normal, point) -> t
+        else -> -1.0
+    }
+}
+
+// ── Response ────────────────────────────────────────────────────────────
+
+/**
+ * The velocity left after sliding along a surface with [normal].
+ *
+ * Removing exactly the component that points into the surface is what turns a
+ * dead stop against a wall into a slide along it.
+ */
+func slide(velocity: Vec2, normal: Vec2): Vec2 {
+    fin into = velocity.dot(normal)
+    if into >= 0.0 {
+        return velocity
+    }
+    return velocity - normal.scale(into)
+}
+
+/** The velocity left after bouncing off [normal] with the given restitution. */
+func bounce(velocity: Vec2, normal: Vec2, restitution: std::Double): Vec2 {
+    fin into = velocity.dot(normal)
+    if into >= 0.0 {
+        return velocity
+    }
+    return velocity - normal.scale(into * (1.0 + realClamp01(restitution)))
+}
+
+/**
+ * Applies [amount] to a body's velocity under [mode].
+ *
+ * The four modes differ only by a scale factor, which `engine.physics.core`
+ * already computes, so both dimensions agree on what an impulse means.
+ */
+func applyToVelocity(velocity: Velocity2D, amount: Vec2, mode: ForceMode, inverseMass: std::Double, dt: std::Double) {
+    velocity.linear = velocity.linear + amount.scale(forceScale(mode, inverseMass, dt))
+}
+
+/** Applies gravity to [velocity] for one substep. */
+func applyGravity(velocity: Velocity2D, gravity: Gravity2D, scale: GravityScale, dt: std::Double) {
+    velocity.linear = velocity.linear + gravity.value.scale(scale.value * dt)
+}
+
+/** Decays [velocity] by [drag] over one substep. */
+func applyDamping(velocity: Velocity2D, drag: Damping, dt: std::Double) {
+    fin keep = realClamp01(1.0 - drag.linear * dt)
+    velocity.linear = velocity.linear.scale(keep)
+    velocity.angular = velocity.angular * realClamp01(1.0 - drag.angular * dt)
+}
+
+/**
+ * Separates two overlapping bodies along the contact normal.
+ *
+ * Correction is shared in proportion to inverse mass and only a fraction of the
+ * penetration is removed per step, so a heavy body barely moves and a stack
+ * settles instead of exploding apart.
+ */
+func resolvePenetration(
+    positionA: Vec2,
+    inverseMassA: std::Double,
+    positionB: Vec2,
+    inverseMassB: std::Double,
+    contact: Contact2D,
+    settings: PhysicsSettings
+): Vec2 {
+    fin total = inverseMassA + inverseMassB
+    if total <= 0.0 || contact.sensor {
+        return positionA
+    }
+    fin depth = realMaxOf(contact.penetration - settings.contactSlop, 0.0)
+    fin push = depth * settings.correctionRate / total
+    return positionA + contact.normal.scale(push * inverseMassA)
+}
+
+test "box contacts resolve along the shallowest axis" {
+    // Overlapping by 2 horizontally and 8 vertically: the horizontal axis wins.
+    when boxContact(Vec2(0.0, 0.0), Vec2(5.0, 5.0), Vec2(8.0, 2.0), Vec2(5.0, 5.0)) {
+        Overlap2D.Touching(contact) -> {
+            assert contact.normal.x < 0.0 && contact.normal.y == 0.0 {
+                "the shallowest axis must be the one resolved along"
+            }
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
+                "the penetration must be the overlap on that axis"
+            }
+        }
+        Overlap2D.Separate() -> { assert false { "overlapping boxes must report a contact" } }
+    }
+
+    assert !overlapTouching(boxContact(Vec2(0.0, 0.0), Vec2(1.0, 1.0), Vec2(50.0, 0.0), Vec2(1.0, 1.0))) {
+        "boxes far apart must not report a contact"
+    }
+}
+
+test "circle contacts measure from the surfaces" {
+    when circleContact(Vec2(0.0, 0.0), 5.0, Vec2(8.0, 0.0), 5.0) {
+        Overlap2D.Touching(contact) -> {
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
+                "two 5-radius circles 8 apart overlap by 2"
+            }
+            assert contact.normal.x < -0.99 { "the normal must separate A from B" }
+        }
+        Overlap2D.Separate() -> { assert false { "overlapping circles must report a contact" } }
+    }
+    assert !overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(9.0, 0.0), 1.0)) {
+        "circles further apart than their radii must be separate"
+    }
+    assert overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(0.0, 0.0), 1.0)) {
+        "coincident circles must still produce a contact rather than dividing by zero"
+    }
+}
+
+test "a sweep stops a fast box at the first thing it meets" {
+    fin body = aabbAt(0.0, 0.0, 10.0, 10.0)
+    fin wall = aabbAt(100.0, 0.0, 10.0, 100.0)
+
+    // A single step of 1000 units — a hundred times the body's own width.
+    when sweepBox(body, Vec2(1000.0, 0.0), wall) {
+        Sweep2D.Blocked(t, normal, point) -> {
+            assert t > 0.089 && t < 0.091 { "the box must stop where the wall is, not where it aimed" }
+            assert normal.x < -0.99 { "the normal must face back along the motion" }
+        }
+        Sweep2D.Clear() -> { assert false { "a fast box must not tunnel through a wall" } }
+    }
+
+    assert !sweepBlocked(sweepBox(body, Vec2(0.0, 1000.0), wall)) {
+        "a sweep that misses the wall must be clear"
+    }
+    assert sweepFraction(sweepBox(body, Vec2(20.0, 0.0), wall)) == 1.0 {
+        "a motion that stops short must permit the whole distance"
+    }
+}
+
+test "a sweep permits motion away from a touching surface" {
+    fin body = aabbAt(0.0, 0.0, 10.0, 10.0)
+    fin floor = aabbAt(0.0, 10.0, 40.0, 10.0)
+    fin wall = aabbAt(10.0, 0.0, 10.0, 40.0)
+
+    assert !sweepBlocked(sweepBox(body, Vec2(0.0, -8.0), floor)) {
+        "jumping away from a touching floor must not report a ceiling"
+    }
+    assert sweepBlocked(sweepBox(body, Vec2(0.0, 8.0), floor)) {
+        "moving into a touching floor must remain blocked"
+    }
+    assert !sweepBlocked(sweepBox(body, Vec2(-8.0, 0.0), wall)) {
+        "moving away from a touching wall must be clear"
+    }
+    assert sweepBlocked(sweepBox(body, Vec2(8.0, 0.0), wall)) {
+        "moving into a touching wall must remain blocked"
+    }
+}
+
+test "rays report the face they struck" {
+    fin wall = aabbAt(50.0, 0.0, 10.0, 100.0)
+    when rayBox(Vec2(0.0, 50.0), Vec2(100.0, 0.0), wall) {
+        RayHit2D.Hit(t, normal, point) -> {
+            assert t > 0.49 && t < 0.51 { "the ray must hit halfway along its direction" }
+            assert normal.x < -0.99 { "the normal must face the ray" }
+            assert point.x > 49.9 && point.x < 50.1 { "the hit point must be on the near face" }
+        }
+        RayHit2D.Miss() -> { assert false { "a ray into a wall must hit" } }
+    }
+    assert !rayHit(rayBox(Vec2(0.0, 200.0), Vec2(100.0, 0.0), wall)) {
+        "a ray passing above the wall must miss"
+    }
+}
+
+test "sliding keeps the tangent and bouncing reverses the normal" {
+    fin wall = Vec2(-1.0, 0.0)
+    fin slid = slide(Vec2(10.0, 4.0), wall)
+    assert slid.x == 0.0 && slid.y == 4.0 { "sliding must remove only the component into the surface" }
+
+    fin bounced = bounce(Vec2(10.0, 4.0), wall, 1.0)
+    assert bounced.x < -9.9 { "a perfectly elastic bounce must reverse the normal component" }
+    assert bounced.y == 4.0 { "a bounce must leave the tangent alone" }
+
+    assert slide(Vec2(-10.0, 0.0), wall).x == -10.0 {
+        "a velocity already leaving the surface must be untouched"
+    }
+}

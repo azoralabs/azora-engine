@@ -23,8 +23,8 @@ import std.container.array
  *
  * Declarative browser UI for Azora Engine.
  *
- * A UI function returns an immutable tree of `DomNode` values. The JavaScript
- * target reconciles that virtual tree against the browser DOM. Event handlers
+ * A UI function returns an immutable tree of `DomNode` values. The browser
+ * host reconciles that virtual tree against the DOM. Event handlers
  * are ordinary stored Azora `Func` values; after a handler mutates reactive
  * state, the mounted render function is evaluated again and only changed DOM
  * nodes are patched.
@@ -39,10 +39,10 @@ import std.container.array
  * Attribute names use their HTML spelling (`class`, `aria-label`, `href`).
  * An empty value removes the attribute during reconciliation.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 pack DomAttribute {
-    fin name: String
-    fin value: String
+    fin name: std::String
+    fin value: std::String
 }
 
 /**
@@ -52,10 +52,10 @@ pack DomAttribute {
  * other standard DOM event names. Handlers are retained as first-class Azora
  * callables and replaced safely when a node is patched.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 pack DomEvent {
-    fin name: String
-    fin handler: Func() -> Unit
+    fin name: std::String
+    fin handler: () -> std::Unit
 }
 
 /**
@@ -65,37 +65,37 @@ pack DomEvent {
  * reconciliation; use stable keys for lists. Attributes, events, and children
  * preserve source order.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 pack DomNode {
-    fin tag: String
-    fin key: String
-    fin value: String
-    fin attributes: Array<DomAttribute>
-    fin events: Array<DomEvent>
-    fin children: Array<DomNode>
+    fin tag: std::String
+    fin key: std::String
+    fin value: std::String
+    fin attributes: std::Array<DomAttribute>
+    fin events: std::Array<DomEvent>
+    fin children: std::Array<DomNode>
 }
 
 /**
  * Creates an HTML attribute.
  */
-@Experimental(sinceAzora: "0.0.4")
-func domAttribute(name: String, value: String): DomAttribute {
+@std::Experimental(since: "0.0.4")
+func domAttribute(name: std::String, value: std::String): DomAttribute {
     return DomAttribute(name, value)
 }
 
 /**
  * Creates a browser event binding.
  */
-@Experimental(sinceAzora: "0.0.4")
-func domEvent(name: String, handler: Func() -> Unit): DomEvent {
+@std::Experimental(since: "0.0.4")
+func domEvent(name: std::String, handler: () -> std::Unit): DomEvent {
     return DomEvent(name, handler)
 }
 
 /**
  * Creates a text node.
  */
-@Experimental(sinceAzora: "0.0.4")
-func domText(value: String): DomNode {
+@std::Experimental(since: "0.0.4")
+func domText(value: std::String): DomNode {
     return DomNode(
         "#text",
         "",
@@ -109,8 +109,8 @@ func domText(value: String): DomNode {
 /**
  * Creates an element with no attributes or events.
  */
-@Experimental(sinceAzora: "0.0.4")
-func domElement(tag: String, children: Array<DomNode>): DomNode {
+@std::Experimental(since: "0.0.4")
+func domElement(tag: std::String, children: std::Array<DomNode>): DomNode {
     return DomNode(
         tag,
         "",
@@ -124,11 +124,11 @@ func domElement(tag: String, children: Array<DomNode>): DomNode {
 /**
  * Creates an element with attributes and children.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 func domElementWithAttributes(
-    tag: String,
-    attributes: Array<DomAttribute>,
-    children: Array<DomNode>
+    tag: std::String,
+    attributes: std::Array<DomAttribute>,
+    children: std::Array<DomNode>
 ): DomNode {
     return DomNode(
         tag,
@@ -143,13 +143,13 @@ func domElementWithAttributes(
 /**
  * Creates a fully configured keyed element.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 func domKeyedElement(
-    tag: String,
-    key: String,
-    attributes: Array<DomAttribute>,
-    events: Array<DomEvent>,
-    children: Array<DomNode>
+    tag: std::String,
+    key: std::String,
+    attributes: std::Array<DomAttribute>,
+    events: std::Array<DomEvent>,
+    children: std::Array<DomNode>
 ): DomNode {
     return DomNode(tag, key, "", attributes, events, children)
 }
@@ -157,11 +157,11 @@ func domKeyedElement(
 /**
  * Creates an element whose only child is text.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 func domTextElement(
-    tag: String,
-    value: String,
-    attributes: Array<DomAttribute>
+    tag: std::String,
+    value: std::String,
+    attributes: std::Array<DomAttribute>
 ): DomNode {
     return domElementWithAttributes(tag, attributes, std::arrayOf(domText(value)))
 }
@@ -169,11 +169,11 @@ func domTextElement(
 /**
  * Creates a button with a click handler.
  */
-@Experimental(sinceAzora: "0.0.4")
+@std::Experimental(since: "0.0.4")
 func domButton(
-    label: String,
-    attributes: Array<DomAttribute>,
-    onClick: Func() -> Unit
+    label: std::String,
+    attributes: std::Array<DomAttribute>,
+    onClick: () -> std::Unit
 ): DomNode {
     return domKeyedElement(
         "button",
@@ -187,16 +187,16 @@ func domButton(
 /**
  * Mounts a virtual DOM render function into an existing HTML element.
  *
- * The JavaScript backend owns the host bridge. It renders immediately, patches
+ * The browser host owns this bridge. It renders immediately, patches
  * by node type and stable key, updates attributes and event listeners, and
  * schedules one rerender after each event handler completes.
  *
  * @param rootId The `id` of the existing host element.
  * @param render A stored callable returning the next immutable virtual tree.
  */
-@Experimental(sinceAzora: "0.0.4")
-bridge [.JavaScript] {
-    func engineUiDomMount(rootId: String, render: Func() -> DomNode): Unit
+@std::Experimental(since: "0.0.4")
+bridge [.WebAssembly] {
+    func engineUiDomMount(rootId: std::String, render: () -> DomNode): std::Unit
 }
 
 test "dom text preserves content" {
@@ -216,7 +216,7 @@ test "dom element preserves ordered children" {
 
 test "dom event stores its callable" {
     var called = false
-    fin event = domEvent("click", func() { called = true })
+    fin event = domEvent("click", { called = true })
     event.handler()
     assert called { "DomEvent did not retain its handler" }
 }
