@@ -1,4 +1,20 @@
 /*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
  * Azora Engine — FFI plumbing shim.
  *
  * This file contains NO platform logic. The entire platform layer (Cocoa
@@ -136,6 +152,18 @@ int64_t az_send_region(int64_t obj, int64_t sel,
         (id)obj, (SEL)sel, r, (long)mip, (const void*)bytes, (long)bytesPerRow);
 }
 
+/* setScissorRect: — MTLScissorRect is four NSUIntegers by value, which a
+ * C-ABI FFI cannot express, so it is built here and passed as one struct.
+ * Metal validates the rectangle against the drawable, so the caller must
+ * clamp it: an out-of-bounds scissor aborts the process rather than clipping. */
+typedef struct { unsigned long x, y, width, height; } AzScissor;
+void az_send_scissor(int64_t obj, int64_t sel,
+                     int64_t x, int64_t y, int64_t w, int64_t h) {
+    AzScissor r = { (unsigned long)x, (unsigned long)y,
+                    (unsigned long)w, (unsigned long)h };
+    ((void (*)(id, SEL, AzScissor))objc_msgSend)((id)obj, (SEL)sel, r);
+}
+
 /* getBytes:bytesPerRow:fromRegion:mipmapLevel: (texture readback). */
 void az_get_region(int64_t obj, int64_t sel,
                    int64_t bytes, int64_t bytesPerRow,
@@ -165,6 +193,23 @@ void az_poke32(int64_t p, int64_t off, int32_t v)  { *(int32_t*)((char*)p + off)
 void az_poke8(int64_t p, int64_t off, int32_t v)   { *(uint8_t*)((char*)p + off) = (uint8_t)v; }
 void az_poke_f32(int64_t p, int64_t off, double v) { *(float*)((char*)p + off) = (float)v; }
 void az_poke_f64(int64_t p, int64_t off, double v) { *(double*)((char*)p + off) = v; }
+
+/* ── Process-wide close request ────────────────────────────────────────── */
+/*
+ * Azora has no mutable global: a top-level `var` is rejected as unsafe to
+ * share, and `fin` is deeply immutable, so its contents cannot stand in for
+ * one either. That is a deliberate language rule, not a gap to work around
+ * in Azora source — which makes this one bit exactly the kind of thing that
+ * belongs here, alongside the other constructs the language cannot express.
+ *
+ * It is one bit, written from any thread and read by the frame loop, so it is
+ * atomic with relaxed ordering: the loop only needs to observe the request
+ * eventually, and nothing else is published through it.
+ */
+static _Atomic int az_close_requested = 0;
+
+void    az_request_exit(void)   { __c11_atomic_store(&az_close_requested, 1, __ATOMIC_RELAXED); }
+int64_t az_exit_requested(void) { return __c11_atomic_load(&az_close_requested, __ATOMIC_RELAXED); }
 
 /* ── Exported symbols / constants ──────────────────────────────────────── */
 

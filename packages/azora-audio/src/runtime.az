@@ -1,0 +1,567 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine.audio.runtime
+ *
+ * Real-time-safe audio storage and mixing contracts.
+ *
+ * PCM blocks are allocated when the pool is created. Decode workers acquire a
+ * stable lease, fill it, commit it, and the device side reads and releases it.
+ * No callback path grows an array or transfers ownership of arbitrary memory.
+ */
+module engine.audio.runtime
+
+import std.container.array
+import engine.media
+
+/** Physical representation expected by an audio provider. */
+enum AudioSampleFormat {
+    Float32
+    Signed16
+    Signed32
+}
+
+/** PCM shape shared by decoders, effects, the mixer and the output device. */
+pack AudioFormat {
+    fin sampleRate: std::Int
+    fin channels: std::Int
+    fin sampleFormat: AudioSampleFormat
+    fin interleaved: std::Bool
+}
+
+/** Preferred internal mix format. Providers convert at their outer boundary. */
+func audioFormatStereo(sampleRate: std::Int): AudioFormat {
+    var rate = sampleRate
+    if rate <= 0 { rate = 48000 }
+    return AudioFormat(rate, 2, AudioSampleFormat.Float32, true)
+}
+
+/** Operations rejected by the audio runtime before reaching native code. */
+error AudioError {
+    InvalidFormat
+    PoolExhausted
+    InvalidLease
+    InvalidFrame
+    InvalidChannel
+    InvalidBus
+    BusCapacity
+    BusCycle
+}
+
+/** Lifecycle of one block in the dedicated PCM pool. */
+enum AudioBufferState {
+    Free
+    Writing
+    Ready
+    Reading
+}
+
+/**
+ * Generation-checked right to one preallocated PCM block.
+ *
+ * A released slot may be reused immediately, but its generation changes. That
+ * makes a late decoder or output callback fail safely instead of touching the
+ * next owner's samples.
+ */
+pack AudioBufferLease {
+    fin slot: std::Int
+    fin generation: std::Long
+    fin firstSample: std::Int
+    fin sampleCapacity: std::Int
+}
+
+/** A value that names no block. */
+func audioBufferLeaseInvalid(): AudioBufferLease {
+    return AudioBufferLease(-1, 0L, 0, 0)
+}
+
+/** Snapshot useful to the profiler without exposing pool internals. */
+pack AudioBufferPoolStats {
+    fin capacity: std::Int
+    fin available: std::Int
+    fin inUse: std::Int
+    fin highWater: std::Int
+    fin acquisitions: std::Long
+    fin exhausted: std::Long
+}
+
+/** Dedicated, fixed-size PCM block pool. */
+pack AudioBufferPool {
+    var format: AudioFormat
+    var blockFrames: std::Int
+    var blocks: std::Int
+    var samples: std::Array<std::Double>
+    var states: std::Array<AudioBufferState>
+    var generations: std::Array<std::Long>
+    var frameCounts: std::Array<std::Int>
+    var timestamps: std::Array<MediaTime>
+    var available: std::Int
+    var highWaterMark: std::Int
+    var acquisitions: std::Long
+    var exhausted: std::Long
+}
+
+/** A pool with no usable storage, suitable only as an explicit fallback. */
+func audioBufferPoolEmpty(): AudioBufferPool {
+    return AudioBufferPool(
+        AudioFormat(48000, 2, AudioSampleFormat.Float32, true),
+        0,
+        0,
+        std::Array::fill<std::Double>(0),
+        std::Array::fill<AudioBufferState>(0),
+        std::Array::fill<std::Long>(0),
+        std::Array::fill<std::Int>(0),
+        std::Array::fill<MediaTime>(0),
+        0,
+        0,
+        0L,
+        0L
+    )
+}
+
+/** Allocates all PCM and bookkeeping storage up front. */
+func audioBufferPool(
+    format: AudioFormat
+    blockFrames: std::Int
+    blocks: std::Int
+): AudioBufferPool ?! AudioError {
+    if format.sampleRate <= 0 || format.channels <= 0 || blockFrames <= 0 || blocks <= 0 {
+        return .InvalidFormat
+    }
+    fin sampleCount = blockFrames * blocks * format.channels
+    var samples: std::Array<std::Double> = std::Array::fill<std::Double>(sampleCount)
+    var states: std::Array<AudioBufferState> = std::Array::fill<AudioBufferState>(blocks)
+    var generations: std::Array<std::Long> = std::Array::fill<std::Long>(blocks)
+    var frameCounts: std::Array<std::Int> = std::Array::fill<std::Int>(blocks)
+    var timestamps: std::Array<MediaTime> = std::Array::fill<MediaTime>(blocks)
+    var sampleIndex = 0
+    while sampleIndex < sampleCount {
+        samples[sampleIndex] = 0.0
+        sampleIndex = sampleIndex + 1
+    }
+    var index = 0
+    while index < blocks {
+        states[index] = AudioBufferState.Free
+        generations[index] = 1L
+        frameCounts[index] = 0
+        timestamps[index] = mediaTimeZero()
+        index = index + 1
+    }
+    return AudioBufferPool(
+        format,
+        blockFrames,
+        blocks,
+        samples,
+        states,
+        generations,
+        frameCounts,
+        timestamps,
+        blocks,
+        0,
+        0L,
+        0L
+    )
+}
+
+/** Public constructor spelling used by the audio proposal. */
+func audioCreateBufferPool(
+    format: AudioFormat
+    blockFrames: std::Int
+    blockCount: std::Int
+): AudioBufferPool ?! AudioError {
+    return try audioBufferPool(format, blockFrames, blockCount)
+}
+
+/** Releases pool storage after the device and decoder workers have stopped. */
+func audioDestroyBufferPool(pool: AudioBufferPool!) {
+    pool.samples = std::Array::fill<std::Double>(0)
+    pool.states = std::Array::fill<AudioBufferState>(0)
+    pool.generations = std::Array::fill<std::Long>(0)
+    pool.frameCounts = std::Array::fill<std::Int>(0)
+    pool.timestamps = std::Array::fill<MediaTime>(0)
+    pool.blockFrames = 0
+    pool.blocks = 0
+    pool.available = 0
+}
+
+/** Public profiler snapshot spelling used by the audio proposal. */
+func audioBufferPoolStats(pool: AudioBufferPool&): AudioBufferPoolStats {
+    return pool.stats()
+}
+
+/** True when [lease] still owns [slot]. */
+func audioLeaseCurrent(pool: AudioBufferPool&, lease: AudioBufferLease&): std::Bool {
+    if lease.slot < 0 || lease.slot >= pool.blocks {
+        return false
+    }
+    return pool.generations[lease.slot] == lease.generation && pool.states[lease.slot] != AudioBufferState.Free
+}
+
+/** Restricts a mix sample to the normal PCM interval. */
+func audioClampSample(sample: std::Double): std::Double {
+    if sample < -1.0 { return -1.0 }
+    if sample > 1.0 { return 1.0 }
+    return sample
+}
+
+impl AudioBufferPool {
+    /** Claims one free block for a decoder or producer. */
+    func acquire[self: Self!](): AudioBufferLease ?! AudioError {
+        var slot = 0
+        while slot < self.blocks {
+            if self.states[slot] == AudioBufferState.Free {
+                self.states[slot] = AudioBufferState.Writing
+                self.frameCounts[slot] = 0
+                self.timestamps[slot] = mediaTimeZero()
+                self.available = self.available - 1
+                self.acquisitions = self.acquisitions + 1L
+                fin used = self.blocks - self.available
+                if used > self.highWaterMark { self.highWaterMark = used }
+                return AudioBufferLease(
+                    slot,
+                    self.generations[slot],
+                    slot * self.blockFrames * self.format.channels,
+                    self.blockFrames * self.format.channels
+                )
+            }
+            slot = slot + 1
+        }
+        self.exhausted = self.exhausted + 1L
+        return .PoolExhausted
+    }
+
+    /** Writes one interleaved sample while a block is being produced. */
+    func write[self: Self!](
+        lease: AudioBufferLease&
+        frame: std::Int
+        channel: std::Int
+        sample: std::Double
+    ) ?! AudioError {
+        if !audioLeaseCurrent(self, lease) || self.states[lease.slot] != AudioBufferState.Writing {
+            return .InvalidLease
+        }
+        if frame < 0 || frame >= self.blockFrames {
+            return .InvalidFrame
+        }
+        if channel < 0 || channel >= self.format.channels {
+            return .InvalidChannel
+        }
+        fin at = lease.firstSample + frame * self.format.channels + channel
+        self.samples[at] = audioClampSample(sample)
+    }
+
+    /** Reads a sample from any live block; effects may read while producing it. */
+    func read[self: Self&](
+        lease: AudioBufferLease&
+        frame: std::Int
+        channel: std::Int
+    ): std::Double ?! AudioError {
+        if !audioLeaseCurrent(self, lease) {
+            return .InvalidLease
+        }
+        if frame < 0 || frame >= self.blockFrames {
+            return .InvalidFrame
+        }
+        if channel < 0 || channel >= self.format.channels {
+            return .InvalidChannel
+        }
+        return self.samples[lease.firstSample + frame * self.format.channels + channel]
+    }
+
+    /** Publishes a complete or partial block to the consumer side. */
+    func commit[self: Self!](
+        lease: AudioBufferLease&
+        frames: std::Int
+        timestamp: MediaTime&
+    ) ?! AudioError {
+        if !audioLeaseCurrent(self, lease) || self.states[lease.slot] != AudioBufferState.Writing {
+            return .InvalidLease
+        }
+        if frames < 0 || frames > self.blockFrames {
+            return .InvalidFrame
+        }
+        self.frameCounts[lease.slot] = frames
+        self.timestamps[lease.slot] = MediaTime(timestamp.ticks, timestamp.timeBaseNum, timestamp.timeBaseDen)
+        self.states[lease.slot] = AudioBufferState.Ready
+    }
+
+    /** Marks a committed block as owned by the output side. */
+    func beginRead[self: Self!](lease: AudioBufferLease&) ?! AudioError {
+        if !audioLeaseCurrent(self, lease) || self.states[lease.slot] != AudioBufferState.Ready {
+            return .InvalidLease
+        }
+        self.states[lease.slot] = AudioBufferState.Reading
+    }
+
+    /** Returns a block to the pool and invalidates every old copy of its lease. */
+    func release[self: Self!](lease: AudioBufferLease&) ?! AudioError {
+        if !audioLeaseCurrent(self, lease) {
+            return .InvalidLease
+        }
+        self.states[lease.slot] = AudioBufferState.Free
+        self.generations[lease.slot] = self.generations[lease.slot] + 1L
+        self.frameCounts[lease.slot] = 0
+        self.timestamps[lease.slot] = mediaTimeZero()
+        self.available = self.available + 1
+    }
+
+    /** Current pool pressure for profiler counters and adaptive decoding. */
+    func stats[self: Self&](): AudioBufferPoolStats {
+        return AudioBufferPoolStats(
+            self.blocks,
+            self.available,
+            self.blocks - self.available,
+            self.highWaterMark,
+            self.acquisitions,
+            self.exhausted
+        )
+    }
+}
+
+/** Stable identity of a mixer bus. */
+pack AudioBusId {
+    fin value: std::Int
+}
+
+func audioMasterBus(): AudioBusId { return AudioBusId(0) }
+func audioMediaBus(): AudioBusId { return AudioBusId(1) }
+func audioMusicBus(): AudioBusId { return AudioBusId(2) }
+func audioEffectsBus(): AudioBusId { return AudioBusId(3) }
+func audioVoiceBus(): AudioBusId { return AudioBusId(4) }
+func audioUiBus(): AudioBusId { return AudioBusId(5) }
+
+/** One node of the mixer hierarchy. */
+pack AudioBus {
+    fin id: AudioBusId
+    var name: std::String
+    var parent: AudioBusId
+    var gain: std::Double
+    var pan: std::Double
+    var muted: std::Bool
+    var soloed: std::Bool
+}
+
+func audioBusEmpty(): AudioBus {
+    return AudioBus(AudioBusId(-1), "", AudioBusId(-1), 1.0, 0.0, false, false)
+}
+
+/** Bounded bus graph; topology changes happen outside the device callback. */
+pack AudioMixer {
+    var buses: std::Array<AudioBus>
+    var count: std::Int
+    var nextId: std::Int
+}
+
+/** Creates the six engine buses used by media and game audio. */
+func audioMixer(capacity: std::Int): AudioMixer {
+    var room = capacity
+    if room < 6 { room = 6 }
+    var buses: std::Array<AudioBus> = std::Array::fill<AudioBus>(room)
+    var index = 0
+    while index < room {
+        buses[index] = audioBusEmpty()
+        index = index + 1
+    }
+    buses[0] = AudioBus(audioMasterBus(), "Master", AudioBusId(-1), 1.0, 0.0, false, false)
+    buses[1] = AudioBus(audioMediaBus(), "Media", audioMasterBus(), 1.0, 0.0, false, false)
+    buses[2] = AudioBus(audioMusicBus(), "Music", audioMasterBus(), 1.0, 0.0, false, false)
+    buses[3] = AudioBus(audioEffectsBus(), "Effects", audioMasterBus(), 1.0, 0.0, false, false)
+    buses[4] = AudioBus(audioVoiceBus(), "Voice", audioMasterBus(), 1.0, 0.0, false, false)
+    buses[5] = AudioBus(audioUiBus(), "UI", audioMasterBus(), 1.0, 0.0, false, false)
+    return AudioMixer(buses, 6, 6)
+}
+
+/** Resolves a bus by stable id rather than by its editable display name. */
+func audioBusIndex(mixer: AudioMixer&, id: AudioBusId&): std::Int {
+    var index = 0
+    while index < mixer.count {
+        if mixer.buses[index].id.value == id.value { return index }
+        index = index + 1
+    }
+    return -1
+}
+
+impl AudioMixer {
+    /** Adds a bus without reallocating the mixer graph. */
+    func createBus[self: Self!](name: std::String, parent: AudioBusId&): AudioBusId ?! AudioError {
+        if self.count >= self.buses.size {
+            return .BusCapacity
+        }
+        if audioBusIndex(self, parent) < 0 {
+            return .InvalidBus
+        }
+        fin id = AudioBusId(self.nextId)
+        self.buses[self.count] = AudioBus(id, name, AudioBusId(parent.value), 1.0, 0.0, false, false)
+        self.count = self.count + 1
+        self.nextId = self.nextId + 1
+        return id
+    }
+
+    func setGain[self: Self!](id: AudioBusId&, gain: std::Double) ?! AudioError {
+        fin index = audioBusIndex(self, id)
+        if index < 0 { return .InvalidBus }
+        var level = gain
+        if level < 0.0 { level = 0.0 }
+        if level > 4.0 { level = 4.0 }
+        self.buses[index].gain = level
+    }
+
+    func setMuted[self: Self!](id: AudioBusId&, muted: std::Bool) ?! AudioError {
+        fin index = audioBusIndex(self, id)
+        if index < 0 { return .InvalidBus }
+        self.buses[index].muted = muted
+    }
+
+    /** Reparents a bus while refusing cycles in the signal graph. */
+    func setParent[self: Self!](id: AudioBusId&, parent: AudioBusId&) ?! AudioError {
+        fin index = audioBusIndex(self, id)
+        fin parentIndex = audioBusIndex(self, parent)
+        if index < 0 || parentIndex < 0 || id.value == audioMasterBus().value {
+            return .InvalidBus
+        }
+        var current = AudioBusId(parent.value)
+        var depth = 0
+        while current.value >= 0 && depth <= self.count {
+            if current.value == id.value {
+                return .BusCycle
+            }
+            fin currentIndex = audioBusIndex(self, current)
+            if currentIndex < 0 { return .InvalidBus }
+            current = AudioBusId(self.buses[currentIndex].parent.value)
+            depth = depth + 1
+        }
+        self.buses[index].parent = AudioBusId(parent.value)
+    }
+
+    /** Gain inherited through the bus graph, including mute state. */
+    func effectiveGain[self: Self&](id: AudioBusId&): std::Double ?! AudioError {
+        var current = AudioBusId(id.value)
+        var gain = 1.0
+        var depth = 0
+        while current.value >= 0 && depth <= self.count {
+            fin index = audioBusIndex(self, current)
+            if index < 0 { return .InvalidBus }
+            if self.buses[index].muted { return 0.0 }
+            gain = gain * self.buses[index].gain
+            current = AudioBusId(self.buses[index].parent.value)
+            depth = depth + 1
+        }
+        return gain
+    }
+}
+
+/**
+ * Contract for built-in and package-provided effects.
+ *
+ * Preparation may allocate or build coefficients. [process] runs only over a
+ * caller-owned pool lease and therefore needs no hidden allocation.
+ */
+spec AudioEffect {
+    func prepare[self: Self!](format: AudioFormat&, maxFrames: std::Int)
+    func process[self: Self!](
+        pool: AudioBufferPool!
+        lease: AudioBufferLease&
+        frames: std::Int
+    ): std::Unit ?! AudioError
+    func reset[self: Self!]()
+    func latency[self: Self&](): std::Int
+}
+
+/** Reference effect that applies a constant gain in place. */
+pack GainEffect {
+    var gain: std::Double
+}
+
+impl AudioEffect for GainEffect {
+    func prepare[self: Self!](format: AudioFormat&, maxFrames: std::Int) {
+        self.gain = audioClampSample(self.gain)
+    }
+
+    func process[self: Self!](
+        pool: AudioBufferPool!
+        lease: AudioBufferLease&
+        frames: std::Int
+    ): std::Unit ?! AudioError {
+        if frames < 0 || frames > pool.blockFrames {
+            return .InvalidFrame
+        }
+        var frame = 0
+        while frame < frames {
+            var channel = 0
+            while channel < pool.format.channels {
+                fin sample = try pool.read(lease, frame, channel)
+                try pool.write(lease, frame, channel, sample * self.gain)
+                channel = channel + 1
+            }
+            frame = frame + 1
+        }
+    }
+
+    func reset[self: Self!]() { }
+
+    func latency[self: Self&](): std::Int {
+        return 0
+    }
+}
+
+test "the PCM pool exhausts without growing and rejects stale leases" {
+    var pool = audioBufferPool(audioFormatStereo(48000), 4, 2) catch audioBufferPoolEmpty()
+    fin first = pool.acquire() catch audioBufferLeaseInvalid()
+    fin second = pool.acquire() catch audioBufferLeaseInvalid()
+    var exhausted = false
+    try {
+        pool.acquire()
+    } catch {
+        exhausted = true
+    }
+    assert exhausted { "a real-time pool must not allocate a surprise third block" }
+    assert pool.stats().highWater == 2 { "pool pressure must be observable" }
+
+    pool.write(first, 0, 0, 0.75) catch { }
+    pool.commit(first, 1, mediaTimeZero()) catch { }
+    pool.beginRead(first) catch { }
+    fin sample = pool.read(first, 0, 0) catch 0.0
+    assert sample > 0.74 && sample < 0.76 { "committed PCM must survive the handoff" }
+    pool.release(first) catch { }
+
+    var stale = false
+    try {
+        pool.read(first, 0, 0)
+    } catch {
+        stale = true
+    }
+    assert stale { "a released generation must never address its replacement" }
+    pool.release(second) catch { }
+}
+
+test "mixer buses resolve by id and inherit gain" {
+    var mixer = audioMixer(8)
+    mixer.setGain(audioMasterBus(), 0.5) catch { }
+    mixer.setGain(audioMediaBus(), 0.8) catch { }
+    fin gain = mixer.effectiveGain(audioMediaBus()) catch 0.0
+    assert gain > 0.39 && gain < 0.41 { "media gain must include the master bus" }
+
+    var cycle = false
+    try {
+        mixer.setParent(audioMediaBus(), audioMediaBus())
+    } catch {
+        cycle = true
+    }
+    assert cycle { "a bus must not route into itself" }
+}
+
+test "effect packs process a caller-owned lease in place" {
+    var pool = audioBufferPool(audioFormatStereo(48000), 2, 1) catch audioBufferPoolEmpty()
+    fin lease = pool.acquire() catch audioBufferLeaseInvalid()
+    pool.write(lease, 0, 0, 0.5) catch { }
+    var gainEffect = GainEffect(0.25)
+    gainEffect.prepare(audioFormatStereo(48000), 2)
+    gainEffect.process(pool, lease, 1) catch { }
+    fin sample = pool.read(lease, 0, 0) catch 0.0
+    assert sample > 0.124 && sample < 0.126 { "the effect must update the pool block" }
+    pool.release(lease) catch { }
+}

@@ -1,6 +1,22 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // __AZORA_PROJECT_NAME__ — ECS + decorators.
 //
-// A modular Azora Engine scene: components and systems are plain Azora data
+// A modular Azora Engine scene: components and systems are plain Azora data,
 // marked with @Component / @System / @Query, simulation lives in ECS data,
 // rendering is submitted through a queue, and background work uses Azora tasks.
 
@@ -56,19 +72,19 @@ func defaultRenderable(): Renderable {
 }
 
 func sameEntity(left: Entity, right: Entity): std::Bool {
-    return left.isValid() && right.isValid() && left.id == right.id && left.generation == right.generation
+    return left.isValid && right.isValid && left.id == right.id && left.generation == right.generation
 }
 
 func transformStoreInit(): TransformStore {
-    return TransformStore(@std::arr[entityInvalid()], @std::arr[defaultLocalTransform()])
+    return TransformStore(@std::arr[Entity::invalid], @std::arr[defaultLocalTransform()])
 }
 
 func spinStoreInit(): SpinStore {
-    return SpinStore(@std::arr[entityInvalid()], @std::arr[Spin(0.0)])
+    return SpinStore(@std::arr[Entity::invalid], @std::arr[Spin(0.0)])
 }
 
 func renderableStoreInit(): RenderableStore {
-    return RenderableStore(@std::arr[entityInvalid()], @std::arr[defaultRenderable()])
+    return RenderableStore(@std::arr[Entity::invalid], @std::arr[defaultRenderable()])
 }
 
 func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore): QueryCursor {
@@ -76,7 +92,7 @@ func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore):
     var i = 1
     while i < transforms.entities.size {
         fin entity = transforms.entities[i]
-        if entity.isValid() && world.isAlive(entity) && spins.has(entity) {
+        if entity.isValid && world.isAlive(entity) && spins.has(entity) {
             query.add(entity)
         }
         i = i + 1
@@ -89,7 +105,7 @@ func buildRenderQuery(world: World, transforms: TransformStore, renderables: Ren
     var i = 1
     while i < transforms.entities.size {
         fin entity = transforms.entities[i]
-        if entity.isValid() && world.isAlive(entity) && renderables.has(entity) {
+        if entity.isValid && world.isAlive(entity) && renderables.has(entity) {
             query.add(entity)
         }
         i = i + 1
@@ -192,18 +208,18 @@ impl RenderableStore {
 
 @System("Update")
 func spinSystem(
-    world: World&,
-    query: @Query (LocalTransform!, Spin&),
-    transforms: TransformStore,
-    spins: SpinStore,
-    dt: std::Double,
+    world: World&
+    query: @Query (LocalTransform!, Spin&)
+    transforms: TransformStore
+    spins: SpinStore
+    dt: std::Double
     speedScale: std::Double
 ) {
     query.reset()
     while query.hasNext() {
         fin entity = query.next()
         fin index = transforms.indexOf(entity)
-        if index >= 0 && entity.isValid() && world.isAlive(entity) && spins.has(entity) {
+        if index >= 0 && entity.isValid && world.isAlive(entity) && spins.has(entity) {
             fin transform = transforms.values[index]
             fin spin = spins.get(entity)
             transforms.insert(entity, LocalTransform(transform.position, transform.rotation + Vec3(0.0, spin.speed * speedScale * dt, 0.0), transform.scale))
@@ -213,23 +229,23 @@ func spinSystem(
 
 @System("Render")
 func renderSystem(
-    app: App,
-    world: World&,
-    query: @Query (LocalTransform&, Renderable&),
-    transforms: TransformStore,
-    renderables: RenderableStore,
+    app: App
+    world: World&
+    query: @Query (LocalTransform&, Renderable&)
+    transforms: TransformStore
+    renderables: RenderableStore
     queue: RenderQueue
 ) {
     query.reset()
     while query.hasNext() {
         fin entity = query.next()
         fin index = transforms.indexOf(entity)
-        if index >= 0 && entity.isValid() && world.isAlive(entity) && renderables.has(entity) {
+        if index >= 0 && entity.isValid && world.isAlive(entity) && renderables.has(entity) {
             fin transform = transforms.values[index]
             fin renderable = renderables.get(entity)
             queue.add(
-                renderable.mesh,
-                Transform3d(transform.position, transform.rotation, transform.scale),
+                renderable.mesh
+                Transform3d(transform.position, transform.rotation, transform.scale)
                 materialColor(renderable.color)
             )
         }
@@ -259,7 +275,7 @@ async func main() {
     fin cube = app.meshCube(1.0)
     fin grid = app.meshGrid(12.0, 12)
 
-    var world = worldInit()
+    var world = World::init()
     var transforms = transformStoreInit()
     var spins = spinStoreInit()
     var renderables = renderableStoreInit()

@@ -1,0 +1,345 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine.media
+ *
+ * Container-neutral contracts shared by audio and video.
+ *
+ * Providers own demuxing and decoding. The rest of the engine only sees stable
+ * stream ids, rational timestamps, metadata and provider capabilities, so a
+ * bundled FFmpeg provider and a platform hardware provider can be selected
+ * without changing player code.
+ */
+module engine.media
+
+import std.container.array
+import engine.io
+
+/** Stable identity of one stream inside a media source. */
+pack StreamId {
+    fin value: std::Int
+}
+
+/** Stable identity of a user-facing track assembled from one or more streams. */
+pack TrackId {
+    fin value: std::Int
+}
+
+/**
+ * A timestamp represented exactly as `value / scale` seconds.
+ *
+ * Keeping decoder timestamps rational avoids accumulating floating-point drift
+ * during long playback and preserves the time bases found in media containers.
+ */
+pack MediaTime {
+    fin ticks: std::Long
+    fin timeBaseNum: std::Int
+    fin timeBaseDen: std::Int
+}
+
+/** Zero seconds in the engine's default microsecond time base. */
+func mediaTimeZero(): MediaTime {
+    return MediaTime(0L, 1, 1000000)
+}
+
+/** Builds a timestamp in a `1 / scale` time base. */
+func mediaTime(value: std::Long, scale: std::Int): MediaTime {
+    if scale <= 0 {
+        return MediaTime(value, 1, 1000000)
+    }
+    return MediaTime(value, 1, scale)
+}
+
+/** Converts seconds to the default microsecond time base. */
+func mediaTimeSeconds(seconds: std::Double): MediaTime {
+    return MediaTime((seconds * 1000000.0) as std::Long, 1, 1000000)
+}
+
+/** Converts seconds to a provider's native time base. */
+func mediaTimeFromSecs(seconds: std::Double, timeBaseNum: std::Int, timeBaseDen: std::Int): MediaTime {
+    if timeBaseNum <= 0 || timeBaseDen <= 0 {
+        return mediaTimeSeconds(seconds)
+    }
+    fin ticks = (seconds * (timeBaseDen as std::Double) / (timeBaseNum as std::Double)) as std::Long
+    return MediaTime(ticks, timeBaseNum, timeBaseDen)
+}
+
+/** Converts a timestamp to seconds for presentation and user interfaces. */
+func mediaTimeSecs(time: MediaTime&): std::Double {
+    if time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
+        return 0.0
+    }
+    return (time.ticks as std::Double) * (time.timeBaseNum as std::Double) / (time.timeBaseDen as std::Double)
+}
+
+/** Compatibility spelling retained for engine internals. */
+func mediaTimeAsSeconds(time: MediaTime&): std::Double {
+    return mediaTimeSecs(time)
+}
+
+/** Converts [time] to another rational time base. */
+func mediaTimeRescale(time: MediaTime&, scale: std::Int): MediaTime {
+    if scale <= 0 || time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
+        return mediaTimeZero()
+    }
+    fin numerator = time.ticks * (time.timeBaseNum as std::Long) * (scale as std::Long)
+    return MediaTime(numerator / (time.timeBaseDen as std::Long), 1, scale)
+}
+
+/** Adds timestamps without first converting them to floating point. */
+func mediaTimeAdd(left: MediaTime&, right: MediaTime&): MediaTime {
+    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
+        return mediaTimeZero()
+    }
+    fin numerator = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
+    fin denominator = (right.timeBaseDen as std::Long) * (left.timeBaseNum as std::Long)
+    return MediaTime(left.ticks + numerator / denominator, left.timeBaseNum, left.timeBaseDen)
+}
+
+/** Subtracts timestamps without first converting them to floating point. */
+func mediaTimeSubtract(left: MediaTime&, right: MediaTime&): MediaTime {
+    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
+        return mediaTimeZero()
+    }
+    fin numerator = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
+    fin denominator = (right.timeBaseDen as std::Long) * (left.timeBaseNum as std::Long)
+    return MediaTime(left.ticks - numerator / denominator, left.timeBaseNum, left.timeBaseDen)
+}
+
+/** Returns a negative value, zero, or a positive value according to ordering. */
+func mediaTimeCompare(left: MediaTime&, right: MediaTime&): std::Int {
+    fin leftValue = left.ticks * (left.timeBaseNum as std::Long) * (right.timeBaseDen as std::Long)
+    fin rightValue = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
+    if leftValue < rightValue { return -1 }
+    if leftValue > rightValue { return 1 }
+    return 0
+}
+
+/** Restricts a timestamp to an inclusive interval. */
+func mediaTimeClamp(value: MediaTime&, minimum: MediaTime&, maximum: MediaTime&): MediaTime {
+    if mediaTimeCompare(value, minimum) < 0 {
+        return MediaTime(minimum.ticks, minimum.timeBaseNum, minimum.timeBaseDen)
+    }
+    if mediaTimeCompare(value, maximum) > 0 {
+        return MediaTime(maximum.ticks, maximum.timeBaseNum, maximum.timeBaseDen)
+    }
+    return MediaTime(value.ticks, value.timeBaseNum, value.timeBaseDen)
+}
+
+/** A source accepted by a media provider. Byte storage remains caller-owned. */
+variant enum MediaSource {
+    Path(path: std::String)
+    Bytes(bytes: Blob)
+    Uri(uri: std::String)
+}
+
+/** Broad role of one stream in a container. */
+enum MediaStreamKind {
+    Video
+    Audio
+    Subtitle
+    Attachment
+    Data
+}
+
+/** Metadata common to all stream kinds, plus kind-specific physical details. */
+pack MediaStreamInfo {
+    fin id: StreamId
+    fin kind: MediaStreamKind
+    fin codec: std::String
+    fin language: std::String
+    fin title: std::String
+    fin width: std::Int
+    fin height: std::Int
+    fin frameRate: std::Double
+    fin sampleRate: std::Int
+    fin channels: std::Int
+    fin isDefault: std::Bool
+}
+
+/** Metadata discovered by probing a source without starting playback. */
+pack MediaInfo {
+    fin format: std::String
+    fin duration: MediaTime
+    fin seekable: std::Bool
+    fin live: std::Bool
+    fin streams: std::Array<MediaStreamInfo>
+}
+
+/** An empty probe result used as a safe fallback in tools and tests. */
+func mediaInfoEmpty(): MediaInfo {
+    return MediaInfo("", mediaTimeZero(), false, false, std::Array::fill<MediaStreamInfo>(0))
+}
+
+/** Number of streams of [kind] in [info]. */
+func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): std::Int {
+    var count = 0
+    var index = 0
+    while index < info.streams.size {
+        if info.streams[index].kind == kind {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    return count
+}
+
+/** True when a caller-owned byte source has storage to probe. */
+func mediaBytesValid(bytes: Blob&): std::Bool {
+    return bytes.data != 0L && bytes.size > 0
+}
+
+/** True when [source] contains enough information for a provider to open it. */
+func mediaSourceValid(source: MediaSource&): std::Bool {
+    return when source {
+        MediaSource.Path(path) -> path != ""
+        MediaSource.Bytes(bytes) -> mediaBytesValid(bytes)
+        MediaSource.Uri(uri) -> uri != ""
+    }
+}
+
+/** Provider operations rejected at the media boundary. */
+error MediaError {
+    InvalidSource
+    UnsupportedContainer
+    UnsupportedCodec
+    ProviderUnavailable
+    OpenFailed
+    DecodeFailed
+    NotSeekable
+    Cancelled
+}
+
+/** Capabilities used by provider selection before a source is opened. */
+pack MediaProviderCapabilities {
+    fin localFiles: std::Bool
+    fin memory: std::Bool
+    fin network: std::Bool
+    fin softwareDecode: std::Bool
+    fin hardwareVideoDecode: std::Bool
+    fin zeroCopyVideo: std::Bool
+    fin audioDecode: std::Bool
+    fin subtitleDecode: std::Bool
+}
+
+/**
+ * Boundary implemented by bundled FFmpeg and platform-specific providers.
+ *
+ * A player selects a provider by these capabilities and then refers to streams
+ * by [StreamId], never by a display name or codec string.
+ */
+spec MediaProvider {
+    func name[self: Self&](): std::String
+    func capabilities[self: Self&](): MediaProviderCapabilities
+    func canOpen[self: Self&](source: MediaSource&): std::Bool
+    func probe[self: Self&](source: MediaSource&): MediaInfo ?! MediaError
+}
+
+/**
+ * Deterministic provider used by engine tests before native codecs are loaded.
+ * It describes one H.264 video stream, one AAC stream and one subtitle stream.
+ */
+pack FakeMediaProvider {
+    fin available: std::Bool
+}
+
+/** A representative movie returned by [FakeMediaProvider]. */
+func fakeMovieInfo(): MediaInfo {
+    var streams: std::Array<MediaStreamInfo> = std::Array::fill<MediaStreamInfo>(3)
+    streams[0] = MediaStreamInfo(
+        StreamId(10),
+        MediaStreamKind.Video,
+        "h264",
+        "und",
+        "Picture",
+        1920,
+        1080,
+        24.0,
+        0,
+        0,
+        true
+    )
+    streams[1] = MediaStreamInfo(
+        StreamId(20),
+        MediaStreamKind.Audio,
+        "aac",
+        "en",
+        "Main",
+        0,
+        0,
+        0.0,
+        48000,
+        2,
+        true
+    )
+    streams[2] = MediaStreamInfo(
+        StreamId(30),
+        MediaStreamKind.Subtitle,
+        "ass",
+        "en",
+        "English",
+        0,
+        0,
+        0.0,
+        0,
+        0,
+        false
+    )
+    return MediaInfo("matroska", mediaTimeSeconds(120.0), true, false, streams)
+}
+
+impl MediaProvider for FakeMediaProvider {
+    func name[self: Self&](): std::String {
+        return "azora.fake-media"
+    }
+
+    func capabilities[self: Self&](): MediaProviderCapabilities {
+        return MediaProviderCapabilities(true, true, false, true, false, false, true, true)
+    }
+
+    func canOpen[self: Self&](source: MediaSource&): std::Bool {
+        return self.available && mediaSourceValid(source)
+    }
+
+    func probe[self: Self&](source: MediaSource&): MediaInfo ?! MediaError {
+        if !self.available {
+            return .ProviderUnavailable
+        }
+        if !self.canOpen(source) {
+            return .InvalidSource
+        }
+        return fakeMovieInfo()
+    }
+}
+
+test "media time preserves ordering across time bases" {
+    fin oneSecond = mediaTime(24L, 24)
+    fin halfSecond = mediaTime(500L, 1000)
+    assert mediaTimeCompare(oneSecond, halfSecond) > 0 { "one second must follow half a second" }
+    assert mediaTimeCompare(oneSecond, mediaTimeSeconds(1.0)) == 0 { "equal instants must compare equally" }
+    assert mediaTimeAdd(halfSecond, halfSecond).ticks == 1000L { "addition must retain the left time base" }
+}
+
+test "the fake provider exposes streams by stable identity and kind" {
+    fin provider = FakeMediaProvider(true)
+    fin info = provider.probe(MediaSource.Path("movie.mkv")) catch mediaInfoEmpty()
+    assert info.format == "matroska" { "the test provider must describe its container" }
+    assert mediaStreamCount(info, MediaStreamKind.Video) == 1 { "the movie must have one video stream" }
+    assert mediaStreamCount(info, MediaStreamKind.Audio) == 1 { "the movie must have one audio stream" }
+    assert info.streams[0].id.value == 10 { "stream selection must use ids, not names" }
+}
+
+test "the provider rejects an empty source" {
+    fin provider = FakeMediaProvider(true)
+    var rejected = false
+    try {
+        provider.probe(MediaSource.Path(""))
+    } catch {
+        rejected = true
+    }
+    assert rejected { "an empty path must not reach a decoder" }
+}

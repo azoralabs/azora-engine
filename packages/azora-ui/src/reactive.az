@@ -20,7 +20,7 @@ import engine.core
 import engine.ecs
 
 /** Revisions observed by one reactive UI owner. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack EcsObserver {
     var _worldRevision: std::Long
     var _storageRevision: std::Long
@@ -74,7 +74,7 @@ impl EcsObserver {
  * `Signal<T>` owns the value. `publishedRevision` records the revision already
  * consumed by a renderer, making repeated frame polling constant-time.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack ReactiveResource<T> {
     var signal: Signal<T>
     var publishedRevision: std::Long
@@ -84,7 +84,7 @@ func reactiveResource<T>(value: T): ReactiveResource<T> {
     return ReactiveResource<T>(signalInit<T>(value), (0 - 1) as std::Long)
 }
 
-impl<T> ReactiveResource {
+impl ReactiveResource<T> {
     prop value[self: Self&]: T = signalGet<T>(self.signal)
     prop version[self: Self&]: std::Long = signalVersion<T>(self.signal)
 
@@ -108,7 +108,7 @@ impl<T> ReactiveResource {
 }
 
 test "ecs observer consumes each world revision once" {
-    var world = worldInit()
+    var world = World::init()
     var observer = ecsObserver()
     assert observer.observeWorld(world) { "first world observation must invalidate" }
     assert !observer.observeWorld(world) { "unchanged world invalidated twice" }

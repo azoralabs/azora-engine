@@ -9,6 +9,8 @@ module engine.audio
 import engine.objc
 import engine.io
 import std.math
+exposed import engine.media
+exposed import engine.audio.runtime
 
 /**
  * @file engine/audio/audio
@@ -194,14 +196,14 @@ realm engine::audio {
  * WAV, AIFF, MP3, AAC — loads through the same call. Tracker modules do not
  * decode this way and are rendered to PCM first; see [soundFromPcm].
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack Sound {
     var player: std::Long
     var ready: std::Bool
 }
 
 /** The sound returned when loading fails; every operation on it is a no-op. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func soundEmpty(): Sound {
     return Sound(0L, false)
 }
@@ -212,7 +214,7 @@ func soundEmpty(): Sound {
  * Takes the bytes rather than a path so callers can decode from an archive, a
  * network buffer, or PCM they rendered themselves, without staging a temp file.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func soundFromBytes(bytes: std::Long, length: std::Int): Sound {
     if bytes == 0L || length <= 0 {
         return soundEmpty()
@@ -231,7 +233,7 @@ func soundFromBytes(bytes: std::Long, length: std::Int): Sound {
 }
 
 /** Loads an encoded sound file from disk. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func loadSound(path: std::String): Sound {
     var blob = readFile(path)
     if !blob.ok() {

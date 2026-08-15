@@ -19,7 +19,7 @@ module engine.ui.navigation
 import engine.core
 
 /** Lifecycle of a navigation entry retained by a display. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 enum NavLifecycle {
     Created
     Active
@@ -28,7 +28,7 @@ enum NavLifecycle {
 }
 
 /** Direction of the most recent stack operation. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 enum NavDirection {
     None
     Push
@@ -43,7 +43,7 @@ enum NavDirection {
  * `revision` changes for every successful mutation and can be observed by a
  * reactive UI host without coupling navigation to a renderer.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack NavBackStack<K> {
     var _entries: std::Array<K>
     var _size: std::Int
@@ -52,7 +52,7 @@ pack NavBackStack<K> {
 }
 
 /** Creates a back stack containing one root key. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func navBackStack<K>(root: K, capacity: std::Int = 32): NavBackStack<K>
 in {
     assert capacity > 0 { "navigation capacity must be positive" }
@@ -62,7 +62,7 @@ in {
     return NavBackStack<K>(entries, 1, 0L, NavDirection.None)
 }
 
-impl<K> NavBackStack {
+impl NavBackStack<K> {
     prop count[self: Self&]: std::Int = self._size
     prop canPop[self: Self&]: std::Bool = self._size > 1
     prop version[self: Self&]: std::Long = self._revision
@@ -130,7 +130,7 @@ impl<K> NavBackStack {
 /** Stored content associated with one typed navigation key. */
 typealias NavContent<K> = (K&) -> std::Unit
 
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack NavEntry<K> {
     fin key: K
     fin content: NavContent<K>
@@ -142,7 +142,7 @@ pack NavEntry<K> {
  * Providers preserve declaration order. A custom equality function allows
  * packs, enums, and application-defined route keys without engine hardcoding.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack NavEntryProvider<K> {
     var _entries: std::Array<NavEntry<K>>
     var _size: std::Int
@@ -150,7 +150,7 @@ pack NavEntryProvider<K> {
 }
 
 func navEntryProvider<K>(
-    equals: (K&, K&) -> std::Bool,
+    equals: (K&, K&) -> std::Bool
     capacity: std::Int = 32
 ): NavEntryProvider<K>
 in {
@@ -159,7 +159,7 @@ in {
     return NavEntryProvider<K>(std::Array::fill<NavEntry<K>>(capacity), 0, equals)
 }
 
-impl<K> NavEntryProvider {
+impl NavEntryProvider<K> {
     /** Registers one destination. Duplicate keys are rejected. */
     func add(key: K, content: NavContent<K>)
     in {
@@ -198,7 +198,7 @@ impl<K> NavEntryProvider {
  * A host calls `sync` before presenting. The return value says whether the
  * visible entry or transition changed since the previous frame.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack NavDisplay {
     var observedRevision: std::Long
     var lifecycle: NavLifecycle

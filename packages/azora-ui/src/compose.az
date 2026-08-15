@@ -1,0 +1,684 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.ui.compose
+ *
+ * Turning a declarative description into ECS operations, deterministically.
+ *
+ * This is the expansion `@compose world { … }` is defined as
+ * (`proposals/REACTIVE_ECS_UI.MD` §9.2), written out as functions:
+ *
+ * ```text
+ * begin Composition::of(owner, world)
+ *   claim node key "main" under owner
+ *   ensure Entity + Column + UiKey("main")
+ *   …
+ *   mark unclaimed previous children for disposal
+ * commit composition
+ * ```
+ *
+ * The macro is sugar over exactly these calls. Writing them out first means the
+ * semantics - identity, reconciliation, disposal - are testable before any
+ * syntax exists, and the macro cannot mean something the functions cannot do.
+ *
+ * ## Reconciliation is by key, not by position
+ *
+ * [claim] looks a node up by `(parent, key)`. A second pass over the same tree
+ * finds the same entities and updates them in place, so a button keeps its
+ * identity - and anything attached to that identity - across recompositions.
+ * Nodes that are *not* claimed during a pass are removed when it commits: that
+ * is how a disappearing node disappears, without anyone writing a removal.
+ */
+module engine.ui.compose
+
+import std.container.array
+import engine.core
+import engine.ecs
+import engine.ui.node
+
+/**
+ * One composition pass over [world].
+ *
+ * The stores travel with the pass rather than being global, because a
+ * composition must not be able to reach a world it was not given (§9.1).
+ */
+pack Composition {
+    var world: World
+    var keys: Storage<UiKey>
+    var children: Storage<UiChild>
+    var order: Storage<UiOrder>
+    var owned: Storage<UiOwned>
+    var text: Storage<UiText>
+    var buttons: Storage<UiButton>
+    var actions: Storage<UiAction>
+    var rects: Storage<UiRect>
+    var paints: Storage<UiPaint>
+    var layouts: Storage<UiLayout>
+    var scrolls: Storage<UiScroll>
+    var tags: Storage<UiTag>
+    var cursors: Storage<UiCursor>
+    var sizes: Storage<UiSize>
+    var paddings: Storage<UiPadding>
+    /** Names the composition, so one owner cannot dispose another's nodes. */
+    fin owner: std::String = ""
+    /** The entity claims hang from when no other parent is given. */
+    var root: Entity
+    /** Next sibling index, per pass. */
+    var cursor: std::Int = 0
+    /**
+     * Child counter for the root, whose parent is not a live entity and so has
+     * nowhere to carry a [UiCursor] of its own.
+     */
+    var rootCursor: std::Int = 0
+}
+
+impl Composition {
+
+    /**
+     * Takes back what the world's copies now hold.
+     *
+     * The other half of [publish]: systems query and write through the world,
+     * and what they wrote has to reach the storages the renderer reads. Called
+     * after systems run and before the frame is committed.
+     */
+    @std::Experimental(since: "0.1")
+    func adopt[self: Self!]() {
+        self.paints = storageOf<UiPaint>(self.world)
+        self.tags = storageOf<UiTag>(self.world)
+        self.scrolls = storageOf<UiScroll>(self.world)
+    }
+
+    /**
+     * Publishes the composition's component storages to its world.
+     *
+     * A query is asked of the world, so what the world holds has to be what
+     * this frame composed. The composition keeps its own storages and the world
+     * gets a copy of each: two owners, and the copy is what queries read.
+     * Called once before systems run, when every storage is settled.
+     */
+    @std::Experimental(since: "0.1")
+    func publish[self: Self!]() {
+        fin tags = registerStorage<UiTag>(self.world, self.tags.clone())
+        fin paints = registerStorage<UiPaint>(self.world, self.paints.clone())
+        fin rects = registerStorage<UiRect>(self.world, self.rects.clone())
+        fin texts = registerStorage<UiText>(self.world, self.text.clone())
+        fin scrolls = registerStorage<UiScroll>(self.world, self.scrolls.clone())
+        // The results say whether an entry was replaced, which is true on every
+        // frame after the first and is not information anyone needs here.
+        if tags && paints && rects && texts && scrolls {
+            return
+        }
+    }
+}
+
+impl Composition:: {
+    /** A composition over [world], owned by [owner]. */
+    func of(world: World, owner: std::String): Composition {
+        return Composition(
+            world,
+            storageInit<UiKey>(UiKey("")),
+            storageInit<UiChild>(UiChild(Entity::invalid)),
+            storageInit<UiOrder>(UiOrder(0)),
+            storageInit<UiOwned>(UiOwned("", false)),
+            storageInit<UiText>(UiText("")),
+            storageInit<UiButton>(UiButton(true)),
+            storageInit<UiAction>(UiAction(0)),
+            storageInit<UiRect>(UiRect(0.0, 0.0, 0.0, 0.0)),
+            storageInit<UiPaint>(UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)),
+            storageInit<UiLayout>(UiLayout(0 - 1, Arrangement.Start, Alignment.Start, 0.0)),
+            storageInit<UiScroll>(UiScroll(0.0, 0.0)),
+            storageInit<UiTag>(UiTag(0 - 1)),
+            storageInit<UiCursor>(UiCursor(0)),
+            storageInit<UiSize>(UiSize(false, false, 0.0, 0.0, 0.0)),
+            storageInit<UiPadding>(UiPadding(0.0, 0.0, 0.0, 0.0)),
+            owner,
+            Entity::invalid,
+            0,
+            0
+        )
+    }
+}
+
+impl Composition {
+    /**
+     * Starts a pass.
+     *
+     * Every node this composition owns is marked unclaimed; [commit] removes
+     * whatever is still unclaimed at the end. A pass therefore describes the whole
+     * tree, and absence is meaningful.
+     */
+    func begin[self: Composition!]() {
+        var index = 0
+        while index < storageLength<UiOwned>(self.owned) {
+            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+            if entity.isValid {
+                fin mark = storageGetOrDefault<UiOwned>(self.owned, entity, UiOwned("", false))
+                if mark.owner == self.owner {
+                    storageInsert<UiOwned>(self.owned, entity, UiOwned(mark.owner, false))
+                }
+            }
+            index = index + 1
+        }
+        self.cursor = 0
+        self.rootCursor = 0
+    }
+
+    /**
+     * The next free sibling position under [parent], consuming it.
+     *
+     * The root has no entity to hang a [UiCursor] on, so its count lives on the
+     * self. Every other parent carries its own, reset when it is claimed.
+     */
+    func nextChildIndex[self: Composition!](parent: Entity): std::Int {
+        if !parent.isValid {
+            fin position = self.rootCursor
+            self.rootCursor = position + 1
+            return position
+        }
+        fin current = storageGetOrDefault<UiCursor>(self.cursors, parent, UiCursor(0))
+        storageInsert<UiCursor>(self.cursors, parent, UiCursor(current.next + 1))
+        return current.next
+    }
+
+    /**
+     * The key a keyless [role] takes at its position under [parent].
+     *
+     * Including the role means a block whose shape changes between passes fails
+     * loudly - the key stops matching and the node is rebuilt - rather than
+     * silently reusing a column's entity for a button.
+     */
+    func positionalKey[self: Composition!](parent: Entity, role: std::String): std::String {
+        return "${role}#${self.peekChildIndex(parent)}"
+    }
+
+    /**
+     * The position [parent]'s next child will take, without consuming it.
+     *
+     * A key is built before the node is claimed, and the claim is what advances the
+     * counter - so reading it here must not. Peeking keeps the key and the sibling
+     * order the node ends up with in step, which is what [childAt] relies on.
+     */
+    func peekChildIndex[self: Composition&](parent: Entity): std::Int {
+        if !parent.isValid {
+            return self.rootCursor
+        }
+        return storageGetOrDefault<UiCursor>(self.cursors, parent, UiCursor(0)).next
+    }
+
+    /**
+     * The entity for [key] under [parent], creating it the first time.
+     *
+     * The same key yields the same entity on every self, which is what makes a
+     * recomposition an update rather than a rebuild.
+     */
+    func claim[self: Composition!](parent: Entity, key: std::String): Entity {
+        fin existing = self.findChild(parent, key)
+        if existing.isValid {
+            storageInsert<UiOwned>(self.owned, existing, UiOwned(self.owner, true))
+            // Position *among siblings*, not a number shared by the whole self:
+            // `parent.childAt(n)` asks for the nth child of that parent, so a
+            // global counter left every parent after the first with no child at
+            // index 0 - the tree arranged one node and silently dropped the rest.
+            storageInsert<UiOrder>(self.order, existing, UiOrder(self.nextChildIndex(parent)))
+            // A claimed node is about to have its own children enumerated, so its
+            // sibling counter starts over here rather than in `begin`: that way a
+            // node claimed twice in one self is a visible key collision, not a
+            // silently continuing count.
+            storageInsert<UiCursor>(self.cursors, existing, UiCursor(0))
+            self.cursor = self.cursor + 1
+            return existing
+        }
+
+        fin created = spawnEntity(self.world)
+        storageInsert<UiKey>(self.keys, created, UiKey(key))
+        storageInsert<UiChild>(self.children, created, UiChild(parent))
+        storageInsert<UiOwned>(self.owned, created, UiOwned(self.owner, true))
+        storageInsert<UiOrder>(self.order, created, UiOrder(self.nextChildIndex(parent)))
+        storageInsert<UiCursor>(self.cursors, created, UiCursor(0))
+        self.cursor = self.cursor + 1
+        return created
+    }
+
+    /** The child of [parent] keyed [key], or an invalid entity. */
+    func findChild[self: Composition&](parent: Entity, key: std::String): Entity {
+        var index = 0
+        while index < storageLength<UiKey>(self.keys) {
+            fin entity = storageEntityAt<UiKey>(self.keys, index)
+            if entity.isValid {
+                fin candidate = storageGetOrDefault<UiKey>(self.keys, entity, UiKey(""))
+                if candidate.value == key {
+                    fin link = storageGetOrDefault<UiChild>(self.children, entity, UiChild(Entity::invalid))
+                    if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                        return entity
+                    }
+                }
+            }
+            index = index + 1
+        }
+        return Entity::invalid
+    }
+
+    /**
+     * Ends the self, removing every node this owner did not claim.
+     *
+     * Children are disposed before parents would be a stronger guarantee than this
+     * gives: removal here is by entity, and a parent's disappearance leaves its
+     * children unclaimed in the same self, so both go. Ordering matters once
+     * disposal runs user code, which it does not yet (§10.3).
+     */
+    func commit[self: Composition!](): std::Int {
+        var removed = 0
+        var index = 0
+        while index < storageLength<UiOwned>(self.owned) {
+            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+            if entity.isValid {
+                fin mark = storageGetOrDefault<UiOwned>(self.owned, entity, UiOwned("", true))
+                if mark.owner == self.owner && !mark.claimed {
+                    storageRemove<UiOwned>(self.owned, entity)
+                    storageRemove<UiKey>(self.keys, entity)
+                    storageRemove<UiChild>(self.children, entity)
+                    storageRemove<UiOrder>(self.order, entity)
+                    storageRemove<UiText>(self.text, entity)
+                    storageRemove<UiButton>(self.buttons, entity)
+                    storageRemove<UiAction>(self.actions, entity)
+                    storageRemove<UiRect>(self.rects, entity)
+                    storageRemove<UiPaint>(self.paints, entity)
+                    storageRemove<UiLayout>(self.layouts, entity)
+                    storageRemove<UiScroll>(self.scrolls, entity)
+                    storageRemove<UiTag>(self.tags, entity)
+                    storageRemove<UiCursor>(self.cursors, entity)
+                    storageRemove<UiSize>(self.sizes, entity)
+                    storageRemove<UiPadding>(self.paddings, entity)
+                    despawnEntity(self.world, entity)
+                    removed = removed + 1
+                }
+            }
+            index = index + 1
+        }
+        return removed
+    }
+
+    /** How many nodes this composition currently holds. */
+    func nodeCount[self: Composition&](): std::Int {
+        var live = 0
+        var index = 0
+        while index < storageLength<UiOwned>(self.owned) {
+            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+            if entity.isValid {
+                live = live + 1
+            }
+            index = index + 1
+        }
+        return live
+    }
+}
+
+
+
+
+
+
+
+
+// ── Scoped builders ─────────────────────────────────────────────────────
+//
+// The flat constructors above take `(pass, parent, key, …)`. Every one of
+// those three is redundant with where the call *is*: a builder nested inside a
+// column belongs to that column, in that composition, at that position. The
+// scope carries them, so a block can be written as a shape rather than as a
+// sequence of parented calls.
+//
+// A block receives its scope as the lambda's implicit `it`, which is as close
+// to the authored surface as the language reaches on its own. `@compose`
+// (step 4) is the rewrite that drops the `it.` - and because every builder here
+// is an ordinary function, the macro cannot express anything this cannot.
+
+/**
+ * A position in a composition: which pass, and which parent to build under.
+ *
+ * Passed by value while the composition it points at is shared - a child scope
+ * is a new parent over the same pass, so nesting cannot lose writes and a scope
+ * cannot outlive its block into a different tree.
+ */
+pack Scope {
+    var pass: Composition!
+    var parent: Entity
+}
+
+impl Scope {
+    /** The scope one level down, under [node]. */
+    func inside[self: Self&](node: Entity): Scope {
+        return Scope(self.pass, node)
+    }
+
+    /**
+     * A container stacking its children downward.
+     *
+     * [key] defaults to the node's position in this block; pass one explicitly
+     * when the block's shape can change - a reordered list keeps its state only
+     * if its items keep their keys.
+     */
+    react func Column<R>[self: Self&](
+        modifier: Modifier! = Modifier()
+        verticalArrangement: Arrangement = Arrangement.Start
+        horizontalAlignment: Alignment = Alignment.Start
+        spacing: std::Double = 0.0
+        key: std::String = ""
+        children: react [Scope&]() -> R
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "column") } else { key }
+        fin node = self.pass.column(self.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
+        with self.inside(node) {
+            children()
+        }
+        return node
+    }
+
+    /** A container laying its children across. */
+    react func Row<R>[self: Self&](
+        modifier: Modifier! = Modifier()
+        horizontalArrangement: Arrangement = Arrangement.Start
+        verticalAlignment: Alignment = Alignment.Start
+        spacing: std::Double = 0.0
+        key: std::String = ""
+        children: react [Scope&]() -> R
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "row") } else { key }
+        fin node = self.pass.row(self.parent, id, modifier, horizontalArrangement, verticalAlignment, spacing)
+        with self.inside(node) {
+            children()
+        }
+        return node
+    }
+
+    /** A column whose children are offset by a scroll position. */
+    react func ScrollColumn<R>[self: Self&](
+        modifier: Modifier! = Modifier()
+        verticalArrangement: Arrangement = Arrangement.Start
+        horizontalAlignment: Alignment = Alignment.Start
+        spacing: std::Double = 0.0
+        key: std::String = ""
+        children: react [Scope&]() -> R
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "scroll") } else { key }
+        fin node = self.pass.scrollColumn(self.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
+        with self.inside(node) {
+            children()
+        }
+        return node
+    }
+
+    /** A line of text. */
+    react func Text[self: Self&](
+        value: std::String
+        modifier: Modifier! = Modifier()
+        key: std::String = ""
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "text") } else { key }
+        return self.pass.text(self.parent, id, modifier, value)
+    }
+
+    /** An activatable node reporting [action] when pressed. */
+    /**
+     * An activatable node whose content is its block.
+     *
+     * `button(action: quit) { text("Quit") }` - the caption is a child, not a
+     * parameter, so a button holding an icon, or a row of icon and caption,
+     * needs no different builder.
+     */
+    react func Button<R>[self: Self&](
+        modifier: Modifier! = Modifier()
+        action: std::Int = 0
+        key: std::String = ""
+        children: react [Scope&]() -> R
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "button") } else { key }
+        fin node = self.pass.button(self.parent, id, modifier, action)
+        with self.inside(node) {
+            children()
+        }
+        return node
+    }
+
+    /** A plain rectangle, tagged so a query can find it later. */
+    react func Shape[self: Self&](
+        modifier: Modifier! = Modifier()
+        group: std::Int = 0 - 1
+        key: std::String = ""
+    ): Entity {
+        fin id = if key == "" { self.pass.positionalKey(self.parent, "shape") } else { key }
+        return self.pass.shape(self.parent, id, modifier, group)
+    }
+
+    /** Places [node] explicitly, as the flat [place] does. */
+    func place[self: Self&](
+        node: Entity
+        x: std::Double
+        y: std::Double
+        width: std::Double
+        height: std::Double
+    ) {
+        self.pass.place(node, x, y, width, height)
+    }
+
+    /** Sets how [node] paints. */
+    func paint[self: Self&](
+        node: Entity
+        r: std::Double
+        g: std::Double
+        b: std::Double
+        alpha: std::Double = 1.0
+        size: std::Double = 0.0
+    ) {
+        self.pass.paint(node, r, g, b, alpha, size)
+    }
+}
+
+/**
+ * One whole pass over [pass]: begin, describe, commit.
+ *
+ * The composition is the caller's, not this function's, because identity across
+ * frames is the entire point - a pass created here each frame would rebuild the
+ * tree every time and no node would keep anything. Returns the number of nodes
+ * the pass removed by not mentioning them.
+ */
+react func compose<R>(pass: Composition!, children: react [Scope&]() -> R): std::Int {
+    pass.begin()
+    with Scope(pass, pass.root) {
+        children()
+    }
+    return pass.commit()
+}
+
+impl Composition {
+    // ── Node constructors ───────────────────────────────────────────────
+    //
+    // The low-level layer: claim a node and give it the components that make
+    // it what it is. These are §9.3's approved constructors, and they are
+    // realm-qualified because the *bare* names belong to the scoped builders
+    // below - a free `column` here would shadow `Scope.column` at every call
+    // site that meant to write a block.
+
+    /**
+     * Writes [chain] onto [node] as components.
+     *
+     * This is where a modifier stops being a description and becomes data the
+     * layout and paint systems read. The chain is walked in order, so a later
+     * link overrides an earlier one asking for the same thing - which is what
+     * makes order observable rather than decorative.
+     *
+     * A chain is applied on every self, so a node that loses a modifier between
+     * passes loses its effect too: the components are rebuilt, not accumulated.
+     */
+    func applyModifier[self: Composition!](node: Entity, chain: Modifier&) {
+        var size = UiSize(false, false, 0.0, 0.0, 0.0)
+        var pad = UiPadding(0.0, 0.0, 0.0, 0.0)
+        var hasPadding = false
+        var background = UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)
+        var hasBackground = false
+
+        var index = 0
+        while index < chain.entries.size {
+        fin entry = chain.entries[index]
+        when entry.kind {
+            ModifierKind.FillMaxWidth -> { size.fillWidth = true }
+            ModifierKind.FillMaxHeight -> { size.fillHeight = true }
+            ModifierKind.Width -> { size.width = entry.a }
+            ModifierKind.Height -> { size.height = entry.a }
+            ModifierKind.Weight -> { size.weight = entry.a }
+            ModifierKind.Padding -> {
+                pad = UiPadding(entry.a, entry.b, entry.c, entry.d)
+                hasPadding = true
+            }
+            ModifierKind.Background -> {
+                background = UiPaint(entry.a, entry.b, entry.c, entry.d, 0.0)
+                hasBackground = true
+            }
+        }
+        index = index + 1
+    }
+
+    storageInsert<UiSize>(self.sizes, node, size)
+
+    if hasPadding {
+        storageInsert<UiPadding>(self.paddings, node, pad)
+    } else {
+        storageRemove<UiPadding>(self.paddings, node)
+    }
+    if hasBackground {
+        storageInsert<UiPaint>(self.paints, node, background)
+    }
+    }
+
+    /** A container that stacks its children downward. */
+    func column[self: Composition!](
+        parent: Entity
+        key: std::String
+        modifier: Modifier!
+        verticalArrangement: Arrangement
+        horizontalAlignment: Alignment
+        spacing: std::Double
+    ): Entity {
+        fin node = self.claim(parent, key)
+        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
+        self.applyModifier(node, modifier)
+        return node
+    }
+
+    /** A container that lays its children across. */
+    func row[self: Composition!](
+        parent: Entity
+        key: std::String
+        modifier: Modifier!
+        horizontalArrangement: Arrangement
+        verticalAlignment: Alignment
+        spacing: std::Double
+    ): Entity {
+        fin node = self.claim(parent, key)
+        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutRow, horizontalArrangement, verticalAlignment, spacing))
+        self.applyModifier(node, modifier)
+        return node
+    }
+
+    /** A column whose children are offset by a scroll position. */
+    func scrollColumn[self: Composition!](
+        parent: Entity
+        key: std::String
+        modifier: Modifier!
+        verticalArrangement: Arrangement
+        horizontalAlignment: Alignment
+        spacing: std::Double
+    ): Entity {
+        fin node = self.column(parent, key, modifier, verticalArrangement, horizontalAlignment, spacing)
+        fin existing = storageGetOrDefault<UiScroll>(self.scrolls, node, UiScroll(0.0, 0.0))
+        storageInsert<UiScroll>(self.scrolls, node, existing)
+        return node
+    }
+
+    /** A plain rectangle, tagged so a query can find it later. */
+    func shape[self: Composition!](parent: Entity, key: std::String, modifier: Modifier!, group: std::Int): Entity {
+        fin node = self.claim(parent, key)
+        storageInsert<UiTag>(self.tags, node, UiTag(group))
+        self.applyModifier(node, modifier)
+        // A shape with no colour of its own is invisible, and a shape is a
+        // rectangle - being invisible by default is never what was meant. The
+        // paint is written *only when absent*, which is what lets a system own
+        // it afterwards: `tintGroup` recolours tagged nodes, and re-running the
+        // description on the next frame must not undo that. A component a
+        // system writes cannot also be rewritten by the description each frame,
+        // or the two fight and the last writer of the frame wins.
+        if !storageHas<UiPaint>(self.paints, node) {
+        storageInsert<UiPaint>(self.paints, node, UiPaint(0.32, 0.34, 0.40, 1.0, 0.0))
+    }
+    return node
+    }
+
+    /** A line of text. */
+    func text[self: Composition!](parent: Entity, key: std::String, modifier: Modifier!, value: std::String): Entity {
+        fin node = self.claim(parent, key)
+        storageInsert<UiText>(self.text, node, UiText(value))
+        self.applyModifier(node, modifier)
+        return node
+    }
+
+    /** An activatable node reporting [action] when pressed. */
+    /**
+     * An activatable node reporting [action] when pressed.
+     *
+     * A button carries no text of its own: what it shows is its children, so a
+     * caption is a `text` node inside it and anything else - an icon, a row of
+     * both - is written the same way. It is given a centring row layout because
+     * that is what makes "inside a button" mean centred without the caller
+     * arranging it.
+     */
+    func button[self: Composition!](
+        parent: Entity
+        key: std::String
+        modifier: Modifier!
+        action: std::Int
+    ): Entity {
+        fin node = self.claim(parent, key)
+        storageInsert<UiButton>(self.buttons, node, UiButton(true))
+        storageInsert<UiAction>(self.actions, node, UiAction(action))
+        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutRow, Arrangement.Center, Alignment.Center, 0.0))
+        self.applyModifier(node, modifier)
+        return node
+    }
+
+    /** Places [node] - the arrangement a layout self would otherwise compute. */
+    func place[self: Composition!](
+        node: Entity
+        x: std::Double
+        y: std::Double
+        width: std::Double
+        height: std::Double
+    ) {
+        storageInsert<UiRect>(self.rects, node, UiRect(x, y, width, height))
+    }
+
+    /** Sets how [node] paints. */
+    func paint[self: Composition!](
+        node: Entity
+        r: std::Double
+        g: std::Double
+        b: std::Double
+        alpha: std::Double
+        size: std::Double
+    ) {
+        storageInsert<UiPaint>(self.paints, node, UiPaint(r, g, b, alpha, size))
+    }
+}

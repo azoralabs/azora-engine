@@ -1,0 +1,426 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.ui.node
+ *
+ * The components a UI node is made of.
+ *
+ * A node is an entity, and its role is the set of components it carries -
+ * `proposals/REACTIVE_ECS_UI.MD` §10.1. There is no `UiNode` type with a `kind`
+ * field: a button *is* an entity holding [UiButton], a label *is* an entity
+ * holding [UiText], and a thing that is both is simply an entity holding both.
+ *
+ * Keeping these as separate components is what lets a system ask for exactly
+ * what it needs. A layout pass reads [UiRect] without loading text; a renderer
+ * reads [UiText] without loading hit-test policy. A single fat node type would
+ * make every pass depend on every field.
+ */
+module engine.ui.node
+
+import std.container.array
+import engine.core
+import engine.ecs
+
+/**
+ * A node's identity within its parent.
+ *
+ * Identity is the key, not the position: reordering keyed siblings moves their
+ * state with them, and changing a key destroys the old node rather than
+ * quietly repurposing it (§9.4).
+ */
+@Component
+pack UiKey {
+    fin value: std::String = ""
+}
+
+/** The parent this node hangs from. One parent per node, no cycles (§10.3). */
+@Component
+pack UiChild {
+    fin parent: Entity
+}
+
+/**
+ * Position among siblings.
+ *
+ * Recorded explicitly because ECS storage order is an implementation detail,
+ * and the semantic tree must present children in the order they were composed
+ * rather than the order they happen to be stored (§10.3).
+ */
+@Component
+pack UiOrder {
+    var index: std::Int = 0
+}
+
+/**
+ * How many children have been claimed under this node during the current pass.
+ *
+ * This is what lets a builder block omit keys: the *n*th child written under a
+ * parent is keyed by that position, so `button("Play")` needs no name. Position
+ * is only an identity while the shape of the block is stable - reorder a list
+ * and positional keys follow the position, not the item - which is why an
+ * explicit `key` still overrides it.
+ *
+ * It is per-parent rather than per-pass because keys only have to be unique
+ * among siblings, and a counter shared by the whole tree would change every
+ * node's key whenever any earlier subtree grew.
+ */
+@Component
+pack UiCursor {
+    var next: std::Int = 0
+}
+
+/** Text to display. */
+@Component
+pack UiText {
+    var value: std::String = ""
+}
+
+/** Marks a node as activatable, and whether it currently is. */
+@Component
+pack UiButton {
+    var enabled: std::Bool = true
+}
+
+/** What the node was asked to do when activated; 0 means nothing. */
+@Component
+pack UiAction {
+    var code: std::Int = 0
+}
+
+/** The rectangle a node occupies, once arranged. */
+@Component
+pack UiRect {
+    var x: std::Double = 0.0
+    var y: std::Double = 0.0
+    var width: std::Double = 0.0
+    var height: std::Double = 0.0
+}
+
+/** How a node paints: colour and coverage. */
+@Component
+pack UiPaint {
+    var r: std::Double = 0.0
+    var g: std::Double = 0.0
+    var b: std::Double = 0.0
+    var alpha: std::Double = 1.0
+    /** Text size; 0 for nodes that draw no text. */
+    var size: std::Double = 0.0
+}
+
+/**
+ * Which composition owns the node, and whether this pass claimed it.
+ *
+ * Reconciliation is by claim: a pass marks every node it still wants, and
+ * whatever is left unclaimed at the end belonged to a previous tree and is
+ * disposed (§9.2). Recording the owner keeps one composition from disposing
+ * another's nodes.
+ */
+@Component
+pack UiOwned {
+    fin owner: std::String = ""
+    var claimed: std::Bool = false
+}
+
+/**
+ * How a container arranges its children.
+ *
+ * Layout is a component rather than a node kind so that "is a column" and "is a
+ * button" are independent facts. A node can gain or lose an arrangement without
+ * changing what it is.
+ */
+@Component
+pack UiLayout {
+    /** 0 stacks children downward, 1 lays them across. */
+    var direction: std::Int = 0
+    /** How leftover space along the container's own axis is distributed. */
+    var arrangement: Arrangement = Arrangement.Start
+    /** Where each child sits on the axis across this one. */
+    var alignment: Alignment = Alignment.Start
+    /** A fixed gap between children, added before [arrangement] distributes. */
+    var spacing: std::Double = 0.0
+}
+
+/** Stacks children downward. */
+fin layoutColumn = 0
+
+/** Lays children across. */
+fin layoutRow = 1
+
+/**
+ * A container whose children are offset by [offset] and clipped to its bounds.
+ *
+ * Scrolling is a property of looking at a container, not of the children, so it
+ * lives here and the children never learn they are scrolled.
+ */
+@Component
+pack UiScroll {
+    var offset: std::Double = 0.0
+    /** Total height the children needed, so scrolling can be bounded. */
+    var contentExtent: std::Double = 0.0
+}
+
+/**
+ * A group label, so a system can find related nodes without knowing their keys.
+ *
+ * This is what a query selects on: "every shape tagged 2" is a question about
+ * data, answerable without the composition that produced it.
+ */
+@Component
+pack UiTag {
+    fin group: std::Int = 0
+}
+
+
+// ── Arrangement and alignment ───────────────────────────────────────────
+
+/**
+ * How a container distributes space *along* its own axis.
+ *
+ * The values are axis-neutral: a column reads `Start` as top and `End` as
+ * bottom, a row reads them as left and right. Compose spells this with one
+ * enum per axis; one enum with neutral names says the same thing without
+ * making `Arrangement.Top` legal on a row.
+ */
+enum Arrangement {
+    Start
+    Center
+    End
+    SpaceBetween
+    SpaceAround
+    SpaceEvenly
+}
+
+/** Where a child sits on the axis *across* the container's own. */
+enum Alignment {
+    Start
+    Center
+    End
+}
+
+// ── Modifiers ───────────────────────────────────────────────────────────
+
+/** What a single link in a modifier chain does. */
+enum ModifierKind {
+    FillMaxWidth
+    FillMaxHeight
+    Width
+    Height
+    Padding
+    Background
+    Weight
+}
+
+/**
+ * One link in a modifier chain.
+ *
+ * The payload is four unnamed numbers because a link is data, not behaviour -
+ * `Padding` reads all four as insets, `Background` reads them as a colour, and
+ * nothing else needs to know which is which.
+ */
+pack ModifierEntry {
+    fin kind: ModifierKind
+    fin a: std::Double = 0.0
+    fin b: std::Double = 0.0
+    fin c: std::Double = 0.0
+    fin d: std::Double = 0.0
+}
+
+/**
+ * An immutable, ordered chain of layout, paint and input instructions.
+ *
+ * Ordered because order is meaning: `.padding(8.0).background(…)` paints inside
+ * the inset, `.background(…).padding(8.0)` paints outside it. Immutable because
+ * a modifier is a value - chaining returns a new one, so a modifier held in a
+ * variable cannot be changed by the widget it was passed to (§12.1).
+ *
+ * A chain never draws. It records what was asked for; the layout and paint
+ * systems decide what that means.
+ */
+pack Modifier {
+    fin entries: std::Array<ModifierEntry> = std::Array::fill<ModifierEntry>(0)
+}
+
+impl Modifier {
+    /** This chain with [entry] appended. */
+    func then[self: Self&](entry: ModifierEntry): Modifier {
+        var grown: std::Array<ModifierEntry> = std::Array::fill<ModifierEntry>(self.entries.size + 1)
+        var index = 0
+        while index < self.entries.size {
+            grown[index] = self.entries[index]
+            index = index + 1
+        }
+        grown[self.entries.size] = entry
+        return Modifier(grown)
+    }
+
+    /** Take all the width the parent offers. */
+    func fillMaxWidth[self: Self&](): Modifier {
+        return self.then(ModifierEntry(ModifierKind.FillMaxWidth, 0.0, 0.0, 0.0, 0.0))
+    }
+
+    /** Take all the height the parent offers. */
+    func fillMaxHeight[self: Self&](): Modifier {
+        return self.then(ModifierEntry(ModifierKind.FillMaxHeight, 0.0, 0.0, 0.0, 0.0))
+    }
+
+    /** Take all of both. */
+    func fillMaxSize[self: Self&](): Modifier {
+        return self.fillMaxWidth().fillMaxHeight()
+    }
+
+    /** A fixed width. */
+    func width[self: Self&](value: std::Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Width, value, 0.0, 0.0, 0.0))
+    }
+
+    /** A fixed height. */
+    func height[self: Self&](value: std::Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Height, value, 0.0, 0.0, 0.0))
+    }
+
+    /** A fixed size on both axes. */
+    func size[self: Self&](width: std::Double, height: std::Double): Modifier {
+        return self.width(width).height(height)
+    }
+
+    /**
+     * Inset from the edges.
+     *
+     * `padding(all:)` sets every edge; the named edges override it, so
+     * `padding(all: 8.0, top: 16.0)` reads the way it looks.
+     */
+    func padding[self: Self&](
+        all: std::Double = 0.0
+        start: std::Double = 0 - 1.0
+        top: std::Double = 0 - 1.0
+        end: std::Double = 0 - 1.0
+        bottom: std::Double = 0 - 1.0
+    ): Modifier {
+        fin l = if start < 0.0 { all } else { start }
+        fin t = if top < 0.0 { all } else { top }
+        fin r = if end < 0.0 { all } else { end }
+        fin b = if bottom < 0.0 { all } else { bottom }
+        return self.then(ModifierEntry(ModifierKind.Padding, l, t, r, b))
+    }
+
+    /** Fill the node's rectangle with a colour. */
+    func background[self: Self&](
+        r: std::Double
+        g: std::Double
+        b: std::Double
+        alpha: std::Double = 1.0
+    ): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Background, r, g, b, alpha))
+    }
+
+    /** Share of the leftover space along the parent's axis. */
+    func weight[self: Self&](value: std::Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Weight, value, 0.0, 0.0, 0.0))
+    }
+}
+
+
+/**
+ * Starting a chain: `Modifier::fillMaxSize()`, as Compose writes it.
+ *
+ * Each is the first link; everything after it is an ordinary method on the
+ * value returned, so a chain reads the same whether it is one link or six. A
+ * static and the instance method of the same name coexist - `Modifier::padding`
+ * starts a chain, `.padding` continues one.
+ */
+impl Modifier:: {
+    /** Take all the width the parent offers. */
+    func fillMaxWidth(): Modifier {
+        return Modifier().fillMaxWidth()
+    }
+
+    /** Take all the height the parent offers. */
+    func fillMaxHeight(): Modifier {
+        return Modifier().fillMaxHeight()
+    }
+
+    /** Take all of both. */
+    func fillMaxSize(): Modifier {
+        return Modifier().fillMaxSize()
+    }
+
+    /** A fixed width. */
+    func width(value: std::Double): Modifier {
+        return Modifier().width(value)
+    }
+
+    /** A fixed height. */
+    func height(value: std::Double): Modifier {
+        return Modifier().height(value)
+    }
+
+    /** A fixed size on both axes. */
+    func size(width: std::Double, height: std::Double): Modifier {
+        return Modifier().size(width, height)
+    }
+
+    /** Inset from the edges. */
+    func padding(
+        all: std::Double = 0.0
+        start: std::Double = 0 - 1.0
+        top: std::Double = 0 - 1.0
+        end: std::Double = 0 - 1.0
+        bottom: std::Double = 0 - 1.0
+    ): Modifier {
+        return Modifier().padding(all: all, start: start, top: top, end: end, bottom: bottom)
+    }
+
+    /** Fill the node's rectangle with a colour. */
+    func background(
+        r: std::Double
+        g: std::Double
+        b: std::Double
+        alpha: std::Double = 1.0
+    ): Modifier {
+        return Modifier().background(r, g, b, alpha)
+    }
+
+    /** Share of the leftover space along the parent's axis. */
+    func weight(value: std::Double): Modifier {
+        return Modifier().weight(value)
+    }
+}
+
+/**
+ * A node's own size request, as its modifier chain left it.
+ *
+ * Absent means "whatever the parent gives me".
+ */
+@Component
+pack UiSize {
+    var fillWidth: std::Bool = false
+    var fillHeight: std::Bool = false
+    /** Fixed extent, or 0 when none was asked for. */
+    var width: std::Double = 0.0
+    var height: std::Double = 0.0
+    /** Share of leftover space along the parent's axis; 0 when none. */
+    var weight: std::Double = 0.0
+}
+
+/** Inset between a node's rectangle and its children's. */
+@Component
+pack UiPadding {
+    var start: std::Double = 0.0
+    var top: std::Double = 0.0
+    var end: std::Double = 0.0
+    var bottom: std::Double = 0.0
+}

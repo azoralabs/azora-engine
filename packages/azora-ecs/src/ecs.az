@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // Azora Engine — ECS.
 //
 // A small, data-oriented ECS layer. Storage is explicit and opt-in: create the
@@ -9,31 +25,18 @@ module engine.ecs
 import std.container.*
 import engine.core
 
-/**
- * Narrows a query to entities that also carry [$Filter].
- *
- * The filter is a compile-time predicate: it selects which entities a system
- * iterates without changing the runtime handle representation, so the expansion
- * is the base type unchanged.
- */
-macro $Base @with $Filter => $Base
-
-/** Narrows a query to entities that do *not* carry [$Filter]. */
-macro $Base @without $Filter => $Base
 
 pack Entity {
     var id: std::Int
     var generation: std::Int
 }
 
-func entityInvalid(): Entity {
-    return Entity(-1, 0)
+impl Entity {
+    prop isValid: std::Bool = self.id >= 0
 }
 
-impl Entity {
-    func isValid(): std::Bool {
-        return self.id >= 0
-    }
+impl Entity:: {
+    fin invalid: Entity = .(-1, 0)
 }
 
 pack World {
@@ -48,22 +51,48 @@ pack World {
     var entityCount: std::Int
     var aliveCount: std::Int
     var tick: std::Int
+    /**
+     * Component storages, keyed by the component's type name.
+     *
+     * The world owns them because a query is asked of the world and nothing
+     * else: `@query Position` names a component, not a place to find it. The
+     * list is erased because the types are not known here - a component is
+     * declared by whoever needs it - and [storageOf] is what puts the type back.
+     */
+    var storageNames: std::MutableList<std::String>
+    var storages: std::MutableList<std::Any>
+    /**
+     * Resources, keyed by their type name.
+     *
+     * A resource is a value there is exactly one of - the frame's clock, the
+     * input read this frame - so it is keyed by its type and nothing else. Held
+     * like storages are, and read the same way: what the world hands back is a
+     * copy, so a system that changes one puts it back.
+     */
+    var resourceNames: std::MutableList<std::String>
+    var resources: std::MutableList<std::Any>
     var totalTime: std::Double
     var fixedTimestep: std::Double
     var fixedAccumulator: std::Double
     var revision: std::Long
 }
 
-func worldInit(): World {
-    var generations = @std::arr[0]
-    var alive = @std::arr[false]
-    var names = @std::arr[""]
-    var parents = @std::arr[-1]
-    var childCounts = @std::arr[0]
-    var prefabs = @std::arr[false]
-    var resources = @std::arr[false]
-    var freeIds = @std::arr[-1]
-    return World(generations, alive, names, parents, childCounts, prefabs, resources, freeIds, 0, 0, 0, 0.0, 1.0 / 60.0, 0.0, 0L)
+impl World:: {
+    func init(): World {
+        var generations = @std::arr[0]
+        var alive = @std::arr[false]
+        var names = @std::arr[""]
+        var parents = @std::arr[-1]
+        var childCounts = @std::arr[0]
+        var prefabs = @std::arr[false]
+        var resources = @std::arr[false]
+        var freeIds = @std::arr[-1]
+        return World(generations, alive, names, parents, childCounts,
+            prefabs, resources, freeIds, 0, 0, 0,
+            std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
+            std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
+            0.0, 1.0 / 60.0, 0.0, 0L)
+    }
 }
 
 impl World {
@@ -150,7 +179,7 @@ impl World {
 
     func entityAt(id: std::Int): Entity {
         if id < 0 || id >= self.entityCount {
-            return entityInvalid()
+            return Entity::invalid
         }
         return Entity(id, self.generations[id])
     }
@@ -176,7 +205,7 @@ impl World {
             }
             i = i + 1
         }
-        return entityInvalid()
+        return Entity::invalid
     }
 
     func setParent(child: Entity, parent: Entity) {
@@ -204,11 +233,11 @@ impl World {
 
     func getParent(entity: Entity): Entity {
         if !self.isAlive(entity) {
-            return entityInvalid()
+            return Entity::invalid
         }
         fin parentId = self.parents[entity.id]
         if parentId < 0 || parentId >= self.entityCount {
-            return entityInvalid()
+            return Entity::invalid
         }
         return Entity(parentId, self.generations[parentId])
     }
@@ -280,7 +309,7 @@ pack Storage<T> {
 }
 
 func storageInit<T>(defaultValue: T): Storage<T> {
-    var entities = @std::arr[entityInvalid()]
+    var entities = @std::arr[Entity::invalid]
     var values = @std::arr[defaultValue]
     var added = @std::arr[false]
     var changed = @std::arr[false]
@@ -288,13 +317,13 @@ func storageInit<T>(defaultValue: T): Storage<T> {
 }
 
 func storageIndexOf<T>(store: Storage<T>&, entity: Entity): std::Int {
-    if !entity.isValid() {
+    if !entity.isValid {
         return -1
     }
     var i = 0
     while i < store.entities.size {
         fin current = store.entities[i]
-        if current.isValid() && current.id == entity.id && current.generation == entity.generation {
+        if current.isValid && current.id == entity.id && current.generation == entity.generation {
             return i
         }
         i = i + 1
@@ -339,7 +368,7 @@ func storageRemove<T>(store: Storage<T>!, entity: Entity): std::Bool {
     if index < 0 {
         return false
     }
-    store.entities[index] = entityInvalid()
+    store.entities[index] = Entity::invalid
     store.added[index] = false
     store.changed[index] = false
     store.revision = store.revision + 1
@@ -369,7 +398,7 @@ func storageCount<T>(store: Storage<T>&): std::Int {
     var total = 0
     var i = 0
     while i < store.entities.size {
-        if store.entities[i].isValid() {
+        if store.entities[i].isValid {
             total = total + 1
         }
         i = i + 1
@@ -387,6 +416,25 @@ func storageValueAt<T>(store: Storage<T>&, index: std::Int): T {
 
 func storageLength<T>(store: Storage<T>&): std::Int {
     return store.entities.size
+}
+
+/**
+ * Creates an entity with no components.
+ *
+ * A free function beside `World.spawn`, because an `impl` reaches a module that
+ * imports its type directly but not one that sees it only transitively - so a
+ * package that merely passes a `World` through could not spawn from it. The
+ * free form has no such reach problem.
+ */
+@std::Experimental(since: "0.1")
+func spawnEntity(world: World!): Entity {
+    return world.spawn()
+}
+
+/** Destroys [entity]. The free counterpart to `World.despawn`, as above. */
+@std::Experimental(since: "0.1")
+func despawnEntity(world: World!, entity: Entity) {
+    world.despawn(entity)
 }
 
 func spawnWith<T>(world: World!, store: Storage<T>!, value: T): Entity {
@@ -426,61 +474,458 @@ pack QueryCursor {
  * The component value remains borrowed from its storage. `single.*`
  * exposes it explicitly; the entity is retained for commands and diagnostics.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack Single<...T> where (...T).size >= 1 {
     var entity: Entity
-    inline for Ty in ...T {
-        value: Ty
+    // The field generator emits a *string fragment* because the field's name is
+    // generated too: `$index` splices the position in, giving `value0`,
+    // `value1`, … . Writing `value: Ty` instead would declare the same name on
+    // every iteration - the specialized pack would still take one argument per
+    // type, but only the last field would be reachable by name and every
+    // earlier one would be silently unreadable.
+    inline for Ty in ...T with index {
+        inline "value$index: $Ty"
     }
 }
 
-impl<...T> Single {
+impl Single<...T> {
+    /** The first (and, for a one-type query, only) component value. */
     oper.* [self: Self&] {
-        return self.value
+        return self.value0
     }
 }
 
 /**
- * Heterogeneous ECS query handle, written `Query<A, B>`.
+ * Heterogeneous ECS query handle, written `QueryOf<A, B>`.
+ *
+ * Named apart from the `@Query` parameter decorator: a decorator registered
+ * before a pack of the same name shadows it, and which one wins depends on
+ * import order - so the two names are kept distinct rather than relying on it.
  *
  * The variadic type list is compile-time-only access metadata. Runtime state is
  * one compact entity cursor, so adding component types does not increase the
  * handle's allocation count.
  */
-@std::Experimental(since: "0.0.4")
-pack Query<...T> {
+@std::Experimental(since: "0.1")
+pack QueryOf<...T> {
     var cursor: QueryCursor
 }
 
-impl<...T> Query {
+/**
+ * A query is what `loop` walks: reset it, then take rows while it has them.
+ *
+ * Declaring the conformance rather than relying on the two methods being
+ * present makes the requirement checkable - `loop q { … }` asks for an
+ * `Iterator`, and a query is one.
+ */
+impl std::Iterator for QueryOf<...T> assoc Item = Entity {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self&]: std::Bool = self.cursor.hasNext()
+    /** Advances the cursor, answering whether a row was found. */
+    func hasNext[self: Self!](): std::Bool {
+        return self.cursor.hasNext()
+    }
+
+    /** The entity the cursor is on. */
+    func next[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+impl QueryOf<...T>:: {
+
+    /**
+     * Builds the query from the world.
+     *
+     * What it selects is in its own type: every component in `...T` narrows the
+     * cursor to rows that carry it, and the world is asked for each storage by
+     * the component's own name. Nothing is passed in but the world, which is
+     * what lets a system declare a query as a parameter and receive it built.
+     */
+    @std::Experimental(since: "0.1")
+    func provide(world: World&): QueryOf<...T> {
+        var cursor = queryAll(world, false)
+        inline for Ty in ...T {
+            queryWith<Ty>(cursor, storageOf<Ty>(world))
+        }
+        return QueryOf(cursor)
+    }
+}
+
+impl QueryOf<...T> {
 
     /**
      * Returns the next matching entity.
      *
      * System-parameter lowering projects this entity into the tuple of borrowed
-     * components requested by the `Query<…>` type arguments.
+     * components requested by the `QueryOf<…>` type arguments.
      */
     func nextEntity[self: Self!](): Entity {
         return self.cursor.next()
     }
 }
 
+/**
+ * Puts [value] in the world as the resource of its type.
+ *
+ * Answers whether it replaced one, which is how a system that inserts on first
+ * use can tell. There is one resource per type, so inserting twice replaces.
+ */
+@std::Experimental(since: "0.1")
+inline func insertResource<T>(world: World!, value: T): std::Bool {
+    return insertResourceNamed<T>(world, T.typeName, take value)
+}
+
+/** Puts [value] under an explicit [name]. See [insertResource]. */
+@std::Experimental(since: "0.1")
+func insertResourceNamed<T>(world: World!, name: std::String, value: T): std::Bool {
+    // Appended rather than replaced in place, and read back to front: the newest
+    // entry for a name is the one that answers, so inserting is one operation
+    // whether or not the resource was already there.
+    var replaced = false
+    var i = 0
+    while i < world.resourceNames.size {
+        if world.resourceNames[i] == name {
+            replaced = true
+        }
+        i = i + 1
+    }
+    world.resourceNames.add(name)
+    world.resources.add(value)
+    return replaced
+}
+
+/**
+ * The world's resource of type `T`.
+ *
+ * A resource a system asks for and the world does not hold is a wiring mistake,
+ * not a condition to handle: nothing sensible can be returned in its place, and
+ * carrying on would hide where it was supposed to be inserted.
+ */
+@std::Experimental(since: "0.1")
+inline func resource<T>(world: World&): T {
+    return resourceNamed<T>(world, T.typeName)
+}
+
+/** The resource under an explicit [name]. See [resource]. */
+@std::Experimental(since: "0.1")
+func resourceNamed<T>(world: World&, name: std::String): T {
+    var i = world.resourceNames.size - 1
+    while i >= 0 {
+        if world.resourceNames[i] == name {
+            return world.resources[i] as T
+        }
+        i = i - 1
+    }
+    panic "no resource '${name}' in this world - insert it before the systems that ask for it"
+}
+
+/**
+ * The world's resource of type `T`, or [fallback] when there is none.
+ *
+ * A fallback rather than a failure: a system that runs before whatever inserts
+ * the resource should see a defined value, not stop the frame.
+ */
+@std::Experimental(since: "0.1")
+inline func resourceOr<T>(world: World&, fallback: T): T {
+    return resourceNamedOr<T>(world, T.typeName, take fallback)
+}
+
+/** The resource under an explicit [name], or [fallback]. See [resourceOr]. */
+@std::Experimental(since: "0.1")
+func resourceNamedOr<T>(world: World&, name: std::String, fallback: T): T {
+    var i = world.resourceNames.size - 1
+    while i >= 0 {
+        if world.resourceNames[i] == name {
+            return world.resources[i] as T
+        }
+        i = i - 1
+    }
+    return fallback
+}
+
+/**
+ * Registers [store] as the world's storage for component `T`.
+ *
+ * Idempotent: registering the same component twice replaces the entry rather
+ * than adding a second one, so a system that registers on first use is safe to
+ * run every frame. Answers whether it replaced one.
+ */
+@std::Experimental(since: "0.1")
+inline func registerStorage<T>(world: World!, store: Storage<T>): std::Bool {
+    return registerStorageNamed<T>(world, T.typeName, take store)
+}
+
+/**
+ * Registers [store] under an explicit [name].
+ *
+ * The name is a parameter because the body has more than one statement, and an
+ * `inline` body is folded only when it is a single expression - which is what
+ * [registerStorage] is, so the type's own name is filled in there.
+ */
+@std::Experimental(since: "0.1")
+func registerStorageNamed<T>(world: World!, name: std::String, store: Storage<T>): std::Bool {
+    var i = 0
+    while i < world.storageNames.size {
+        if world.storageNames[i] == name {
+            // Replacing in place is not something a list offers, so the old
+            // entry is dropped and the new one appended - a lookup finds the
+            // last match either way.
+            world.storageNames.removeAt(i)
+            world.storages.removeAt(i)
+            world.storageNames.add(name)
+            world.storages.add(store)
+            return true
+        }
+        i = i + 1
+    }
+    world.storageNames.add(name)
+    world.storages.add(store)
+    return false
+}
+
+/**
+ * The world's storage for component `T`, or an empty one when none was
+ * registered.
+ *
+ * A query over a component nothing ever stored matches nothing, which is what
+ * an empty storage gives - the alternative is an error at the one moment a
+ * caller can do least about it, midway through a frame.
+ */
+@std::Experimental(since: "0.1")
+inline func storageOf<T>(world: World&): Storage<T> {
+    return storageNamed<T>(world, T.typeName)
+}
+
+/** The world's storage registered under an explicit [name]. See [storageOf]. */
+@std::Experimental(since: "0.1")
+func storageNamed<T>(world: World&, name: std::String): Storage<T> {
+    var i = 0
+    while i < world.storageNames.size {
+        if world.storageNames[i] == name {
+            return world.storages[i] as Storage<T>
+        }
+        i = i + 1
+    }
+    // Built without `@std::arr[]`: this fallback is reached from a
+    // specialization created after macros are expanded, so a macro left here
+    // would still be one when the resolver arrived.
+    return Storage<T>(
+        std::Array::fill<Entity>(0),
+        std::Array::fill<T>(0),
+        std::Array::fill<std::Bool>(0),
+        std::Array::fill<std::Bool>(0),
+        0L,
+    )
+}
+
+/**
+ * A query narrowed to rows that also carry `T`.
+ *
+ * The filter is in the type, not in the state: runtime is still the one cursor
+ * `Q` was walking, and the extra type arguments are the compile-time record of
+ * what was asked for. Nesting is what composes them, so `with` and `without`
+ * can be written in either order and as many times as a system needs.
+ */
+@std::Experimental(since: "0.1")
+pack QueryWith<Q, ...T> {
+    var cursor: QueryCursor
+}
+
+/** A query narrowed to rows that do *not* carry `T`. */
+@std::Experimental(since: "0.1")
+pack QueryWithout<Q, ...T> {
+    var cursor: QueryCursor
+}
+
+/**
+ * How a system asks for the rows it wants.
+ *
+ * ```azora
+ * func recolour(shapes: @query Shape)
+ * func moving(bodies: @query [Position, Velocity] without Frozen)
+ * ```
+ *
+ * `$T` is uppercase, so it is a *type* hole: these arms are matched where a
+ * type is written rather than where a call is, and the parameter's declared
+ * type becomes the query handle the system receives.
+ */
+@std::Experimental(since: "0.1")
+macro @query {
+    $Q => QueryOf<$Q>
+    $Q with $T => QueryWith<QueryOf<$Q>, $T>
+    $Q with [...$T] => QueryWith<QueryOf<$Q>, ...$T>
+    $Q without $T => QueryWithout<QueryOf<$Q>, $T>
+    $Q without [...$T] => QueryWithout<QueryOf<$Q>, ...$T>
+    $Q with $T without $S => QueryWithout<QueryWith<QueryOf<$Q>, $T>, $S>
+    $Q with [...$T] without $S => QueryWithout<QueryWith<QueryOf<$Q>, ...$T>, $S>
+    $Q with $T without [...$S] => QueryWithout<QueryWith<QueryOf<$Q>, $T>, ...$S>
+    $Q with [...$T] without [...$S] => QueryWithout<QueryWith<QueryOf<$Q>, ...$T>, ...$S>
+    [...$Q] => QueryOf<...$Q>
+    [...$Q] with $T => QueryWith<QueryOf<...$Q>, $T>
+    [...$Q] with [...$T] => QueryWith<QueryOf<...$Q>, ...$T>
+    [...$Q] without $T => QueryWithout<QueryOf<...$Q>, $T>
+    [...$Q] without [...$T] => QueryWithout<QueryOf<...$Q>, ...$T>
+    [...$Q] with $T without $S => QueryWithout<QueryWith<QueryOf<...$Q>, $T>, $S>
+    [...$Q] with [...$T] without $S => QueryWithout<QueryWith<QueryOf<...$Q>, ...$T>, $S>
+    [...$Q] with $T without [...$S] => QueryWithout<QueryWith<QueryOf<...$Q>, $T>, ...$S>
+    [...$Q] with [...$T] without [...$S] => QueryWithout<QueryWith<QueryOf<...$Q>, ...$T>, ...$S>
+}
+
+impl QueryWith<Q, ...T>:: {
+
+    /**
+     * Builds the narrowed query from the world.
+     *
+     * The query it narrows builds itself first - `Q` is whatever the clause was
+     * written against, and it knows how - and then each component in `...T`
+     * removes the rows that do not carry it. Filters nest, so this holds however
+     * many clauses were written.
+     */
+    @std::Experimental(since: "0.1")
+    func provide(world: World&): QueryWith<Q, ...T> {
+        var base = Q::provide(world)
+        inline for Ty in ...T {
+            queryWith<Ty>(base.cursor, storageOf<Ty>(world))
+        }
+        return QueryWith(base.cursor)
+    }
+}
+
+impl QueryWithout<Q, ...T>:: {
+
+    /** The same, keeping only the rows that carry *none* of `...T`. */
+    @std::Experimental(since: "0.1")
+    func provide(world: World&): QueryWithout<Q, ...T> {
+        var base = Q::provide(world)
+        inline for Ty in ...T {
+            queryWithout<Ty>(base.cursor, storageOf<Ty>(world))
+        }
+        return QueryWithout(base.cursor)
+    }
+}
+
+/** Rows matching every one of the filters. */
+@std::Experimental(since: "0.1")
+pack QueryAnd<Q, ...T> {
+    var cursor: QueryCursor
+}
+
+/** Rows matching any one of the filters. */
+@std::Experimental(since: "0.1")
+pack QueryOr<Q, ...T> {
+    var cursor: QueryCursor
+}
+
+impl std::Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
+    func reset[self: Self!]() {
+        self.cursor.reset()
+    }
+
+    func hasNext[self: Self!](): std::Bool {
+        return self.cursor.hasNext()
+    }
+
+    /** The entity the cursor is on. */
+    func next[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+impl std::Iterator for QueryOr<Q, ...T> assoc Item = Entity {
+    func reset[self: Self!]() {
+        self.cursor.reset()
+    }
+
+    func hasNext[self: Self!](): std::Bool {
+        return self.cursor.hasNext()
+    }
+
+    /** The entity the cursor is on. */
+    func next[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+/**
+ * Rows whose `T` appeared this frame - `@query [Added<Position>]`.
+ *
+ * A marker: it carries no state and is never constructed. What it does is stand
+ * in a query's type list where a component would, saying *which* rows are
+ * wanted rather than which components are read. [Changed] and [Removed] are the
+ * same idea over the other two things that can happen to a component.
+ */
+@std::Experimental(since: "0.1")
+pack Added<T>
+
+/** Rows whose `T` was written this frame. */
+@std::Experimental(since: "0.1")
+pack Changed<T>
+
+/** Rows whose `T` was taken away this frame. */
+@std::Experimental(since: "0.1")
+pack Removed<T>
+
+/** A narrowed query walks its rows exactly as the query it narrowed does. */
+impl QueryWith<Q, ...T> {
+    /** The next matching entity. See [QueryOf.nextEntity]. */
+    @std::Experimental(since: "0.1")
+    func nextEntity[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+impl QueryWithout<Q, ...T> {
+    /** The next matching entity. See [QueryOf.nextEntity]. */
+    @std::Experimental(since: "0.1")
+    func nextEntity[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+impl std::Iterator for QueryWith<Q, ...T> assoc Item = Entity {
+    func reset[self: Self!]() {
+        self.cursor.reset()
+    }
+
+    func hasNext[self: Self!](): std::Bool {
+        return self.cursor.hasNext()
+    }
+
+    /** The entity the cursor is on. */
+    func next[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
+impl std::Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
+    func reset[self: Self!]() {
+        self.cursor.reset()
+    }
+
+    func hasNext[self: Self!](): std::Bool {
+        return self.cursor.hasNext()
+    }
+
+    /** The entity the cursor is on. */
+    func next[self: Self!](): Entity {
+        return self.cursor.next()
+    }
+}
+
 func queryEmpty(): QueryCursor {
-    return QueryCursor(@std::arr[entityInvalid()], 1, true, "")
+    return QueryCursor(@std::arr[Entity::invalid], 1, true, "")
 }
 
 func queryError(message: std::String): QueryCursor {
-    return QueryCursor(@std::arr[entityInvalid()], 1, false, message)
+    return QueryCursor(@std::arr[Entity::invalid], 1, false, message)
 }
 
 impl QueryCursor {
     func add(entity: Entity) {
-        if entity.isValid() {
+        if entity.isValid {
             self.entities.add(entity)
         }
     }
@@ -496,14 +941,14 @@ impl QueryCursor {
 
     func invalidateAt(index: std::Int) {
         if index > 0 && index < self.entities.size {
-            self.entities[index] = entityInvalid()
+            self.entities[index] = Entity::invalid
         }
     }
 
     func hasNext(): std::Bool {
         var i = self.cursor
         while i < self.entities.size {
-            if self.entities[i].isValid() {
+            if self.entities[i].isValid {
                 return true
             }
             i = i + 1
@@ -515,18 +960,18 @@ impl QueryCursor {
         while self.cursor < self.entities.size {
             fin entity = self.entities[self.cursor]
             self.cursor = self.cursor + 1
-            if entity.isValid() {
+            if entity.isValid {
                 return entity
             }
         }
-        return entityInvalid()
+        return Entity::invalid
     }
 
     func count(): std::Int {
         var total = 0
         var i = 1
         while i < self.entities.size {
-            if self.entities[i].isValid() {
+            if self.entities[i].isValid {
                 total = total + 1
             }
             i = i + 1
@@ -539,12 +984,12 @@ impl QueryCursor {
     }
 
     func single(): QueryFetch {
-        var found = entityInvalid()
+        var found = Entity::invalid
         var total = 0
         var i = 1
         while i < self.entities.size {
             fin entity = self.entities[i]
-            if entity.isValid() {
+            if entity.isValid {
                 found = entity
                 total = total + 1
             }
@@ -554,9 +999,9 @@ impl QueryCursor {
             return QueryFetch(true, found, "")
         }
         if total == 0 {
-            return QueryFetch(false, entityInvalid(), "query expected one entity, found none")
+            return QueryFetch(false, Entity::invalid, "query expected one entity, found none")
         }
-        return QueryFetch(false, entityInvalid(), "query expected one entity, found many")
+        return QueryFetch(false, Entity::invalid, "query expected one entity, found many")
     }
 }
 
@@ -585,7 +1030,7 @@ func queryRetainAlive(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && !world.isAlive(entity) {
+        if entity.isValid && !world.isAlive(entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -596,7 +1041,7 @@ func queryRetainResources(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && !world.isResource(entity) {
+        if entity.isValid && !world.isResource(entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -607,7 +1052,7 @@ func queryRetainScene(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && world.isResource(entity) {
+        if entity.isValid && world.isResource(entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -619,7 +1064,7 @@ func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: st
     var i = 0
     while i < store.entities.size {
         fin entity = store.entities[i]
-        if entity.isValid() && world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
+        if entity.isValid && world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
             query.add(entity)
         }
         i = i + 1
@@ -631,7 +1076,7 @@ func queryWith<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && !storageHas<T>(store, entity) {
+        if entity.isValid && !storageHas<T>(store, entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -642,7 +1087,7 @@ func queryWithout<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && storageHas<T>(store, entity) {
+        if entity.isValid && storageHas<T>(store, entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -653,7 +1098,7 @@ func queryAdded<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && !storageWasAdded<T>(store, entity) {
+        if entity.isValid && !storageWasAdded<T>(store, entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -664,7 +1109,7 @@ func queryChanged<T>(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid() && !storageWasChanged<T>(store, entity) {
+        if entity.isValid && !storageWasChanged<T>(store, entity) {
             query.invalidateAt(i)
         }
         i = i + 1
@@ -861,7 +1306,7 @@ pack CommandBuffer {
 }
 
 func commandBufferInit(): CommandBuffer {
-    var despawns = @std::arr[entityInvalid()]
+    var despawns = @std::arr[Entity::invalid]
     return CommandBuffer(despawns, 1)
 }
 
@@ -886,7 +1331,7 @@ impl CommandBuffer {
  * decorator is the only place a system's place in the frame is written down,
  * which is what stops the two from drifting apart.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack ScheduledSystem {
     /** The function's own name, as `runBefore`/`runAfter` spell it. */
     fin name: std::String
@@ -978,7 +1423,7 @@ func systemPhaseRank(phase: SystemPhase): std::Int {
  * [runPhase] dispatch to the right function from a plain integer. See the note
  * on [systemPlan].
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack SystemPlan {
     var systems: std::Array<ScheduledSystem>
     var count: std::Int
@@ -991,12 +1436,12 @@ pack SystemPlan {
 
 /** Records one decorated system. Called only by the [systemPlan] expansion. */
 func systemPlanDeclare(
-    plan: SystemPlan!,
-    name: std::String,
-    phase: SystemPhase,
-    order: std::Int,
-    runBefore: std::String,
-    runAfter: std::String,
+    plan: SystemPlan!
+    name: std::String
+    phase: SystemPhase
+    order: std::Int
+    runBefore: std::String
+    runAfter: std::String
     inSet: std::String
 ) {
     plan.systems.add(ScheduledSystem(name, phase, order, runBefore, runAfter, inSet, true))
@@ -1160,7 +1605,7 @@ impl SystemPlan {
 /**
  * The schedule, built from every `@System` function in the program.
  *
- * There is no registration: `std::reflect<*>.withDeco<System>` enumerates the
+ * There is no registration: `std::reflect<*>.withAnnot<System>` enumerates the
  * decorated functions at compile time, and each one's decorator supplies its
  * phase, order and ordering constraints. Adding a system to the frame is
  * writing `@System` above it.
@@ -1177,7 +1622,7 @@ impl SystemPlan {
  * Build it once and keep it; the ordering is fixed at compile time and cannot
  * change while the program runs.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func systemPlan(): SystemPlan {
     var plan = SystemPlan(
         std::Array::fill<ScheduledSystem>(0),
@@ -1188,7 +1633,7 @@ func systemPlan(): SystemPlan {
         ""
     )
 
-    inline for S in std::reflect<*>.withDeco<System> {
+    inline for S in std::reflect<*>.withAnnot<System> {
         systemPlanDeclare(
             plan,
             std::reflect<S>.declName,
@@ -1214,14 +1659,14 @@ func systemPlan(): SystemPlan {
  * design exists to avoid. See [systemPlan] for why the index identifies the
  * function.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
     var step = 0
     while step < plan.resolvedCount {
         fin due = plan.resolved[step]
         if plan.systems[due].phase == phase && plan.systems[due].enabled {
             var cursor = 0
-            inline for S in std::reflect<*>.withDeco<System> {
+            inline for S in std::reflect<*>.withAnnot<System> {
                 if cursor == due {
                     S(world)
                 }
@@ -1239,7 +1684,7 @@ func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
  * those systems afterwards — [SystemPlan.setEnabled] — rather than this
  * deciding on their behalf.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func runSystems(plan: SystemPlan&, world: World!) {
     runPhase(plan, SystemPhase.Startup, world)
     runPhase(plan, SystemPhase.PreUpdate, world)

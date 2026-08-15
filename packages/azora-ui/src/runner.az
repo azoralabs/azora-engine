@@ -1,0 +1,485 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.ui.runner
+ *
+ * The frame loop, so an application does not have to write one.
+ *
+ * An application declares `@System` functions and calls [runUi]. Everything
+ * between - opening the window, running each phase in order, arranging the
+ * committed tree, drawing it, presenting the frame, and shutting down - happens
+ * here. No application code calls a draw function, and none of it names another
+ * system.
+ *
+ * ## Systems are found, not registered
+ *
+ * `engine.core`'s `@System` decorator says the engine finds systems by
+ * compile-time reflection. This is where that happens:
+ * `std::reflect<*>.withAnnot<System>` enumerates every annotated function in the
+ * whole program, `inline for` unrolls the list at compile time, and each
+ * system's `phase` is read from its own decorator. There is no registry to keep
+ * in step and no list to forget to add to - what is written *is* the schedule.
+ *
+ * Because the loop is unrolled, a system costs a direct call. Nothing is stored
+ * in a function value, which is what lets this lower to every backend.
+ */
+module engine.ui.runner
+
+import std.container.array
+import std.reflection
+import engine.core
+import engine.ecs
+import engine.platform
+import engine.input
+import engine.ui.node
+import engine.ui.compose
+import engine.ui.systems
+import engine.ui.paint
+
+/**
+ * What a system is handed.
+ *
+ * One value carrying the three things a system can want: where to compose, the
+ * world to query, and what the frame did. A system takes `ui: Ui!` and needs no
+ * other parameter, which is what lets the engine call every system the same way
+ * without knowing what any of them does.
+ */
+pack Ui {
+    /** Where to build: the composition, positioned at the tree root. */
+    var at: Scope
+    /** The window, for input and size. */
+    var app: App
+    /**
+     * The action code of a button pressed this frame, or 0.
+     *
+     * Hit-testing is the engine's job, so a system reads the *result* of a
+     * click rather than the mouse position that produced it.
+     */
+    var action: std::Int
+    /** Seconds since the previous frame. */
+    var deltaSecs: std::Double
+    /** Time accumulated since each system last ran, by slot. */
+    var elapsed: std::Array<std::Double>
+    /** Frames counted since each system last ran, by slot. */
+    var frames: std::Array<std::Int>
+    /** Whether each `Once`-style system has already run. */
+    var ran: std::Array<std::Bool>
+}
+
+impl Ui {
+    /** Window width in points. */
+    func width[self: Self&](): std::Double {
+        return self.app.width() as std::Double
+    }
+
+    /** Window height in points. */
+    func height[self: Self&](): std::Double {
+        return self.app.height() as std::Double
+    }
+
+    /** Whether [key] is held this frame. */
+    func keyDown[self: Self&](key: std::Int): std::Bool {
+        return self.app.keyDown(key)
+    }
+
+    /** Whether [key] went down this frame. */
+    func keyPressed[self: Self&](key: std::Int): std::Bool {
+        return self.app.keyPressed(key)
+    }
+
+    /**
+     * Whether the system in [slot] is due this frame, per [interval].
+     *
+     * Advancing the slot's counters is part of asking: a system that is not due
+     * still accumulated the time that will make it due later.
+     */
+    func due[self: Self!](slot: std::Int, interval: SystemInterval): std::Bool {
+        if slot < 0 || slot >= maxSystems {
+            return true
+        }
+        self.elapsed[slot] = self.elapsed[slot] + self.deltaSecs
+        self.frames[slot] = self.frames[slot] + 1
+
+        when interval {
+            SystemInterval.EveryFrame -> return true
+            SystemInterval.Every(d) -> {
+                if self.elapsed[slot] < durationSecs(d) {
+                    return false
+                }
+                // Dropped, not accumulated: an overrun frame runs the system
+                // once, not once per interval it slept through.
+                self.elapsed[slot] = 0.0
+                return true
+            }
+            SystemInterval.EveryFrames(n) -> {
+                if self.frames[slot] < n {
+                    return false
+                }
+                self.frames[slot] = 0
+                return true
+            }
+            SystemInterval.Once -> {
+                if self.ran[slot] {
+                    return false
+                }
+                self.ran[slot] = true
+                return true
+            }
+            SystemInterval.After(d) -> {
+                if self.ran[slot] || self.elapsed[slot] < durationSecs(d) {
+                    return false
+                }
+                self.ran[slot] = true
+                return true
+            }
+            SystemInterval.AfterFrames(n) -> {
+                if self.ran[slot] || self.frames[slot] < n {
+                    return false
+                }
+                self.ran[slot] = true
+                return true
+            }
+            SystemInterval.Fixed(d) -> {
+                // Accumulated, not dropped - the caller runs the system once per
+                // step the accumulator holds, which is what determinism needs.
+                if self.elapsed[slot] < durationSecs(d) {
+                    return false
+                }
+                self.elapsed[slot] = self.elapsed[slot] - durationSecs(d)
+                return true
+            }
+        }
+        return true
+    }
+}
+
+/**
+ * Runs [phase]'s systems, in declaration order.
+ *
+ * The `if` is on decorator metadata, which is known at compile time, so a
+ * system whose phase does not match folds away rather than costing a test.
+ */
+/**
+ * How many interval slots a program may use; one per `@System`.
+ *
+ * Fixed rather than counted because the unrolled loop below has no runtime
+ * length - the systems are known at compile time, and this only has to be at
+ * least as many.
+ */
+fin maxSystems = 256
+
+/** A duration in seconds, as the scheduler counts time. */
+func durationSecs(d: std::Duration&): std::Double {
+    return (d.seconds as std::Double) + (d.nanosecondAdjustment as std::Double) / 1000000000.0
+}
+
+/**
+ * Runs [phase]'s systems, honouring each one's interval.
+ *
+ * The `if` on the phase is decorator metadata, known at compile time, so a
+ * system in another phase folds away. The interval is checked at runtime
+ * against per-system state: the unrolled loop visits systems in a stable order,
+ * so slot *n* belongs to the same system every frame.
+ */
+/**
+ * What a button reported this frame, as a resource.
+ *
+ * Hit-testing is the engine's job, so a system reads the *result* of a click -
+ * the action code a button carried - rather than a mouse position.
+ */
+@std::Experimental(since: "0.1")
+pack UiInput {
+    /** The action code of a button pressed this frame, or 0. */
+    var action: std::Int = 0
+}
+
+/**
+ * A resource, as a system parameter: `time: Res<Time>`.
+ *
+ * The world holds one value per type; this is how a system asks for one. What
+ * it gets is a copy, so a system that changes a resource puts it back with
+ * [insertResource] - the same discipline component storages have.
+ */
+@std::Experimental(since: "0.1")
+pack Res<T> {
+    var value: T
+}
+
+impl Res<T>:: {
+    /** Reads the resource of type `T` from the frame's world. */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): Res<T> {
+        return Res(resource<T>(ui.at.pass.world))
+    }
+}
+
+impl World:: {
+    /**
+     * The frame's world, as a system parameter.
+     *
+     * A system that asks for the world gets the one this frame composed into,
+     * so it can query and write without being handed anything else. This is the
+     * one line that says where a frame keeps its world.
+     */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): World& {
+        return ui.at.pass.world
+    }
+}
+
+impl QueryWith<Q, ...T>:: {
+    /** A narrowed query over the frame's world. */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): QueryWith<Q, ...T> {
+        return QueryWith::provide(ui.at.pass.world)
+    }
+}
+
+impl QueryWithout<Q, ...T>:: {
+    /** A narrowed query over the frame's world. */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): QueryWithout<Q, ...T> {
+        return QueryWithout::provide(ui.at.pass.world)
+    }
+}
+
+impl QueryOf<...T>:: {
+    /** A query over the frame's world - the frame is what a system is handed. */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): QueryOf<...T> {
+        return QueryOf::provide(ui.at.pass.world)
+    }
+}
+
+impl Ui:: {
+    /**
+     * The frame itself, as a system parameter.
+     *
+     * A system that asks for the frame is asking for the one it is running in,
+     * so this hands back what it was given. Every other parameter type builds
+     * itself from the world; this is the one that cannot, because a frame is
+     * more than the world it carries.
+     */
+    @std::Experimental(since: "0.1")
+    func from(ui: Ui!): Ui! {
+        return ui
+    }
+}
+
+react func dispatch(phase: SystemPhase, ui: Ui!) {
+    var slot = 0
+    inline for F in std::reflect<*>.withAnnot<System> {
+        if std::reflect<F>.annotMeta<System>.phase == phase {
+            if ui.due(slot, std::reflect<F>.annotMeta<System>.interval) {
+                // Each parameter is built from the frame, by its own type: a
+                // system says what it wants and is handed it. Nothing here
+                // knows any system's signature, so adding a parameter to one
+                // changes only that system.
+                F(inline for P in std::reflect<F>.params { P::from(ui) })
+            }
+        }
+        slot = slot + 1
+    }
+}
+
+/**
+ * Opens a window and runs the application until it closes.
+ *
+ * The whole of an application's `main`:
+ *
+ * ```azora
+ * func main() {
+ *     runUi("My App", 1000, 680)
+ * }
+ * ```
+ *
+ * `.Startup` runs once before the first frame. `.PreUpdate`, `.Update` and
+ * `.PostUpdate` run every frame, in that order - a system that describes the
+ * interface belongs in one of them, because composition is reconciliation: the
+ * same description re-run finds the same nodes and updates them in place.
+ * `.Render` is the engine's own: arrange, draw, present. `.Last` runs after the
+ * frame has been presented.
+ *
+ * The dispatcher is reactive so that a system may be too: a `react func` system
+ * keeps `remember` state across frames, which is where an application's own
+ * state lives when it is small enough not to want a resource.
+ */
+realm engine {
+    /**
+     * Opens a window and runs the application until it closes.
+     *
+     * The whole of an application's `main`:
+     *
+     * ```azora
+     * func main() {
+     *     engine::run("My App", 1000, 680)
+     * }
+     * ```
+     */
+    react func run(title: std::String, width: std::Int, height: std::Int) {
+        runUiColored(title, width, height, 0.07, 0.08, 0.10)
+    }
+}
+
+/** [runUi] with an explicit background colour. */
+/** [count] zeroed slots; `Array::fill` leaves them unset. */
+func zeroDoubles(count: std::Int): std::Array<std::Double> {
+    var slots: std::Array<std::Double> = std::Array::fill<std::Double>(count)
+    var i = 0
+    while i < count {
+        slots[i] = 0.0
+        i = i + 1
+    }
+    return slots
+}
+
+func zeroInts(count: std::Int): std::Array<std::Int> {
+    var slots: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+    var i = 0
+    while i < count {
+        slots[i] = 0
+        i = i + 1
+    }
+    return slots
+}
+
+func zeroBools(count: std::Int): std::Array<std::Bool> {
+    var slots: std::Array<std::Bool> = std::Array::fill<std::Bool>(count)
+    var i = 0
+    while i < count {
+        slots[i] = false
+        i = i + 1
+    }
+    return slots
+}
+
+react func runUiColored(
+    title: std::String
+    width: std::Int
+    height: std::Int
+    r: std::Double
+    g: std::Double
+    b: std::Double
+) {
+    var window = appInit(title, width, height)
+    if !window.ok {
+        return
+    }
+    window.setClearColor(r, g, b)
+
+    var world = World::init()
+    var pass = Composition::of(take world, "app")
+    // Commas: a newline cannot separate arguments once one of them is a call.
+    var ui = Ui(
+        Scope(pass, pass.root), window, 0, 0.0,
+        zeroDoubles(maxSystems), zeroInts(maxSystems), zeroBools(maxSystems),
+    )
+
+    pass.begin()
+    dispatch(SystemPhase.Startup, ui)
+    pass.commit()
+
+    while ui.app.frame() {
+        ui.deltaSecs = ui.app.deltaTime()
+
+        // Hit-testing before the systems run, so a system sees this frame's
+        // click rather than the previous one's.
+        ui.action = 0
+        if ui.app.mouseClicked(mouseLeft) {
+            ui.action = pass.hit(ui.app.mouseX(), ui.app.mouseY())
+        }
+
+        // Scrolling is the engine's, and it runs *before* the description: a
+        // scrollable is scrollable because it carries the component, so this
+        // finds every one of them without an application naming any. The
+        // arrangement it acts on is the previous frame's, which is the only one
+        // that exists yet - and is what the user was looking at when they
+        // scrolled.
+        var keyScroll = 0.0
+        if ui.keyDown(keyArrowDown) {
+            keyScroll = 12.0
+        }
+        if ui.keyDown(keyArrowUp) {
+            keyScroll = 0.0 - 12.0
+        }
+        pass.applyScroll(ui.app.mouseX(),
+            ui.app.mouseY(),
+            0.0 - ui.app.scrollY(),
+            keyScroll
+        )
+
+        // A frame's description is rebuilt and reconciled, so a system may
+        // compose freely: unchanged nodes keep their identity and their state.
+        pass.begin()
+        // Component storages are published to the world before the systems run,
+        // so a query asked of the world this frame reads this frame's rows. The
+        // composition still owns them; this is the point at which what it owns
+        // becomes what anyone else can ask about.
+        ui.at.pass.publish()
+        // The frame's own values go in as resources, so a system can ask for
+        // what it needs instead of being handed everything.
+        fin world = ui.at.pass.world
+        fin clock = insertResource<Time>(
+            ui.at.pass.world,
+            Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as std::Long),
+        )
+        fin input = insertResource<UiInput>(ui.at.pass.world, UiInput(ui.action))
+        if clock == input || clock != input {
+            dispatch(SystemPhase.PreUpdate, ui)
+        }
+        dispatch(SystemPhase.Update, ui)
+        dispatch(SystemPhase.PostUpdate, ui)
+        // Systems wrote through the world; what they wrote is taken back before
+        // the frame is committed, so the renderer draws what they decided.
+        ui.at.pass.adopt()
+        pass.commit()
+
+        renderFrame(ui)
+        dispatch(SystemPhase.Last, ui)
+    }
+
+    ui.app.shutdown()
+}
+
+/**
+ * Arranges and draws the committed tree, then presents it.
+ *
+ * This is the `.Render` phase, and it is the engine's rather than an
+ * application's: "stack these children" and "draw what was arranged" are the
+ * same for every program. `.Render` systems run *after* the tree is drawn, so a
+ * system in that phase overlays rather than replaces.
+ */
+react func renderFrame(ui: Ui!) {
+    fin w = ui.width()
+    fin h = ui.height()
+
+    // Every root-level node is given the whole window; a tree with one root -
+    // the usual shape - therefore fills it.
+    fin count = ui.at.pass.childCount(ui.at.pass.root)
+    var index = 0
+    while index < count {
+        fin node = ui.at.pass.childAt(ui.at.pass.root, index)
+        if node.isValid {
+            ui.at.pass.arrange(node, 0.0, 0.0, w, h)
+            paintTree(ui.app, ui.at.pass, node, 0.0, h)
+        }
+        index = index + 1
+    }
+
+    dispatch(SystemPhase.Render, ui)
+    ui.app.present()
+}

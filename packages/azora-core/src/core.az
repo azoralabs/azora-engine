@@ -13,6 +13,22 @@
  * WebAssembly modules.
  */
 module engine.core
+import std.time
+import engine.io
+
+/**
+ * The block a builder takes: reactive, and capturing what it reads.
+ *
+ * `Column(…) @children { … }` is `Column(…) react [; &] { … }`. Reactive
+ * because a widget's block may hold `remember` or an `effect`; capturing
+ * because a block almost always reads the scope around it, and writing the
+ * capture list on every one of them is noise rather than information.
+ *
+ * A source fragment rather than an arm: `react [; &]` is a pair of markers the
+ * following lambda carries, not an expression a template could rewrite.
+ */
+@std::Experimental(since: "0.1")
+macro @children => inline "react [; &]"
 
 /**
  * Ordered engine schedule phases.
@@ -20,7 +36,7 @@ module engine.core
  * Systems in one phase may run in parallel when their ECS access sets do not
  * conflict. A phase completes before the next phase begins.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 enum SystemPhase {
     Startup
     PreUpdate
@@ -31,8 +47,39 @@ enum SystemPhase {
     Last
 }
 
+/**
+ * How often a system runs.
+ *
+ * `Every` follows the game clock and *drops* missed firings: a frame that
+ * overruns its interval runs the system once, not once per interval elapsed.
+ * `Fixed` is the opposite and is why both exist - it drains the simulation
+ * accumulator, so it may run several times in one rendered frame, which is what
+ * determinism requires of physics.
+ *
+ * Frame-counted variants are deterministic where the timed ones are not:
+ * "every fourth frame" staggers expensive work without drifting with the frame
+ * rate, which "every 60 milliseconds" does.
+ */
+@std::Experimental(since: "0.1")
+variant enum SystemInterval {
+    /** Once per frame. The default, and what most systems want. */
+    EveryFrame
+    /** Periodically, on the game clock; missed firings are dropped. */
+    Every(std::Duration)
+    /** Every *n*th frame, counted rather than timed. */
+    EveryFrames(std::Int)
+    /** The first time the phase runs, and never again. */
+    Once
+    /** Once, after the delay has elapsed. */
+    After(std::Duration)
+    /** Once, after that many frames. */
+    AfterFrames(std::Int)
+    /** At a fixed simulation step, draining the accumulator. */
+    Fixed(std::Duration)
+}
+
 /** Marks a pack or enum as ECS component data. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 annot Component for [.Pack, .Enum]
 
 /**
@@ -55,9 +102,16 @@ annot Component for [.Pack, .Enum]
  * @param runAfter Comma-separated names of systems this one must follow.
  * @param inSet Name of the system set this belongs to; sets order as a unit.
  */
-@std::Experimental(since: "0.0.4")
-annot System for .Func {
-    fin phase: SystemPhase = SystemPhase.Update
+@std::Experimental(since: "0.1")
+annot System for [.Func, .AsyncFunc] {
+    fin phase: SystemPhase = .Update
+    /**
+     * How often the system runs within its phase.
+     *
+     * A `.Startup` system runs once, before the first frame, so an interval
+     * there would have nothing to measure - leave it unset.
+     */
+    fin interval: SystemInterval = .EveryFrame
     fin order: std::Int = 0
     fin runBefore: std::String = ""
     fin runAfter: std::String = ""
@@ -72,7 +126,7 @@ annot System for .Func {
  * reader scheduled earlier in the frame to still see it, short enough that a
  * queue nobody drains cannot grow without bound.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 annot Event for [.Pack, .Enum]
 
 /**
@@ -82,15 +136,15 @@ annot Event for [.Pack, .Enum]
  * are my children" are both constant-time without either side storing a list
  * the other has to keep in step.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 annot Relation for .Pack
 
 /** Marks a pack as application-wide ECS resource data. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 annot Resource for .Pack
 
 /** Marks a function parameter whose component access is query-derived. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 annot Query for .Param
 
 /**
@@ -99,7 +153,7 @@ annot Query for .Param
  * `deltaSecs` is the clamped variable timestep. `fixedDeltaSecs` is the
  * deterministic simulation step used by `.FixedUpdate`.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack Time {
     var deltaSecs: std::Double
     var elapsedSecs: std::Double
@@ -108,7 +162,7 @@ pack Time {
 }
 
 /** Creates a clock with a 60 Hz fixed timestep. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func timeInit(): Time {
     return Time(0.0, 0.0, 1.0 / 60.0, 0L)
 }
@@ -146,7 +200,7 @@ impl Time {
  * Reads are allocation-free. Writes increment `revision`, allowing systems and
  * UI hosts to skip work when the observed value did not change.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack Signal<T> {
     var value: T
     var revision: std::Long
@@ -219,4 +273,31 @@ impl EngineClock {
 graph AzEngine {
     solo EngineRegistry
     solo EngineClock
+}
+
+/**
+ * Application lifetime, reachable from anywhere.
+ *
+ * `App.quit()` needs the window; an `effect` does not have one. A reactive
+ * body that decides the program is over — `effect mustClose == true { exit() }`
+ * — should not have to reach through the UI tree to a platform object it
+ * otherwise never touches. These two functions are that decision, expressed
+ * where any code can state it and the frame loop can observe it.
+ *
+ * The request is one-way: `exit()` asks the running application to stop, and
+ * nothing clears it. It is not the process exiting — the frame loop still ends
+ * the current frame, so teardown, saves and disposal all run normally.
+ */
+realm azora::engine {
+    /** Ask the running application to close. Idempotent. */
+    @std::Experimental(since: "0.1")
+    func exit() {
+        azRequestExit()
+    }
+
+    /** Whether `exit()` has been called. The frame loop's stop condition. */
+    @std::Experimental(since: "0.1")
+    func exitRequested(): std::Bool {
+        return azExitRequested() != 0L
+    }
 }

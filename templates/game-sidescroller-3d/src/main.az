@@ -1,19 +1,29 @@
 /*
  * Copyright 2026 AzoraLabs
  *
- * Licensed under the Apache License, Version 2.0.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 /**
- * @file game-sidescroller-3d
+ * @file game-sidescroller-3d,
  *
  * Native LLVM side-scroller demonstrating the current Azora Engine:
- * data-oriented ECS storage, typed navigation, reactive HUD state, immediate
+ * data-oriented ECS storage, typed navigation, reactive HUD state, immediate,
  * UI, engine physics contacts, 3D rendering, keyboard/gamepad input and audio.
  *
- * A / D or arrows   Move
- * Space or Up       Jump
- * Escape            Pause
+ * A / D or arrows   Move,
+ * Space or Up       Jump,
+ * Escape            Pause,
  */
 module game
 
@@ -115,8 +125,8 @@ func addPlatform(
     b: std::Double
 ) {
     spawnWith<Platform>(world, platforms, Platform(
-        Vec3(x, y, 0.0),
-        Vec3(width * 0.5, 0.35, depth * 0.5),
+        Vec3(x, y, 0.0)
+        Vec3(width * 0.5, 0.35, depth * 0.5)
         colorRgb(r, g, b)
     ))
 }
@@ -205,7 +215,7 @@ func resetSession(
 
     var i = 1
     while i < storageLength<Coin>(coins) {
-        if storageEntityAt<Coin>(coins, i).isValid() {
+        if storageEntityAt<Coin>(coins, i).isValid {
             fin coin: Coin = storageValueAt<Coin>(coins, i)
             coin.collected = false
         }
@@ -214,7 +224,7 @@ func resetSession(
 
     var w = 1
     while w < storageLength<Walker>(walkers) {
-        if storageEntityAt<Walker>(walkers, w).isValid() {
+        if storageEntityAt<Walker>(walkers, w).isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, w)
             if walker.center.x <= walker.minX || walker.center.x >= walker.maxX {
                 walker.center.x = (walker.minX + walker.maxX) * 0.5
@@ -256,7 +266,7 @@ func updateWalkers(walkers: Storage<Walker>, dt: std::Double) {
     var queryIndex = 1
     while queryIndex < storageLength<Walker>(walkers) {
         fin entity = storageEntityAt<Walker>(walkers, queryIndex)
-        if entity.isValid() {
+        if entity.isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, queryIndex)
             walker.center.x = walker.center.x + walker.velocityX * dt
             if walker.center.x < walker.minX {
@@ -277,7 +287,7 @@ func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>
     var i = 1
     while i < storageLength<Platform>(platforms) {
         fin entity = storageEntityAt<Platform>(platforms, i)
-        if entity.isValid() {
+        if entity.isValid {
             fin platform: Platform = storageValueAt<Platform>(platforms, i)
             fin contact = engine::physics::aabbContact(position, playerHalf(), platform.center, platform.halfSize)
             if contact.hit {
@@ -310,13 +320,13 @@ func collectCoins(
     var i = 1
     while i < storageLength<Coin>(coins) {
         fin entity = storageEntityAt<Coin>(coins, i)
-        if entity.isValid() {
+        if entity.isValid {
             fin coin: Coin = storageValueAt<Coin>(coins, i)
             if !coin.collected {
                 fin hit = engine::physics::aabbOverlaps(
-                    position,
-                    playerHalf(),
-                    coin.center,
+                    position
+                    playerHalf()
+                    coin.center
                     Vec3(0.34, 0.34, 0.34)
                 )
                 if hit {
@@ -334,12 +344,12 @@ func hitWalker(position: Vec3, walkers: Storage<Walker>): std::Bool {
     var i = 1
     while i < storageLength<Walker>(walkers) {
         fin entity = storageEntityAt<Walker>(walkers, i)
-        if entity.isValid() {
+        if entity.isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, i)
             if engine::physics::aabbOverlaps(
-                position,
-                playerHalf(),
-                walker.center,
+                position
+                playerHalf()
+                walker.center
                 Vec3(0.48, 0.48, 0.48)
             ) {
                 return true
@@ -430,7 +440,7 @@ func updatePlayer(
 
 func drawBox(app: App, cube: Mesh, center: Vec3, size: Vec3, color: Color) {
     fin model = mat4Mul(
-        mat4Translation(center.x, center.y, center.z),
+        mat4Translation(center.x, center.y, center.z)
         mat4Scale(size.x, size.y, size.z)
     )
     app.drawMesh(cube, model, color.r, color.g, color.b)
@@ -473,20 +483,20 @@ func renderWorld(
 
     var p = 1
     while p < storageLength<Platform>(platforms) {
-        if storageEntityAt<Platform>(platforms, p).isValid() {
+        if storageEntityAt<Platform>(platforms, p).isValid {
             fin platform: Platform = storageValueAt<Platform>(platforms, p)
             drawBox(
-                app,
-                cube,
-                platform.center,
-                Vec3(platform.halfSize.x * 2.0, platform.halfSize.y * 2.0, platform.halfSize.z * 2.0),
+                app
+                cube
+                platform.center
+                Vec3(platform.halfSize.x * 2.0, platform.halfSize.y * 2.0, platform.halfSize.z * 2.0)
                 platform.color
             )
             drawBox(
-                app,
-                cube,
-                Vec3(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z),
-                Vec3(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0),
+                app
+                cube
+                Vec3(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z)
+                Vec3(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0)
                 colorRgb(0.43, 0.76, 0.36)
             )
         }
@@ -495,7 +505,7 @@ func renderWorld(
 
     var c = 1
     while c < storageLength<Coin>(coins) {
-        if storageEntityAt<Coin>(coins, c).isValid() {
+        if storageEntityAt<Coin>(coins, c).isValid {
             fin coin: Coin = storageValueAt<Coin>(coins, c)
             if !coin.collected {
                 fin bob = sin(session.elapsed * 3.0 + coin.phase) * 0.12
@@ -510,7 +520,7 @@ func renderWorld(
 
     var w = 1
     while w < storageLength<Walker>(walkers) {
-        if storageEntityAt<Walker>(walkers, w).isValid() {
+        if storageEntityAt<Walker>(walkers, w).isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, w)
             drawBox(app, cube, walker.center, Vec3(0.9, 0.9, 0.8), colorRgb(0.82, 0.22, 0.30))
             drawBox(app, cube, Vec3(walker.center.x - 0.22, walker.center.y - 0.55, 0.0), Vec3(0.18, 0.28, 0.26), colorRgb(0.19, 0.16, 0.20))
@@ -627,7 +637,7 @@ async func main() {
     fin cube = app.meshCube(1.0)
     fin cylinder = app.meshCylinder(1.0, 1.0, 18)
 
-    var world = worldInit()
+    var world = World::init()
     var transforms = storageInit<Transform>(transformEcsDefault())
     var players = storageInit<Player>(Player(vec3Zero(), false, 0.0, 0.0, 3, 0, 0.0, 1.0))
     var platforms = storageInit<Platform>(Platform(vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.3, 0.6, 0.4)))
@@ -679,15 +689,15 @@ async func main() {
             if current == GameRoute.Playing {
                 updateWalkers(walkers, dt)
                 fin alive = updatePlayer(
-                    app,
-                    world,
-                    players,
-                    transforms,
-                    platforms,
-                    coins,
-                    walkers,
-                    score,
-                    audio,
+                    app
+                    world
+                    players
+                    transforms
+                    platforms
+                    coins
+                    walkers
+                    score
+                    audio
                     dt
                 )
                 fin transform: Transform = storageGet<Transform>(transforms, playerEntity)

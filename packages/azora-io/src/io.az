@@ -47,6 +47,13 @@ bridge .C {
     func @foreignName("az_poke8")(p: std::Long, off: std::Long, v: std::Int)
     func @foreignName("az_poke_f32")(p: std::Long, off: std::Long, v: std::Double)
     func @foreignName("az_poke_f64")(p: std::Long, off: std::Long, v: std::Double)
+
+    // Process-wide close request (az_ffi.c). The flag lives in the runtime
+    // because Azora has no mutable global to put it in: a top-level `var` is
+    // rejected as unsafe to share, and `fin` is deeply immutable. The engine
+    // surface over these two is `azora::engine::exit()` in `engine.core`.
+    func @foreignName("az_request_exit")()
+    func @foreignName("az_exit_requested")(): std::Long
 }
 
 /** `fseek` origin: end of stream. */
@@ -92,14 +99,14 @@ func asciiChar(code: std::Int): std::String {
  * A blob owns its allocation; call [release] when finished. `size` is zero for
  * a failed read, which is what [ok] reports.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack Blob {
     var data: std::Long
     var size: std::Int
 }
 
 /** An empty blob, used for every failure path. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func blobEmpty(): Blob {
     return Blob(0L, 0)
 }
@@ -111,7 +118,7 @@ func blobEmpty(): Blob {
  * [Blob.ok] rather than handling an error type, because a missing asset is
  * expected during development and should degrade rather than abort.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func readFile(path: std::String): Blob {
     fin stream = fopen(path, "rb")
     if stream == 0L {
@@ -150,7 +157,7 @@ func readFile(path: std::String): Blob {
  * is replaced. A failed write leaves the previous file intact and removes the
  * temporary file, making this suitable for settings and save-game metadata.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func writeTextFile(path: std::String, content: std::String): std::Bool {
     fin temporary = path + ".tmp"
     fin stream = fopen(temporary, "wb")

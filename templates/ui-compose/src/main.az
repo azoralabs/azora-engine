@@ -1,0 +1,262 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file src/main
+ *
+ * A reactive-ECS UI demo: columns, rows, buttons, text, scrolling, and a query
+ * that recolours shapes it never named.
+ *
+ * There is no frame loop here, and nothing draws. This file declares `@System`
+ * functions; the engine finds them by compile-time reflection, runs each phase
+ * in order, and owns arranging, drawing and presenting. `main` opens the window
+ * and hands over.
+ *
+ * The interface is described once per frame by [ui]. That is not a rebuild:
+ * composition is reconciliation, so the same description re-run finds the same
+ * entities and updates them in place - which is why "rebuild the UI" and "keep
+ * the UI" are the same code path.
+ *
+ * The palette buttons do not hold references to the shapes they tint. They ask
+ * for "every node tagged 1" and the world answers, so the shapes could be
+ * composed anywhere, by anyone, and the button would still find them.
+ */
+module demo
+
+import std.container.array
+import std.time
+import engine.core
+import engine.ecs
+import engine.ui.node
+import engine.ui.compose
+import engine.ui.systems
+import engine.platform
+import engine.gpu.draw
+import engine.ui
+import engine.ui.runner
+
+/** Action codes the buttons report. Zero means "no action". */
+fin actionRed = 1
+fin actionGreen = 2
+fin actionBlue = 3
+fin actionSlate = 4
+fin actionAddRow = 5
+
+/** The group the recolourable shapes carry, and the query selects on. */
+fin swatchGroup = 1
+
+/**
+ * Describes the whole interface, and holds the little state it needs.
+ *
+ * `remember` is the state: it belongs to this system and survives across
+ * frames, so there is no resource to register and nothing to thread through a
+ * parameter. The engine calls this every frame; reconciliation makes that an
+ * update rather than a rebuild.
+ */
+@System(phase: .Update)
+react func ui(ui: Ui!) {
+    remember var rows = 6
+    remember var tint = "none"
+
+    // The state this system owns, changed by this system. `respond` recolours
+    // the shapes; what a click *means* to the description lives here, next to
+    // the `remember` cells it writes.
+    when ui.action {
+        actionAddRow -> rows = rows + 1
+        actionRed -> tint = "red"
+        actionGreen -> tint = "green"
+        actionBlue -> tint = "blue"
+        actionSlate -> tint = "slate"
+    }
+
+    fin width = ui.width()
+    fin height = ui.height()
+
+    with ui.at {
+        Column(
+            modifier: .().fillMaxSize()
+        ) @children {
+            Row(
+                modifier: .()
+                    .height(56.0)
+                    .fillMaxWidth()
+                    .background(0.14, 0.15, 0.18)
+                horizontalArrangement: .Start
+                verticalAlignment: .Center
+                spacing: 8.0
+            ) @children {
+                Button(
+                    modifier: swatch(0.78, 0.28, 0.28)
+                    action: actionRed
+                ) @children {
+                    Text("Red")
+                }
+                Button(
+                    modifier: swatch(0.29, 0.66, 0.38)
+                    action: actionGreen
+                ) @children {
+                    Text("Green")
+                }
+                Button(
+                    modifier: swatch(0.27, 0.51, 0.86)
+                    action: actionBlue
+                ) @children {
+                    Text("Blue")
+                }
+                Button(
+                    modifier: swatch(0.35, 0.38, 0.45)
+                    action: actionSlate
+                ) @children {
+                    Text("Slate")
+                }
+                Button(
+                    modifier: swatch(0.45, 0.35, 0.62)
+                    action: actionAddRow
+                ) @children {
+                    Text("Add row")
+                }
+            }
+
+            Row(
+                modifier: .()
+                    .fillMaxWidth()
+                    .weight(1.0)
+                key: "body"
+            ) @children {
+                // A scrolling list of rows, each holding three tagged swatches.
+                ScrollColumn(
+                    modifier: .()
+                        .weight(3.0)
+                        .fillMaxHeight()
+                        .padding(all: 12.0)
+                        .background(0.10, 0.11, 0.13)
+                    spacing: 8.0
+                    key: "list"
+                ) @children {
+                    var index = 0
+                    while index < rows {
+                        Row(
+                            modifier: .()
+                                .height(64.0)
+                                .fillMaxWidth()
+                                .padding(all: 6.0)
+                                .background(0.16, 0.17, 0.20)
+                            verticalAlignment: .Center
+                            spacing: 8.0
+                            key: "line-${index}"
+                        ) @children {
+                            Text("Row ${index + 1}", modifier: .().width(90.0))
+                            Shape(modifier: .().weight(1.0), group: swatchGroup)
+                            Shape(modifier: .().weight(1.0), group: swatchGroup)
+                            Shape(modifier: .().weight(1.0), group: swatchGroup)
+                        }
+                        index = index + 1
+                    }
+                }
+
+                // A side panel that reports state, proving text updates in place.
+                Column(
+                    modifier: .()
+                        .weight(1.0)
+                        .fillMaxHeight()
+                        .padding(all: 14.0)
+                        .background(0.13, 0.14, 0.17)
+                    verticalArrangement: .Start
+                    spacing: 10.0
+                ) @children {
+                    Text("Reactive ECS UI", modifier: .().height(30.0))
+                    Text("rows: ${rows}", modifier: .().height(30.0))
+                    Text("tint: ${tint}", modifier: .().height(30.0))
+                    Text("scroll: up/down", modifier: .().height(30.0))
+                    Text("${width as std::Int} x ${height as std::Int}", modifier: .().height(30.0))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Turns a click into a change, and recolours by asking the world.
+ *
+ * The palette buttons name no shape. `tintGroup` selects every node carrying
+ * the swatch tag and writes its paint, so the shapes could be composed anywhere
+ * and this would still find them.
+ */
+@System(phase: .PostUpdate)
+func respond(ui: Ui!, input: Res<UiInput>) {
+    when input.value.action {
+        actionRed -> ui.at.pass.tintGroup(swatchGroup, 0.78, 0.28, 0.28)
+        actionGreen -> ui.at.pass.tintGroup(swatchGroup, 0.29, 0.66, 0.38)
+        actionBlue -> ui.at.pass.tintGroup(swatchGroup, 0.27, 0.51, 0.86)
+        actionSlate -> ui.at.pass.tintGroup(swatchGroup, 0.35, 0.38, 0.45)
+    }
+}
+
+/**
+ * Every shape takes a new colour every five seconds.
+ *
+ * The rows come from a query over the world - `queryAll` asks it for every live
+ * entity, and each `queryWith` narrows that answer to the rows carrying one
+ * more component. Nothing here names a shape or walks a storage: what is
+ * recoloured is whatever carries both a tag and a paint, so a shape composed
+ * anywhere by anyone is included.
+ */
+@System(phase: .Update, interval: .Every(5.seconds()))
+react func changeColorEach5Secs(
+    world: World&
+    shapes: @query [UiTag, UiPaint]
+) {
+    remember var round = 1
+    round = round + 1
+
+    var paints = storageOf<UiPaint>(world)
+    fin tags = storageOf<UiTag>(world)
+
+    var index = 0
+    shapes.forEach { entity ->
+        if entity.isValid {
+            fin tag = storageGetOrDefault<UiTag>(tags, entity, UiTag(0 - 1))
+            if tag.group == swatchGroup {
+                fin h = (round * 2654435761 + index * 40503) % 1000003
+                storageInsert<UiPaint>(paints, entity, UiPaint(
+                    0.25 + ((h % 97) as std::Double) / 96.0 * 0.6,
+                    0.25 + (((h / 97) % 89) as std::Double) / 88.0 * 0.6,
+                    0.25 + (((h / 8633) % 83) as std::Double) / 82.0 * 0.6,
+                    1.0,
+                    0.0
+                ))
+                index = index + 1
+            }
+        }
+    }
+
+    fin stored = registerStorage<UiPaint>(world, take paints)
+    if stored {
+        return
+    }
+}
+
+/** A button's colour, as a modifier - the demo's one piece of shared styling. */
+func swatch(r: std::Double, g: std::Double, b: std::Double): Modifier {
+    return .()
+        .weight(1.0)
+        .fillMaxHeight()
+        .background(r, g, b)
+}
+
+react func main() {
+    engine::run("Azora Reactive ECS UI", 1000, 680)
+}

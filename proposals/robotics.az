@@ -1,0 +1,476 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+module azora.engine.robotics
+
+import std.container.array
+import std.math
+
+/**
+ * @file azora-engine/robotics
+ *
+ * Backend-neutral robotics contracts. Geometry, limits, and trajectory
+ * validation are ordinary Azora code; hardware, middleware, clocks, and
+ * safety-rated controllers are explicit bridge implementations.
+ *
+ * @since 0.1
+ */
+
+realm engine {
+    /** Broad robot morphology used for capability negotiation. */
+    @Experimental(since: "0.1")
+    enum RobotKind {
+        FixedBase
+        Mobile
+        Manipulator
+        MobileManipulator
+        Aerial
+        Underwater
+        Humanoid
+    }
+
+    /** Managed lifecycle of a robot process or hardware component. */
+    @Experimental(since: "0.1")
+    enum LifecycleState {
+        Created
+        Configured
+        Inactive
+        Active
+        Faulted
+        Shutdown
+    }
+
+    /** Safety mode is independent from ordinary application lifecycle. */
+    @Experimental(since: "0.1")
+    enum SafetyMode {
+        Normal
+        ReducedSpeed
+        ProtectiveStop
+        EmergencyStop
+        Recovery
+    }
+
+    /** Common sensor families. Device adapters may expose additional kinds. */
+    @Experimental(since: "0.1")
+    enum SensorKind {
+        Imu
+        JointState
+        Lidar
+        Camera
+        ForceTorque
+        Gps
+        Battery
+        Encoder
+    }
+
+    /** Common actuator families. */
+    @Experimental(since: "0.1")
+    enum ActuatorKind {
+        Joint
+        Motor
+        Gripper
+        DifferentialDrive
+        Thruster
+        Led
+    }
+
+    /** Control variable accepted by an actuator. */
+    @Experimental(since: "0.1")
+    enum ControlMode {
+        Position
+        Velocity
+        Effort
+        Torque
+        Current
+    }
+
+    /** Result of submitting a command to an actuator or controller. */
+    @Experimental(since: "0.1")
+    enum CommandResult {
+        Accepted
+        Rejected
+        Expired
+        ProtectiveStop
+        EmergencyStop
+        Faulted
+    }
+
+    /** Transport intent for a topic or subscription. */
+    @Experimental(since: "0.1")
+    enum DeliveryMode {
+        Reliable
+        BestEffort
+    }
+
+    /** Three-dimensional vector in a named coordinate frame. */
+    @Experimental(since: "0.1")
+    pack Vector3 {
+        var x: Double
+        var y: Double
+        var z: Double
+    }
+
+    /** Unit quaternion in scalar-first order. */
+    @Experimental(since: "0.1")
+    pack Quaternion {
+        var w: Double
+        var x: Double
+        var y: Double
+        var z: Double
+    }
+
+    /** Position and orientation relative to a named frame. */
+    @Experimental(since: "0.1")
+    pack Pose {
+        var position: Vector3
+        var orientation: Quaternion
+    }
+
+    /** A rigid transform between two named frames. */
+    @Experimental(since: "0.1")
+    pack FrameTransform {
+        var parent: String
+        var child: String
+        var pose: Pose
+    }
+
+    /** Linear and angular velocity in a frame. */
+    @Experimental(since: "0.1")
+    pack Twist {
+        var linear: Vector3
+        var angular: Vector3
+    }
+
+    /** Force and torque in a frame. */
+    @Experimental(since: "0.1")
+    pack Wrench {
+        var force: Vector3
+        var torque: Vector3
+    }
+
+    /** Position, velocity, and effort limits for one joint. */
+    @Experimental(since: "0.1")
+    pack JointLimit {
+        var name: String
+        var minimum: Double
+        var maximum: Double
+        var maxVelocity: Double
+        var maxAcceleration: Double
+    }
+
+    /** Current measured joint state. */
+    @Experimental(since: "0.1")
+    pack JointState {
+        var name: String
+        var position: Double
+        var velocity: Double
+        var effort: Double
+    }
+
+    /** One requested joint command before controller acceptance. */
+    @Experimental(since: "0.1")
+    pack JointCommand {
+        var name: String
+        var mode: ControlMode
+        var value: Double
+        var deadlineNs: Long
+    }
+
+    /** One time-stamped point in a multi-joint trajectory. */
+    @Experimental(since: "0.1")
+    pack TrajectoryPoint {
+        var timeSeconds: Double
+        var positions: Array<Double>
+        var velocities: Array<Double>
+    }
+
+    /** Ordered trajectory with a stable joint-name order. */
+    @Experimental(since: "0.1")
+    pack Trajectory {
+        var jointNames: Array<String>
+        var points: Array<TrajectoryPoint>
+    }
+
+    /** Limits applied before a command can reach a hardware adapter. */
+    @Experimental(since: "0.1")
+    pack SafetyLimits {
+        var maxLinearSpeed: Double
+        var maxAngularSpeed: Double
+        var maxEffort: Double
+        var commandTimeoutNs: Long
+    }
+
+    /** A timestamped sensor sample with explicit frame and sequence identity. */
+    @Experimental(since: "0.1")
+    pack SensorSample<T> {
+        var timestampNs: Long
+        var sequence: Long
+        var frame: String
+        var value: T
+    }
+
+    /** Opaque robot graph and hardware connection. */
+    @Experimental(since: "0.1")
+    bridge pack Robot
+
+    /** Opaque sensor stream handle. */
+    @Experimental(since: "0.1")
+    bridge pack Sensor<T>
+
+    /** Opaque actuator/controller handle. */
+    @Experimental(since: "0.1")
+    bridge pack Actuator<T>
+
+    /** Continuous ROS-like topic stream. */
+    @Experimental(since: "0.1")
+    bridge pack Topic<T>
+
+    /** Short request/response endpoint. */
+    @Experimental(since: "0.1")
+    bridge pack Service<TRequest, TResponse>
+
+    /** Long-running, cancellable operation with feedback. */
+    @Experimental(since: "0.1")
+    bridge pack Action<TGoal, TFeedback, TResult>
+
+    /** Provider-managed handle for one action goal. */
+    @Experimental(since: "0.1")
+    bridge pack GoalHandle<TFeedback, TResult>
+
+    /** Opaque safety-rated or safety-supervising controller. */
+    @Experimental(since: "0.1")
+    bridge pack SafetyController
+
+    /** Constructs a vector. */
+    @Experimental(since: "0.1")
+    func vector3(x: Double, y: Double, z: Double): Vector3 {
+        return Vector3(x, y, z)
+    }
+
+    /** Constructs a quaternion. */
+    @Experimental(since: "0.1")
+    func quaternion(w: Double, x: Double, y: Double, z: Double): Quaternion {
+        return Quaternion(w, x, y, z)
+    }
+
+    /** Constructs an identity pose. */
+    @Experimental(since: "0.1")
+    func identityPose(): Pose {
+        return Pose(Vector3(0.0, 0.0, 0.0), Quaternion(1.0, 0.0, 0.0, 0.0))
+    }
+
+    /** Constructs a pose from position and orientation. */
+    @Experimental(since: "0.1")
+    func pose(position: Vector3, orientation: Quaternion): Pose {
+        return Pose(position, normalizeQuaternion(orientation))
+    }
+
+    /** Returns the squared length of a vector. */
+    @Experimental(since: "0.1")
+    func lengthSquared(value: Vector3): Double {
+        return value.x * value.x + value.y * value.y + value.z * value.z
+    }
+
+    /** Returns a normalized quaternion and rejects a zero rotation. */
+    @Experimental(since: "0.1")
+    func normalizeQuaternion(value: Quaternion): Quaternion {
+        fin length = std::sqrt(
+            value.w * value.w + value.x * value.x + value.y * value.y + value.z * value.z,
+        )
+        assert length > 0.0 { "a rotation quaternion cannot have zero length" }
+        return Quaternion(
+            value.w / length,
+            value.x / length,
+            value.y / length,
+            value.z / length,
+        )
+    }
+
+    /** Applies a rigid pose to a point. */
+    @Experimental(since: "0.1")
+    func transformPoint(value: Pose, point: Vector3): Vector3 {
+        fin q = normalizeQuaternion(value.orientation)
+        fin ix = q.w * point.x + q.y * point.z - q.z * point.y
+        fin iy = q.w * point.y + q.z * point.x - q.x * point.z
+        fin iz = q.w * point.z + q.x * point.y - q.y * point.x
+        fin iw = 0.0 - q.x * point.x - q.y * point.y - q.z * point.z
+        fin rx = ix * q.w + iw * (0.0 - q.x) + iy * (0.0 - q.z) - iz * (0.0 - q.y)
+        fin ry = iy * q.w + iw * (0.0 - q.y) + iz * (0.0 - q.x) - ix * (0.0 - q.z)
+        fin rz = iz * q.w + iw * (0.0 - q.z) + ix * (0.0 - q.y) - iy * (0.0 - q.x)
+        return Vector3(
+            rx + value.position.x,
+            ry + value.position.y,
+            rz + value.position.z,
+        )
+    }
+
+    /** Returns whether a scalar lies inside a joint's position limits. */
+    @Experimental(since: "0.1")
+    func withinLimit(value: Double, limit: JointLimit&): Bool {
+        return value >= limit.minimum && value <= limit.maximum
+    }
+
+    /** Clamps a scalar to a joint's declared position limits. */
+    @Experimental(since: "0.1")
+    func clampToLimit(value: Double, limit: JointLimit&): Double {
+        if value < limit.minimum { return limit.minimum }
+        if value > limit.maximum { return limit.maximum }
+        return value
+    }
+
+    /** Creates a command after applying position bounds. */
+    @Experimental(since: "0.1")
+    func boundedPositionCommand(
+        name: String,
+        value: Double,
+        deadlineNs: Long,
+        limit: JointLimit&,
+    ): JointCommand {
+        return JointCommand(name, ControlMode.Position, clampToLimit(value, limit), deadlineNs)
+    }
+
+    /** Validates that a trajectory is monotonic and dimensionally consistent. */
+    @Experimental(since: "0.1")
+    func validTrajectory(value: Trajectory&): Bool {
+        if value.jointNames.size == 0 || value.points.size == 0 { return false }
+        var previousTime = 0.0
+        for i in 0..<value.points.size {
+            fin point = value.points[i]
+            if point.timeSeconds < previousTime { return false }
+            if point.positions.size != value.jointNames.size { return false }
+            if point.velocities.size != 0 && point.velocities.size != value.jointNames.size {
+                return false
+            }
+            previousTime = point.timeSeconds
+        }
+        return true
+    }
+
+    /** Connects to a robot graph or hardware adapter. */
+    @Experimental(since: "0.1")
+    bridge func connect(name: String, kind: RobotKind): Robot
+
+    /** Reads the managed lifecycle state. */
+    @Experimental(since: "0.1")
+    bridge func lifecycle(robot: Robot): LifecycleState
+
+    /** Requests a lifecycle transition; safety controllers may reject it. */
+    @Experimental(since: "0.1")
+    bridge func transition(robot: Robot, desired: LifecycleState): Bool
+
+    /** Reads the current independent safety mode. */
+    @Experimental(since: "0.1")
+    bridge func safetyMode(robot: Robot): SafetyMode
+
+    /** Opens a typed sensor stream by resolved symbol/device identity. */
+    @Experimental(since: "0.1")
+    bridge func sensor<T>(robot: Robot, name: String, kind: SensorKind): Sensor<T>
+
+    /** Reads one sensor sample with timestamp, sequence, and frame metadata. */
+    @Experimental(since: "0.1")
+    bridge func read<T>(sensor: Sensor<T>): SensorSample<T>
+
+    /** Opens a typed actuator/controller endpoint. */
+    @Experimental(since: "0.1")
+    bridge func actuator<T>(robot: Robot, name: String, kind: ActuatorKind): Actuator<T>
+
+    /** Sends a bounded command and returns the controller's safety result. */
+    @Experimental(since: "0.1")
+    bridge func command<T>(
+        actuator: Actuator<T>,
+        value: T,
+        limits: SafetyLimits,
+    ): CommandResult
+
+    /** Publishes a continuous stream sample. */
+    @Experimental(since: "0.1")
+    bridge func publish<T>(topic: Topic<T>, value: T): Unit
+
+    /** Subscribes to a continuous stream with explicit delivery intent. */
+    @Experimental(since: "0.1")
+    bridge func subscribe<T>(
+        robot: Robot,
+        name: String,
+        mode: DeliveryMode,
+        depth: Int,
+    ): Topic<T>
+
+    /** Opens a short request/response service. */
+    @Experimental(since: "0.1")
+    bridge func service<TRequest, TResponse>(
+        robot: Robot,
+        name: String,
+    ): Service<TRequest, TResponse>
+
+    /** Calls a short service and returns its typed response. */
+    @Experimental(since: "0.1")
+    bridge func request<TRequest, TResponse>(
+        service: Service<TRequest, TResponse>,
+        value: TRequest,
+    ): TResponse
+
+    /** Opens a cancellable long-running action endpoint. */
+    @Experimental(since: "0.1")
+    bridge func action<TGoal, TFeedback, TResult>(
+        robot: Robot,
+        name: String,
+    ): Action<TGoal, TFeedback, TResult>
+
+    /** Sends an action goal and returns a provider-managed goal handle. */
+    @Experimental(since: "0.1")
+    bridge func sendGoal<TGoal, TFeedback, TResult>(
+        action: Action<TGoal, TFeedback, TResult>,
+        goal: TGoal,
+    ): GoalHandle<TFeedback, TResult>
+
+    /** Reads the latest feedback without blocking for final completion. */
+    @Experimental(since: "0.1")
+    bridge func feedback<TFeedback, TResult>(
+        goal: GoalHandle<TFeedback, TResult>,
+    ): TFeedback
+
+    /** Waits for and returns the final action result. */
+    @Experimental(since: "0.1")
+    bridge func result<TFeedback, TResult>(
+        goal: GoalHandle<TFeedback, TResult>,
+    ): TResult
+
+    /** Requests cancellation/preemption of a running action goal. */
+    @Experimental(since: "0.1")
+    bridge func cancel<TFeedback, TResult>(
+        goal: GoalHandle<TFeedback, TResult>,
+    ): Bool
+
+    /** Opens a safety controller separate from ordinary application control. */
+    @Experimental(since: "0.1")
+    bridge func safetyController(robot: Robot): SafetyController
+
+    /** Requests a protective stop. Clearing it must be a separate explicit call. */
+    @Experimental(since: "0.1")
+    bridge func protectiveStop(controller: SafetyController, reason: String): Unit
+
+    /** Requests an emergency stop; adapters must map this to the safety system. */
+    @Experimental(since: "0.1")
+    bridge func emergencyStop(controller: SafetyController, reason: String): Unit
+
+    /** Clears a stop only when the external safety system permits recovery. */
+    @Experimental(since: "0.1")
+    bridge func clearStop(controller: SafetyController): Bool
+
+    /** Closes a robot connection and its ordinary command channels. */
+    @Experimental(since: "0.1")
+    bridge func close(robot: Robot): Unit
+}

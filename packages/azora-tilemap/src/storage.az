@@ -232,14 +232,14 @@ impl TileLayer {
 
     /** Allocates the flag plane if it is still sparse. */
     func ensureFlags() {
-        if self.flags.size == 0 && self.size.isValid() {
+        if self.flags.size == 0 && self.size.isValid {
             self.flags = intGridFill(self.size.x, self.size.y, 0)
         }
     }
 
     /** Allocates the tint plane if it is still sparse. */
     func ensureTints() {
-        if self.tints.size == 0 && self.size.isValid() {
+        if self.tints.size == 0 && self.size.isValid {
             self.tints = intGridFill(self.size.x, self.size.y, tileTintNone)
         }
     }
@@ -674,7 +674,7 @@ func layerRebuildChunks(layer: TileLayer!) {
  * dropped, so the copy happens here.
  */
 func layerResize(layer: TileLayer!, size: TilemapSize): std::Unit ?! TilemapFault {
-    if !size.isValid() {
+    if !size.isValid {
         return .EmptySize
     }
     fin hadFlags = layer.flags.size > 0
@@ -819,9 +819,9 @@ func tileStorageGet(storage: TileStorage&, pos: TilePos): TileEntity {
 func tileStorageEntity(storage: TileStorage&, pos: TilePos): Entity {
     when tileStorageGet(storage, pos) {
         TileEntity.Bound(entity) -> { return entity }
-        else -> { return entityInvalid() }
+        else -> { return Entity::invalid }
     }
-    return entityInvalid()
+    return Entity::invalid
 }
 
 /** Binds [pos] to [entity], replacing whatever it held. */
@@ -830,13 +830,13 @@ func tileStorageSet(storage: TileStorage!, pos: TilePos, entity: Entity): std::U
     if at < 0 {
         return .OutOfBounds
     }
-    if storage.ids[at] < 0 && entity.isValid() {
+    if storage.ids[at] < 0 && entity.isValid {
         storage.count = storage.count + 1
     }
-    if storage.ids[at] >= 0 && !entity.isValid() {
+    if storage.ids[at] >= 0 && !entity.isValid {
         storage.count = storage.count - 1
     }
-    if entity.isValid() {
+    if entity.isValid {
         storage.ids[at] = entity.id
         storage.generations[at] = entity.generation
     } else {
@@ -847,7 +847,7 @@ func tileStorageSet(storage: TileStorage!, pos: TilePos, entity: Entity): std::U
 
 /** Unbinds [pos], leaving the entity itself alone. */
 func tileStorageRemove(storage: TileStorage!, pos: TilePos): std::Unit ?! TilemapFault {
-    try tileStorageSet(storage, pos, entityInvalid())
+    try tileStorageSet(storage, pos, Entity::invalid)
 }
 
 /** Unbinds every cell. */

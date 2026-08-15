@@ -1,0 +1,477 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file engine.video
+ *
+ * Provider-independent video playback state and bounded decoded-frame queues.
+ *
+ * Native providers may decode on many workers, but they publish frames through
+ * this deterministic boundary. A seek changes the generation immediately, so
+ * work already in flight cannot present a frame from the old timeline.
+ */
+module engine.video
+
+import std.container.array
+import engine.media
+exposed import engine.media
+
+/** Public lifecycle of a video session. */
+enum VideoState {
+    Closed
+    Opening
+    Ready
+    Playing
+    Paused
+    Buffering
+    Seeking
+    Ended
+    Failed
+}
+
+/** Clock that decides which decoded frame is presented. */
+enum SyncPolicy {
+    AudioMaster
+    VideoMaster
+    ExternalClock
+}
+
+/** Preference used when several compatible decode paths exist. */
+variant enum ProviderPreference {
+    Automatic
+    Named(name: std::String)
+    Hardware
+    Software
+}
+
+/** Behaviour when a decoder reaches a full frame queue. */
+enum VideoQueuePolicy {
+    RejectNewest
+    DropOldest
+}
+
+/** Result of offering one decoded frame to a queue. */
+enum VideoQueuePush {
+    Accepted
+    DroppedOldest
+    RejectedFull
+    RejectedStale
+}
+
+/** Result of reading one frame without confusing an empty queue with a frame. */
+variant enum VideoFrameRead {
+    Frame(frame: VideoFrame)
+    Empty
+}
+
+/** Video-specific operations that can be refused before reaching a provider. */
+error VideoError {
+    NoVideoStream
+    InvalidState
+    NotSeekable
+}
+
+/** Settings fixed when a session opens. */
+pack VideoOpenOptions {
+    fin providerPreference: ProviderPreference
+    fin sync: SyncPolicy
+    fin frameQueueCapacity: std::Int
+    fin frameQueuePolicy: VideoQueuePolicy
+    fin looping: std::Bool
+    fin playbackRate: std::Double
+}
+
+/** Defaults favour the fastest provider and audio-led movie playback. */
+func videoOpenOptions(): VideoOpenOptions {
+    return VideoOpenOptions(
+        ProviderPreference.Automatic,
+        SyncPolicy.AudioMaster,
+        8,
+        VideoQueuePolicy.DropOldest,
+        false,
+        1.0
+    )
+}
+
+/** Stable public identity of a resource-owning native video session. */
+pack VideoPlayer {
+    fin id: std::Long
+}
+
+/** A player value that owns no provider session. */
+func videoPlayerInvalid(): VideoPlayer {
+    return VideoPlayer(0L)
+}
+
+/**
+ * One decoded picture ready for presentation.
+ *
+ * `surface` is an opaque provider-owned image handle. A software provider may
+ * point it at an upload image while VideoToolbox may publish an IOSurface-backed
+ * Metal texture. Queue and playback code do not distinguish those paths.
+ */
+pack VideoFrame {
+    fin stream: StreamId
+    fin pts: MediaTime
+    fin duration: MediaTime
+    fin sequence: std::Long
+    fin generation: std::Long
+    fin width: std::Int
+    fin height: std::Int
+    fin surface: std::Long
+    fin keyframe: std::Bool
+}
+
+/** A harmless frame used to initialise preallocated queue storage. */
+func videoFrameEmpty(): VideoFrame {
+    return VideoFrame(
+        StreamId(-1),
+        mediaTimeZero(),
+        mediaTimeZero(),
+        -1L,
+        0L,
+        0,
+        0,
+        0L,
+        false
+    )
+}
+
+/** Fixed-capacity ring shared by a decoder and the presentation side. */
+pack VideoFrameQueue {
+    var frames: std::Array<VideoFrame>
+    var capacity: std::Int
+    var head: std::Int
+    var count: std::Int
+    var generation: std::Long
+    var dropped: std::Long
+    var policy: VideoQueuePolicy
+}
+
+/** Allocates queue storage once; pushing and popping do not grow it. */
+func videoFrameQueue(capacity: std::Int, policy: VideoQueuePolicy): VideoFrameQueue {
+    var room = capacity
+    if room < 1 { room = 1 }
+    var frames: std::Array<VideoFrame> = std::Array::fill<VideoFrame>(room)
+    var index = 0
+    while index < room {
+        frames[index] = videoFrameEmpty()
+        index = index + 1
+    }
+    return VideoFrameQueue(frames, room, 0, 0, 1L, 0L, policy)
+}
+
+impl VideoFrameQueue {
+    /** Offers a frame without blocking a decoder worker. */
+    func push[self: Self!](frame: VideoFrame): VideoQueuePush {
+        if frame.generation != self.generation {
+            self.dropped = self.dropped + 1L
+            return VideoQueuePush.RejectedStale
+        }
+        if self.count >= self.capacity {
+            if self.policy == VideoQueuePolicy.RejectNewest {
+                self.dropped = self.dropped + 1L
+                return VideoQueuePush.RejectedFull
+            }
+            self.head = (self.head + 1) % self.capacity
+            self.count = self.count - 1
+            self.dropped = self.dropped + 1L
+            fin at = (self.head + self.count) % self.capacity
+            self.frames[at] = frame
+            self.count = self.count + 1
+            return VideoQueuePush.DroppedOldest
+        }
+        fin at = (self.head + self.count) % self.capacity
+        self.frames[at] = frame
+        self.count = self.count + 1
+        return VideoQueuePush.Accepted
+    }
+
+    /** Removes the oldest decoded frame. */
+    func pop[self: Self!](): VideoFrameRead {
+        if self.count <= 0 {
+            return VideoFrameRead.Empty
+        }
+        fin frame = self.frames[self.head]
+        self.frames[self.head] = videoFrameEmpty()
+        self.head = (self.head + 1) % self.capacity
+        self.count = self.count - 1
+        return VideoFrameRead.Frame(frame)
+    }
+
+    /** Invalidates every queued and in-flight frame after a seek or stop. */
+    func flush[self: Self!](generation: std::Long) {
+        self.head = 0
+        self.count = 0
+        self.generation = generation
+    }
+}
+
+/**
+ * Provider-independent state owned by one player.
+ *
+ * The selected tracks are stable stream ids. Display names and codec names are
+ * metadata only and are never used for dispatch or identity.
+ */
+pack VideoSession {
+    var state: VideoState
+    var info: MediaInfo
+    var position: MediaTime
+    var duration: MediaTime
+    var selectedVideo: StreamId
+    var selectedAudio: StreamId
+    var selectedSubtitle: StreamId
+    var hasAudio: std::Bool
+    var hasSubtitle: std::Bool
+    var playbackRate: std::Double
+    var looping: std::Bool
+    var resumeAfterSeek: std::Bool
+    var generation: std::Long
+    var frames: VideoFrameQueue
+    var presentedFrames: std::Long
+}
+
+/** Finds the first stream id of [kind], or `-1` when none exists. */
+func videoFirstStream(info: MediaInfo&, kind: MediaStreamKind): StreamId {
+    var index = 0
+    while index < info.streams.size {
+        if info.streams[index].kind == kind {
+            return StreamId(info.streams[index].id.value)
+        }
+        index = index + 1
+    }
+    return StreamId(-1)
+}
+
+/** Builds a ready session from provider metadata. */
+func videoSession(info: MediaInfo, options: VideoOpenOptions): VideoSession ?! VideoError {
+    fin video = videoFirstStream(info, MediaStreamKind.Video)
+    if video.value < 0 {
+        return .NoVideoStream
+    }
+    fin audio = videoFirstStream(info, MediaStreamKind.Audio)
+    fin subtitle = videoFirstStream(info, MediaStreamKind.Subtitle)
+    var rate = options.playbackRate
+    if rate <= 0.0 { rate = 1.0 }
+    return VideoSession(
+        VideoState.Ready,
+        info,
+        mediaTimeZero(),
+        MediaTime(info.duration.ticks, info.duration.timeBaseNum, info.duration.timeBaseDen),
+        video,
+        audio,
+        subtitle,
+        audio.value >= 0,
+        subtitle.value >= 0,
+        rate,
+        options.looping,
+        false,
+        1L,
+        videoFrameQueue(options.frameQueueCapacity, options.frameQueuePolicy),
+        0L
+    )
+}
+
+/** A closed, inert session used when an application chooses a fallback value. */
+func videoSessionEmpty(): VideoSession {
+    fin info = mediaInfoEmpty()
+    return VideoSession(
+        VideoState.Closed,
+        info,
+        mediaTimeZero(),
+        mediaTimeZero(),
+        StreamId(-1),
+        StreamId(-1),
+        StreamId(-1),
+        false,
+        false,
+        1.0,
+        false,
+        false,
+        1L,
+        videoFrameQueue(1, VideoQueuePolicy.RejectNewest),
+        0L
+    )
+}
+
+/** Probes [source] through [provider] and opens a provider-neutral session. */
+func videoOpenWith(
+    provider: MediaProvider
+    source: MediaSource&
+    options: VideoOpenOptions
+): VideoSession ?! [MediaError, VideoError] {
+    fin info = try provider.probe(source)
+    return try videoSession(take info, options)
+}
+
+impl VideoSession {
+    /** Starts or resumes playback. */
+    func play[self: Self!]() ?! VideoError {
+        if self.state == VideoState.Closed || self.state == VideoState.Opening || self.state == VideoState.Failed {
+            return .InvalidState
+        }
+        if self.state == VideoState.Seeking {
+            self.resumeAfterSeek = true
+            return
+        }
+        if self.state == VideoState.Ended {
+            self.position = mediaTimeZero()
+            self.generation = self.generation + 1L
+            self.frames.flush(self.generation)
+        }
+        self.state = VideoState.Playing
+    }
+
+    /** Pauses while retaining decoded frames. */
+    func pause[self: Self!]() ?! VideoError {
+        if self.state != VideoState.Playing && self.state != VideoState.Buffering {
+            return .InvalidState
+        }
+        self.state = VideoState.Paused
+    }
+
+    /** Rewinds and invalidates decoder work without closing the provider. */
+    func stop[self: Self!]() {
+        if self.state == VideoState.Closed { return }
+        self.position = mediaTimeZero()
+        self.state = VideoState.Ready
+        self.resumeAfterSeek = false
+        self.generation = self.generation + 1L
+        self.frames.flush(self.generation)
+    }
+
+    /** Starts an asynchronous seek and invalidates old decoder output. */
+    func seek[self: Self!](target: MediaTime&) ?! VideoError {
+        if self.state == VideoState.Closed || self.state == VideoState.Opening || self.state == VideoState.Failed {
+            return .InvalidState
+        }
+        if !self.info.seekable {
+            return .NotSeekable
+        }
+        self.resumeAfterSeek = self.state == VideoState.Playing || self.state == VideoState.Buffering
+        self.position = mediaTimeClamp(target, mediaTimeZero(), self.duration)
+        self.state = VideoState.Seeking
+        self.generation = self.generation + 1L
+        self.frames.flush(self.generation)
+    }
+
+    /** Completes a provider seek after its first usable frame has been decoded. */
+    func finishSeek[self: Self!]() ?! VideoError {
+        if self.state != VideoState.Seeking {
+            return .InvalidState
+        }
+        if self.resumeAfterSeek {
+            self.state = VideoState.Playing
+        } else {
+            self.state = VideoState.Paused
+        }
+        self.resumeAfterSeek = false
+    }
+
+    /** Advances the selected clock; decode and presentation remain separate. */
+    func tick[self: Self!](elapsedSeconds: std::Double) {
+        if self.state != VideoState.Playing || elapsedSeconds <= 0.0 {
+            return
+        }
+        fin next = mediaTimeAdd(self.position, mediaTimeSeconds(elapsedSeconds * self.playbackRate))
+        if mediaTimeCompare(next, self.duration) < 0 {
+            self.position = next
+            return
+        }
+        if self.looping && self.duration.ticks > 0L {
+            fin overflow = mediaTimeAsSeconds(next) - mediaTimeAsSeconds(self.duration)
+            self.position = mediaTimeSeconds(overflow)
+            self.generation = self.generation + 1L
+            self.frames.flush(self.generation)
+            return
+        }
+        self.position = MediaTime(self.duration.ticks, self.duration.timeBaseNum, self.duration.timeBaseDen)
+        self.state = VideoState.Ended
+    }
+
+    /** Presents one frame or reports buffering without blocking. */
+    func presentNext[self: Self!](): VideoFrameRead {
+        fin read = self.frames.pop()
+        when read {
+            VideoFrameRead.Frame(frame) -> {
+                self.position = MediaTime(frame.pts.ticks, frame.pts.timeBaseNum, frame.pts.timeBaseDen)
+                self.presentedFrames = self.presentedFrames + 1L
+                if self.state == VideoState.Buffering {
+                    self.state = VideoState.Playing
+                }
+            }
+            VideoFrameRead.Empty() -> {
+                if self.state == VideoState.Playing {
+                    self.state = VideoState.Buffering
+                }
+            }
+        }
+        return read
+    }
+
+    /** Closes a session and invalidates every outstanding frame. */
+    func close[self: Self!]() {
+        self.generation = self.generation + 1L
+        self.frames.flush(self.generation)
+        self.position = mediaTimeZero()
+        self.state = VideoState.Closed
+        self.resumeAfterSeek = false
+    }
+}
+
+/** Test frame in [generation] at [seconds]. */
+func fakeVideoFrame(sequence: std::Long, generation: std::Long, seconds: std::Double): VideoFrame {
+    return VideoFrame(
+        StreamId(10),
+        mediaTimeSeconds(seconds),
+        mediaTimeSeconds(1.0 / 24.0),
+        sequence,
+        generation,
+        1920,
+        1080,
+        sequence,
+        sequence % 24L == 0L
+    )
+}
+
+test "a full frame queue drops deterministically and retains order" {
+    var queue = videoFrameQueue(2, VideoQueuePolicy.DropOldest)
+    assert queue.push(fakeVideoFrame(1L, 1L, 0.0)) == VideoQueuePush.Accepted { "the first frame must fit" }
+    assert queue.push(fakeVideoFrame(2L, 1L, 0.04)) == VideoQueuePush.Accepted { "the second frame must fit" }
+    assert queue.push(fakeVideoFrame(3L, 1L, 0.08)) == VideoQueuePush.DroppedOldest {
+        "a live decoder must not block behind an obsolete frame"
+    }
+    when queue.pop() {
+        VideoFrameRead.Frame(frame) -> { assert frame.sequence == 2L { "the oldest frame must have been dropped" } }
+        VideoFrameRead.Empty() -> { assert false { "two frames must remain queued" } }
+    }
+}
+
+test "a seek invalidates queued and in-flight frames by generation" {
+    var session = videoSession(fakeMovieInfo(), videoOpenOptions()) catch videoSessionEmpty()
+    session.play() catch { }
+    session.frames.push(fakeVideoFrame(1L, session.generation, 0.0))
+    fin oldGeneration = session.generation
+    session.seek(mediaTimeSeconds(40.0)) catch { }
+    assert session.state == VideoState.Seeking { "seek must be visible until the provider catches up" }
+    assert session.frames.count == 0 { "frames from the old timeline must be flushed" }
+    assert session.frames.push(fakeVideoFrame(2L, oldGeneration, 0.04)) == VideoQueuePush.RejectedStale {
+        "late decoder work must not cross a seek boundary"
+    }
+    session.finishSeek() catch { }
+    assert session.state == VideoState.Playing { "a playing session must resume after seek" }
+}
+
+test "playback reaches the exact end and can restart" {
+    var session = videoSession(fakeMovieInfo(), videoOpenOptions()) catch videoSessionEmpty()
+    session.play() catch { }
+    session.tick(121.0)
+    assert session.state == VideoState.Ended { "non-looping playback must stop at duration" }
+    assert mediaTimeCompare(session.position, session.duration) == 0 { "the end position must be exact" }
+    session.play() catch { }
+    assert session.state == VideoState.Playing { "playing an ended session must restart it" }
+    assert session.position.ticks == 0L { "restart must rewind" }
+}

@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // Azora Engine — platform layer (macOS), written entirely in Azora.
 //
 // The window, event pump, input state and frame lifecycle are implemented
@@ -25,6 +41,7 @@ import engine.input
 import engine.gpu
 import engine.objc
 import engine.io
+import engine.core
 
 bridge .C {
     func CACurrentMediaTime(): std::Double
@@ -41,7 +58,8 @@ pack AzWindow {
 
 pack AzInput {
     // Raw state block: key down [0..2047], key pressed [2048..4095],
-    // mouse down [4096..4098], mouse clicked [4100..4102].
+    // mouse down [4096..4098], mouse clicked [4100..4102],
+    // wheel x [4104..4111], wheel y [4112..4119] (doubles, per frame).
     var state: std::Long
 }
 
@@ -113,7 +131,7 @@ func appInit(title: std::String, width: std::Int, height: std::Int): App {
         true,
         win,
         gpu,
-        AzInput(azAlloc(4112L)),
+        AzInput(azAlloc(4128L)),
         AzTime(now, now, 1.0 / 60.0),
         0.10, 0.10, 0.12,
         pool,
@@ -154,7 +172,10 @@ impl App {
         self.pool = objcAutoreleasePoolPush()
 
         self.pumpEvents()
-        if self.closing {
+        // Two ways to stop: this window's own quit(), and the application-wide
+        // request any code can make - including a reactive effect, which has no
+        // window to call quit() on.
+        if self.closing || azora::engine::exitRequested() {
             return false
         }
         // The window server may map the window a few frames late; only treat
@@ -330,6 +351,10 @@ impl App {
         azPoke8(self.inp.state, 4100L, 0)
         azPoke8(self.inp.state, 4101L, 0)
         azPoke8(self.inp.state, 4102L, 0)
+        // Wheel motion is a per-frame delta, not a state: it is cleared here and
+        // accumulated below, so a frame with no scrolling reports exactly zero.
+        azPokeF64(self.inp.state, 4104L, 0.0)
+        azPokeF64(self.inp.state, 4112L, 0.0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
@@ -364,6 +389,15 @@ impl App {
                 }
                 self.setKey(keyShift, shiftDown)
             }
+            if evType == 22L {
+                // Trackpads report precise deltas through the same event, so
+                // two-finger scrolling needs no separate path. Deltas within a
+                // frame accumulate: one frame can carry several events.
+                fin dx = azSendD0(ev, sel("scrollingDeltaX"))
+                fin dy = azSendD0(ev, sel("scrollingDeltaY"))
+                azPokeF64(self.inp.state, 4104L, azPeekF64(self.inp.state, 4104L) + dx)
+                azPokeF64(self.inp.state, 4112L, azPeekF64(self.inp.state, 4112L) + dy)
+            }
             if evType == 1L {
                 self.setMouse(0, 1)
             }
@@ -379,6 +413,16 @@ impl App {
 
             send1(nsapp, sel("sendEvent:"), ev)
         }
+    }
+
+    /// Horizontal wheel/trackpad motion this frame; 0 when nothing scrolled.
+    func scrollX(): std::Double {
+        return azPeekF64(self.inp.state, 4104L)
+    }
+
+    /// Vertical wheel/trackpad motion this frame. Positive scrolls content down.
+    func scrollY(): std::Double {
+        return azPeekF64(self.inp.state, 4112L)
     }
 
     func setKey(key: std::Int, down: std::Int) {

@@ -43,7 +43,7 @@ fin xmPackedFlag = 0x80
  * Every field is optional in the file's packed encoding; zero means "no change"
  * for that column, which is how a tracker expresses sustain.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack TrackerNote {
     var note: std::Int
     var instrument: std::Int
@@ -58,7 +58,7 @@ pack TrackerNote {
  * Row-major matches playback order — a tracker advances one row across all
  * channels at a time — so the renderer reads contiguous memory.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack TrackerPattern {
     var rows: std::Int
     var channels: std::Int
@@ -71,7 +71,7 @@ pack TrackerPattern {
  * `data` holds signed 16-bit PCM regardless of the file's storage width, so the
  * renderer has one representation to mix.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack TrackerSample {
     var length: std::Int
     var loopStart: std::Int
@@ -85,7 +85,7 @@ pack TrackerSample {
 }
 
 /** An instrument: the samples a note can trigger, and the map from note to sample. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack TrackerInstrument {
     var name: std::String
     var samples: std::Array<TrackerSample>
@@ -93,7 +93,7 @@ pack TrackerInstrument {
 }
 
 /** A parsed module: the song, its patterns, and its instruments. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack TrackerModule {
     var name: std::String
     var channels: std::Int
@@ -109,7 +109,7 @@ pack TrackerModule {
 }
 
 /** The module returned when parsing fails. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func moduleEmpty(): TrackerModule {
     return TrackerModule(
         "", 0, 0, 0, 6, 125, true,
@@ -136,7 +136,7 @@ func sampleEmpty(): TrackerSample {
  * Returns an unusable module rather than failing loudly when the signature does
  * not match, so a caller can probe a file cheaply.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func parseModule(blob: Blob): TrackerModule {
     if !blob.ok() || !blob.matches(0, xmSignature) {
         return moduleEmpty()
@@ -538,13 +538,13 @@ func sampleFrame(data: std::Long, index: std::Int): std::Int {
  * Returned as a value rather than through an out-parameter: `T!` parameters do
  * not write back to the caller, so a length returned that way is silently zero.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack RenderedAudio {
     var data: std::Long
     var length: std::Int
 }
 
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func renderModule(song: TrackerModule&): RenderedAudio {
     if !song.ok || song.channels <= 0 || song.songLength <= 0 {
         return RenderedAudio(0L, 0)
@@ -704,13 +704,13 @@ func applyEvent(    song: TrackerModule&,
 
 /** Advances one voice by a frame and returns its contribution to the mix. */
 func advanceVoice(
-    song: TrackerModule&,
-    channel: std::Int,
-    voiceSample: std::Array<std::Int>,
-    voiceInstrument: std::Array<std::Int>,
-    voicePos: std::Array<std::Double>,
-    voiceStep: std::Array<std::Double>,
-    voiceVolume: std::Array<std::Double>,
+    song: TrackerModule&
+    channel: std::Int
+    voiceSample: std::Array<std::Int>
+    voiceInstrument: std::Array<std::Int>
+    voicePos: std::Array<std::Double>
+    voiceStep: std::Array<std::Double>
+    voiceVolume: std::Array<std::Double>
     voiceActive: std::Array<std::Int>
 ): std::Double {
     fin instrumentIndex = voiceInstrument[channel]
@@ -753,7 +753,7 @@ func advanceVoice(
 }
 
 /** Renders [module] and hands the PCM to the platform audio player. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func moduleToSound(song: TrackerModule&): Sound {
     fin rendered = renderModule(song)
     if rendered.data == 0L || rendered.size <= 0 {
@@ -765,7 +765,7 @@ func moduleToSound(song: TrackerModule&): Sound {
 }
 
 /** Loads and renders a tracker module in one call. */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func loadMusic(path: std::String): Sound {
     var blob = readFile(path)
     if !blob.ok() {

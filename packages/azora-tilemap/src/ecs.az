@@ -107,13 +107,13 @@ pack TileEntities {
 /** Empty stores and a cell index sized to [size]. */
 func tileEntitiesNew(size: TilemapSize): TileEntities {
     return TileEntities(
-        storageInit<TilePosition>(TilePosition(TilePos(0, 0))),
-        storageInit<TileTextureIndex>(TileTextureIndex(tileEmpty)),
-        storageInit<TileTint>(TileTint(tileColorWhite())),
-        storageInit<TileVisibility>(TileVisibility(true)),
-        storageInit<TileMirror>(TileMirror(tileFlipNone())),
-        storageInit<TileLayerIndex>(TileLayerIndex(0)),
-        storageInit<TilemapId>(TilemapId(entityInvalid())),
+        storageInit(TilePosition(TilePos(0, 0))),
+        storageInit(TileTextureIndex(tileEmpty)),
+        storageInit(TileTint(tileColorWhite())),
+        storageInit(TileVisibility(true)),
+        storageInit(TileMirror(tileFlipNone())),
+        storageInit(TileLayerIndex(0)),
+        storageInit(TilemapId(Entity::invalid)),
         tileStorageNew(size)
     )
 }
@@ -125,12 +125,12 @@ func tileEntitiesNew(size: TilemapSize): TileEntities {
  * right on the frame it is created rather than on the one after the first sync.
  */
 func spawnTile(
-    world: World!,
-    entities: TileEntities!,
-    map: Tilemap&,
-    layer: std::Int,
-    pos: TilePos,
-    index: std::Int,
+    world: World!
+    entities: TileEntities!
+    map: Tilemap&
+    layer: std::Int
+    pos: TilePos
+    index: std::Int
     owner: Entity
 ): Entity ?! TilemapFault {
     if !map.hasLayer(layer) {
@@ -141,11 +141,11 @@ func spawnTile(
     }
 
     fin entity = world.spawn()
-    storageInsert<TilePosition>(entities.positions, entity, TilePosition(pos))
-    storageInsert<TileTextureIndex>(entities.indices, entity, TileTextureIndex(index))
-    storageInsert<TileVisibility>(entities.visibility, entity, TileVisibility(true))
-    storageInsert<TileLayerIndex>(entities.layers, entity, TileLayerIndex(layer))
-    storageInsert<TilemapId>(entities.owners, entity, TilemapId(owner))
+    storageInsert(entities.positions, entity, TilePosition(pos))
+    storageInsert(entities.indices, entity, TileTextureIndex(index))
+    storageInsert(entities.visibility, entity, TileVisibility(true))
+    storageInsert(entities.layers, entity, TileLayerIndex(layer))
+    storageInsert(entities.owners, entity, TilemapId(owner))
     try tileStorageSet(entities.bindings, pos, entity)
     layerPut(map.layers[layer], pos, index)
     return entity
@@ -158,15 +158,15 @@ func spawnTile(
  * skipped decoration rather than something to unwind for.
  */
 func spawnTileOrNone(
-    world: World!,
-    entities: TileEntities!,
-    map: Tilemap&,
-    layer: std::Int,
-    pos: TilePos,
-    index: std::Int,
+    world: World!
+    entities: TileEntities!
+    map: Tilemap&
+    layer: std::Int
+    pos: TilePos
+    index: std::Int
     owner: Entity
 ): Entity {
-    return spawnTile(world, entities, map, layer, pos, index, owner) catch entityInvalid()
+    return spawnTile(world, entities, map, layer, pos, index, owner) catch Entity::invalid
 }
 
 /** The entity bound to [pos], or an invalid entity. */
@@ -176,22 +176,22 @@ func tileEntityAt(entities: TileEntities&, pos: TilePos): Entity {
 
 /** Gives [entity] a tint, creating the component if it has none. */
 func setTileTint(entities: TileEntities!, entity: Entity, color: TileColor) {
-    storageInsert<TileTint>(entities.tints, entity, TileTint(color))
+    storageInsert(entities.tints, entity, TileTint(color))
 }
 
 /** Gives [entity] a mirroring, creating the component if it has none. */
 func setTileMirror(entities: TileEntities!, entity: Entity, mirrors: TileFlip) {
-    storageInsert<TileMirror>(entities.mirrors, entity, TileMirror(mirrors))
+    storageInsert(entities.mirrors, entity, TileMirror(mirrors))
 }
 
 /** Shows or hides [entity] without clearing its cell. */
 func setTileVisible(entities: TileEntities!, entity: Entity, visible: std::Bool) {
-    storageInsert<TileVisibility>(entities.visibility, entity, TileVisibility(visible))
+    storageInsert(entities.visibility, entity, TileVisibility(visible))
 }
 
 /** Changes the tile [entity] draws. */
 func setTileIndex(entities: TileEntities!, entity: Entity, index: std::Int) {
-    storageInsert<TileTextureIndex>(entities.indices, entity, TileTextureIndex(index))
+    storageInsert(entities.indices, entity, TileTextureIndex(index))
 }
 
 /**
@@ -202,10 +202,10 @@ func setTileIndex(entities: TileEntities!, entity: Entity, index: std::Int) {
  */
 func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: TilePos): std::Bool {
     fin entity = tileEntityAt(entities, pos)
-    if !entity.isValid() {
+    if !entity.isValid {
         return false
     }
-    fin layer = storageGetOrDefault<TileLayerIndex>(entities.layers, entity, TileLayerIndex(0)).layer
+    fin layer = storageGetOrDefault(entities.layers, entity, TileLayerIndex(0)).layer
     if map.hasLayer(layer) {
         layerPut(map.layers[layer], pos, tileEmpty)
     }
@@ -232,23 +232,23 @@ func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: Til
 func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): std::Int {
     var written = 0
     var i = 0
-    while i < storageLength<TilePosition>(entities.positions) {
-        fin entity = storageEntityAt<TilePosition>(entities.positions, i)
-        if entity.isValid() && world.isAlive(entity) {
-            fin pos = storageValueAt<TilePosition>(entities.positions, i).pos
-            fin layer = storageGetOrDefault<TileLayerIndex>(entities.layers, entity, TileLayerIndex(0)).layer
+    while i < storageLength(entities.positions) {
+        fin entity = storageEntityAt(entities.positions, i)
+        if entity.isValid && world.isAlive(entity) {
+            fin pos = storageValueAt(entities.positions, i).pos
+            fin layer = storageGetOrDefault(entities.layers, entity, TileLayerIndex(0)).layer
             if map.hasLayer(layer) {
-                fin index = storageGetOrDefault<TileTextureIndex>(
+                fin index = storageGetOrDefault(
                     entities.indices,
                     entity,
                     TileTextureIndex(tileEmpty)
                 ).index
-                fin visible = storageGetOrDefault<TileVisibility>(
+                fin visible = storageGetOrDefault(
                     entities.visibility,
                     entity,
                     TileVisibility(true)
                 ).visible
-                fin mirrors = storageGetOrDefault<TileMirror>(
+                fin mirrors = storageGetOrDefault(
                     entities.mirrors,
                     entity,
                     TileMirror(tileFlipNone())
@@ -260,8 +260,8 @@ func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): s
                 }
 
                 var tint = tileTintNone
-                if storageHas<TileTint>(entities.tints, entity) {
-                    tint = tileColorPack(storageGet<TileTint>(entities.tints, entity).color)
+                if storageHas(entities.tints, entity) {
+                    tint = tileColorPack(storageGet(entities.tints, entity).color)
                 }
 
                 layerPutFull(map.layers[layer], pos, index, flags, tint)
@@ -290,32 +290,32 @@ func clearTileEntities(world: World!, entities: TileEntities!): std::Int {
 }
 
 test "a tile entity writes its own cell and can be found again" {
-    var world = worldInit()
+    var world = World::init()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(2, 3), 5, entityInvalid())
-    assert entity.isValid() { "spawning inside the map must succeed" }
+    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(2, 3), 5, Entity::invalid)
+    assert entity.isValid { "spawning inside the map must succeed" }
     assert tileEntityAt(entities, TilePos(2, 3)).id == entity.id { "the cell must resolve to its entity" }
     assert layerIndexAt(map.layers[0], TilePos(2, 3)) == 5 {
         "spawning must write the tile immediately, not on the next sync"
     }
 
-    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, entityInvalid()).isValid() {
+    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, Entity::invalid).isValid {
         "spawning outside the map must be refused"
     }
 }
 
 test "syncing carries appearance from components into the layer" {
-    var world = worldInit()
+    var world = World::init()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(1, 1), 3, entityInvalid())
+    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(1, 1), 3, Entity::invalid)
     setTileIndex(entities, entity, 9)
     setTileMirror(entities, entity, tileFlip(true, false, false))
     setTileTint(entities, entity, tileColor(1.0, 0.0, 0.0, 1.0))
@@ -332,21 +332,21 @@ test "syncing carries appearance from components into the layer" {
 }
 
 test "despawning clears the cell and sweeping unbinds dead handles" {
-    var world = worldInit()
+    var world = World::init()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    spawnTileOrNone(world, entities, map, 0, TilePos(4, 4), 7, entityInvalid())
+    spawnTileOrNone(world, entities, map, 0, TilePos(4, 4), 7, Entity::invalid)
     assert despawnTile(world, entities, map, TilePos(4, 4)) { "despawning a bound cell must succeed" }
     assert layerIndexAt(map.layers[0], TilePos(4, 4)) == tileEmpty { "despawning must clear the cell" }
-    assert !tileEntityAt(entities, TilePos(4, 4)).isValid() { "the cell must no longer be bound" }
+    assert !tileEntityAt(entities, TilePos(4, 4)).isValid { "the cell must no longer be bound" }
     assert !despawnTile(world, entities, map, TilePos(4, 4)) { "despawning an empty cell must report nothing done" }
 
     // A tile entity killed behind the tilemap's back must still be swept up.
-    fin orphan = spawnTileOrNone(world, entities, map, 0, TilePos(5, 5), 2, entityInvalid())
+    fin orphan = spawnTileOrNone(world, entities, map, 0, TilePos(5, 5), 2, Entity::invalid)
     world.despawn(orphan)
     assert sweepTileEntities(world, entities) == 1 { "the dead handle must be swept" }
-    assert !tileEntityAt(entities, TilePos(5, 5)).isValid() { "the swept cell must be unbound" }
+    assert !tileEntityAt(entities, TilePos(5, 5)).isValid { "the swept cell must be unbound" }
 }

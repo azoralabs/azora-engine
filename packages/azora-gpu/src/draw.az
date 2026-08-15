@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 // Azora Engine - GPU drawing API on top of `App`.
 //
 // `App` (engine.platform) owns an `AzGpu` (engine.gpu), so the drawing calls
@@ -243,6 +259,60 @@ impl App {
     }
 
     /**
+     * Restricts drawing to a rectangle, in points.
+     *
+     * This is what makes a scrolled container bound its content: a row moved
+     * past the edge is cut off at the edge rather than drawn over whatever sits
+     * beyond it. The rectangle is clamped to the drawable first - Metal treats
+     * a scissor outside it as a programming error and aborts the process, so
+     * clamping here is not defensive, it is required.
+     */
+    func setScissor(x: std::Double, y: std::Double, w: std::Double, h: std::Double) {
+        fin scale = self.gpu.scale
+        fin maxW = (self.width() as std::Double) * scale
+        fin maxH = (self.height() as std::Double) * scale
+
+        var px = x * scale
+        var py = y * scale
+        if px < 0.0 {
+            px = 0.0
+        }
+        if py < 0.0 {
+            py = 0.0
+        }
+        var pw = w * scale
+        var ph = h * scale
+        if px + pw > maxW {
+            pw = maxW - px
+        }
+        if py + ph > maxH {
+            ph = maxH - py
+        }
+        if pw <= 0.0 || ph <= 0.0 {
+            // An empty rectangle is not a legal scissor; nothing is visible
+            // anyway, so collapse it to a single pixel off in the corner.
+            azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0L, 0L, 1L, 1L)
+            return
+        }
+        azSendScissor(
+            self.gpu.enc,
+            sel("setScissorRect:"),
+            px as std::Long,
+            py as std::Long,
+            pw as std::Long,
+            ph as std::Long
+        )
+    }
+
+    /** Removes any scissor, restoring drawing to the whole window. */
+    func clearScissor() {
+        fin scale = self.gpu.scale
+        fin w = (self.width() as std::Double) * scale
+        fin h = (self.height() as std::Double) * scale
+        azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0L, 0L, w as std::Long, h as std::Long)
+    }
+
+    /**
      * Uploads `width` x `height` RGBA8 pixels as a GPU texture.
      *
      * `pixels` points at tightly packed, top-row-first bytes — the layout the
@@ -315,8 +385,8 @@ impl App {
      * storing a second, flipped copy of every sprite sheet.
      */
     func drawSpriteRegionFlipped(
-        tex: std::Long, texWidth: std::Int, texHeight: std::Int,
-        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int,
+        tex: std::Long, texWidth: std::Int, texHeight: std::Int
+        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int
         x: std::Double, y: std::Double, w: std::Double, h: std::Double
     ) {
         if texWidth <= 0 || texHeight <= 0 {
@@ -340,8 +410,8 @@ impl App {
      * belongs here rather than at every call site.
      */
     func drawSpriteRegion(
-        tex: std::Long, texWidth: std::Int, texHeight: std::Int,
-        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int,
+        tex: std::Long, texWidth: std::Int, texHeight: std::Int
+        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int
         x: std::Double, y: std::Double, w: std::Double, h: std::Double
     ) {
         if texWidth <= 0 || texHeight <= 0 {

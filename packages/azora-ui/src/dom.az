@@ -39,7 +39,7 @@ import std.container.array
  * Attribute names use their HTML spelling (`class`, `aria-label`, `href`).
  * An empty value removes the attribute during reconciliation.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack DomAttribute {
     fin name: std::String
     fin value: std::String
@@ -52,7 +52,7 @@ pack DomAttribute {
  * other standard DOM event names. Handlers are retained as first-class Azora
  * callables and replaced safely when a node is patched.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack DomEvent {
     fin name: std::String
     fin handler: () -> std::Unit
@@ -65,7 +65,7 @@ pack DomEvent {
  * reconciliation; use stable keys for lists. Attributes, events, and children
  * preserve source order.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 pack DomNode {
     fin tag: std::String
     fin key: std::String
@@ -78,7 +78,7 @@ pack DomNode {
 /**
  * Creates an HTML attribute.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domAttribute(name: std::String, value: std::String): DomAttribute {
     return DomAttribute(name, value)
 }
@@ -86,7 +86,7 @@ func domAttribute(name: std::String, value: std::String): DomAttribute {
 /**
  * Creates a browser event binding.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domEvent(name: std::String, handler: () -> std::Unit): DomEvent {
     return DomEvent(name, handler)
 }
@@ -94,7 +94,7 @@ func domEvent(name: std::String, handler: () -> std::Unit): DomEvent {
 /**
  * Creates a text node.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domText(value: std::String): DomNode {
     return DomNode(
         "#text",
@@ -109,7 +109,7 @@ func domText(value: std::String): DomNode {
 /**
  * Creates an element with no attributes or events.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domElement(tag: std::String, children: std::Array<DomNode>): DomNode {
     return DomNode(
         tag,
@@ -124,10 +124,10 @@ func domElement(tag: std::String, children: std::Array<DomNode>): DomNode {
 /**
  * Creates an element with attributes and children.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domElementWithAttributes(
-    tag: std::String,
-    attributes: std::Array<DomAttribute>,
+    tag: std::String
+    attributes: std::Array<DomAttribute>
     children: std::Array<DomNode>
 ): DomNode {
     return DomNode(
@@ -143,12 +143,12 @@ func domElementWithAttributes(
 /**
  * Creates a fully configured keyed element.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domKeyedElement(
-    tag: std::String,
-    key: std::String,
-    attributes: std::Array<DomAttribute>,
-    events: std::Array<DomEvent>,
+    tag: std::String
+    key: std::String
+    attributes: std::Array<DomAttribute>
+    events: std::Array<DomEvent>
     children: std::Array<DomNode>
 ): DomNode {
     return DomNode(tag, key, "", attributes, events, children)
@@ -157,10 +157,10 @@ func domKeyedElement(
 /**
  * Creates an element whose only child is text.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domTextElement(
-    tag: std::String,
-    value: std::String,
+    tag: std::String
+    value: std::String
     attributes: std::Array<DomAttribute>
 ): DomNode {
     return domElementWithAttributes(tag, attributes, std::arrayOf(domText(value)))
@@ -169,10 +169,10 @@ func domTextElement(
 /**
  * Creates a button with a click handler.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 func domButton(
-    label: std::String,
-    attributes: std::Array<DomAttribute>,
+    label: std::String
+    attributes: std::Array<DomAttribute>
     onClick: () -> std::Unit
 ): DomNode {
     return domKeyedElement(
@@ -194,7 +194,7 @@ func domButton(
  * @param rootId The `id` of the existing host element.
  * @param render A stored callable returning the next immutable virtual tree.
  */
-@std::Experimental(since: "0.0.4")
+@std::Experimental(since: "0.1")
 bridge [.WebAssembly] {
     func engineUiDomMount(rootId: std::String, render: () -> DomNode): std::Unit
 }
