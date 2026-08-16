@@ -23,8 +23,9 @@
 # time while `azora run` was perfectly happy, so a test that exercises only one
 # of them proves very little.
 #
-# Only the modules a headless test can use are staged: engine.core and
-# engine.ecs. Anything touching a window belongs in a template, not here.
+# Only the modules a headless test can use are staged: engine.core, engine.ecs,
+# and the composition machinery, which needs no window. Anything that opens one
+# belongs in a template, not here.
 #
 #     tests/run.sh            # every test
 #     tests/run.sh query      # tests whose name contains "query"
@@ -73,7 +74,7 @@ for source in "$TESTS_DIR"/*.az; do
         module="$(grep -m1 '^module ' "$f" | awk '{print $2}')"
         [ -z "$module" ] && continue
         case "$module" in
-            engine.core|engine.ecs|engine.ecs.*)
+            engine.core|engine.ecs|engine.ecs.*|engine.ui.node|engine.ui.compose)
                 path="$(echo "$module" | tr '.' '/')"
                 mkdir -p "$stage/$(dirname "$path")"
                 cp "$f" "$stage/$path.az"

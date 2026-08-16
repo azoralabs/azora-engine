@@ -223,17 +223,17 @@ func respond(world: World&, input: Res<UiInput>) {
  */
 @System(phase: .Update, interval: .Every(5.seconds))
 react func changeColorEach5Secs(
-    shapes: @query [UiTag&, UiPaint!]
+    shapes: @query [TagI&, Paint!]
 ) {
     remember var round = 1
     round = round + 1
 
     var index = 0
-    // One parameter per fetch term, entity first. `UiPaint!` is an exclusive
+    // One parameter per fetch term, entity first. `Paint!` is an exclusive
     // borrow of the stored value, so assigning through `paint` *is* the write -
     // there is no storage to reach for here and none to put it back into.
     shapes.unpack { entity, tag, paint ->
-        if entity.isValid && tag.group == swatchGroup {
+        if entity.isValid && tag.index == swatchGroup {
             fin h = (round * 2654435761 + index * 40503) % 1000003
             paint.r = 0.25 + ((h % 97) as std::Double) / 96.0 * 0.6
             paint.g = 0.25 + (((h / 97) % 89) as std::Double) / 88.0 * 0.6

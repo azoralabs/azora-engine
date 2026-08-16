@@ -25,7 +25,7 @@
  * ```text
  * begin Composition::of(owner, world)
  *   claim node key "main" under owner
- *   ensure Entity + Column + UiKey("main")
+ *   ensure Entity + Column + Key("main")
  *   …
  *   mark unclaimed previous children for disposal
  * commit composition
@@ -85,100 +85,54 @@ pack Composition {
     var cursor: std::Int = 0
     /**
      * Child counter for the root, whose parent is not a live entity and so has
-     * nowhere to carry a [UiCursor] of its own.
+     * nowhere to carry a [Cursor] of its own.
      */
     var rootCursor: std::Int = 0
 }
 
+/**
+ * The world's storage for component `T`, reached through a composition.
+ *
+ * One place where composing code asks the world for a component, so a
+ * composition names no component type of its own and every builder goes through
+ * the same door. Marked as providing access because the caller already declared
+ * the world it is composing into.
+ */
+@std::Experimental(since: "0.1")
+@std::ProvidesAccess
+inline func store<T>(pass: Composition&): Storage<T> {
+    return storageOf<T>(pass.world)
+}
+
 impl Composition {
-    /** The world's storage for [UiKey]. */
+    /** The world's storage for [Key]. */
     @std::ProvidesAccess
-    prop keys[self: Self&]: Storage<UiKey> {
-        return storageOf<UiKey>(self.world)
+    prop keys[self: Self&]: Storage<Key> {
+        return store<Key>(self)
     }
 
-    /** The world's storage for [UiChild]. */
+    /** The world's storage for [Child]. */
     @std::ProvidesAccess
-    prop children[self: Self&]: Storage<UiChild> {
-        return storageOf<UiChild>(self.world)
+    prop children[self: Self&]: Storage<Child> {
+        return store<Child>(self)
     }
 
-    /** The world's storage for [UiOrder]. */
+    /** The world's storage for [SiblingOrder]. */
     @std::ProvidesAccess
-    prop order[self: Self&]: Storage<UiOrder> {
-        return storageOf<UiOrder>(self.world)
+    prop order[self: Self&]: Storage<SiblingOrder> {
+        return store<SiblingOrder>(self)
     }
 
-    /** The world's storage for [UiOwned]. */
+    /** The world's storage for [Owned]. */
     @std::ProvidesAccess
-    prop owned[self: Self&]: Storage<UiOwned> {
-        return storageOf<UiOwned>(self.world)
+    prop owned[self: Self&]: Storage<Owned> {
+        return store<Owned>(self)
     }
 
-    /** The world's storage for [UiText]. Plural, so the node builder keeps `text`. */
+    /** The world's storage for [Cursor]. */
     @std::ProvidesAccess
-    prop texts[self: Self&]: Storage<UiText> {
-        return storageOf<UiText>(self.world)
-    }
-
-    /** The world's storage for [UiButton]. */
-    @std::ProvidesAccess
-    prop buttons[self: Self&]: Storage<UiButton> {
-        return storageOf<UiButton>(self.world)
-    }
-
-    /** The world's storage for [UiAction]. */
-    @std::ProvidesAccess
-    prop actions[self: Self&]: Storage<UiAction> {
-        return storageOf<UiAction>(self.world)
-    }
-
-    /** The world's storage for [UiRect]. */
-    @std::ProvidesAccess
-    prop rects[self: Self&]: Storage<UiRect> {
-        return storageOf<UiRect>(self.world)
-    }
-
-    /** The world's storage for [UiPaint]. */
-    @std::ProvidesAccess
-    prop paints[self: Self&]: Storage<UiPaint> {
-        return storageOf<UiPaint>(self.world)
-    }
-
-    /** The world's storage for [UiLayout]. */
-    @std::ProvidesAccess
-    prop layouts[self: Self&]: Storage<UiLayout> {
-        return storageOf<UiLayout>(self.world)
-    }
-
-    /** The world's storage for [UiScroll]. */
-    @std::ProvidesAccess
-    prop scrolls[self: Self&]: Storage<UiScroll> {
-        return storageOf<UiScroll>(self.world)
-    }
-
-    /** The world's storage for [UiTag]. */
-    @std::ProvidesAccess
-    prop tags[self: Self&]: Storage<UiTag> {
-        return storageOf<UiTag>(self.world)
-    }
-
-    /** The world's storage for [UiCursor]. */
-    @std::ProvidesAccess
-    prop cursors[self: Self&]: Storage<UiCursor> {
-        return storageOf<UiCursor>(self.world)
-    }
-
-    /** The world's storage for [UiSize]. */
-    @std::ProvidesAccess
-    prop sizes[self: Self&]: Storage<UiSize> {
-        return storageOf<UiSize>(self.world)
-    }
-
-    /** The world's storage for [UiPadding]. */
-    @std::ProvidesAccess
-    prop paddings[self: Self&]: Storage<UiPadding> {
-        return storageOf<UiPadding>(self.world)
+    prop cursors[self: Self&]: Storage<Cursor> {
+        return store<Cursor>(self)
     }
 
 
@@ -190,21 +144,21 @@ impl Composition:: {
         // The world is given a storage per component the composition writes, so
         // there is one owner of each and a query asked of the world this frame
         // reads what was composed into it - this frame or any earlier one.
-        fin hasUiKey = registerStorage<UiKey>(world, storageInit<UiKey>(UiKey("")))
-        fin hasUiChild = registerStorage<UiChild>(world, storageInit<UiChild>(UiChild(Entity::invalid)))
-        fin hasUiOrder = registerStorage<UiOrder>(world, storageInit<UiOrder>(UiOrder(0)))
-        fin hasUiOwned = registerStorage<UiOwned>(world, storageInit<UiOwned>(UiOwned("", false)))
-        fin hasUiText = registerStorage<UiText>(world, storageInit<UiText>(UiText("")))
-        fin hasUiButton = registerStorage<UiButton>(world, storageInit<UiButton>(UiButton(true)))
-        fin hasUiAction = registerStorage<UiAction>(world, storageInit<UiAction>(UiAction(0)))
-        fin hasUiRect = registerStorage<UiRect>(world, storageInit<UiRect>(UiRect(0.0, 0.0, 0.0, 0.0)))
-        fin hasUiPaint = registerStorage<UiPaint>(world, storageInit<UiPaint>(UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)))
-        fin hasUiLayout = registerStorage<UiLayout>(world, storageInit<UiLayout>(UiLayout(0 - 1, Arrangement.Start, Alignment.Start, 0.0)))
-        fin hasUiScroll = registerStorage<UiScroll>(world, storageInit<UiScroll>(UiScroll(0.0, 0.0)))
-        fin hasUiTag = registerStorage<UiTag>(world, storageInit<UiTag>(UiTag(0 - 1)))
-        fin hasUiCursor = registerStorage<UiCursor>(world, storageInit<UiCursor>(UiCursor(0)))
-        fin hasUiSize = registerStorage<UiSize>(world, storageInit<UiSize>(UiSize(false, false, 0.0, 0.0, 0.0)))
-        fin hasUiPadding = registerStorage<UiPadding>(world, storageInit<UiPadding>(UiPadding(0.0, 0.0, 0.0, 0.0)))
+        fin hasUiKey = registerStorage<Key>(world, storageInit<Key>(Key("")))
+        fin hasUiChild = registerStorage<Child>(world, storageInit<Child>(Child(Entity::invalid)))
+        fin hasUiOrder = registerStorage<SiblingOrder>(world, storageInit<SiblingOrder>(SiblingOrder(0)))
+        fin hasUiOwned = registerStorage<Owned>(world, storageInit<Owned>(Owned("", false)))
+        fin hasUiText = registerStorage<Label>(world, storageInit<Label>(Label("")))
+        fin hasUiButton = registerStorage<Clickable>(world, storageInit<Clickable>(Clickable(true)))
+        fin hasUiAction = registerStorage<Action>(world, storageInit<Action>(Action(0)))
+        fin hasUiRect = registerStorage<Rect>(world, storageInit<Rect>(Rect(0.0, 0.0, 0.0, 0.0)))
+        fin hasUiPaint = registerStorage<Paint>(world, storageInit<Paint>(Paint(0.0, 0.0, 0.0, 1.0, 0.0)))
+        fin hasUiLayout = registerStorage<Layout>(world, storageInit<Layout>(Layout(0 - 1, Arrangement.Start, Alignment.Start, 0.0)))
+        fin hasUiScroll = registerStorage<Scroll>(world, storageInit<Scroll>(Scroll(0.0, 0.0)))
+        fin hasUiTag = registerStorage<TagI>(world, storageInit<TagI>(TagI(0 - 1)))
+        fin hasUiCursor = registerStorage<Cursor>(world, storageInit<Cursor>(Cursor(0)))
+        fin hasUiSize = registerStorage<Size>(world, storageInit<Size>(Size(false, false, 0.0, 0.0, 0.0)))
+        fin hasUiPadding = registerStorage<Padding>(world, storageInit<Padding>(Padding(0.0, 0.0, 0.0, 0.0)))
         // Each answers whether it replaced an entry, which is only ever true on
         // a second composition over the same world. Read so the registration is
         // a bound result rather than a discarded one.
@@ -227,12 +181,12 @@ impl Composition {
      */
     func begin[self: Composition!]() {
         var index = 0
-        while index < storageLength<UiOwned>(self.owned) {
-            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+        while index < storageLength<Owned>(self.owned) {
+            fin entity = storageEntityAt<Owned>(self.owned, index)
             if entity.isValid {
-                fin mark = storageGetOrDefault<UiOwned>(self.owned, entity, UiOwned("", false))
+                fin mark = storageGetOrDefault<Owned>(self.owned, entity, Owned("", false))
                 if mark.owner == self.owner {
-                    storageInsert<UiOwned>(self.owned, entity, UiOwned(mark.owner, false))
+                    storageInsert<Owned>(self.owned, entity, Owned(mark.owner, false))
                 }
             }
             index = index + 1
@@ -245,7 +199,7 @@ impl Composition {
     /**
      * The next free sibling position under [parent], consuming it.
      *
-     * The root has no entity to hang a [UiCursor] on, so its count lives on the
+     * The root has no entity to hang a [Cursor] on, so its count lives on the
      * self. Every other parent carries its own, reset when it is claimed.
      */
     func nextChildIndex[self: Composition!](parent: Entity): std::Int {
@@ -254,8 +208,8 @@ impl Composition {
             self.rootCursor = position + 1
             return position
         }
-        fin current = storageGetOrDefault<UiCursor>(self.cursors, parent, UiCursor(0))
-        storageInsert<UiCursor>(self.cursors, parent, UiCursor(current.next + 1))
+        fin current = storageGetOrDefault<Cursor>(self.cursors, parent, Cursor(0))
+        storageInsert<Cursor>(self.cursors, parent, Cursor(current.next + 1))
         return current.next
     }
 
@@ -281,7 +235,7 @@ impl Composition {
         if !parent.isValid {
             return self.rootCursor
         }
-        return storageGetOrDefault<UiCursor>(self.cursors, parent, UiCursor(0)).next
+        return storageGetOrDefault<Cursor>(self.cursors, parent, Cursor(0)).next
     }
 
     /**
@@ -294,27 +248,27 @@ impl Composition {
         self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
-            storageInsert<UiOwned>(self.owned, existing, UiOwned(self.owner, true))
+            storageInsert<Owned>(self.owned, existing, Owned(self.owner, true))
             // Position *among siblings*, not a number shared by the whole self:
             // `parent.childAt(n)` asks for the nth child of that parent, so a
             // global counter left every parent after the first with no child at
             // index 0 - the tree arranged one node and silently dropped the rest.
-            storageInsert<UiOrder>(self.order, existing, UiOrder(self.nextChildIndex(parent)))
+            storageInsert<SiblingOrder>(self.order, existing, SiblingOrder(self.nextChildIndex(parent)))
             // A claimed node is about to have its own children enumerated, so its
             // sibling counter starts over here rather than in `begin`: that way a
             // node claimed twice in one self is a visible key collision, not a
             // silently continuing count.
-            storageInsert<UiCursor>(self.cursors, existing, UiCursor(0))
+            storageInsert<Cursor>(self.cursors, existing, Cursor(0))
             self.cursor = self.cursor + 1
             return existing
         }
 
         fin created = spawnEntity(self.world)
-        storageInsert<UiKey>(self.keys, created, UiKey(key))
-        storageInsert<UiChild>(self.children, created, UiChild(parent))
-        storageInsert<UiOwned>(self.owned, created, UiOwned(self.owner, true))
-        storageInsert<UiOrder>(self.order, created, UiOrder(self.nextChildIndex(parent)))
-        storageInsert<UiCursor>(self.cursors, created, UiCursor(0))
+        storageInsert<Key>(self.keys, created, Key(key))
+        storageInsert<Child>(self.children, created, Child(parent))
+        storageInsert<Owned>(self.owned, created, Owned(self.owner, true))
+        storageInsert<SiblingOrder>(self.order, created, SiblingOrder(self.nextChildIndex(parent)))
+        storageInsert<Cursor>(self.cursors, created, Cursor(0))
         self.cursor = self.cursor + 1
         return created
     }
@@ -322,12 +276,12 @@ impl Composition {
     /** The child of [parent] keyed [key], or an invalid entity. */
     func findChild[self: Composition&](parent: Entity, key: std::String): Entity {
         var index = 0
-        while index < storageLength<UiKey>(self.keys) {
-            fin entity = storageEntityAt<UiKey>(self.keys, index)
+        while index < storageLength<Key>(self.keys) {
+            fin entity = storageEntityAt<Key>(self.keys, index)
             if entity.isValid {
-                fin candidate = storageGetOrDefault<UiKey>(self.keys, entity, UiKey(""))
+                fin candidate = storageGetOrDefault<Key>(self.keys, entity, Key(""))
                 if candidate.value == key {
-                    fin link = storageGetOrDefault<UiChild>(self.children, entity, UiChild(Entity::invalid))
+                    fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
                     if link.parent.id == parent.id && link.parent.generation == parent.generation {
                         return entity
                     }
@@ -353,28 +307,19 @@ impl Composition {
         }
         var removed = 0
         var index = 0
-        while index < storageLength<UiOwned>(self.owned) {
-            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+        while index < storageLength<Owned>(self.owned) {
+            fin entity = storageEntityAt<Owned>(self.owned, index)
             if entity.isValid {
-                fin mark = storageGetOrDefault<UiOwned>(self.owned, entity, UiOwned("", true))
+                fin mark = storageGetOrDefault<Owned>(self.owned, entity, Owned("", true))
                 if mark.owner == self.owner && !mark.claimed {
-                    storageRemove<UiOwned>(self.owned, entity)
-                    storageRemove<UiKey>(self.keys, entity)
-                    storageRemove<UiChild>(self.children, entity)
-                    storageRemove<UiOrder>(self.order, entity)
-                    storageRemove<UiText>(self.texts, entity)
-                    storageRemove<UiButton>(self.buttons, entity)
-                    storageRemove<UiAction>(self.actions, entity)
-                    storageRemove<UiRect>(self.rects, entity)
-                    storageRemove<UiPaint>(self.paints, entity)
-                    storageRemove<UiLayout>(self.layouts, entity)
-                    storageRemove<UiScroll>(self.scrolls, entity)
-                    storageRemove<UiTag>(self.tags, entity)
-                    storageRemove<UiCursor>(self.cursors, entity)
-                    storageRemove<UiSize>(self.sizes, entity)
-                    storageRemove<UiPadding>(self.paddings, entity)
-                    despawnEntity(self.world, entity)
-                    removed = removed + 1
+                    // Whatever the node carried goes with it. A composition does
+                    // not know what its nodes are made of - that is the point -
+                    // so the world drops the entity from every storage it holds.
+                    fin dropped = removeFromEveryStorage(self.world, entity)
+                    if dropped >= 0 {
+                        despawnEntity(self.world, entity)
+                        removed = removed + 1
+                    }
                 }
             }
             index = index + 1
@@ -386,8 +331,8 @@ impl Composition {
     func nodeCount[self: Composition&](): std::Int {
         var live = 0
         var index = 0
-        while index < storageLength<UiOwned>(self.owned) {
-            fin entity = storageEntityAt<UiOwned>(self.owned, index)
+        while index < storageLength<Owned>(self.owned) {
+            fin entity = storageEntityAt<Owned>(self.owned, index)
             if entity.isValid {
                 live = live + 1
             }
@@ -594,11 +539,11 @@ impl Composition {
      * A chain is applied on every self, so a node that loses a modifier between
      * passes loses its effect too: the components are rebuilt, not accumulated.
      */
-    func applyModifier[self: Composition!](node: Entity, chain: Modifier&) {
-        var size = UiSize(false, false, 0.0, 0.0, 0.0)
-        var pad = UiPadding(0.0, 0.0, 0.0, 0.0)
+    func applyModifier[self: Self!](node: Entity, chain: Modifier&) {
+        var size = Size(false, false, 0.0, 0.0, 0.0)
+        var pad = Padding(0.0, 0.0, 0.0, 0.0)
         var hasPadding = false
-        var background = UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)
+        var background = Paint(0.0, 0.0, 0.0, 1.0, 0.0)
         var hasBackground = false
 
         var index = 0
@@ -611,31 +556,31 @@ impl Composition {
             ModifierKind.Height -> { size.height = entry.a }
             ModifierKind.Weight -> { size.weight = entry.a }
             ModifierKind.Padding -> {
-                pad = UiPadding(entry.a, entry.b, entry.c, entry.d)
+                pad = Padding(entry.a, entry.b, entry.c, entry.d)
                 hasPadding = true
             }
             ModifierKind.Background -> {
-                background = UiPaint(entry.a, entry.b, entry.c, entry.d, 0.0)
+                background = Paint(entry.a, entry.b, entry.c, entry.d, 0.0)
                 hasBackground = true
             }
         }
         index = index + 1
     }
 
-    storageInsert<UiSize>(self.sizes, node, size)
+    storageInsert<Size>(store<Size>(self), node, size)
 
     if hasPadding {
-        storageInsert<UiPadding>(self.paddings, node, pad)
+        storageInsert<Padding>(store<Padding>(self), node, pad)
     } else {
-        storageRemove<UiPadding>(self.paddings, node)
+        storageRemove<Padding>(store<Padding>(self), node)
     }
     if hasBackground {
-        storageInsert<UiPaint>(self.paints, node, background)
+        storageInsert<Paint>(store<Paint>(self), node, background)
     }
     }
 
     /** A container that stacks its children downward. */
-    func column[self: Composition!](
+    func column[self: Self!](
         parent: Entity
         key: std::String
         modifier: Modifier!
@@ -644,13 +589,13 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
+        storageInsert<Layout>(store<Layout>(self), node, Layout(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
         self.applyModifier(node, modifier)
         return node
     }
 
     /** A container that lays its children across. */
-    func row[self: Composition!](
+    func row[self: Self!](
         parent: Entity
         key: std::String
         modifier: Modifier!
@@ -659,13 +604,13 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutRow, horizontalArrangement, verticalAlignment, spacing))
+        storageInsert<Layout>(store<Layout>(self), node, Layout(layoutRow, horizontalArrangement, verticalAlignment, spacing))
         self.applyModifier(node, modifier)
         return node
     }
 
     /** A column whose children are offset by a scroll position. */
-    func scrollColumn[self: Composition!](
+    func scrollColumn[self: Self!](
         parent: Entity
         key: std::String
         modifier: Modifier!
@@ -674,15 +619,15 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.column(parent, key, modifier, verticalArrangement, horizontalAlignment, spacing)
-        fin existing = storageGetOrDefault<UiScroll>(self.scrolls, node, UiScroll(0.0, 0.0))
-        storageInsert<UiScroll>(self.scrolls, node, existing)
+        fin existing = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
+        storageInsert<Scroll>(store<Scroll>(self), node, existing)
         return node
     }
 
     /** A plain rectangle, tagged so a query can find it later. */
-    func shape[self: Composition!](parent: Entity, key: std::String, modifier: Modifier!, group: std::Int): Entity {
+    func shape[self: Self!](parent: Entity, key: std::String, modifier: Modifier!, group: std::Int): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiTag>(self.tags, node, UiTag(group))
+        storageInsert<TagI>(store<TagI>(self), node, TagI(group))
         self.applyModifier(node, modifier)
         // A shape with no colour of its own is invisible, and a shape is a
         // rectangle - being invisible by default is never what was meant. The
@@ -691,16 +636,16 @@ impl Composition {
         // description on the next frame must not undo that. A component a
         // system writes cannot also be rewritten by the description each frame,
         // or the two fight and the last writer of the frame wins.
-        if !storageHas<UiPaint>(self.paints, node) {
-        storageInsert<UiPaint>(self.paints, node, UiPaint(0.32, 0.34, 0.40, 1.0, 0.0))
+        if !storageHas<Paint>(store<Paint>(self), node) {
+        storageInsert<Paint>(store<Paint>(self), node, Paint(0.32, 0.34, 0.40, 1.0, 0.0))
     }
     return node
     }
 
     /** A line of text. */
-    func text[self: Composition!](parent: Entity, key: std::String, modifier: Modifier!, value: std::String): Entity {
+    func text[self: Self!](parent: Entity, key: std::String, modifier: Modifier!, value: std::String): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiText>(self.texts, node, UiText(value))
+        storageInsert<Label>(store<Label>(self), node, Label(value))
         self.applyModifier(node, modifier)
         return node
     }
@@ -715,33 +660,33 @@ impl Composition {
      * that is what makes "inside a button" mean centred without the caller
      * arranging it.
      */
-    func button[self: Composition!](
+    func button[self: Self!](
         parent: Entity
         key: std::String
         modifier: Modifier!
         action: std::Int
     ): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiButton>(self.buttons, node, UiButton(true))
-        storageInsert<UiAction>(self.actions, node, UiAction(action))
-        storageInsert<UiLayout>(self.layouts, node, UiLayout(layoutRow, Arrangement.Center, Alignment.Center, 0.0))
+        storageInsert<Clickable>(store<Clickable>(self), node, Clickable(true))
+        storageInsert<Action>(store<Action>(self), node, Action(action))
+        storageInsert<Layout>(store<Layout>(self), node, Layout(layoutRow, Arrangement.Center, Alignment.Center, 0.0))
         self.applyModifier(node, modifier)
         return node
     }
 
     /** Places [node] - the arrangement a layout self would otherwise compute. */
-    func place[self: Composition!](
+    func place[self: Self!](
         node: Entity
         x: std::Double
         y: std::Double
         width: std::Double
         height: std::Double
     ) {
-        storageInsert<UiRect>(self.rects, node, UiRect(x, y, width, height))
+        storageInsert<Rect>(store<Rect>(self), node, Rect(x, y, width, height))
     }
 
     /** Sets how [node] paints. */
-    func paint[self: Composition!](
+    func paint[self: Self!](
         node: Entity
         r: std::Double
         g: std::Double
@@ -749,6 +694,6 @@ impl Composition {
         alpha: std::Double
         size: std::Double
     ) {
-        storageInsert<UiPaint>(self.paints, node, UiPaint(r, g, b, alpha, size))
+        storageInsert<Paint>(store<Paint>(self), node, Paint(r, g, b, alpha, size))
     }
 }

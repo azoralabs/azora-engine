@@ -21,12 +21,12 @@
  *
  * A node is an entity, and its role is the set of components it carries -
  * `proposals/REACTIVE_ECS_UI.MD` §10.1. There is no `UiNode` type with a `kind`
- * field: a button *is* an entity holding [UiButton], a label *is* an entity
- * holding [UiText], and a thing that is both is simply an entity holding both.
+ * field: a button *is* an entity holding [Clickable], a label *is* an entity
+ * holding [Label], and a thing that is both is simply an entity holding both.
  *
  * Keeping these as separate components is what lets a system ask for exactly
- * what it needs. A layout pass reads [UiRect] without loading text; a renderer
- * reads [UiText] without loading hit-test policy. A single fat node type would
+ * what it needs. A layout pass reads [Rect] without loading text; a renderer
+ * reads [Label] without loading hit-test policy. A single fat node type would
  * make every pass depend on every field.
  */
 module engine.ui.node
@@ -43,13 +43,13 @@ import engine.ecs
  * quietly repurposing it (§9.4).
  */
 @Component
-pack UiKey {
+pack Key {
     fin value: std::String = ""
 }
 
 /** The parent this node hangs from. One parent per node, no cycles (§10.3). */
 @Component
-pack UiChild {
+pack Child {
     fin parent: Entity
 }
 
@@ -61,7 +61,7 @@ pack UiChild {
  * rather than the order they happen to be stored (§10.3).
  */
 @Component
-pack UiOrder {
+pack SiblingOrder {
     var index: std::Int = 0
 }
 
@@ -79,31 +79,31 @@ pack UiOrder {
  * node's key whenever any earlier subtree grew.
  */
 @Component
-pack UiCursor {
+pack Cursor {
     var next: std::Int = 0
 }
 
 /** Text to display. */
 @Component
-pack UiText {
+pack Label {
     var value: std::String = ""
 }
 
 /** Marks a node as activatable, and whether it currently is. */
 @Component
-pack UiButton {
+pack Clickable {
     var enabled: std::Bool = true
 }
 
 /** What the node was asked to do when activated; 0 means nothing. */
 @Component
-pack UiAction {
+pack Action {
     var code: std::Int = 0
 }
 
 /** The rectangle a node occupies, once arranged. */
 @Component
-pack UiRect {
+pack Rect {
     var x: std::Double = 0.0
     var y: std::Double = 0.0
     var width: std::Double = 0.0
@@ -112,7 +112,7 @@ pack UiRect {
 
 /** How a node paints: colour and coverage. */
 @Component
-pack UiPaint {
+pack Paint {
     var r: std::Double = 0.0
     var g: std::Double = 0.0
     var b: std::Double = 0.0
@@ -130,7 +130,7 @@ pack UiPaint {
  * another's nodes.
  */
 @Component
-pack UiOwned {
+pack Owned {
     fin owner: std::String = ""
     var claimed: std::Bool = false
 }
@@ -143,7 +143,7 @@ pack UiOwned {
  * changing what it is.
  */
 @Component
-pack UiLayout {
+pack Layout {
     /** 0 stacks children downward, 1 lays them across. */
     var direction: std::Int = 0
     /** How leftover space along the container's own axis is distributed. */
@@ -167,7 +167,7 @@ fin layoutRow = 1
  * lives here and the children never learn they are scrolled.
  */
 @Component
-pack UiScroll {
+pack Scroll {
     var offset: std::Double = 0.0
     /** Total height the children needed, so scrolling can be bounded. */
     var contentExtent: std::Double = 0.0
@@ -180,8 +180,21 @@ pack UiScroll {
  * data, answerable without the composition that produced it.
  */
 @Component
-pack UiTag {
-    fin group: std::Int = 0
+pack Tag {
+    fin name: std::String = ""
+}
+
+/**
+ * The same marker, numbered.
+ *
+ * A name says what a thing is and survives a rename of nothing; a number is
+ * what a generator hands out when there is no name to give. Both are markers
+ * and neither is the other, so they are two components rather than one with a
+ * field nobody fills.
+ */
+@Component
+pack TagI {
+    fin index: std::Int = 0
 }
 
 
@@ -406,7 +419,7 @@ impl Modifier:: {
  * Absent means "whatever the parent gives me".
  */
 @Component
-pack UiSize {
+pack Size {
     var fillWidth: std::Bool = false
     var fillHeight: std::Bool = false
     /** Fixed extent, or 0 when none was asked for. */
@@ -418,7 +431,7 @@ pack UiSize {
 
 /** Inset between a node's rectangle and its children's. */
 @Component
-pack UiPadding {
+pack Padding {
     var start: std::Double = 0.0
     var top: std::Double = 0.0
     var end: std::Double = 0.0

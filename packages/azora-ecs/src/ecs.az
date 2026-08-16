@@ -384,6 +384,30 @@ func storageRemove<T>(store: Storage<T>!, entity: Entity): std::Bool {
     return true
 }
 
+/**
+ * Drops [entity] from every storage the world holds, whatever they hold.
+ *
+ * Removal marks the entity's slot and clears its change flags; it never reads
+ * the value, so what a storage holds does not come into it. That is what lets
+ * something drop an entity without naming a single component type - and so lets
+ * a composition be written without naming the components composed into it.
+ *
+ * Answers how many storages carried the entity.
+ */
+@std::Experimental(since: "0.1")
+func removeFromEveryStorage(world: World!, entity: Entity): std::Int {
+    var dropped = 0
+    var i = 0
+    while i < world.storages.size {
+        var store = world.storages[i] as Storage<std::Any>
+        if storageRemove<std::Any>(store, entity) {
+            dropped = dropped + 1
+        }
+        i = i + 1
+    }
+    return dropped
+}
+
 func storageWasAdded<T>(store: Storage<T>&, entity: Entity): std::Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.added[index]

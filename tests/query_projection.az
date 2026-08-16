@@ -30,33 +30,33 @@ import std.container.tuple
 import engine.core
 import engine.ecs
 
-@Component pack Tag { var group: std::Int }
+@Component pack Marker { var group: std::Int }
 @Component pack Paint { var r: std::Double }
 
 func main() {
     var world = World::init()
-    var tags = storageOf<Tag>(world)
+    var tags = storageOf<Marker>(world)
     var paints = storageOf<Paint>(world)
 
     fin a = world.spawn()
     fin b = world.spawn()
-    storageInsert<Tag>(tags, a, Tag(1))
-    storageInsert<Tag>(tags, b, Tag(2))
+    storageInsert<Marker>(tags, a, Marker(1))
+    storageInsert<Marker>(tags, b, Marker(2))
     storageInsert<Paint>(paints, a, Paint(0.0))
     storageInsert<Paint>(paints, b, Paint(0.0))
 
-    fin t = registerStorage<Tag>(world, tags)
+    fin t = registerStorage<Marker>(world, tags)
     fin p = registerStorage<Paint>(world, paints)
     std::println("replacedAnything=${t || p}")
 
     // `for row in q` - the row is a tuple, entity first.
-    var byFor = QueryOf<Tag&, Paint!>::provide(world)
+    var byFor = QueryOf<Marker&, Paint!>::provide(world)
     for row in byFor {
         std::println("for group=${row.1.group}")
     }
 
     // `for [ … ] in q` - the row taken apart in the header.
-    var byNames = QueryOf<Tag&, Paint!>::provide(world)
+    var byNames = QueryOf<Marker&, Paint!>::provide(world)
     for [entity, tag, paint] in byNames {
         if entity.isValid {
             std::println("destructured ${tag.group} ${paint.r}")
@@ -64,14 +64,14 @@ func main() {
     }
 
     // `forEach` - the same row, handed over whole.
-    var byEach = QueryOf<Tag&, Paint!>::provide(world)
+    var byEach = QueryOf<Marker&, Paint!>::provide(world)
     byEach.forEach { row ->
         std::println("forEach group=${row.1.group}")
     }
 
     // `unpack` - the row spread across parameters, entity first. Writing
     // through `paint` writes the storage.
-    var byUnpack = QueryOf<Tag&, Paint!>::provide(world)
+    var byUnpack = QueryOf<Marker&, Paint!>::provide(world)
     byUnpack.unpack { entity, tag, paint ->
         if entity.isValid {
             paint.r = (tag.group as std::Double)
@@ -79,7 +79,7 @@ func main() {
     }
 
     // Read back through a fresh query: the writes above landed in the storage.
-    var after = QueryOf<Tag&, Paint!>::provide(world)
+    var after = QueryOf<Marker&, Paint!>::provide(world)
     after.unpack { entity, tag, paint ->
         std::println("painted ${tag.group} -> ${paint.r}")
     }

@@ -1,0 +1,71 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Reconciliation: the same description re-run is an update, not a rebuild.
+//
+// Composition is what makes a described tree world state, so the two things
+// worth pinning are that a node keeps its identity across passes, and that a
+// node nobody claims goes away - taking whatever it carried with it, without
+// the composition naming a single component type.
+
+module app
+
+import std.io
+import engine.core
+import engine.ecs
+import engine.ui.node
+import engine.ui.compose
+
+func main() {
+    var world = World::init()
+    var pass = Composition::of(take world, "test")
+
+    // First pass: two children under the root.
+    pass.begin()
+    fin rootA = pass.claim(Entity::invalid, "root")
+    fin oneA = pass.claim(rootA, "one")
+    fin twoA = pass.claim(rootA, "two")
+    fin removedA = pass.commit()
+    std::println("first removed=${removedA} nodes=${pass.nodeCount()}")
+
+    // Second pass over the same description: the same entities answer.
+    pass.begin()
+    fin rootB = pass.claim(Entity::invalid, "root")
+    fin oneB = pass.claim(rootB, "one")
+    fin twoB = pass.claim(rootB, "two")
+    fin removedB = pass.commit()
+    std::println("kept root=${rootA.id == rootB.id} one=${oneA.id == oneB.id} two=${twoA.id == twoB.id}")
+    std::println("second removed=${removedB} nodes=${pass.nodeCount()}")
+
+    // A component on a node, to see it go when the node does.
+    storageInsert<TagI>(store<TagI>(pass), twoB, TagI(7))
+    std::println("tagged=${storageHas<TagI>(store<TagI>(pass), twoB)}")
+
+    // Third pass claims only one child: the other is unclaimed and swept.
+    pass.begin()
+    fin rootC = pass.claim(Entity::invalid, "root")
+    fin oneC = pass.claim(rootC, "one")
+    fin removedC = pass.commit()
+    std::println("third removed=${removedC} nodes=${pass.nodeCount()}")
+    std::println("still tagged=${storageHas<TagI>(store<TagI>(pass), twoB)}")
+    std::println("kept one=${oneA.id == oneC.id}")
+
+    // A pass that describes nothing says nothing about the tree, so the tree
+    // stays - which is what lets a description run once and outlive its frame.
+    pass.begin()
+    fin removedD = pass.commit()
+    std::println("silent removed=${removedD} nodes=${pass.nodeCount()}")
+}

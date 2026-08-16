@@ -24,7 +24,7 @@
  * them. That separation is the point: [tintGroup] recolours every shape in a
  * group without being told which keys they had, because the group is data.
  *
- * `@query [UiTag&, UiPaint!]` is the syntax the proposal wants for selecting
+ * `@query [TagI&, Paint!]` is the syntax the proposal wants for selecting
  * those rows. It does not exist yet, so the selection is written out - which is
  * what the annotation expands to, and keeps the semantics testable ahead of the
  * syntax.
@@ -60,9 +60,9 @@ impl Composition {
     /**
      * Arranges [node]'s subtree inside the given rectangle.
      *
-     * A container with [UiLayout] positions its children along one axis; anything
+     * A container with [Layout] positions its children along one axis; anything
      * else simply passes its own rectangle down. Recursion is depth-first in
-     * [UiOrder], so the arranged order is the composed order rather than whatever
+     * [SiblingOrder], so the arranged order is the composed order rather than whatever
      * order storage happens to hold (§10.3).
      */
     func arrange[self: Composition!](
@@ -74,13 +74,13 @@ impl Composition {
     ) {
         self.place(node, x, y, width, height)
 
-        fin layout = storageGetOrDefault<UiLayout>(self.layouts, node, UiLayout(0 - 1, Arrangement.Start, Alignment.Start, 0.0))
+        fin layout = storageGetOrDefault<Layout>(store<Layout>(self), node, Layout(0 - 1, Arrangement.Start, Alignment.Start, 0.0))
         if layout.direction < 0 {
             return
         }
 
-        fin scroll = storageGetOrDefault<UiScroll>(self.scrolls, node, UiScroll(0.0, 0.0))
-        fin pad = storageGetOrDefault<UiPadding>(self.paddings, node, UiPadding(0.0, 0.0, 0.0, 0.0))
+        fin scroll = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
+        fin pad = storageGetOrDefault<Padding>(store<Padding>(self), node, Padding(0.0, 0.0, 0.0, 0.0))
         fin innerX = x + pad.start
         fin innerY = y + pad.top
         fin innerWidth = width - pad.start - pad.end
@@ -108,7 +108,7 @@ impl Composition {
         var index = 0
         while index < count {
             fin child = self.childAt(node, index)
-            fin size = storageGetOrDefault<UiSize>(self.sizes, child, UiSize(false, false, 0.0, 0.0, 0.0))
+            fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
             fin asked = if layout.direction == layoutRow { size.width } else { size.height }
             fin fills = if layout.direction == layoutRow { size.fillWidth } else { size.fillHeight }
             weights[index] = size.weight
@@ -156,7 +156,7 @@ impl Composition {
             index = 0
             while index < count {
                 fin child = self.childAt(node, index)
-                fin size = storageGetOrDefault<UiSize>(self.sizes, child, UiSize(false, false, 0.0, 0.0, 0.0))
+                fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
                 fin asked = if layout.direction == layoutRow { size.width } else { size.height }
                 fin fills = if layout.direction == layoutRow { size.fillWidth } else { size.fillHeight }
                 if size.weight <= 0.0 && asked <= 0.0 && !fills {
@@ -202,7 +202,7 @@ impl Composition {
             fin child = self.childAt(node, index)
             fin span = extents[index]
             if child.isValid {
-                fin size = storageGetOrDefault<UiSize>(self.sizes, child, UiSize(false, false, 0.0, 0.0, 0.0))
+                fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
                 if layout.direction == layoutRow {
                     fin across = crossExtent(size.height, size.fillHeight, innerHeight)
                     fin offset = alignOffset(layout.alignment, innerHeight, across)
@@ -220,7 +220,7 @@ impl Composition {
 
         // Record how much room the children wanted, so scrolling can be bounded.
         if layout.direction == layoutColumn {
-            storageInsert<UiScroll>(self.scrolls, node, UiScroll(scroll.offset, content + scroll.offset))
+            storageInsert<Scroll>(store<Scroll>(self), node, Scroll(scroll.offset, content + scroll.offset))
         }
     }
 
@@ -228,7 +228,7 @@ impl Composition {
      * Scrolls whatever the pointer is over, and whatever the keyboard asks for.
      *
      * This is a system, not something an application calls: it asks the world for
-     * every node carrying [UiScroll] and applies the frame's motion to the one
+     * every node carrying [Scroll] and applies the frame's motion to the one
      * under the pointer. A scrollable is scrollable because it holds the component,
      * so a container composed anywhere by anyone scrolls without being registered,
      * named, or reached through a handle.
@@ -252,10 +252,10 @@ impl Composition {
 
         var moved = 0
         var index = 0
-        while index < storageLength<UiScroll>(self.scrolls) {
-            fin entity = storageEntityAt<UiScroll>(self.scrolls, index)
+        while index < storageLength<Scroll>(store<Scroll>(self)) {
+            fin entity = storageEntityAt<Scroll>(store<Scroll>(self), index)
             if entity.isValid {
-                fin rect = storageGetOrDefault<UiRect>(self.rects, entity, UiRect(0.0, 0.0, 0.0, 0.0))
+                fin rect = storageGetOrDefault<Rect>(store<Rect>(self), entity, Rect(0.0, 0.0, 0.0, 0.0))
                 fin insideX = pointerX >= rect.x && pointerX <= rect.x + rect.width
                 fin insideY = pointerY >= rect.y && pointerY <= rect.y + rect.height
                 fin inside = insideX && insideY
@@ -279,10 +279,10 @@ impl Composition {
     func childCount[self: Composition&](parent: Entity): std::Int {
         var total = 0
         var index = 0
-        while index < storageLength<UiChild>(self.children) {
-            fin entity = storageEntityAt<UiChild>(self.children, index)
+        while index < storageLength<Child>(self.children) {
+            fin entity = storageEntityAt<Child>(self.children, index)
             if entity.isValid {
-                fin link = storageGetOrDefault<UiChild>(self.children, entity, UiChild(Entity::invalid))
+                fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
                 if link.parent.id == parent.id {
                     total = total + 1
                 }
@@ -295,12 +295,12 @@ impl Composition {
     /** [parent]'s child at composition position [position]. */
     func childAt[self: Composition&](parent: Entity, position: std::Int): Entity {
         var index = 0
-        while index < storageLength<UiChild>(self.children) {
-            fin entity = storageEntityAt<UiChild>(self.children, index)
+        while index < storageLength<Child>(self.children) {
+            fin entity = storageEntityAt<Child>(self.children, index)
             if entity.isValid {
-                fin link = storageGetOrDefault<UiChild>(self.children, entity, UiChild(Entity::invalid))
+                fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
                 if link.parent.id == parent.id {
-                    fin slot = storageGetOrDefault<UiOrder>(self.order, entity, UiOrder(0 - 1))
+                    fin slot = storageGetOrDefault<SiblingOrder>(self.order, entity, SiblingOrder(0 - 1))
                     if slot.index == position {
                         return entity
                     }
@@ -314,14 +314,14 @@ impl Composition {
     /**
      * Recolours every node tagged [group].
      *
-     * The query is `[UiTag&, UiPaint!]`: rows carrying both, read the tag, write the
+     * The query is `[TagI&, Paint!]`: rows carrying both, read the tag, write the
      * paint. Nothing here knows what those nodes are called or where they sit -
      * which is exactly why a button can recolour a set of shapes it never named.
      */
     /** Writes [colour] onto [entity]'s paint, keeping its alpha and text size. */
     func setPaint[self: Composition!](entity: Entity, r: std::Double, g: std::Double, b: std::Double) {
-        fin current = storageGetOrDefault<UiPaint>(self.paints, entity, UiPaint(0.0, 0.0, 0.0, 1.0, 0.0))
-        storageInsert<UiPaint>(self.paints, entity, UiPaint(r, g, b, current.alpha, current.size))
+        fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
+        storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
     }
 
     func tintGroup[self: Composition!](
@@ -332,13 +332,13 @@ impl Composition {
     ): std::Int {
         var touched = 0
         var index = 0
-        while index < storageLength<UiTag>(self.tags) {
-            fin entity = storageEntityAt<UiTag>(self.tags, index)
+        while index < storageLength<TagI>(store<TagI>(self)) {
+            fin entity = storageEntityAt<TagI>(store<TagI>(self), index)
             if entity.isValid {
-                fin tag = storageGetOrDefault<UiTag>(self.tags, entity, UiTag(0 - 1))
-                if tag.group == group {
-                    fin current = storageGetOrDefault<UiPaint>(self.paints, entity, UiPaint(0.0, 0.0, 0.0, 1.0, 0.0))
-                    storageInsert<UiPaint>(self.paints, entity, UiPaint(r, g, b, current.alpha, current.size))
+                fin tag = storageGetOrDefault<TagI>(store<TagI>(self), entity, TagI(0 - 1))
+                if tag.index == group {
+                    fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
+                    storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
                     touched = touched + 1
                 }
             }
@@ -356,13 +356,13 @@ impl Composition {
     func hit[self: Composition&](pointerX: std::Double, pointerY: std::Double): std::Int {
         var found = 0
         var index = 0
-        while index < storageLength<UiAction>(self.actions) {
-            fin entity = storageEntityAt<UiAction>(self.actions, index)
+        while index < storageLength<Action>(store<Action>(self)) {
+            fin entity = storageEntityAt<Action>(store<Action>(self), index)
             if entity.isValid {
-                fin rect = storageGetOrDefault<UiRect>(self.rects, entity, UiRect(0.0, 0.0, 0.0, 0.0))
+                fin rect = storageGetOrDefault<Rect>(store<Rect>(self), entity, Rect(0.0, 0.0, 0.0, 0.0))
                 if pointerX >= rect.x && pointerX <= rect.x + rect.width &&
                     pointerY >= rect.y && pointerY <= rect.y + rect.height {
-                    fin action = storageGetOrDefault<UiAction>(self.actions, entity, UiAction(0))
+                    fin action = storageGetOrDefault<Action>(store<Action>(self), entity, Action(0))
                     if action.code != 0 {
                         found = action.code
                     }
@@ -375,7 +375,7 @@ impl Composition {
 
     /** Moves a scroll container by [delta], clamped to its content. */
     func scrollBy[self: Composition!](node: Entity, delta: std::Double, viewport: std::Double) {
-        fin current = storageGetOrDefault<UiScroll>(self.scrolls, node, UiScroll(0.0, 0.0))
+        fin current = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
         var moved = current.offset + delta
         fin limit = current.contentExtent - viewport
         if moved > limit {
@@ -384,6 +384,6 @@ impl Composition {
         if moved < 0.0 {
             moved = 0.0
         }
-        storageInsert<UiScroll>(self.scrolls, node, UiScroll(moved, current.contentExtent))
+        storageInsert<Scroll>(store<Scroll>(self), node, Scroll(moved, current.contentExtent))
     }
 }
