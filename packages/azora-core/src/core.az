@@ -108,10 +108,15 @@ annot System for [.Func, .AsyncFunc] {
     /**
      * How often the system runs within its phase.
      *
-     * A `.Startup` system runs once, before the first frame, so an interval
-     * there would have nothing to measure - leave it unset.
+     * Not read on `.Startup`: that phase runs once, before the first frame, so
+     * how often has nothing to measure there. An interval written on a startup
+     * system is ignored rather than obeyed - the phase decides, and a rule that
+     * only the documentation kept would be a rule in name.
      */
-    fin interval: SystemInterval = .EveryFrame
+    fin interval: SystemInterval = when phase {
+        .Startup -> seal .Once
+        else -> .EveryFrame
+    }
     fin order: std::Int = 0
     fin runBefore: std::String = ""
     fin runAfter: std::String = ""

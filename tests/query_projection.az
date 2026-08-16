@@ -1,0 +1,86 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// A query hands back the components, not an entity to look up.
+//
+// Every way of taking a row apart is exercised, because they are separate code
+// paths that agree only if they are made to: `for … in` walks the iterator,
+// `forEach` hands the row over whole, and `unpack` spreads it across
+// parameters. The last case is the point of the borrows: a `!` term is the
+// stored value, so assigning through it is the write, and the storage is never
+// named again.
+
+module app
+
+import std.io
+import std.container.tuple
+import engine.core
+import engine.ecs
+
+@Component pack Tag { var group: std::Int }
+@Component pack Paint { var r: std::Double }
+
+func main() {
+    var world = World::init()
+    var tags = storageOf<Tag>(world)
+    var paints = storageOf<Paint>(world)
+
+    fin a = world.spawn()
+    fin b = world.spawn()
+    storageInsert<Tag>(tags, a, Tag(1))
+    storageInsert<Tag>(tags, b, Tag(2))
+    storageInsert<Paint>(paints, a, Paint(0.0))
+    storageInsert<Paint>(paints, b, Paint(0.0))
+
+    fin t = registerStorage<Tag>(world, tags)
+    fin p = registerStorage<Paint>(world, paints)
+    std::println("replacedAnything=${t || p}")
+
+    // `for row in q` - the row is a tuple, entity first.
+    var byFor = QueryOf<Tag&, Paint!>::provide(world)
+    for row in byFor {
+        std::println("for group=${row.1.group}")
+    }
+
+    // `for [ … ] in q` - the row taken apart in the header.
+    var byNames = QueryOf<Tag&, Paint!>::provide(world)
+    for [entity, tag, paint] in byNames {
+        if entity.isValid {
+            std::println("destructured ${tag.group} ${paint.r}")
+        }
+    }
+
+    // `forEach` - the same row, handed over whole.
+    var byEach = QueryOf<Tag&, Paint!>::provide(world)
+    byEach.forEach { row ->
+        std::println("forEach group=${row.1.group}")
+    }
+
+    // `unpack` - the row spread across parameters, entity first. Writing
+    // through `paint` writes the storage.
+    var byUnpack = QueryOf<Tag&, Paint!>::provide(world)
+    byUnpack.unpack { entity, tag, paint ->
+        if entity.isValid {
+            paint.r = (tag.group as std::Double)
+        }
+    }
+
+    // Read back through a fresh query: the writes above landed in the storage.
+    var after = QueryOf<Tag&, Paint!>::provide(world)
+    after.unpack { entity, tag, paint ->
+        std::println("painted ${tag.group} -> ${paint.r}")
+    }
+}

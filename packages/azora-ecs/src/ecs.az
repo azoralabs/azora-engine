@@ -23,6 +23,7 @@
 module engine.ecs
 
 import std.container.*
+import std.container.tuple
 import engine.core
 
 
@@ -46,7 +47,15 @@ pack World {
     var parents: std::Array<std::Int>
     var childCounts: std::Array<std::Int>
     var prefabs: std::Array<std::Bool>
-    var resources: std::Array<std::Bool>
+    /**
+     * Per-entity flag: whether this entity was marked a resource entity.
+     *
+     * Indexed by entity id, like every array above it, and unrelated to the
+     * keyed [resources] store further down - that one holds the values a system
+     * asks for by type. Named apart because they were once both `resources`,
+     * and every read of the second silently reached the first.
+     */
+    var resourceMarks: std::Array<std::Bool>
     var freeIds: std::Array<std::Int>
     var entityCount: std::Int
     var aliveCount: std::Int
@@ -85,10 +94,10 @@ impl World:: {
         var parents = @std::arr[-1]
         var childCounts = @std::arr[0]
         var prefabs = @std::arr[false]
-        var resources = @std::arr[false]
+        var resourceMarks = @std::arr[false]
         var freeIds = @std::arr[-1]
         return World(generations, alive, names, parents, childCounts,
-            prefabs, resources, freeIds, 0, 0, 0,
+            prefabs, resourceMarks, freeIds, 0, 0, 0,
             std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
             std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
             0.0, 1.0 / 60.0, 0.0, 0L)
@@ -109,7 +118,7 @@ impl World {
             self.parents[id] = -1
             self.childCounts[id] = 0
             self.prefabs[id] = false
-            self.resources[id] = false
+            self.resourceMarks[id] = false
             self.aliveCount = self.aliveCount + 1
             self.revision = self.revision + 1
             return Entity(id, gen)
@@ -123,7 +132,7 @@ impl World {
             self.parents[id] = -1
             self.childCounts[id] = 0
             self.prefabs[id] = false
-            self.resources[id] = false
+            self.resourceMarks[id] = false
         } else {
             self.generations.add(0)
             self.alive.add(true)
@@ -131,7 +140,7 @@ impl World {
             self.parents.add(-1)
             self.childCounts.add(0)
             self.prefabs.add(false)
-            self.resources.add(false)
+            self.resourceMarks.add(false)
         }
         self.entityCount = self.entityCount + 1
         self.aliveCount = self.aliveCount + 1
@@ -161,7 +170,7 @@ impl World {
         self.parents[entity.id] = -1
         self.childCounts[entity.id] = 0
         self.prefabs[entity.id] = false
-        self.resources[entity.id] = false
+        self.resourceMarks[entity.id] = false
         self.freeIds.add(entity.id)
         self.revision = self.revision + 1
     }
@@ -264,13 +273,13 @@ impl World {
 
     func spawnResource(name: std::String): Entity {
         fin entity = self.spawnNamed(name)
-        self.resources[entity.id] = true
+        self.resourceMarks[entity.id] = true
         return entity
     }
 
     func markResource(entity: Entity) {
         if self.isAlive(entity) {
-            self.resources[entity.id] = true
+            self.resourceMarks[entity.id] = true
         }
     }
 
@@ -278,7 +287,7 @@ impl World {
         if !self.isAlive(entity) {
             return false
         }
-        return self.resources[entity.id]
+        return self.resourceMarks[entity.id]
     }
 
     func progress(deltaTime: std::Double) {
@@ -509,6 +518,14 @@ impl Single<...T> {
 @std::Experimental(since: "0.1")
 pack QueryOf<...T> {
     var cursor: QueryCursor
+    /**
+     * The world the query was asked of.
+     *
+     * Held because a row is the *components*, not the entity that carries them,
+     * and the storages they come from are the world's. A `World` field names the
+     * world itself rather than a copy - an aggregate is a reference here.
+     */
+    var world: World
 }
 
 /**
@@ -518,19 +535,78 @@ pack QueryOf<...T> {
  * present makes the requirement checkable - `loop q { … }` asks for an
  * `Iterator`, and a query is one.
  */
-impl std::Iterator for QueryOf<...T> assoc Item = Entity {
+impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
     /** Advances the cursor, answering whether a row was found. */
-    func hasNext[self: Self!](): std::Bool {
+    prop hasNext[self: Self!]: std::Bool {
         return self.cursor.hasNext()
     }
 
-    /** The entity the cursor is on. */
-    func next[self: Self!](): Entity {
-        return self.cursor.next()
+    /**
+     * The row the cursor is on: the entity, then one component per fetch term.
+     *
+     * The entity comes first so a row is always at least a pair, and so the
+     * component positions follow the order the query was written in.
+     *
+     * The components are the stored values, not copies of them - an aggregate is
+     * a reference here - so a term written `!` may be assigned through and the
+     * storage sees it. That is what makes a fetch a *borrow* rather than a read,
+     * and what lets a system stop reaching for a storage mid-body.
+     */
+    prop next[self: Self!]: std::Tuple<Entity, ...T> {
+        fin row: Entity = self.cursor.next()
+        // Spelled with its type arguments: the row's element types cannot be
+        // read back off the fetches, whose types come from calls, and a variadic
+        // callee is specialized from the types it is given.
+        return std::tupleOf<Entity, ...T>(row, inline for Ty in ...T {
+            storageGet<Ty>(storageOf<Ty>(self.world), row)
+        })
+    }
+
+    /**
+     * Walks the rows, handing each one to [body] as a whole.
+     *
+     * Written out rather than inherited from `std::Iterator`: a provided
+     * member's copy keeps the spec's `Item` unspecialized in its callable
+     * parameter, so the block is offered a bare `Tuple` and the concrete row
+     * does not match it.
+     */
+    func forEach[self: Self!](body: inline (std::Tuple<Entity, ...T>) -> std::Unit) {
+        self.reset()
+        while self.hasNext {
+            body(self.next)
+        }
+    }
+
+    /**
+     * Walks the rows, handing each one to [body] *spread across parameters*.
+     *
+     * ```azora
+     * shapes.unpack { entity, tag, paint -> … }
+     * ```
+     *
+     * The same rows `forEach` walks, taken apart: one parameter for the entity
+     * and one per fetch term, in the order the query was written. Separate from
+     * [forEach] because the two differ only in how many parameters the block
+     * takes, and a block's arity is not something a call can be resolved on.
+     *
+     * No tuple is built here - each component is fetched straight from its
+     * storage, so `unpack` costs a walk and nothing more.
+     */
+    func unpack[self: Self!](body: inline (Entity, ...T) -> std::Unit) {
+        self.reset()
+        while self.hasNext {
+            fin row: Entity = self.cursor.next()
+            body(
+                row
+                inline for Ty in ...T {
+                    storageGet<Ty>(storageOf<Ty>(self.world), row)
+                }
+            )
+        }
     }
 }
 
@@ -550,7 +626,7 @@ impl QueryOf<...T>:: {
         inline for Ty in ...T {
             queryWith<Ty>(cursor, storageOf<Ty>(world))
         }
-        return QueryOf(cursor)
+        return QueryOf(cursor, world)
     }
 }
 
@@ -824,12 +900,12 @@ impl std::Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func hasNext[self: Self!](): std::Bool {
+    prop hasNext[self: Self!]: std::Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    func next[self: Self!](): Entity {
+    prop next[self: Self!]: Entity {
         return self.cursor.next()
     }
 }
@@ -839,12 +915,12 @@ impl std::Iterator for QueryOr<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func hasNext[self: Self!](): std::Bool {
+    prop hasNext[self: Self!]: std::Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    func next[self: Self!](): Entity {
+    prop next[self: Self!]: Entity {
         return self.cursor.next()
     }
 }
@@ -890,12 +966,12 @@ impl std::Iterator for QueryWith<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func hasNext[self: Self!](): std::Bool {
+    prop hasNext[self: Self!]: std::Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    func next[self: Self!](): Entity {
+    prop next[self: Self!]: Entity {
         return self.cursor.next()
     }
 }
@@ -905,12 +981,12 @@ impl std::Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func hasNext[self: Self!](): std::Bool {
+    prop hasNext[self: Self!]: std::Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    func next[self: Self!](): Entity {
+    prop next[self: Self!]: Entity {
         return self.cursor.next()
     }
 }

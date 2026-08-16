@@ -61,20 +61,26 @@ fin swatchGroup = 1
 /**
  * Describes the whole interface, and holds the little state it needs.
  *
- * `remember` is the state: it belongs to this system and survives across
- * frames, so there is no resource to register and nothing to thread through a
- * parameter. The engine calls this every frame; reconciliation makes that an
- * update rather than a rebuild.
+ * Takes the world and nothing else, like every other system. What it needs of
+ * the frame it asks the world for: where to build, how big the surface is, and
+ * what was clicked. `remember` is the state - it belongs to this system and
+ * survives across frames, so there is no resource to register and nothing to
+ * thread through a parameter. The engine calls this every frame;
+ * reconciliation makes that an update rather than a rebuild.
  */
 @System(phase: .Update)
-react func ui(ui: Ui!) {
+react func ui(
+    world: World&
+    input: Res<UiInput>
+    viewport: Res<Viewport>
+) {
     remember var rows = 6
     remember var tint = "none"
 
     // The state this system owns, changed by this system. `respond` recolours
     // the shapes; what a click *means* to the description lives here, next to
     // the `remember` cells it writes.
-    when ui.action {
+    when input.value.action {
         actionAddRow -> rows = rows + 1
         actionRed -> tint = "red"
         actionGreen -> tint = "green"
@@ -82,10 +88,10 @@ react func ui(ui: Ui!) {
         actionSlate -> tint = "slate"
     }
 
-    fin width = ui.width()
-    fin height = ui.height()
+    fin width = viewport.value.width
+    fin height = viewport.value.height
 
-    with ui.at {
+    @compose world {
         Column(
             modifier: .().fillMaxSize()
         ) @children {
@@ -196,12 +202,13 @@ react func ui(ui: Ui!) {
  * and this would still find them.
  */
 @System(phase: .PostUpdate)
-func respond(ui: Ui!, input: Res<UiInput>) {
+func respond(world: World&, input: Res<UiInput>) {
+    var at = composeIn(world)
     when input.value.action {
-        actionRed -> ui.at.pass.tintGroup(swatchGroup, 0.78, 0.28, 0.28)
-        actionGreen -> ui.at.pass.tintGroup(swatchGroup, 0.29, 0.66, 0.38)
-        actionBlue -> ui.at.pass.tintGroup(swatchGroup, 0.27, 0.51, 0.86)
-        actionSlate -> ui.at.pass.tintGroup(swatchGroup, 0.35, 0.38, 0.45)
+        actionRed -> at.pass.tintGroup(swatchGroup, 0.78, 0.28, 0.28)
+        actionGreen -> at.pass.tintGroup(swatchGroup, 0.29, 0.66, 0.38)
+        actionBlue -> at.pass.tintGroup(swatchGroup, 0.27, 0.51, 0.86)
+        actionSlate -> at.pass.tintGroup(swatchGroup, 0.35, 0.38, 0.45)
     }
 }
 
@@ -211,45 +218,32 @@ func respond(ui: Ui!, input: Res<UiInput>) {
  * The rows come from a query over the world - `queryAll` asks it for every live
  * entity, and each `queryWith` narrows that answer to the rows carrying one
  * more component. Nothing here names a shape or walks a storage: what is
- * recoloured is whatever carries both a tag and a paint, so a shape composed
+ * recoloured is whatever carries both a tag and a paint, so a s hape composed
  * anywhere by anyone is included.
  */
-@System(phase: .Update, interval: .Every(5.seconds()))
+@System(phase: .Update, interval: .Every(5.seconds))
 react func changeColorEach5Secs(
-    world: World&
-    shapes: @query [UiTag, UiPaint]
+    shapes: @query [UiTag&, UiPaint!]
 ) {
     remember var round = 1
     round = round + 1
 
-    var paints = storageOf<UiPaint>(world)
-    fin tags = storageOf<UiTag>(world)
-
     var index = 0
-    shapes.forEach { entity ->
-        if entity.isValid {
-            fin tag = storageGetOrDefault<UiTag>(tags, entity, UiTag(0 - 1))
-            if tag.group == swatchGroup {
-                fin h = (round * 2654435761 + index * 40503) % 1000003
-                storageInsert<UiPaint>(paints, entity, UiPaint(
-                    0.25 + ((h % 97) as std::Double) / 96.0 * 0.6,
-                    0.25 + (((h / 97) % 89) as std::Double) / 88.0 * 0.6,
-                    0.25 + (((h / 8633) % 83) as std::Double) / 82.0 * 0.6,
-                    1.0,
-                    0.0
-                ))
-                index = index + 1
-            }
+    // One parameter per fetch term, entity first. `UiPaint!` is an exclusive
+    // borrow of the stored value, so assigning through `paint` *is* the write -
+    // there is no storage to reach for here and none to put it back into.
+    shapes.unpack { entity, tag, paint ->
+        if entity.isValid && tag.group == swatchGroup {
+            fin h = (round * 2654435761 + index * 40503) % 1000003
+            paint.r = 0.25 + ((h % 97) as std::Double) / 96.0 * 0.6
+            paint.g = 0.25 + (((h / 97) % 89) as std::Double) / 88.0 * 0.6
+            paint.b = 0.25 + (((h / 8633) % 83) as std::Double) / 82.0 * 0.6
+            paint.alpha = 1.0
+            index = index + 1
         }
-    }
-
-    fin stored = registerStorage<UiPaint>(world, take paints)
-    if stored {
-        return
     }
 }
 
-/** A button's colour, as a modifier - the demo's one piece of shared styling. */
 func swatch(r: std::Double, g: std::Double, b: std::Double): Modifier {
     return .()
         .weight(1.0)

@@ -208,6 +208,44 @@ pack UiInput {
 }
 
 /**
+ * The drawable area this frame, as a resource.
+ *
+ * A system that lays out against the window needs its size and nothing else
+ * about it, so that is what it is handed. Reading it from a resource rather
+ * than from `Ui` is what lets such a system take `world: World&` alone.
+ */
+@std::Experimental(since: "0.1")
+pack Viewport {
+    /** Window width in points. */
+    var width: std::Double = 0.0
+    /** Window height in points. */
+    var height: std::Double = 0.0
+}
+
+/**
+ * Where a system builds nodes, as a resource: `with composeIn(world) { … }`.
+ *
+ * A [Scope] is a handle - it holds an exclusive borrow of the composition and
+ * the node to hang children from - so putting one in the world shares the
+ * composition rather than copying it. That is what makes composition reachable
+ * from the world, and a system that composes need not be handed `Ui` to do it.
+ */
+@std::Experimental(since: "0.1")
+inline func composeIn(world: World&): Scope {
+    return resource<Scope>(world)
+}
+
+/**
+ * Where a system builds: `@compose world { Column(…) }`.
+ *
+ * The contextual scope a composing system opens, without repeating how it is
+ * found. `with composeIn(world)` says the same thing and says it twice - that
+ * the scope comes from the world, and that it is the receiver for what
+ * follows - so the shorter spelling is the one a system should write.
+ */
+macro @compose $w => inline "with composeIn($w)"
+
+/**
  * A resource, as a system parameter: `time: Res<Time>`.
  *
  * The world holds one value per type; this is how a system asks for one. What
@@ -220,9 +258,15 @@ pack Res<T> {
 }
 
 impl Res<T>:: {
-    /** Reads the resource of type `T` from the frame's world. */
+    /**
+     * Reads the resource of type `T` from the frame's world.
+     *
+     * `inline` because the resource is keyed by `T.typeName`, and a type
+     * parameter is erased: one body shared by every `T` has no name to look
+     * up. Expanding at the call site is what puts the concrete type back.
+     */
     @std::Experimental(since: "0.1")
-    func from(ui: Ui!): Res<T> {
+    inline func from(ui: Ui!): Res<T> {
         return Res(resource<T>(ui.at.pass.world))
     }
 }
@@ -284,7 +328,12 @@ react func dispatch(phase: SystemPhase, ui: Ui!) {
     var slot = 0
     inline for F in std::reflect<*>.withAnnot<System> {
         if std::reflect<F>.annotMeta<System>.phase == phase {
-            if ui.due(slot, std::reflect<F>.annotMeta<System>.interval) {
+            // `.Startup` is `.Once` and cannot be otherwise: the phase runs
+            // before the first frame and never again, so an interval would be
+            // asking how often something that happens once should happen. The
+            // declared one is ignored rather than obeyed, which is what makes
+            // the rule true instead of merely documented.
+            if phase == SystemPhase.Startup || ui.due(slot, std::reflect<F>.annotMeta<System>.interval) {
                 // Each parameter is built from the frame, by its own type: a
                 // system says what it wants and is handed it. Nothing here
                 // knows any system's signature, so adding a parameter to one
@@ -438,7 +487,15 @@ react func runUiColored(
             Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as std::Long),
         )
         fin input = insertResource<UiInput>(ui.at.pass.world, UiInput(ui.action))
-        if clock == input || clock != input {
+        // Where to build, and how big the surface is. Between them these are
+        // everything `Ui` carried that a describing system actually used, which
+        // is what lets one take `world: World&` and nothing else.
+        fin at = insertResource<Scope>(ui.at.pass.world, ui.at.clone())
+        fin viewport = insertResource<Viewport>(
+            ui.at.pass.world,
+            Viewport(ui.width(), ui.height()),
+        )
+        if clock == input || at == viewport || clock != input {
             dispatch(SystemPhase.PreUpdate, ui)
         }
         dispatch(SystemPhase.Update, ui)
