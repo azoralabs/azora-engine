@@ -53,30 +53,34 @@ import engine.ui.node
 /**
  * One composition pass over [world].
  *
- * The stores travel with the pass rather than being global, because a
- * composition must not be able to reach a world it was not given (§9.1).
+ * A node is an entity, and what it looks like is components on it, so the tree
+ * *is* world state and the world is what holds it. A composition carries only
+ * its position in that tree - which world, which root, how far along - so two
+ * passes over one world see each other's nodes, and a pass cannot reach a world
+ * it was not given (§9.1).
  */
 pack Composition {
+    /**
+     * The world every node lives in.
+     *
+     * A node is an entity and what it looks like is components on it, so the
+     * world holds the tree. The composition holds only where it is in that
+     * tree: nothing here is a copy of anything the world has.
+     */
     var world: World
-    var keys: Storage<UiKey>
-    var children: Storage<UiChild>
-    var order: Storage<UiOrder>
-    var owned: Storage<UiOwned>
-    var text: Storage<UiText>
-    var buttons: Storage<UiButton>
-    var actions: Storage<UiAction>
-    var rects: Storage<UiRect>
-    var paints: Storage<UiPaint>
-    var layouts: Storage<UiLayout>
-    var scrolls: Storage<UiScroll>
-    var tags: Storage<UiTag>
-    var cursors: Storage<UiCursor>
-    var sizes: Storage<UiSize>
-    var paddings: Storage<UiPadding>
     /** Names the composition, so one owner cannot dispose another's nodes. */
     fin owner: std::String = ""
     /** The entity claims hang from when no other parent is given. */
     var root: Entity
+    /**
+     * Whether anything was composed since the pass opened.
+     *
+     * A tree is world state, so a frame in which no system describes one is a
+     * frame that says nothing about it - not one that says it is empty. The
+     * sweep at [commit] runs only when something actually claimed, which is what
+     * lets a tree built once in `.Startup` outlive the frames after it.
+     */
+    var composed: std::Bool = false
     /** Next sibling index, per pass. */
     var cursor: std::Int = 0
     /**
@@ -87,69 +91,129 @@ pack Composition {
 }
 
 impl Composition {
-
-    /**
-     * Takes back what the world's copies now hold.
-     *
-     * The other half of [publish]: systems query and write through the world,
-     * and what they wrote has to reach the storages the renderer reads. Called
-     * after systems run and before the frame is committed.
-     */
-    @std::Experimental(since: "0.1")
-    func adopt[self: Self!]() {
-        self.paints = storageOf<UiPaint>(self.world)
-        self.tags = storageOf<UiTag>(self.world)
-        self.scrolls = storageOf<UiScroll>(self.world)
+    /** The world's storage for [UiKey]. */
+    @std::ProvidesAccess
+    prop keys[self: Self&]: Storage<UiKey> {
+        return storageOf<UiKey>(self.world)
     }
 
-    /**
-     * Publishes the composition's component storages to its world.
-     *
-     * A query is asked of the world, so what the world holds has to be what
-     * this frame composed. The composition keeps its own storages and the world
-     * gets a copy of each: two owners, and the copy is what queries read.
-     * Called once before systems run, when every storage is settled.
-     */
-    @std::Experimental(since: "0.1")
-    func publish[self: Self!]() {
-        fin tags = registerStorage<UiTag>(self.world, self.tags.clone())
-        fin paints = registerStorage<UiPaint>(self.world, self.paints.clone())
-        fin rects = registerStorage<UiRect>(self.world, self.rects.clone())
-        fin texts = registerStorage<UiText>(self.world, self.text.clone())
-        fin scrolls = registerStorage<UiScroll>(self.world, self.scrolls.clone())
-        // The results say whether an entry was replaced, which is true on every
-        // frame after the first and is not information anyone needs here.
-        if tags && paints && rects && texts && scrolls {
-            return
-        }
+    /** The world's storage for [UiChild]. */
+    @std::ProvidesAccess
+    prop children[self: Self&]: Storage<UiChild> {
+        return storageOf<UiChild>(self.world)
     }
+
+    /** The world's storage for [UiOrder]. */
+    @std::ProvidesAccess
+    prop order[self: Self&]: Storage<UiOrder> {
+        return storageOf<UiOrder>(self.world)
+    }
+
+    /** The world's storage for [UiOwned]. */
+    @std::ProvidesAccess
+    prop owned[self: Self&]: Storage<UiOwned> {
+        return storageOf<UiOwned>(self.world)
+    }
+
+    /** The world's storage for [UiText]. Plural, so the node builder keeps `text`. */
+    @std::ProvidesAccess
+    prop texts[self: Self&]: Storage<UiText> {
+        return storageOf<UiText>(self.world)
+    }
+
+    /** The world's storage for [UiButton]. */
+    @std::ProvidesAccess
+    prop buttons[self: Self&]: Storage<UiButton> {
+        return storageOf<UiButton>(self.world)
+    }
+
+    /** The world's storage for [UiAction]. */
+    @std::ProvidesAccess
+    prop actions[self: Self&]: Storage<UiAction> {
+        return storageOf<UiAction>(self.world)
+    }
+
+    /** The world's storage for [UiRect]. */
+    @std::ProvidesAccess
+    prop rects[self: Self&]: Storage<UiRect> {
+        return storageOf<UiRect>(self.world)
+    }
+
+    /** The world's storage for [UiPaint]. */
+    @std::ProvidesAccess
+    prop paints[self: Self&]: Storage<UiPaint> {
+        return storageOf<UiPaint>(self.world)
+    }
+
+    /** The world's storage for [UiLayout]. */
+    @std::ProvidesAccess
+    prop layouts[self: Self&]: Storage<UiLayout> {
+        return storageOf<UiLayout>(self.world)
+    }
+
+    /** The world's storage for [UiScroll]. */
+    @std::ProvidesAccess
+    prop scrolls[self: Self&]: Storage<UiScroll> {
+        return storageOf<UiScroll>(self.world)
+    }
+
+    /** The world's storage for [UiTag]. */
+    @std::ProvidesAccess
+    prop tags[self: Self&]: Storage<UiTag> {
+        return storageOf<UiTag>(self.world)
+    }
+
+    /** The world's storage for [UiCursor]. */
+    @std::ProvidesAccess
+    prop cursors[self: Self&]: Storage<UiCursor> {
+        return storageOf<UiCursor>(self.world)
+    }
+
+    /** The world's storage for [UiSize]. */
+    @std::ProvidesAccess
+    prop sizes[self: Self&]: Storage<UiSize> {
+        return storageOf<UiSize>(self.world)
+    }
+
+    /** The world's storage for [UiPadding]. */
+    @std::ProvidesAccess
+    prop paddings[self: Self&]: Storage<UiPadding> {
+        return storageOf<UiPadding>(self.world)
+    }
+
+
 }
 
 impl Composition:: {
     /** A composition over [world], owned by [owner]. */
     func of(world: World, owner: std::String): Composition {
-        return Composition(
-            world,
-            storageInit<UiKey>(UiKey("")),
-            storageInit<UiChild>(UiChild(Entity::invalid)),
-            storageInit<UiOrder>(UiOrder(0)),
-            storageInit<UiOwned>(UiOwned("", false)),
-            storageInit<UiText>(UiText("")),
-            storageInit<UiButton>(UiButton(true)),
-            storageInit<UiAction>(UiAction(0)),
-            storageInit<UiRect>(UiRect(0.0, 0.0, 0.0, 0.0)),
-            storageInit<UiPaint>(UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)),
-            storageInit<UiLayout>(UiLayout(0 - 1, Arrangement.Start, Alignment.Start, 0.0)),
-            storageInit<UiScroll>(UiScroll(0.0, 0.0)),
-            storageInit<UiTag>(UiTag(0 - 1)),
-            storageInit<UiCursor>(UiCursor(0)),
-            storageInit<UiSize>(UiSize(false, false, 0.0, 0.0, 0.0)),
-            storageInit<UiPadding>(UiPadding(0.0, 0.0, 0.0, 0.0)),
-            owner,
-            Entity::invalid,
-            0,
-            0
-        )
+        // The world is given a storage per component the composition writes, so
+        // there is one owner of each and a query asked of the world this frame
+        // reads what was composed into it - this frame or any earlier one.
+        fin hasUiKey = registerStorage<UiKey>(world, storageInit<UiKey>(UiKey("")))
+        fin hasUiChild = registerStorage<UiChild>(world, storageInit<UiChild>(UiChild(Entity::invalid)))
+        fin hasUiOrder = registerStorage<UiOrder>(world, storageInit<UiOrder>(UiOrder(0)))
+        fin hasUiOwned = registerStorage<UiOwned>(world, storageInit<UiOwned>(UiOwned("", false)))
+        fin hasUiText = registerStorage<UiText>(world, storageInit<UiText>(UiText("")))
+        fin hasUiButton = registerStorage<UiButton>(world, storageInit<UiButton>(UiButton(true)))
+        fin hasUiAction = registerStorage<UiAction>(world, storageInit<UiAction>(UiAction(0)))
+        fin hasUiRect = registerStorage<UiRect>(world, storageInit<UiRect>(UiRect(0.0, 0.0, 0.0, 0.0)))
+        fin hasUiPaint = registerStorage<UiPaint>(world, storageInit<UiPaint>(UiPaint(0.0, 0.0, 0.0, 1.0, 0.0)))
+        fin hasUiLayout = registerStorage<UiLayout>(world, storageInit<UiLayout>(UiLayout(0 - 1, Arrangement.Start, Alignment.Start, 0.0)))
+        fin hasUiScroll = registerStorage<UiScroll>(world, storageInit<UiScroll>(UiScroll(0.0, 0.0)))
+        fin hasUiTag = registerStorage<UiTag>(world, storageInit<UiTag>(UiTag(0 - 1)))
+        fin hasUiCursor = registerStorage<UiCursor>(world, storageInit<UiCursor>(UiCursor(0)))
+        fin hasUiSize = registerStorage<UiSize>(world, storageInit<UiSize>(UiSize(false, false, 0.0, 0.0, 0.0)))
+        fin hasUiPadding = registerStorage<UiPadding>(world, storageInit<UiPadding>(UiPadding(0.0, 0.0, 0.0, 0.0)))
+        // Each answers whether it replaced an entry, which is only ever true on
+        // a second composition over the same world. Read so the registration is
+        // a bound result rather than a discarded one.
+        if hasUiKey && hasUiChild && hasUiOrder && hasUiOwned && hasUiText &&
+            hasUiButton && hasUiAction && hasUiRect && hasUiPaint && hasUiLayout &&
+            hasUiScroll && hasUiTag && hasUiCursor && hasUiSize && hasUiPadding {
+            return Composition(world, owner, Entity::invalid, false, 0, 0)
+        }
+        return Composition(world, owner, Entity::invalid, false, 0, 0)
     }
 }
 
@@ -173,6 +237,7 @@ impl Composition {
             }
             index = index + 1
         }
+        self.composed = false
         self.cursor = 0
         self.rootCursor = 0
     }
@@ -226,6 +291,7 @@ impl Composition {
      * recomposition an update rather than a rebuild.
      */
     func claim[self: Composition!](parent: Entity, key: std::String): Entity {
+        self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
             storageInsert<UiOwned>(self.owned, existing, UiOwned(self.owner, true))
@@ -281,6 +347,10 @@ impl Composition {
      * disposal runs user code, which it does not yet (§10.3).
      */
     func commit[self: Composition!](): std::Int {
+        // Nothing described the tree this pass, so nothing about it is stale.
+        if !self.composed {
+            return 0
+        }
         var removed = 0
         var index = 0
         while index < storageLength<UiOwned>(self.owned) {
@@ -292,7 +362,7 @@ impl Composition {
                     storageRemove<UiKey>(self.keys, entity)
                     storageRemove<UiChild>(self.children, entity)
                     storageRemove<UiOrder>(self.order, entity)
-                    storageRemove<UiText>(self.text, entity)
+                    storageRemove<UiText>(self.texts, entity)
                     storageRemove<UiButton>(self.buttons, entity)
                     storageRemove<UiAction>(self.actions, entity)
                     storageRemove<UiRect>(self.rects, entity)
@@ -630,7 +700,7 @@ impl Composition {
     /** A line of text. */
     func text[self: Composition!](parent: Entity, key: std::String, modifier: Modifier!, value: std::String): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<UiText>(self.text, node, UiText(value))
+        storageInsert<UiText>(self.texts, node, UiText(value))
         self.applyModifier(node, modifier)
         return node
     }

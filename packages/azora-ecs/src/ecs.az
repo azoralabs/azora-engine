@@ -556,6 +556,7 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
      * storage sees it. That is what makes a fetch a *borrow* rather than a read,
      * and what lets a system stop reaching for a storage mid-body.
      */
+    @std::ProvidesAccess
     prop next[self: Self!]: std::Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
         // Spelled with its type arguments: the row's element types cannot be
@@ -574,6 +575,7 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
      * parameter, so the block is offered a bare `Tuple` and the concrete row
      * does not match it.
      */
+    @std::ProvidesAccess
     func forEach[self: Self!](body: inline (std::Tuple<Entity, ...T>) -> std::Unit) {
         self.reset()
         while self.hasNext {
@@ -596,6 +598,7 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
      * No tuple is built here - each component is fetched straight from its
      * storage, so `unpack` costs a walk and nothing more.
      */
+    @std::ProvidesAccess
     func unpack[self: Self!](body: inline (Entity, ...T) -> std::Unit) {
         self.reset()
         while self.hasNext {
@@ -621,6 +624,23 @@ impl QueryOf<...T>:: {
      * what lets a system declare a query as a parameter and receive it built.
      */
     @std::Experimental(since: "0.1")
+    /**
+     * How far the storages this query reads have moved.
+     *
+     * A query's rows change when a component is written, and a storage counts
+     * its own writes, so the sum over the fetch terms answers for the whole
+     * query in one number.
+     */
+    @std::ProvidesAccess
+    func stamp(world: World&): std::Int {
+        var total = 0
+        inline for Ty in ...T {
+            total = total + (storageOf<Ty>(world).revision as std::Int)
+        }
+        return total
+    }
+
+    @std::ProvidesAccess
     func provide(world: World&): QueryOf<...T> {
         var cursor = queryAll(world, false)
         inline for Ty in ...T {
@@ -674,6 +694,26 @@ func insertResourceNamed<T>(world: World!, name: std::String, value: T): std::Bo
 }
 
 /**
+ * How many times the resource under [name] has been written.
+ *
+ * Resources are appended, so the position of the newest entry is a number that
+ * moves exactly when the resource is written and never otherwise. That is all a
+ * reader needs to tell "the same as last time" from "different".
+ */
+@std::Experimental(since: "0.1")
+func resourceStamp(world: World&, name: std::String): std::Int {
+    var found = 0 - 1
+    var i = 0
+    while i < world.resourceNames.size {
+        if world.resourceNames[i] == name {
+            found = i
+        }
+        i = i + 1
+    }
+    return found
+}
+
+/**
  * The world's resource of type `T`.
  *
  * A resource a system asks for and the world does not hold is a wiring mistake,
@@ -681,6 +721,7 @@ func insertResourceNamed<T>(world: World!, name: std::String, value: T): std::Bo
  * carrying on would hide where it was supposed to be inserted.
  */
 @std::Experimental(since: "0.1")
+@std::SignatureOnly
 inline func resource<T>(world: World&): T {
     return resourceNamed<T>(world, T.typeName)
 }
@@ -705,6 +746,7 @@ func resourceNamed<T>(world: World&, name: std::String): T {
  * the resource should see a defined value, not stop the frame.
  */
 @std::Experimental(since: "0.1")
+@std::SignatureOnly
 inline func resourceOr<T>(world: World&, fallback: T): T {
     return resourceNamedOr<T>(world, T.typeName, take fallback)
 }
@@ -771,6 +813,7 @@ func registerStorageNamed<T>(world: World!, name: std::String, store: Storage<T>
  * caller can do least about it, midway through a frame.
  */
 @std::Experimental(since: "0.1")
+@std::SignatureOnly
 inline func storageOf<T>(world: World&): Storage<T> {
     return storageNamed<T>(world, T.typeName)
 }
@@ -861,6 +904,17 @@ impl QueryWith<Q, ...T>:: {
      * many clauses were written.
      */
     @std::Experimental(since: "0.1")
+    /** How far the storages this query reads have moved. See [QueryOf::stamp]. */
+    @std::ProvidesAccess
+    func stamp(world: World&): std::Int {
+        var total = Q::stamp(world)
+        inline for Ty in ...T {
+            total = total + (storageOf<Ty>(world).revision as std::Int)
+        }
+        return total
+    }
+
+    @std::ProvidesAccess
     func provide(world: World&): QueryWith<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {
@@ -874,6 +928,17 @@ impl QueryWithout<Q, ...T>:: {
 
     /** The same, keeping only the rows that carry *none* of `...T`. */
     @std::Experimental(since: "0.1")
+    /** How far the storages this query reads have moved. See [QueryOf::stamp]. */
+    @std::ProvidesAccess
+    func stamp(world: World&): std::Int {
+        var total = Q::stamp(world)
+        inline for Ty in ...T {
+            total = total + (storageOf<Ty>(world).revision as std::Int)
+        }
+        return total
+    }
+
+    @std::ProvidesAccess
     func provide(world: World&): QueryWithout<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {

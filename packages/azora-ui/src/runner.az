@@ -78,6 +78,23 @@ pack Ui {
     var frames: std::Array<std::Int>
     /** Whether each `Once`-style system has already run. */
     var ran: std::Array<std::Bool>
+    /** The action last written to [UiInput], so an unchanged one is not rewritten. */
+    var lastAction: std::Int
+    /** The width last written to [Viewport]. */
+    var lastWidth: std::Double
+    /** The height last written to [Viewport]. */
+    var lastHeight: std::Double
+    /** Whether the composition scope has been put in the world. */
+    var seededScope: std::Bool
+    /**
+     * The stamp each system's parameters last showed, by slot.
+     *
+     * A system declares what it touches in its signature, so the signature is
+     * also the list of what could make its answer different. Summing the stamps
+     * of its parameters gives one number per system that moves exactly when one
+     * of them does.
+     */
+    var stamps: std::Array<std::Int>
 }
 
 impl Ui {
@@ -107,6 +124,24 @@ impl Ui {
      * Advancing the slot's counters is part of asking: a system that is not due
      * still accumulated the time that will make it due later.
      */
+    /**
+     * Whether slot [slot]'s inputs differ from when it last ran, recording
+     * [stamp] as what it has now seen.
+     *
+     * This is what makes a description re-run because something it reads
+     * changed, rather than because a frame happened.
+     */
+    func moved[self: Self!](slot: std::Int, stamp: std::Int): std::Bool {
+        if slot < 0 || slot >= maxSystems {
+            return true
+        }
+        if self.stamps[slot] == stamp {
+            return false
+        }
+        self.stamps[slot] = stamp
+        return true
+    }
+
     func due[self: Self!](slot: std::Int, interval: SystemInterval): std::Bool {
         if slot < 0 || slot >= maxSystems {
             return true
@@ -231,18 +266,11 @@ pack Viewport {
  * from the world, and a system that composes need not be handed `Ui` to do it.
  */
 @std::Experimental(since: "0.1")
+@std::ProvidesAccess
 inline func composeIn(world: World&): Scope {
     return resource<Scope>(world)
 }
 
-/**
- * Where a system builds: `@compose world { Column(…) }`.
- *
- * The contextual scope a composing system opens, without repeating how it is
- * found. `with composeIn(world)` says the same thing and says it twice - that
- * the scope comes from the world, and that it is the receiver for what
- * follows - so the shorter spelling is the one a system should write.
- */
 macro @compose $w => inline "with composeIn($w)"
 
 /**
@@ -266,6 +294,13 @@ impl Res<T>:: {
      * up. Expanding at the call site is what puts the concrete type back.
      */
     @std::Experimental(since: "0.1")
+    /** How many times this resource has been written. */
+    @std::ProvidesAccess
+    inline func stamp(world: World&): std::Int {
+        return resourceStamp(world, T.typeName)
+    }
+
+    @std::ProvidesAccess
     inline func from(ui: Ui!): Res<T> {
         return Res(resource<T>(ui.at.pass.world))
     }
@@ -279,6 +314,12 @@ impl World:: {
      * so it can query and write without being handed anything else. This is the
      * one line that says where a frame keeps its world.
      */
+    /** How far the world's structure has moved: spawns and despawns. */
+    @std::ProvidesAccess
+    func stamp(world: World&): std::Int {
+        return world.revision as std::Int
+    }
+
     @std::Experimental(since: "0.1")
     func from(ui: Ui!): World& {
         return ui.at.pass.world
@@ -324,16 +365,65 @@ impl Ui:: {
     }
 }
 
+/**
+ * Puts the frame's own values in the world, where a system asks for them.
+ *
+ * The clock, what was clicked, where to build and how big the surface is: the
+ * four things a system wants of the frame rather than of the world's contents.
+ * Written once and called before every dispatch, so a `.Startup` system and an
+ * `.Update` one are handed the same things.
+ */
+react func seedFrameResources(ui: Ui!) {
+    fin world = ui.at.pass.world
+    // Written every frame, because it is different every frame: a system that
+    // asks for the clock is asking to run on every one.
+    fin clock = insertResource<Time>(
+        ui.at.pass.world,
+        Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as std::Long),
+    )
+    // The rest are written only when they differ. A resource's stamp moves when
+    // it is written, and a description re-runs when a stamp it reads moves - so
+    // rewriting an unchanged value every frame would make every reader run
+    // every frame, which is the thing being avoided.
+    var wrote = clock
+    if ui.action != ui.lastAction {
+        ui.lastAction = ui.action
+        wrote = insertResource<UiInput>(ui.at.pass.world, UiInput(ui.action))
+    }
+    fin width = ui.width()
+    fin height = ui.height()
+    if width != ui.lastWidth || height != ui.lastHeight {
+        ui.lastWidth = width
+        ui.lastHeight = height
+        wrote = insertResource<Viewport>(ui.at.pass.world, Viewport(width, height))
+    }
+    if !ui.seededScope {
+        ui.seededScope = true
+        wrote = insertResource<Scope>(ui.at.pass.world, ui.at.clone())
+    }
+    if wrote {
+        return
+    }
+}
+
+
 react func dispatch(phase: SystemPhase, ui: Ui!) {
     var slot = 0
     inline for F in std::reflect<*>.withAnnot<System> {
         if std::reflect<F>.annotMeta<System>.phase == phase {
-            // `.Startup` is `.Once` and cannot be otherwise: the phase runs
-            // before the first frame and never again, so an interval would be
-            // asking how often something that happens once should happen. The
-            // declared one is ignored rather than obeyed, which is what makes
-            // the rule true instead of merely documented.
-            if phase == SystemPhase.Startup || ui.due(slot, std::reflect<F>.annotMeta<System>.interval) {
+            // A `.Startup` system describes rather than repeats, so it runs
+            // when what it reads differs from when it last ran - which the
+            // first time is always. Its parameters are that list, so their
+            // stamps summed are the one number to compare.
+            //
+            // Every other phase runs on its declared interval.
+            var inputs = 0
+            inline for P in std::reflect<F>.params {
+                inputs = inputs + P::stamp(ui.at.pass.world)
+            }
+            if (phase == SystemPhase.Startup && ui.moved(slot, inputs)) ||
+                (phase != SystemPhase.Startup &&
+                    ui.due(slot, std::reflect<F>.annotMeta<System>.interval)) {
                 // Each parameter is built from the frame, by its own type: a
                 // system says what it wants and is handed it. Nothing here
                 // knows any system's signature, so adding a parameter to one
@@ -396,6 +486,17 @@ func zeroDoubles(count: std::Int): std::Array<std::Double> {
     return slots
 }
 
+/** [count] slots, each holding [value]. */
+func filledInts(count: std::Int, value: std::Int): std::Array<std::Int> {
+    var slots: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+    var i = 0
+    while i < count {
+        slots[i] = value
+        i = i + 1
+    }
+    return slots
+}
+
 func zeroInts(count: std::Int): std::Array<std::Int> {
     var slots: std::Array<std::Int> = std::Array::fill<std::Int>(count)
     var i = 0
@@ -436,9 +537,15 @@ react func runUiColored(
     var ui = Ui(
         Scope(pass, pass.root), window, 0, 0.0,
         zeroDoubles(maxSystems), zeroInts(maxSystems), zeroBools(maxSystems),
+        0 - 1, 0.0 - 1.0, 0.0 - 1.0, false,
+        // Below any real stamp, so the first pass always runs.
+        filledInts(maxSystems, 0 - 1),
     )
 
     pass.begin()
+    // A `.Startup` system asks for resources exactly as any other does, so they
+    // are seeded before it runs rather than only once the loop is turning.
+    seedFrameResources(ui)
     dispatch(SystemPhase.Startup, ui)
     pass.commit()
 
@@ -474,35 +581,14 @@ react func runUiColored(
         // A frame's description is rebuilt and reconciled, so a system may
         // compose freely: unchanged nodes keep their identity and their state.
         pass.begin()
-        // Component storages are published to the world before the systems run,
-        // so a query asked of the world this frame reads this frame's rows. The
-        // composition still owns them; this is the point at which what it owns
-        // becomes what anyone else can ask about.
-        ui.at.pass.publish()
-        // The frame's own values go in as resources, so a system can ask for
-        // what it needs instead of being handed everything.
-        fin world = ui.at.pass.world
-        fin clock = insertResource<Time>(
-            ui.at.pass.world,
-            Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as std::Long),
-        )
-        fin input = insertResource<UiInput>(ui.at.pass.world, UiInput(ui.action))
-        // Where to build, and how big the surface is. Between them these are
-        // everything `Ui` carried that a describing system actually used, which
-        // is what lets one take `world: World&` and nothing else.
-        fin at = insertResource<Scope>(ui.at.pass.world, ui.at.clone())
-        fin viewport = insertResource<Viewport>(
-            ui.at.pass.world,
-            Viewport(ui.width(), ui.height()),
-        )
-        if clock == input || at == viewport || clock != input {
-            dispatch(SystemPhase.PreUpdate, ui)
-        }
+        seedFrameResources(ui)
+        // The description runs again when what it reads differs from when it
+        // last ran; `dispatch` decides that per system from its own parameters.
+        // Reconciliation turns a second pass into an update of the first.
+        dispatch(SystemPhase.Startup, ui)
+        dispatch(SystemPhase.PreUpdate, ui)
         dispatch(SystemPhase.Update, ui)
         dispatch(SystemPhase.PostUpdate, ui)
-        // Systems wrote through the world; what they wrote is taken back before
-        // the frame is committed, so the renderer draws what they decided.
-        ui.at.pass.adopt()
         pass.commit()
 
         renderFrame(ui)
