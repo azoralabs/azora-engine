@@ -141,11 +141,17 @@ impl Composition {
 impl Composition:: {
     /** A composition over [world], owned by [owner]. */
     func of(world: World, owner: std::String): Composition {
-        // No storage is registered here. A world grows one the first time a
-        // component of that type is asked for, so declaring a component is the
-        // whole of what it takes to store one - including components declared by
-        // programs this file has never heard of.
-        return Composition(world, owner, Entity::invalid)
+        // A storage per component the program declares, found by the decorator
+        // that says what a component is. Registering them here rather than one
+        // line per type is what keeps a new component from silently having
+        // nowhere to be stored: declaring it is all there is to do.
+        //
+        // Empty rather than seeded, because a component is not required to be
+        // constructible out of nothing - many carry fields with no default.
+        inline for C in std::reflect<*>.withAnnot<Component> {
+            registerStorage<C>(world, storageEmpty<C>())
+        }
+        return Composition(world, owner, Entity::invalid, false, 0, 0)
     }
 }
 
@@ -162,9 +168,9 @@ impl Composition {
         while index < storageLength<Owned>(self.owned) {
             fin entity = storageEntityAt<Owned>(self.owned, index)
             if entity.isValid {
-                fin mark = storageGetOrDefault<Owned>(self.owned, entity, .())
+                fin mark = storageGetOrDefault<Owned>(self.owned, entity, Owned("", false))
                 if mark.owner == self.owner {
-                    storageInsert<Owned>(self.owned, entity, .(mark.owner))
+                    storageInsert<Owned>(self.owned, entity, Owned(mark.owner, false))
                 }
             }
             index = index + 1
@@ -186,8 +192,8 @@ impl Composition {
             self.rootCursor = position + 1
             return position
         }
-        fin current = storageGetOrDefault<Cursor>(self.cursors, parent, .())
-        storageInsert<Cursor>(self.cursors, parent, .(current.next + 1))
+        fin current = storageGetOrDefault<Cursor>(self.cursors, parent, Cursor(0))
+        storageInsert<Cursor>(self.cursors, parent, Cursor(current.next + 1))
         return current.next
     }
 
@@ -213,7 +219,7 @@ impl Composition {
         if !parent.isValid {
             return self.rootCursor
         }
-        return storageGetOrDefault<Cursor>(self.cursors, parent, .()).next
+        return storageGetOrDefault<Cursor>(self.cursors, parent, Cursor(0)).next
     }
 
     /**
@@ -226,27 +232,27 @@ impl Composition {
         self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
-            storageInsert<Owned>(self.owned, existing, .(self.owner, true))
+            storageInsert<Owned>(self.owned, existing, Owned(self.owner, true))
             // Position *among siblings*, not a number shared by the whole self:
             // `parent.childAt(n)` asks for the nth child of that parent, so a
             // global counter left every parent after the first with no child at
             // index 0 - the tree arranged one node and silently dropped the rest.
-            storageInsert<SiblingOrder>(self.order, existing, .(self.nextChildIndex(parent)))
+            storageInsert<SiblingOrder>(self.order, existing, SiblingOrder(self.nextChildIndex(parent)))
             // A claimed node is about to have its own children enumerated, so its
             // sibling counter starts over here rather than in `begin`: that way a
             // node claimed twice in one self is a visible key collision, not a
             // silently continuing count.
-            storageInsert<Cursor>(self.cursors, existing, .())
+            storageInsert<Cursor>(self.cursors, existing, Cursor(0))
             self.cursor = self.cursor + 1
             return existing
         }
 
         fin created = spawnEntity(self.world)
-        storageInsert<Key>(self.keys, created, .(key))
-        storageInsert<Child>(self.children, created, .(parent))
-        storageInsert<Owned>(self.owned, created, .(self.owner, true))
-        storageInsert<SiblingOrder>(self.order, created, .(self.nextChildIndex(parent)))
-        storageInsert<Cursor>(self.cursors, created, .())
+        storageInsert<Key>(self.keys, created, Key(key))
+        storageInsert<Child>(self.children, created, Child(parent))
+        storageInsert<Owned>(self.owned, created, Owned(self.owner, true))
+        storageInsert<SiblingOrder>(self.order, created, SiblingOrder(self.nextChildIndex(parent)))
+        storageInsert<Cursor>(self.cursors, created, Cursor(0))
         self.cursor = self.cursor + 1
         return created
     }
@@ -257,7 +263,7 @@ impl Composition {
         while index < storageLength<Key>(self.keys) {
             fin entity = storageEntityAt<Key>(self.keys, index)
             if entity.isValid {
-                fin candidate = storageGetOrDefault<Key>(self.keys, entity, .())
+                fin candidate = storageGetOrDefault<Key>(self.keys, entity, Key(""))
                 if candidate.value == key {
                     fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
                     if link.parent.id == parent.id && link.parent.generation == parent.generation {
@@ -288,7 +294,7 @@ impl Composition {
         while index < storageLength<Owned>(self.owned) {
             fin entity = storageEntityAt<Owned>(self.owned, index)
             if entity.isValid {
-                fin mark = storageGetOrDefault<Owned>(self.owned, entity, .(claimed: true))
+                fin mark = storageGetOrDefault<Owned>(self.owned, entity, Owned("", true))
                 if mark.owner == self.owner && !mark.claimed {
                     // Whatever the node carried goes with it. A composition does
                     // not know what its nodes are made of - that is the point -
@@ -319,6 +325,13 @@ impl Composition {
         return live
     }
 }
+
+
+
+
+
+
+
 
 // ── Scoped builders ─────────────────────────────────────────────────────
 //
@@ -504,43 +517,43 @@ impl Composition {
      * passes loses its effect too: the components are rebuilt, not accumulated.
      */
     func applyModifier[self: Self!](node: Entity, chain: Modifier&) {
-        var size = Size()
-        var pad = Padding()
+        var size = Size(false, false, 0.0, 0.0, 0.0)
+        var pad = Padding(0.0, 0.0, 0.0, 0.0)
         var hasPadding = false
-        var background = Paint()
+        var background = Paint(0.0, 0.0, 0.0, 1.0, 0.0)
         var hasBackground = false
 
         var index = 0
         while index < chain.entries.size {
-            fin entry = chain.entries[index]
-            when entry.kind {
-                ModifierKind.FillMaxWidth -> { size.fillWidth = true }
-                ModifierKind.FillMaxHeight -> { size.fillHeight = true }
-                ModifierKind.Width -> { size.width = entry.a }
-                ModifierKind.Height -> { size.height = entry.a }
-                ModifierKind.Weight -> { size.weight = entry.a }
-                ModifierKind.Padding -> {
-                    pad = Padding(entry.a, entry.b, entry.c, entry.d)
-                    hasPadding = true
-                }
-                ModifierKind.Background -> {
-                    background = Paint(entry.a, entry.b, entry.c, entry.d, 0.0)
-                    hasBackground = true
-                }
+        fin entry = chain.entries[index]
+        when entry.kind {
+            ModifierKind.FillMaxWidth -> { size.fillWidth = true }
+            ModifierKind.FillMaxHeight -> { size.fillHeight = true }
+            ModifierKind.Width -> { size.width = entry.a }
+            ModifierKind.Height -> { size.height = entry.a }
+            ModifierKind.Weight -> { size.weight = entry.a }
+            ModifierKind.Padding -> {
+                pad = Padding(entry.a, entry.b, entry.c, entry.d)
+                hasPadding = true
             }
-            index = index + 1
+            ModifierKind.Background -> {
+                background = Paint(entry.a, entry.b, entry.c, entry.d, 0.0)
+                hasBackground = true
+            }
         }
+        index = index + 1
+    }
 
-        storageInsert<Size>(store(self), node, size)
+    storageInsert<Size>(store<Size>(self), node, size)
 
-        if hasPadding {
-            storageInsert<Padding>(store(self), node, pad)
-        } else {
-            storageRemove<Padding>(store(self), node)
-        }
-        if hasBackground {
-            storageInsert<Paint>(store(self), node, background)
-        }
+    if hasPadding {
+        storageInsert<Padding>(store<Padding>(self), node, pad)
+    } else {
+        storageRemove<Padding>(store<Padding>(self), node)
+    }
+    if hasBackground {
+        storageInsert<Paint>(store<Paint>(self), node, background)
+    }
     }
 
     /** A container that stacks its children downward. */
@@ -553,7 +566,7 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<Layout>(store(self), node, .(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
+        storageInsert<Layout>(store<Layout>(self), node, Layout(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
         self.applyModifier(node, modifier)
         return node
     }
@@ -568,7 +581,7 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<Layout>(store(self), node, .(layoutRow, horizontalArrangement, verticalAlignment, spacing))
+        storageInsert<Layout>(store<Layout>(self), node, Layout(layoutRow, horizontalArrangement, verticalAlignment, spacing))
         self.applyModifier(node, modifier)
         return node
     }
@@ -583,15 +596,15 @@ impl Composition {
         spacing: std::Double
     ): Entity {
         fin node = self.column(parent, key, modifier, verticalArrangement, horizontalAlignment, spacing)
-        fin existing = storageGetOrDefault<Scroll>(store(self), node, .())
-        storageInsert<Scroll>(store(self), node, existing)
+        fin existing = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
+        storageInsert<Scroll>(store<Scroll>(self), node, existing)
         return node
     }
 
     /** A plain rectangle, tagged so a query can find it later. */
     func shape[self: Self!](parent: Entity, key: std::String, modifier: Modifier&, group: std::Int): Entity {
         fin node = self.claim(parent, key)
-        storageInsert<TagI>(store(self), node, .(group))
+        storageInsert<TagI>(store<TagI>(self), node, TagI(group))
         self.applyModifier(node, modifier)
         // A shape with no colour of its own is invisible, and a shape is a
         // rectangle - being invisible by default is never what was meant. The
@@ -600,8 +613,8 @@ impl Composition {
         // description on the next frame must not undo that. A component a
         // system writes cannot also be rewritten by the description each frame,
         // or the two fight and the last writer of the frame wins.
-        if !storageHas<Paint>(store(self), node) {
-            storageInsert<Paint>(store(self), node, .(0.32, 0.34, 0.40, 1.0, 0.0))
+        if !storageHas<Paint>(store<Paint>(self), node) {
+            storageInsert<Paint>(store<Paint>(self), node, Paint(0.32, 0.34, 0.40, 1.0, 0.0))
         }
         return node
     }
@@ -626,6 +639,6 @@ impl Composition {
         alpha: std::Double
         size: std::Double
     ) {
-        storageInsert<Paint>(store(self), node, .(r, g, b, alpha, size))
+        storageInsert<Paint>(store<Paint>(self), node, Paint(r, g, b, alpha, size))
     }
 }

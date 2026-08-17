@@ -1,0 +1,256 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0.
+ */
+
+/**
+ * @file azora.navigation
+ *
+ * State-based navigation inspired by Compose Navigation 3.
+ *
+ * Applications own a typed back stack. An entry provider maps keys to stored
+ * Azora callables, while `NavDisplay` controls lifecycle and transitions.
+ * Navigation itself has no browser, window, or renderer dependency and is
+ * therefore identical in LLVM and WebAssembly builds.
+ */
+module azora.navigation
+
+import engine.core
+
+/** Lifecycle of a navigation entry retained by a display. */
+@std::Experimental(since: "0.1")
+enum NavLifecycle {
+    Created
+    Active
+    Suspended
+    Destroyed
+}
+
+/** Direction of the most recent stack operation. */
+@std::Experimental(since: "0.1")
+enum NavDirection {
+    None
+    Push
+    Pop
+    Replace
+}
+
+/**
+ * Typed, bounded navigation history.
+ *
+ * The stack owns its values and performs no allocation after construction.
+ * `revision` changes for every successful mutation and can be observed by a
+ * reactive UI host without coupling navigation to a renderer.
+ */
+@std::Experimental(since: "0.1")
+pack NavBackStack<K> {
+    var _entries: std::Array<K>
+    var _size: std::Int
+    var _revision: std::Long
+    var _direction: NavDirection
+}
+
+/** Creates a back stack containing one root key. */
+@std::Experimental(since: "0.1")
+func navBackStack<K>(root: K, capacity: std::Int = 32): NavBackStack<K>
+in {
+    assert capacity > 0 { "navigation capacity must be positive" }
+} scope {
+    var entries = std::Array::fill<K>(capacity)
+    entries[0] = root
+    return NavBackStack<K>(entries, 1, 0L, NavDirection.None)
+}
+
+impl NavBackStack<K> {
+    prop count[self: Self&]: std::Int = self._size
+    prop canPop[self: Self&]: std::Bool = self._size > 1
+    prop version[self: Self&]: std::Long = self._revision
+    prop lastDirection[self: Self&]: NavDirection = self._direction
+
+    /** Returns the visible key. */
+    prop current[self: Self&]: K
+    in {
+    assert self._size > 0 { "navigation stack is empty" }
+    } scope {
+    return self._entries[self._size - 1]
+    }
+
+    /** Adds a destination to the top of the stack. */
+    func push(key: K)
+    in {
+    assert self._size < self._entries.size { "navigation capacity exceeded" }
+    } scope {
+    self._entries[self._size] = key
+    self._size = self._size + 1
+    self._revision = self._revision + 1
+    self._direction = NavDirection.Push
+    }
+
+    /** Removes and returns the visible destination. The root cannot be popped. */
+    func pop(): K
+    in {
+    assert self._size > 1 { "cannot pop the navigation root" }
+    } scope {
+    fin key = self._entries[self._size - 1]
+    self._size = self._size - 1
+    self._revision = self._revision + 1
+    self._direction = NavDirection.Pop
+    return key
+    }
+
+    /** Replaces the visible destination without changing stack depth. */
+    func replace(key: K)
+    in {
+    assert self._size > 0 { "navigation stack is empty" }
+    } scope {
+    self._entries[self._size - 1] = key
+    self._revision = self._revision + 1
+    self._direction = NavDirection.Replace
+    }
+
+    /** Pops every destination above the root. */
+    func popToRoot[self: Self!]() {
+    if self._size > 1 {
+    self._size = 1
+    self._revision = self._revision + 1
+    self._direction = NavDirection.Pop
+    }
+    }
+
+    /** Reads a key by depth, starting with the root at zero. */
+    func at(index: std::Int): K
+    in {
+    assert index >= 0 && index < self._size { "navigation index out of bounds" }
+    } scope {
+    return self._entries[index]
+    }
+}
+
+/** Stored content associated with one typed navigation key. */
+typealias NavContent<K> = (K&) -> std::Unit
+
+@std::Experimental(since: "0.1")
+pack NavEntry<K> {
+    fin key: K
+    fin content: NavContent<K>
+}
+
+/**
+ * Registry used to resolve destinations.
+ *
+ * Providers preserve declaration order. A custom equality function allows
+ * packs, enums, and application-defined route keys without engine hardcoding.
+ */
+@std::Experimental(since: "0.1")
+pack NavEntryProvider<K> {
+    var _entries: std::Array<NavEntry<K>>
+    var _size: std::Int
+    fin _equals: (K&, K&) -> std::Bool
+}
+
+func navEntryProvider<K>(
+    equals: (K&, K&) -> std::Bool
+    capacity: std::Int = 32
+): NavEntryProvider<K>
+in {
+    assert capacity > 0 { "navigation provider capacity must be positive" }
+} scope {
+    return NavEntryProvider<K>(std::Array::fill<NavEntry<K>>(capacity), 0, equals)
+}
+
+impl NavEntryProvider<K> {
+    /** Registers one destination. Duplicate keys are rejected. */
+    func add(key: K, content: NavContent<K>)
+    in {
+    assert self.indexOf(key) < 0 { "duplicate navigation key" }
+    assert self._size < self._entries.size { "navigation provider capacity exceeded" }
+    } scope {
+    self._entries[self._size] = NavEntry<K>(key, content)
+    self._size = self._size + 1
+    }
+
+    func indexOf[self: Self&](key: K&): std::Int {
+    var index = 0
+    while index < self._size {
+    if self._equals(self._entries[index].key, key) {
+    return index
+    }
+    index = index + 1
+    }
+    return -1
+    }
+
+    /** Invokes content for `key`; returns false when no entry is registered. */
+    func present[self: Self&](key: K&): std::Bool {
+    fin index = self.indexOf(key)
+    if index < 0 {
+    return false
+    }
+    self._entries[index].content(key)
+    return true
+    }
+}
+
+/**
+ * Renderer-neutral state consumed by a navigation host.
+ *
+ * A host calls `sync` before presenting. The return value says whether the
+ * visible entry or transition changed since the previous frame.
+ */
+@std::Experimental(since: "0.1")
+pack NavDisplay {
+    var observedRevision: std::Long
+    var lifecycle: NavLifecycle
+    var direction: NavDirection
+}
+
+func navDisplay(): NavDisplay {
+    return NavDisplay((0 - 1) as std::Long, NavLifecycle.Created, NavDirection.None)
+}
+
+impl NavDisplay {
+    func sync<K>[self: Self!](stack: NavBackStack<K>&): std::Bool {
+    if self.observedRevision == stack.version {
+    return false
+    }
+    self.observedRevision = stack.version
+    self.direction = stack.lastDirection
+    self.lifecycle = NavLifecycle.Active
+    return true
+    }
+
+    func suspend[self: Self!]() {
+    self.lifecycle = NavLifecycle.Suspended
+    }
+
+    func destroy[self: Self!]() {
+    self.lifecycle = NavLifecycle.Destroyed
+    }
+}
+
+test "navigation stack preserves typed history" {
+    var stack = navBackStack<std::Int>(1, 4)
+    stack.push(2)
+    stack.push(3)
+    assert stack.count == 3 { "push changed navigation depth incorrectly" }
+    assert stack.current == 3 { "current must return the visible key" }
+    assert stack.pop() == 3 { "pop must return the removed key" }
+    assert stack.current == 2 { "pop did not reveal the previous key" }
+    stack.replace(7)
+    assert stack.current == 7 { "replace did not update the visible key" }
+    stack.popToRoot()
+    assert stack.current == 1 && !stack.canPop { "popToRoot must preserve only the root" }
+}
+
+test "navigation display observes revisions once" {
+    var stack = navBackStack<std::Int>(1)
+    var display = navDisplay()
+    assert display.sync(stack) { "first display sync must activate the entry" }
+    assert !display.sync(stack) { "unchanged navigation must not invalidate UI" }
+    stack.push(2)
+    assert display.sync(stack) { "stack mutations must invalidate UI" }
+    assert display.direction == NavDirection.Push { "display lost transition direction" }
+}
+
+test .All "engine navigation"

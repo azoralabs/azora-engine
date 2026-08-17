@@ -325,6 +325,23 @@ func storageInit<T>(defaultValue: T): Storage<T> {
     return Storage<T>(entities, values, added, changed, 0)
 }
 
+/**
+ * An empty storage for [T], built without a value of it.
+ *
+ * A storage holds no components until one is inserted, so the value
+ * [storageInit] is handed is only there to give the array an element type. Not
+ * needing one is what lets storages be registered for every component the
+ * program declares, including those whose fields have no defaults and so cannot
+ * be constructed out of nothing.
+ */
+func storageEmpty<T>(): Storage<T> {
+    var entities = @std::arr[]
+    var values = @std::arr[]
+    var added = @std::arr[]
+    var changed = @std::arr[]
+    return Storage<T>(entities, values, added, changed, 0)
+}
+
 func storageIndexOf<T>(store: Storage<T>&, entity: Entity): std::Int {
     if !entity.isValid {
         return -1
@@ -852,24 +869,16 @@ func storageNamed<T>(world: World&, name: std::String): Storage<T> {
         }
         i = i + 1
     }
-    // Nothing has stored a [T] yet, so the world gets a storage for it now.
-    // Creating it on the first ask is what registers a component: declaring one
-    // is all there is to do, and no list has to be kept in step with the types
-    // that exist.
-    //
     // Built without `@std::arr[]`: this fallback is reached from a
     // specialization created after macros are expanded, so a macro left here
     // would still be one when the resolver arrived.
-    fin fresh = Storage<T>(
+    return Storage<T>(
         std::Array::fill<Entity>(0),
         std::Array::fill<T>(0),
         std::Array::fill<std::Bool>(0),
         std::Array::fill<std::Bool>(0),
         0L,
     )
-    world.storageNames.add(name)
-    world.storages.add(fresh)
-    return fresh
 }
 
 /**

@@ -60,7 +60,7 @@ import engine.ui.paint
  */
 pack Ui {
     /** Where to build: the composition, positioned at the tree root. */
-    var at: Scope
+    var at: Anchor
     /** The window, for input and size. */
     var app: App
     /**
@@ -84,7 +84,7 @@ pack Ui {
     var lastWidth: std::Double
     /** The height last written to [Viewport]. */
     var lastHeight: std::Double
-    /** Whether the composition scope has been put in the world. */
+    /** Whether the composition anchor has been put in the world. */
     var seededScope: std::Bool
     /**
      * The stamp each system's parameters last showed, by slot.
@@ -260,15 +260,15 @@ pack Viewport {
 /**
  * Where a system builds nodes, as a resource: `with composeIn(world) { … }`.
  *
- * A [Scope] is a handle - it holds an exclusive borrow of the composition and
+ * An [Anchor] is a handle - it holds an exclusive borrow of the composition and
  * the node to hang children from - so putting one in the world shares the
  * composition rather than copying it. That is what makes composition reachable
  * from the world, and a system that composes need not be handed `Ui` to do it.
  */
 @std::Experimental(since: "0.1")
 @std::ProvidesAccess
-inline func composeIn(world: World&): Scope {
-    return resource<Scope>(world)
+inline func composeIn(world: World&): Anchor {
+    return resource<Anchor>(world)
 }
 
 macro @compose $w => inline "with composeIn($w)"
@@ -399,7 +399,7 @@ react func seedFrameResources(ui: Ui!) {
     }
     if !ui.seededScope {
         ui.seededScope = true
-        wrote = insertResource<Scope>(ui.at.pass.world, ui.at.clone())
+        wrote = insertResource<Anchor>(ui.at.pass.world, ui.at.clone())
     }
     if wrote {
         return
@@ -535,7 +535,7 @@ react func runUiColored(
     var pass = Composition::of(take world, "app")
     // Commas: a newline cannot separate arguments once one of them is a call.
     var ui = Ui(
-        Scope(pass, pass.root), window, 0, 0.0,
+        Anchor(pass, pass.root), window, 0, 0.0,
         zeroDoubles(maxSystems), zeroInts(maxSystems), zeroBools(maxSystems),
         0 - 1, 0.0 - 1.0, 0.0 - 1.0, false,
         // Below any real stamp, so the first pass always runs.

@@ -20,7 +20,7 @@
  * Drawing the committed UI world.
  *
  * The last pass, and the only one that touches `App`. It reads arranged rows -
- * [Rect] with [Paint], and [Label] where present - and submits draw calls.
+ * [Rect] with [Paint], and [Text] where present - and submits draw calls.
  * Nothing above it knows a renderer exists, which is what lets the same world be
  * asserted on in a test with no window (§10.1: the render tree owns draw data
  * and nothing else).
@@ -54,15 +54,15 @@ func paintTree(
     clipTop: std::Double
     clipBottom: std::Double
 ) {
-    fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), node, Rect(0.0, 0.0, 0.0, 0.0))
+    fin rect = storageGetOrDefault<Rect>(store(pass), node, .())
     fin visible = rect.y + rect.height >= clipTop && rect.y <= clipBottom
 
     if visible {
-        fin ink = storageGetOrDefault<Paint>(store<Paint>(pass), node, Paint(0.0, 0.0, 0.0, 0.0, 0.0))
+        fin ink = storageGetOrDefault<Paint>(store(pass), node, .())
         if ink.alpha > 0.0 && rect.width > 0.0 && rect.height > 0.0 {
             app.uiRect(rect.x, rect.y, rect.width, rect.height, ink.r, ink.g, ink.b, ink.alpha)
         }
-        fin label = storageGetOrDefault<Label>(store<Label>(pass), node, Label(""))
+        fin label = storageGetOrDefault<Text>(store(pass), node, .())
         if std::stringLength(label.value) > 0 {
             fin size = if ink.size > 0.0 { ink.size } else { 14.0 }
             // Text is drawn inside its own node's rectangle. It is not nudged
@@ -85,7 +85,7 @@ func paintTree(
     // drawn over whatever sits above the container - the toolbar, a neighbour,
     // anything. The rectangle is restored afterwards rather than saved and
     // put back, because containers here do not nest.
-    fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node)
+    fin scrolls = storageHas<Scroll>(store(pass), node)
     var childTop = clipTop
     var childBottom = clipBottom
     if scrolls {

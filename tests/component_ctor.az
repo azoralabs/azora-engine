@@ -1,0 +1,68 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// A component's constructor is how it enters a composition.
+//
+// `Text(…)` and `Button(…)` name the packs themselves. Written where an anchor
+// is in scope the constructor reads that anchor and spawns a node; written
+// anywhere else the same name builds the plain value, which is what lets one
+// name serve both without a builder beside it.
+//
+// Both routes into the tree are covered: the provided `Compose.compose` that
+// `Text` derives, and the one `Button` writes itself to also mark the node
+// activatable and centre what it holds.
+
+module app
+
+import std.io
+import engine.core
+import engine.ecs
+import engine.ui.node
+import engine.ui.compose
+
+/** A component this file declares and never registers by hand. */
+@Component
+pack Marker {
+    var note: std::String = ""
+}
+
+react func main() {
+    var world = World::init()
+    var pass = Composition::of(take world, "test")
+
+    fin plain = Text("just a value")
+    std::println("plain=${plain.value}")
+
+    pass.begin()
+    var root = Anchor(pass, pass.root)
+    with root {
+        fin caption = Text("Play")
+        fin action = Button(action: 7) {
+            Text("Stop")
+        }
+        std::println("caption=${caption.id} button=${action.id}")
+        std::println("clickable=${storageHas<Clickable>(store<Clickable>(pass), action)}")
+        std::println("code=${storageGet<Action>(store<Action>(pass), action).code}")
+        std::println("stored=${storageHas<Button>(store<Button>(pass), action)}")
+        std::println("captioned=${storageGet<Text>(store<Text>(pass), caption).value}")
+    }
+    // Nothing registered a storage for [Marker]; declaring it was enough.
+    storageInsert<Marker>(store<Marker>(pass), pass.root, .("here"))
+    std::println("marker=${storageGet<Marker>(store<Marker>(pass), pass.root).note}")
+
+    fin swept = pass.commit()
+    std::println("swept=${swept} nodes=${pass.nodeCount()}")
+}

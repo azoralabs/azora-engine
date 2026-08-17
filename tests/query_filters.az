@@ -66,9 +66,11 @@ func main() {
     storageInsert<Tagged>(tagged, a, Tagged(100))
     storageInsert<Tagged>(tagged, b, Tagged(200))
 
-    // Each answers whether it *replaced* a registration, so a first one is
-    // false. The values are read rather than discarded because an `inline func`
-    // only folds its `T.typeName` where its result is bound.
+    // Each answers whether it *replaced* a registration, and each does: asking
+    // for a storage is what creates it, so `storageOf` above already put these
+    // in the world and registering them again puts the same ones back. The
+    // values are read rather than discarded because an `inline func` only folds
+    // its `T.typeName` where its result is bound.
     fin p = registerStorage<Position>(world, positions)
     fin f = registerStorage<Frozen>(world, frozen)
     fin t = registerStorage<Tagged>(world, tagged)
