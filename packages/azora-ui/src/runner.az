@@ -271,7 +271,24 @@ inline func composeIn(world: World&): Anchor {
     return resource<Anchor>(world)
 }
 
-macro @compose $w => inline "with composeIn($w)"
+macro @compose {
+    func _body(body: String, key: String = "", modifier: String = ".()") { // this should be automatically deepinline because we are in a macro
+        return """
+            with anchor.pass {
+                fin node = compose(anchor.parent, @applyKey($key), $modifier)
+                with anchor.inside(node) {
+                    $body
+                }
+                return node
+            }
+        """
+    }
+
+    { $body } => _body($body)
+    by $key: String => _body($body, $key)
+    using $modifier: Modifier& => _body($body, "", $modifier)
+    by $key: String using $modifier: Modifier& => _body($body, $key, $modifier)
+} // we enforce key to be String and $modifier to be Modifier but when we use it they all are code text
 
 /**
  * A resource, as a system parameter: `time: Res<Time>`.

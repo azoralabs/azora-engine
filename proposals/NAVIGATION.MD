@@ -2,7 +2,7 @@
 
 Status: Full design proposal
 
-Primary package: `engine.ui.navigation`
+Primary package: `azora.navigation`
 
 Related packages: `engine.ui`, `engine.ui.compose`, `engine.ui.reactive`,
 `engine.input`, `engine.platform`, `engine.profiler`, `std.serializer`
@@ -188,36 +188,36 @@ The proposal uses these terms consistently:
 
 ## 7. Package and module layout
 
-The initial implementation remains in `azora-ui`, because navigation needs the
-reactive owner and composition host but must not depend on a particular
-renderer.
+Navigation lives in the dedicated `azora-navigation` package. The core remains
+renderer-neutral; `azora-ui` and other presentation packages consume it through
+ordinary entry content and scene adapters.
 
 ```text
-azora-ui/
-  engine.ui.navigation          # stack, entries, display, lifecycle
-  engine.ui.navigation.scene    # scenes and scene strategies
-  engine.ui.navigation.overlay  # dialogs, sheets, menus, overlays
-  engine.ui.navigation.motion   # transition and predictive-back state
-  engine.ui.navigation.state    # decorators, owner state, snapshots
-  engine.ui.navigation.link     # URI/deep-link parsing and stack plans
-  engine.ui.navigation.test     # headless display and deterministic drivers
+azora-navigation/
+  azora.navigation          # public facade
+  azora.navigation.model    # IDs, policies, environments, and errors
+  azora.navigation.stack    # back stacks and atomic transactions
+  azora.navigation.entry    # resolution, metadata, owners, and contexts
+  azora.navigation.scene    # scene selection and adaptive strategies
+  azora.navigation.overlay  # dialogs, sheets, popovers, and overlays
+  azora.navigation.motion   # transitions and predictive-back state
+  azora.navigation.back     # scoped hierarchical back dispatch
+  azora.navigation.state    # results, stack sets, and snapshots
+  azora.navigation.link     # URI parsing and transactional stack plans
+  azora.navigation.test     # headless display and deterministic drivers
 ```
 
 The package dependencies remain one-directional:
 
 ```text
 engine.core / engine.ecs / engine.input / engine.platform / std.serializer
-                -> engine.ui.navigation
+                -> azora.navigation
                 -> engine.ui.compose and provider adapters
 ```
 
-`engine.ui.navigation` must not import `engine.video`, `engine.audio`, gameplay
+`azora.navigation` must not import `engine.video`, `engine.audio`, gameplay
 packages, or platform-native UI frameworks. An application screen may import
 those packages normally.
-
-If the module grows enough to slow unrelated UI builds, it may become
-`azora-navigation` later while retaining the `engine.ui.navigation` module
-name.
 
 ## 8. Canonical route model
 
@@ -679,18 +679,32 @@ Entry content runs under its `NavEntryOwner`. Azora state lifetimes apply
 directly:
 
 ```azora
-react func ProductScreen(id: std::String, context: NavEntryContext<AppRoute>&) {
-    remember var menuOpen = false
-    retain var scroll = 0.0
-    preserve var selectedTab = 0
+@Component
+pack ProductScreen derives Compose
 
-    effect defer {
-        // cancel entry-local observation or release entry-local capability
+impl ProductScreen {
+    react ctor[self: Self!, anchor: Anchor&](
+        id: std::String
+        navEntryContext: NavEntryContext<AppRoute>&
+        modifier: Modifier& = .()
+        key: std::String = ""
+    ): Entity {
+        retain var scroll = 0.0
+        preserve var selectedTab = 0
+
+        @compose by key using modifier {
+            productContent(id, selectedTab, scroll)
+        }
     }
-
-    productContent(id, selectedTab, scroll)
 }
 ```
+
+Like `Text` and `Button`, a component that emits ECS UI derives or implements
+`Compose`, receives `self` and an `Anchor&` in its `react ctor`, claims its root
+with `compose(anchor.parent, @applyKey, modifier)`, and returns that `Entity`.
+Screen children are composed under `anchor.inside(node)`. Empty marker
+components still use the same constructor shape so completion and `@compose`
+do not need a second screen-specific calling convention.
 
 - `remember` survives recomposition while the current owner exists.
 - `retain` survives temporary scene/layout recreation in the process.
@@ -1238,22 +1252,31 @@ Nested navigation is used when a screen contains an independent flow whose
 history and lifetime belong to that screen.
 
 ```azora
-variant enum SettingsRoute {
+enum SettingsRoute {
     Overview
     Audio
     Video
     Advanced
 }
 
-react func SettingsScreen(context: NavEntryContext<AppRoute>&) {
-    preserve var stack = navBackStack<SettingsRoute>(SettingsRoute.Overview)
+@Component
+pack SettingsScreen derives Compose
 
-    navDisplay(
-        stack: stack,
-        parent: context.owner,
-        entryProvider: settingsEntryProvider(),
-        backDispatcher: context.environment.back.child()
-    )
+impl SettingsScreen {
+    react ctor[self: Self!, anchor: Anchor&](
+        navEntryContext: NavEntryContext<AppRoute>&
+    ): Entity {
+        preserve var stack = navBackStack<SettingsRoute>(.Overview)
+
+        @compose {
+            navDisplay(
+                stack: stack
+                parent: navEntryContext.owner
+                entryProvider: settingsEntryProvider()
+                backDispatcher: navEntryContext.environment.back.child
+            )
+        }
+    }
 }
 ```
 
@@ -1821,7 +1844,7 @@ Recommended profiler counters/spans:
 
 ### 38.7 Headless UI tests
 
-`engine.ui.navigation.test` supplies a `TestNavDisplay<K>` with fixed window
+`azora.navigation.test` supplies a `TestNavDisplay<K>` with fixed window
 metrics, clock, input, and transition driver. Tests inspect:
 
 - visible scenes and entries;
