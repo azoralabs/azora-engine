@@ -49,7 +49,7 @@ pack TilePosition {
 /** Which tile of the tileset a tile entity draws. */
 @Component
 pack TileTextureIndex {
-    var index: std::Int
+    var index: Int
 }
 
 /** A per-entity tint, multiplied over its layer's own. */
@@ -61,7 +61,7 @@ pack TileTint {
 /** Whether a tile entity is drawn; the cell stays occupied either way. */
 @Component
 pack TileVisibility {
-    var visible: std::Bool
+    var visible: Bool
 }
 
 /** A tile entity's mirroring. */
@@ -73,7 +73,7 @@ pack TileMirror {
 /** Which layer of its map a tile entity writes into. */
 @Component
 pack TileLayerIndex {
-    var layer: std::Int
+    var layer: Int
 }
 
 /** The tilemap entity a tile belongs to. */
@@ -128,9 +128,9 @@ func spawnTile(
     world: World!
     entities: TileEntities!
     map: Tilemap&
-    layer: std::Int
+    layer: Int
     pos: TilePos
-    index: std::Int
+    index: Int
     owner: Entity
 ): Entity ?! TilemapFault {
     if !map.hasLayer(layer) {
@@ -161,9 +161,9 @@ func spawnTileOrNone(
     world: World!
     entities: TileEntities!
     map: Tilemap&
-    layer: std::Int
+    layer: Int
     pos: TilePos
-    index: std::Int
+    index: Int
     owner: Entity
 ): Entity {
     return spawnTile(world, entities, map, layer, pos, index, owner) catch Entity::invalid
@@ -185,12 +185,12 @@ func setTileMirror(entities: TileEntities!, entity: Entity, mirrors: TileFlip) {
 }
 
 /** Shows or hides [entity] without clearing its cell. */
-func setTileVisible(entities: TileEntities!, entity: Entity, visible: std::Bool) {
+func setTileVisible(entities: TileEntities!, entity: Entity, visible: Bool) {
     storageInsert(entities.visibility, entity, TileVisibility(visible))
 }
 
 /** Changes the tile [entity] draws. */
-func setTileIndex(entities: TileEntities!, entity: Entity, index: std::Int) {
+func setTileIndex(entities: TileEntities!, entity: Entity, index: Int) {
     storageInsert(entities.indices, entity, TileTextureIndex(index))
 }
 
@@ -200,7 +200,7 @@ func setTileIndex(entities: TileEntities!, entity: Entity, index: std::Int) {
  * Clearing the cell is part of despawning: an entity removed without its tile
  * leaves the picture of a door that no longer exists.
  */
-func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: TilePos): std::Bool {
+func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: TilePos): Bool {
     fin entity = tileEntityAt(entities, pos)
     if !entity.isValid {
         return false
@@ -229,7 +229,7 @@ func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: Til
  * a switch thrown during `.Update` shows its new tile in the same frame it was
  * thrown, not the next one.
  */
-func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): std::Int {
+func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): Int {
     var written = 0
     var i = 0
     while i < storageLength(entities.positions) {
@@ -280,12 +280,12 @@ func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): s
  * the world has since recycled, which is how a door starts answering for a
  * crate. Belongs in `.Last`, after everything that can despawn a tile.
  */
-func sweepTileEntities(world: World&, entities: TileEntities!): std::Int {
+func sweepTileEntities(world: World&, entities: TileEntities!): Int {
     return tileStorageSweep(entities.bindings, world)
 }
 
 /** Despawns every tile entity and unbinds every cell. */
-func clearTileEntities(world: World!, entities: TileEntities!): std::Int {
+func clearTileEntities(world: World!, entities: TileEntities!): Int {
     return tileStorageDespawnAll(entities.bindings, world)
 }
 

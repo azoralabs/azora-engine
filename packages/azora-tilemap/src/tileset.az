@@ -36,36 +36,36 @@ import engine.gpu.draw
  * array.
  */
 pack TileSet {
-    var name: std::String
+    var name: String
     var texture: TilemapTexture
-    var traits: std::Array<std::Int>
+    var traits: Array<Int>
     var animations: TileAnimationSet
 }
 
 /** A tileset over [texture], with every tile inert and unanimated. */
-func tileSetNew(name: std::String, texture: TilemapTexture): TileSet {
+func tileSetNew(name: String, texture: TilemapTexture): TileSet {
     fin count = intMax(textureTileCount(texture), 0)
     return TileSet(name, texture, intGridFill(count, 1, 0), tileAnimationSetNew(count))
 }
 
 /** A tileset over a single sheet. */
-func tileSetFromAtlas(name: std::String, atlas: TileAtlas): TileSet {
+func tileSetFromAtlas(name: String, atlas: TileAtlas): TileSet {
     return tileSetNew(name, tilemapTextureSingle(atlas))
 }
 
 impl TileSet {
     /** The number of tiles the set can address. */
-    func count(): std::Int {
+    func count(): Int {
         return textureTileCount(self.texture)
     }
 
     /** True when [index] names a tile of this set. */
-    func owns(index: std::Int): std::Bool {
+    func owns(index: Int): Bool {
         return index >= 0 && index < self.count()
     }
 
     /** The trait bits of [index], or `0` for an unknown tile. */
-    func traitsOf(index: std::Int): std::Int {
+    func traitsOf(index: Int): Int {
         if index < 0 || index >= self.traits.size {
             return 0
         }
@@ -73,7 +73,7 @@ impl TileSet {
     }
 
     /** Replaces the trait bits of [index]. */
-    func setTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+    func setTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         if index < 0 || index >= self.traits.size {
             return .UnknownTile
         }
@@ -81,12 +81,12 @@ impl TileSet {
     }
 
     /** Adds [traits] to the bits of [index]. */
-    func addTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+    func addTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         try self.setTraits(index, self.traitsOf(index) | traits)
     }
 
     /** Removes [traits] from the bits of [index]. */
-    func removeTraits(index: std::Int, traits: std::Int): std::Unit ?! TilemapFault {
+    func removeTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         try self.setTraits(index, flagsClear(self.traitsOf(index), traits))
     }
 
@@ -96,7 +96,7 @@ impl TileSet {
      * Tilesets are laid out in runs — a strip of ground, a strip of water — so
      * marking a run is the operation a game actually performs after loading.
      */
-    func addTraitsRange(first: std::Int, last: std::Int, traits: std::Int): std::Int {
+    func addTraitsRange(first: Int, last: Int, traits: Int): Int {
         var marked = 0
         var index = intMax(first, 0)
         while index <= last && index < self.traits.size {
@@ -108,41 +108,41 @@ impl TileSet {
     }
 
     /** True when [index] carries every bit of [mask]. */
-    func hasAll(index: std::Int, mask: std::Int): std::Bool {
+    func hasAll(index: Int, mask: Int): Bool {
         return flagsAll(self.traitsOf(index), mask)
     }
 
     /** True when [index] carries any bit of [mask]. */
-    func hasAny(index: std::Int, mask: std::Int): std::Bool {
+    func hasAny(index: Int, mask: Int): Bool {
         return flagsAny(self.traitsOf(index), mask)
     }
 
-    func isSolid(index: std::Int): std::Bool {
+    func isSolid(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitSolid)
     }
 
-    func isOneWay(index: std::Int): std::Bool {
+    func isOneWay(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitOneWay)
     }
 
-    func isLadder(index: std::Int): std::Bool {
+    func isLadder(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitLadder)
     }
 
-    func isWater(index: std::Int): std::Bool {
+    func isWater(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitWater)
     }
 
-    func isHazard(index: std::Int): std::Bool {
+    func isHazard(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitHazard)
     }
 
-    func isDestructible(index: std::Int): std::Bool {
+    func isDestructible(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitDestructible)
     }
 
     /** The slope direction of [index]: `1` rising right, `-1` rising left, `0` flat. */
-    func slope(index: std::Int): std::Int {
+    func slope(index: Int): Int {
         fin traits = self.traitsOf(index)
         if flagsAny(traits, traitSlopeRight) {
             return 1
@@ -159,24 +159,24 @@ impl TileSet {
      * The [traitAnimated] bit lets a renderer or an editor tell at a glance
      * that a tile is not the still picture it appears to be.
      */
-    func animate(animation: TileAnimation): std::Int {
+    func animate(animation: TileAnimation): Int {
         fin id = self.animations.add(animation)
         self.addTraitsRange(animation.first, animation.last, traitAnimated)
         return id
     }
 
     /** The tile actually drawn for [index] at [seconds] in cell [pos]. */
-    func resolve(index: std::Int, seconds: std::Double, pos: TilePos): std::Int {
+    func resolve(index: Int, seconds: Double, pos: TilePos): Int {
         return self.animations.resolveAt(index, seconds, pos)
     }
 
     /** The sheet and local id backing [index]. */
-    func find(index: std::Int): AtlasPick {
+    func find(index: Int): AtlasPick {
         return textureFind(self.texture, index)
     }
 
     /** True when the set has usable artwork. */
-    func ok(): std::Bool {
+    func ok(): Bool {
         return textureOk(self.texture)
     }
 }

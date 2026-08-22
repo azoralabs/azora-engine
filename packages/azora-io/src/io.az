@@ -22,38 +22,38 @@ import std.char
 import std.string
 
 bridge .C {
-    func fopen(path: std::String, mode: std::String): std::Long
-    func fclose(stream: std::Long): std::Int
-    func fseek(stream: std::Long, offset: std::Long, whence: std::Int): std::Int
-    func ftell(stream: std::Long): std::Long
-    func fread(ptr: std::Long, size: std::Long, count: std::Long, stream: std::Long): std::Long
-    func fputs(text: std::String, stream: std::Long): std::Int
-    func fflush(stream: std::Long): std::Int
-    func remove(path: std::String): std::Int
-    func rename(oldPath: std::String, newPath: std::String): std::Int
+    func fopen(path: String, mode: String): Long
+    func fclose(stream: Long): Int
+    func fseek(stream: Long, offset: Long, whence: Int): Int
+    func ftell(stream: Long): Long
+    func fread(ptr: Long, size: Long, count: Long, stream: Long): Long
+    func fputs(text: String, stream: Long): Int
+    func fflush(stream: Long): Int
+    func remove(path: String): Int
+    func rename(oldPath: String, newPath: String): Int
 
     // Raw memory (az_ffi.c). Declared once here, for the whole engine: this is
     // the lowest module every consumer of raw buffers already imports, and a
     // second declaration elsewhere would collide with this one.
-    func @foreignName("az_alloc")(n: std::Long): std::Long
-    func @foreignName("az_free")(p: std::Long)
-    func @foreignName("az_copy")(dst: std::Long, src: std::Long, n: std::Long)
-    func @foreignName("az_peek64")(p: std::Long, off: std::Long): std::Long
-    func @foreignName("az_peek32")(p: std::Long, off: std::Long): std::Int
-    func @foreignName("az_peek8")(p: std::Long, off: std::Long): std::Int
-    func @foreignName("az_peek_f64")(p: std::Long, off: std::Long): std::Double
-    func @foreignName("az_poke64")(p: std::Long, off: std::Long, v: std::Long)
-    func @foreignName("az_poke32")(p: std::Long, off: std::Long, v: std::Int)
-    func @foreignName("az_poke8")(p: std::Long, off: std::Long, v: std::Int)
-    func @foreignName("az_poke_f32")(p: std::Long, off: std::Long, v: std::Double)
-    func @foreignName("az_poke_f64")(p: std::Long, off: std::Long, v: std::Double)
+    func @foreignName("az_alloc")(n: Long): Long
+    func @foreignName("az_free")(p: Long)
+    func @foreignName("az_copy")(dst: Long, src: Long, n: Long)
+    func @foreignName("az_peek64")(p: Long, off: Long): Long
+    func @foreignName("az_peek32")(p: Long, off: Long): Int
+    func @foreignName("az_peek8")(p: Long, off: Long): Int
+    func @foreignName("az_peek_f64")(p: Long, off: Long): Double
+    func @foreignName("az_poke64")(p: Long, off: Long, v: Long)
+    func @foreignName("az_poke32")(p: Long, off: Long, v: Int)
+    func @foreignName("az_poke8")(p: Long, off: Long, v: Int)
+    func @foreignName("az_poke_f32")(p: Long, off: Long, v: Double)
+    func @foreignName("az_poke_f64")(p: Long, off: Long, v: Double)
 
     // Process-wide close request (az_ffi.c). The flag lives in the runtime
     // because Azora has no mutable global to put it in: a top-level `var` is
     // rejected as unsafe to share, and `fin` is deeply immutable. The engine
     // surface over these two is `azora::engine::exit()` in `engine.core`.
     func @foreignName("az_request_exit")()
-    func @foreignName("az_exit_requested")(): std::Long
+    func @foreignName("az_exit_requested")(): Long
 }
 
 /** `fseek` origin: end of stream. */
@@ -67,7 +67,7 @@ fin seekSet = 0
  *
  * Asset formats label things in ASCII, so turning a byte into a one-character
  * string is a hot path. Slicing this constant is the way to do it: the obvious
- * route, `charsToString(@std::arr[codeToChar(c)])`, miscompiles on the native
+ * route, `charsToString(@arr[codeToChar(c)])`, miscompiles on the native
  * backend and faults, so it is deliberately not used here.
  */
 fin asciiPrintable =
@@ -80,7 +80,7 @@ fin asciiPrintable =
  * keep its line structure, or every line-based parser downstream sees one
  * enormous line. Carriage returns are dropped so CRLF files behave like LF.
  */
-func asciiChar(code: std::Int): std::String {
+func asciiChar(code: Int): String {
     if code == 10 {
         return "\n"
     }
@@ -90,7 +90,7 @@ func asciiChar(code: std::Int): std::String {
     if code < 32 || code > 126 {
         return ""
     }
-    return std::strSlice(asciiPrintable, code - 32, code - 31)
+    return strSlice(asciiPrintable, code - 32, code - 31)
 }
 
 /**
@@ -99,14 +99,14 @@ func asciiChar(code: std::Int): std::String {
  * A blob owns its allocation; call [release] when finished. `size` is zero for
  * a failed read, which is what [ok] reports.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Blob {
-    var data: std::Long
-    var size: std::Int
+    var data: Long
+    var size: Int
 }
 
 /** An empty blob, used for every failure path. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func blobEmpty(): Blob {
     return Blob(0L, 0)
 }
@@ -118,8 +118,8 @@ func blobEmpty(): Blob {
  * [Blob.ok] rather than handling an error type, because a missing asset is
  * expected during development and should degrade rather than abort.
  */
-@std::Experimental(since: "0.1")
-func readFile(path: std::String): Blob {
+@Experimental(since: "0.1")
+func readFile(path: String): Blob {
     fin stream = fopen(path, "rb")
     if stream == 0L {
         return blobEmpty()
@@ -147,7 +147,7 @@ func readFile(path: std::String): Blob {
         azFree(buffer)
         return blobEmpty()
     }
-    return Blob(buffer, read as std::Int)
+    return Blob(buffer, read as Int)
 }
 
 /**
@@ -157,8 +157,8 @@ func readFile(path: std::String): Blob {
  * is replaced. A failed write leaves the previous file intact and removes the
  * temporary file, making this suitable for settings and save-game metadata.
  */
-@std::Experimental(since: "0.1")
-func writeTextFile(path: std::String, content: std::String): std::Bool {
+@Experimental(since: "0.1")
+func writeTextFile(path: String, content: String): Bool {
     fin temporary = path + ".tmp"
     fin stream = fopen(temporary, "wb")
     if stream == 0L {
@@ -189,12 +189,12 @@ func writeTextFile(path: std::String, content: std::String): std::Bool {
 impl Blob {
 
     /** Whether the blob holds any bytes. */
-    func ok(): std::Bool {
+    func ok(): Bool {
         return self.data != 0L && self.size > 0
     }
 
     /** Whether [count] bytes can be read starting at [offset]. */
-    func has(offset: std::Int, count: std::Int): std::Bool {
+    func has(offset: Int, count: Int): Bool {
         if offset < 0 || count < 0 {
             return false
         }
@@ -208,15 +208,15 @@ impl Blob {
      * negative; masking folds it back into 0..255. The cast is parenthesized
      * because `x as Long & m` would parse `Long &` as a borrowed type.
      */
-    func u8(offset: std::Int): std::Int {
+    func u8(offset: Int): Int {
         if !self.has(offset, 1) {
             return 0
         }
-        return azPeek8(self.data, (offset as std::Long)) & 0xFF
+        return azPeek8(self.data, (offset as Long)) & 0xFF
     }
 
     /** The signed byte at [offset]. */
-    func i8(offset: std::Int): std::Int {
+    func i8(offset: Int): Int {
         fin value = self.u8(offset)
         if value > 127 {
             return value - 256
@@ -228,12 +228,12 @@ impl Blob {
      * The little-endian unsigned 16-bit value at [offset].
      *
      */
-    func u16(offset: std::Int): std::Int {
+    func u16(offset: Int): Int {
         return self.u8(offset) | (self.u8(offset + 1) << 8)
     }
 
     /** The little-endian signed 16-bit value at [offset]. */
-    func i16(offset: std::Int): std::Int {
+    func i16(offset: Int): Int {
         fin value = self.u16(offset)
         if value > 32767 {
             return value - 65536
@@ -248,7 +248,7 @@ impl Blob {
      * not depend on the host's byte order — asset formats are little-endian by
      * definition, whatever the machine reading them.
      */
-    func i32(offset: std::Int): std::Int {
+    func i32(offset: Int): Int {
         // A trailing operator is what continues the statement across a newline;
         // a leading one would terminate the previous line's expression.
         return self.u8(offset) |
@@ -263,18 +263,18 @@ impl Blob {
      * Read through the runtime rather than reassembled from bytes, because the
      * bit layout of a double is not something to hand-roll.
      */
-    func f64(offset: std::Int): std::Double {
+    func f64(offset: Int): Double {
         if !self.has(offset, 8) {
             return 0.0
         }
-        return azPeekF64(self.data, offset as std::Long)
+        return azPeekF64(self.data, offset as Long)
     }
 
     /**
      * A fixed-width string of [length] bytes at [offset], stopping at the first
      * NUL. Fixed-width NUL-padded fields are how most asset formats store text.
      */
-    func text(offset: std::Int, length: std::Int): std::String {
+    func text(offset: Int, length: Int): String {
         var result = ""
         var i = 0
         while i < length {
@@ -289,8 +289,8 @@ impl Blob {
     }
 
     /** Whether the bytes at [offset] equal the ASCII [expected]. */
-    func matches(offset: std::Int, expected: std::String): std::Bool {
-        fin length = std::strLength(expected)
+    func matches(offset: Int, expected: String): Bool {
+        fin length = strLength(expected)
         if !self.has(offset, length) {
             return false
         }

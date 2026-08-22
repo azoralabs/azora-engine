@@ -116,9 +116,9 @@ error PhysicsFault {
  */
 @Component
 pack PhysicsMaterial {
-    var friction: std::Double
-    var restitution: std::Double
-    var density: std::Double
+    var friction: Double
+    var restitution: Double
+    var density: Double
 }
 
 /**
@@ -130,15 +130,15 @@ pack PhysicsMaterial {
  */
 @Component
 pack CollisionLayers {
-    var memberships: std::Int
-    var filters: std::Int
+    var memberships: Int
+    var filters: Int
 }
 
 /** Per-body velocity decay, applied once per substep. */
 @Component
 pack Damping {
-    var linear: std::Double
-    var angular: std::Double
+    var linear: Double
+    var angular: Double
 }
 
 /**
@@ -150,38 +150,38 @@ pack Damping {
  */
 @Component
 pack Sleeping {
-    var awake: std::Bool
-    var stillFor: std::Double
-    var threshold: std::Double
+    var awake: Bool
+    var stillFor: Double
+    var threshold: Double
 }
 
 /** Marks a collider that reports contacts without resolving them. */
 @Component
 pack Sensor {
-    var active: std::Bool
+    var active: Bool
 }
 
 /** Gravity scale for one body; `0` makes it float, `-1` makes it fall upward. */
 @Component
 pack GravityScale {
-    var value: std::Double
+    var value: Double
 }
 
 /** Solver tuning shared by a whole world. */
 @Resource
 pack PhysicsSettings {
-    var substeps: std::Int
-    var correctionRate: std::Double
-    var contactSlop: std::Double
-    var maxDelta: std::Double
-    var sleepThreshold: std::Double
-    var allowSleeping: std::Bool
+    var substeps: Int
+    var correctionRate: Double
+    var contactSlop: Double
+    var maxDelta: Double
+    var sleepThreshold: Double
+    var allowSleeping: Bool
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
 
 /** A material with the friction and bounce of ordinary painted metal. */
-func physicsMaterial(friction: std::Double = 0.65, restitution: std::Double = 0.05, density: std::Double = 1.0): PhysicsMaterial {
+func physicsMaterial(friction: Double = 0.65, restitution: Double = 0.05, density: Double = 1.0): PhysicsMaterial {
     return PhysicsMaterial(
         realClamp01(friction),
         realClamp01(restitution),
@@ -204,24 +204,24 @@ func allLayers(): CollisionLayers {
     return CollisionLayers(physicsAllLayers, physicsAllLayers)
 }
 
-func collisionLayers(memberships: std::Int, filters: std::Int): CollisionLayers {
+func collisionLayers(memberships: Int, filters: Int): CollisionLayers {
     return CollisionLayers(memberships, filters)
 }
 
 /** True when each of [a] and [b] is a member of a layer the other filters for. */
-func layersInteract(a: CollisionLayers, b: CollisionLayers): std::Bool {
+func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool {
     return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
 }
 
-func damping(linear: std::Double = 0.01, angular: std::Double = 0.05): Damping {
+func damping(linear: Double = 0.01, angular: Double = 0.05): Damping {
     return Damping(realClamp01(linear), realClamp01(angular))
 }
 
-func awakeBody(threshold: std::Double = 0.001): Sleeping {
+func awakeBody(threshold: Double = 0.001): Sleeping {
     return Sleeping(true, 0.0, threshold)
 }
 
-func gravityScale(value: std::Double = 1.0): GravityScale {
+func gravityScale(value: Double = 1.0): GravityScale {
     return GravityScale(value)
 }
 
@@ -245,7 +245,7 @@ func physicsSettings(): PhysicsSettings {
  * Static and kinematic bodies have zero inverse mass, which is what makes them
  * immovable without the solver needing to branch on the kind at every contact.
  */
-func inverseMassFor(kind: RigidBodyKind, mass: std::Double): std::Double {
+func inverseMassFor(kind: RigidBodyKind, mass: Double): Double {
     return when kind {
         RigidBodyKind.Dynamic -> if mass > 0.0 { 1.0 / mass } else { 0.0 }
         else -> 0.0
@@ -253,7 +253,7 @@ func inverseMassFor(kind: RigidBodyKind, mass: std::Double): std::Double {
 }
 
 /** True when [kind] is moved by the solver rather than by the game. */
-func kindIsSimulated(kind: RigidBodyKind): std::Bool {
+func kindIsSimulated(kind: RigidBodyKind): Bool {
     return when kind {
         RigidBodyKind.Dynamic -> true
         else -> false
@@ -261,7 +261,7 @@ func kindIsSimulated(kind: RigidBodyKind): std::Bool {
 }
 
 /** True when [kind] pushes other bodies but is never pushed itself. */
-func kindIsImmovable(kind: RigidBodyKind): std::Bool {
+func kindIsImmovable(kind: RigidBodyKind): Bool {
     return when kind {
         RigidBodyKind.Dynamic -> false
         else -> true
@@ -274,7 +274,7 @@ func kindIsImmovable(kind: RigidBodyKind): std::Bool {
  * Folding the four modes into a single scale factor here keeps the integrators
  * in both dimensions free of mode branching.
  */
-func forceScale(mode: ForceMode, inverseMass: std::Double, dt: std::Double): std::Double {
+func forceScale(mode: ForceMode, inverseMass: Double, dt: Double): Double {
     return when mode {
         ForceMode.Force -> inverseMass * dt
         ForceMode.Acceleration -> dt
@@ -292,7 +292,7 @@ func forceScale(mode: ForceMode, inverseMass: std::Double, dt: std::Double): std
  * quarter second before it sleeps, so a projectile at the top of its arc — which
  * is momentarily motionless — is not put to sleep in mid-air.
  */
-func updateSleep(sleep: Sleeping, speedSquared: std::Double, dt: std::Double): std::Bool {
+func updateSleep(sleep: Sleeping, speedSquared: Double, dt: Double): Bool {
     if speedSquared > sleep.threshold {
         sleep.stillFor = 0.0
         sleep.awake = true
@@ -313,7 +313,7 @@ func wake(sleep: Sleeping) {
 
 // ── Scalar helpers ──────────────────────────────────────────────────────
 
-func realClamp01(value: std::Double): std::Double {
+func realClamp01(value: Double): Double {
     return when true {
         value < 0.0 -> 0.0
         value > 1.0 -> 1.0
@@ -321,23 +321,23 @@ func realClamp01(value: std::Double): std::Double {
     }
 }
 
-func realMaxOf(a: std::Double, b: std::Double): std::Double {
+func realMaxOf(a: Double, b: Double): Double {
     return if a > b { a } else { b }
 }
 
-func realMinOf(a: std::Double, b: std::Double): std::Double {
+func realMinOf(a: Double, b: Double): Double {
     return if a < b { a } else { b }
 }
 
-func realClampTo(value: std::Double, low: std::Double, high: std::Double): std::Double {
+func realClampTo(value: Double, low: Double, high: Double): Double {
     return realMinOf(realMaxOf(value, low), high)
 }
 
-func absReal(value: std::Double): std::Double {
+func absReal(value: Double): Double {
     return if value < 0.0 { 0.0 - value } else { value }
 }
 
-func realSign(value: std::Double): std::Double {
+func realSign(value: Double): Double {
     return when true {
         value > 0.0 -> 1.0
         value < 0.0 -> -1.0
@@ -346,12 +346,12 @@ func realSign(value: std::Double): std::Double {
 }
 
 /** The timestep the solver will actually use for a frame delta of [dt]. */
-func clampTimestep(dt: std::Double, settings: PhysicsSettings): std::Double {
+func clampTimestep(dt: Double, settings: PhysicsSettings): Double {
     return realClampTo(dt, 0.0, settings.maxDelta)
 }
 
 /** The number of substeps [settings] asks for, held to a sane range. */
-func substepCount(settings: PhysicsSettings): std::Int {
+func substepCount(settings: PhysicsSettings): Int {
     return when true {
         settings.substeps < 1 -> 1
         settings.substeps > 16 -> 16

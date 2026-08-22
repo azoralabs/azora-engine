@@ -31,22 +31,22 @@ fin rgbaStride = 4
  * top row first. `indices` and `palette` are non-zero only for a palettized
  * source, and are what [applyPalette] re-expands from.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Image {
-    var width: std::Int
-    var height: std::Int
+    var width: Int
+    var height: Int
     /** RGBA8 pixels, `width * height * 4` bytes. */
-    var pixels: std::Long
+    var pixels: Long
     /** One byte per pixel of palette indices, or 0 when not palettized. */
-    var indices: std::Long
+    var indices: Long
     /** RGBA8 palette entries, or 0 when not palettized. */
-    var palette: std::Long
+    var palette: Long
     /** Number of entries in `palette`. */
-    var paletteCount: std::Int
+    var paletteCount: Int
 }
 
 /** The empty image returned by every failure path. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func imageEmpty(): Image {
     return Image(0, 0, 0L, 0L, 0L, 0)
 }
@@ -58,7 +58,7 @@ func imageEmpty(): Image {
  * [Image.ok] rather than handling an error type, so a missing asset degrades to
  * a blank draw instead of taking the frame down.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func decode(blob: Blob): Image {
     if !blob.ok() {
         return imageEmpty()
@@ -77,7 +77,7 @@ func decode(blob: Blob): Image {
  * and padded to a four-byte boundary; both are undone here so the caller always
  * receives top-down tightly packed RGBA.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func decodeBmp(blob: Blob): Image {
     if !blob.has(0, 54) {
         return imageEmpty()
@@ -108,7 +108,7 @@ func decodeBmp(blob: Blob): Image {
     }
 
     fin pixelCount = width * height
-    fin pixels = azAlloc((pixelCount * rgbaStride) as std::Long)
+    fin pixels = azAlloc((pixelCount * rgbaStride) as Long)
     if pixels == 0L {
         return imageEmpty()
     }
@@ -124,7 +124,7 @@ func decodeBmp(blob: Blob): Image {
         }
         image.palette = readBmpPalette(blob, paletteOffset, paletteCount)
         image.paletteCount = paletteCount
-        image.indices = azAlloc(pixelCount as std::Long)
+        image.indices = azAlloc(pixelCount as Long)
         if image.palette == 0L || image.indices == 0L {
             image.release()
             return imageEmpty()
@@ -149,15 +149,15 @@ func decodeBmp(blob: Blob): Image {
  * BMP stores palette entries as BGRA with an unused fourth byte, so the channel
  * order is corrected here and every entry is made fully opaque.
  */
-func readBmpPalette(blob: Blob, offset: std::Int, count: std::Int): std::Long {
-    fin palette = azAlloc((count * rgbaStride) as std::Long)
+func readBmpPalette(blob: Blob, offset: Int, count: Int): Long {
+    fin palette = azAlloc((count * rgbaStride) as Long)
     if palette == 0L {
         return 0L
     }
     var i = 0
     while i < count {
         fin src = offset + i * 4
-        fin dst = (i * rgbaStride) as std::Long
+        fin dst = (i * rgbaStride) as Long
         azPoke8(palette, dst, blob.u8(src + 2))
         azPoke8(palette, dst + 1L, blob.u8(src + 1))
         azPoke8(palette, dst + 2L, blob.u8(src))
@@ -168,7 +168,7 @@ func readBmpPalette(blob: Blob, offset: std::Int, count: std::Int): std::Long {
 }
 
 /** Copies one-byte-per-pixel rows into [image]'s index plane, top-down. */
-func readIndexedRows(blob: Blob, image: Image, dataOffset: std::Int, bottomUp: std::Bool) {
+func readIndexedRows(blob: Blob, image: Image, dataOffset: Int, bottomUp: Bool) {
     fin rowStride = paddedStride(image.width)
     var y = 0
     while y < image.height {
@@ -176,7 +176,7 @@ func readIndexedRows(blob: Blob, image: Image, dataOffset: std::Int, bottomUp: s
         fin rowStart = dataOffset + sourceRow * rowStride
         var x = 0
         while x < image.width {
-            azPoke8(image.indices, (y * image.width + x) as std::Long, blob.u8(rowStart + x))
+            azPoke8(image.indices, (y * image.width + x) as Long, blob.u8(rowStart + x))
             x = x + 1
         }
         y = y + 1
@@ -184,7 +184,7 @@ func readIndexedRows(blob: Blob, image: Image, dataOffset: std::Int, bottomUp: s
 }
 
 /** Decodes 24- or 32-bit BGR(A) rows straight into [image]'s RGBA pixels. */
-func readTrueColorRows(blob: Blob, image: Image, dataOffset: std::Int, bitCount: std::Int, bottomUp: std::Bool) {
+func readTrueColorRows(blob: Blob, image: Image, dataOffset: Int, bitCount: Int, bottomUp: Bool) {
     fin bytesPerPixel = bitCount / 8
     fin rowStride = paddedStride(image.width * bytesPerPixel)
     var y = 0
@@ -194,7 +194,7 @@ func readTrueColorRows(blob: Blob, image: Image, dataOffset: std::Int, bitCount:
         var x = 0
         while x < image.width {
             fin src = rowStart + x * bytesPerPixel
-            fin dst = ((y * image.width + x) * rgbaStride) as std::Long
+            fin dst = ((y * image.width + x) * rgbaStride) as Long
             azPoke8(image.pixels, dst, blob.u8(src + 2))
             azPoke8(image.pixels, dst + 1L, blob.u8(src + 1))
             azPoke8(image.pixels, dst + 2L, blob.u8(src))
@@ -210,19 +210,19 @@ func readTrueColorRows(blob: Blob, image: Image, dataOffset: std::Int, bitCount:
 }
 
 /** A BMP row's byte width, rounded up to the next four-byte boundary. */
-func paddedStride(unpadded: std::Int): std::Int {
+func paddedStride(unpadded: Int): Int {
     return (unpadded + 3) / 4 * 4
 }
 
 impl Image {
 
     /** Whether the image decoded successfully. */
-    func ok(): std::Bool {
+    func ok(): Bool {
         return self.pixels != 0L && self.width > 0 && self.height > 0
     }
 
     /** Whether the image kept a palette that [applyPalette] can re-expand. */
-    func isPalettized(): std::Bool {
+    func isPalettized(): Bool {
         return self.indices != 0L && self.palette != 0L && self.paletteCount > 0
     }
 
@@ -240,12 +240,12 @@ impl Image {
         fin count = self.width * self.height
         var i = 0
         while i < count {
-            var index = azPeek8(self.indices, i as std::Long) & 0xFF
+            var index = azPeek8(self.indices, i as Long) & 0xFF
             if index >= self.paletteCount {
                 index = 0
             }
-            fin src = (index * rgbaStride) as std::Long
-            fin dst = (i * rgbaStride) as std::Long
+            fin src = (index * rgbaStride) as Long
+            fin dst = (i * rgbaStride) as Long
             azPoke8(self.pixels, dst, azPeek8(self.palette, src) & 0xFF)
             azPoke8(self.pixels, dst + 1L, azPeek8(self.palette, src + 1L) & 0xFF)
             azPoke8(self.pixels, dst + 2L, azPeek8(self.palette, src + 2L) & 0xFF)
@@ -260,11 +260,11 @@ impl Image {
      * The change only reaches the pixels on the next [applyPalette], so a caller
      * can rewrite a whole cycle and expand once.
      */
-    func setPaletteEntry(index: std::Int, r: std::Int, g: std::Int, b: std::Int) {
+    func setPaletteEntry(index: Int, r: Int, g: Int, b: Int) {
         if self.palette == 0L || index < 0 || index >= self.paletteCount {
             return
         }
-        fin dst = (index * rgbaStride) as std::Long
+        fin dst = (index * rgbaStride) as Long
         azPoke8(self.palette, dst, r)
         azPoke8(self.palette, dst + 1L, g)
         azPoke8(self.palette, dst + 2L, b)
@@ -276,15 +276,15 @@ impl Image {
      * Palettized game art conventionally reserves one index as the colour key
      * rather than carrying an alpha channel.
      */
-    func setColorKey(index: std::Int) {
+    func setColorKey(index: Int) {
         if self.palette == 0L || index < 0 || index >= self.paletteCount {
             return
         }
-        azPoke8(self.palette, (index * rgbaStride + 3) as std::Long, 0)
+        azPoke8(self.palette, (index * rgbaStride + 3) as Long, 0)
     }
 
     /** The number of bytes in the RGBA pixel buffer. */
-    func byteCount(): std::Int {
+    func byteCount(): Int {
         return self.width * self.height * rgbaStride
     }
 

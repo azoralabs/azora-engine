@@ -33,7 +33,7 @@ pack LocalTransform {
 
 @Component
 pack Spin {
-    var speed: std::Double
+    var speed: Double
 }
 
 @Component
@@ -43,24 +43,24 @@ pack Renderable {
 }
 
 pack TransformStore {
-    var entities: std::Array<Entity>
-    var values: std::Array<LocalTransform>
+    var entities: Array<Entity>
+    var values: Array<LocalTransform>
 }
 
 pack SpinStore {
-    var entities: std::Array<Entity>
-    var values: std::Array<Spin>
+    var entities: Array<Entity>
+    var values: Array<Spin>
 }
 
 pack RenderableStore {
-    var entities: std::Array<Entity>
-    var values: std::Array<Renderable>
+    var entities: Array<Entity>
+    var values: Array<Renderable>
 }
 
 @Resource
 solo pack GameConfig {
-    fin spinSpeed: std::Double = 1.0
-    fin cameraSpeed: std::Double = 4.5
+    fin spinSpeed: Double = 1.0
+    fin cameraSpeed: Double = 4.5
 }
 
 func defaultLocalTransform(): LocalTransform {
@@ -71,20 +71,20 @@ func defaultRenderable(): Renderable {
     return Renderable(Mesh(0L, 0), colorRgb(0.0, 0.0, 0.0))
 }
 
-func sameEntity(left: Entity, right: Entity): std::Bool {
+func sameEntity(left: Entity, right: Entity): Bool {
     return left.isValid && right.isValid && left.id == right.id && left.generation == right.generation
 }
 
 func transformStoreInit(): TransformStore {
-    return TransformStore(@std::arr[Entity::invalid], @std::arr[defaultLocalTransform()])
+    return TransformStore(@arr[Entity::invalid], @arr[defaultLocalTransform()])
 }
 
 func spinStoreInit(): SpinStore {
-    return SpinStore(@std::arr[Entity::invalid], @std::arr[Spin(0.0)])
+    return SpinStore(@arr[Entity::invalid], @arr[Spin(0.0)])
 }
 
 func renderableStoreInit(): RenderableStore {
-    return RenderableStore(@std::arr[Entity::invalid], @std::arr[defaultRenderable()])
+    return RenderableStore(@arr[Entity::invalid], @arr[defaultRenderable()])
 }
 
 func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore): QueryCursor {
@@ -114,7 +114,7 @@ func buildRenderQuery(world: World, transforms: TransformStore, renderables: Ren
 }
 
 impl TransformStore {
-    func indexOf(entity: Entity): std::Int {
+    func indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -125,7 +125,7 @@ impl TransformStore {
         return -1
     }
 
-    func has(entity: Entity): std::Bool {
+    func has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
@@ -145,7 +145,7 @@ impl TransformStore {
 }
 
 impl SpinStore {
-    func indexOf(entity: Entity): std::Int {
+    func indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -156,7 +156,7 @@ impl SpinStore {
         return -1
     }
 
-    func has(entity: Entity): std::Bool {
+    func has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
@@ -176,7 +176,7 @@ impl SpinStore {
 }
 
 impl RenderableStore {
-    func indexOf(entity: Entity): std::Int {
+    func indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -187,7 +187,7 @@ impl RenderableStore {
         return -1
     }
 
-    func has(entity: Entity): std::Bool {
+    func has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
@@ -212,8 +212,8 @@ func spinSystem(
     query: @Query (LocalTransform!, Spin&)
     transforms: TransformStore
     spins: SpinStore
-    dt: std::Double
-    speedScale: std::Double
+    dt: Double
+    speedScale: Double
 ) {
     query.reset()
     while query.hasNext {
@@ -291,15 +291,15 @@ async func main() {
     var i = 0
     while i < cubeCount {
         fin entity = world.spawnNamed("Cube")
-        fin x = ((i as std::Double) - 2.0) * 1.7
-        fin y = 0.65 + ((i % 2) as std::Double) * 0.35
-        transforms.insert(entity, LocalTransform(Vec3(x, y, 0.0), Vec3(0.0, i as std::Double * 0.4, 0.0), Vec3(0.8, 0.8, 0.8)))
-        spins.insert(entity, Spin(0.7 + (i as std::Double) * 0.18))
-        renderables.insert(entity, Renderable(cube, colorRgb(0.30 + (i as std::Double) * 0.10, 0.70, 0.95 - (i as std::Double) * 0.08)))
+        fin x = ((i as Double) - 2.0) * 1.7
+        fin y = 0.65 + ((i % 2) as Double) * 0.35
+        transforms.insert(entity, LocalTransform(Vec3(x, y, 0.0), Vec3(0.0, i as Double * 0.4, 0.0), Vec3(0.8, 0.8, 0.8)))
+        spins.insert(entity, Spin(0.7 + (i as Double) * 0.18))
+        renderables.insert(entity, Renderable(cube, colorRgb(0.30 + (i as Double) * 0.10, 0.70, 0.95 - (i as Double) * 0.08)))
         i = i + 1
     }
 
-    remember var paused: std::Bool = false
+    remember var paused: Bool = false
 
     while app.frame() {
         fin dt = app.deltaTime()

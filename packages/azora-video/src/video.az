@@ -42,7 +42,7 @@ enum SyncPolicy {
 /** Preference used when several compatible decode paths exist. */
 variant enum ProviderPreference {
     Automatic
-    Named(name: std::String)
+    Named(name: String)
     Hardware
     Software
 }
@@ -78,10 +78,10 @@ error VideoError {
 pack VideoOpenOptions {
     fin providerPreference: ProviderPreference
     fin sync: SyncPolicy
-    fin frameQueueCapacity: std::Int
+    fin frameQueueCapacity: Int
     fin frameQueuePolicy: VideoQueuePolicy
-    fin looping: std::Bool
-    fin playbackRate: std::Double
+    fin looping: Bool
+    fin playbackRate: Double
 }
 
 /** Defaults favour the fastest provider and audio-led movie playback. */
@@ -98,7 +98,7 @@ func videoOpenOptions(): VideoOpenOptions {
 
 /** Stable public identity of a resource-owning native video session. */
 pack VideoPlayer {
-    fin id: std::Long
+    fin id: Long
 }
 
 /** A player value that owns no provider session. */
@@ -117,12 +117,12 @@ pack VideoFrame {
     fin stream: StreamId
     fin pts: MediaTime
     fin duration: MediaTime
-    fin sequence: std::Long
-    fin generation: std::Long
-    fin width: std::Int
-    fin height: std::Int
-    fin surface: std::Long
-    fin keyframe: std::Bool
+    fin sequence: Long
+    fin generation: Long
+    fin width: Int
+    fin height: Int
+    fin surface: Long
+    fin keyframe: Bool
 }
 
 /** A harmless frame used to initialise preallocated queue storage. */
@@ -142,20 +142,20 @@ func videoFrameEmpty(): VideoFrame {
 
 /** Fixed-capacity ring shared by a decoder and the presentation side. */
 pack VideoFrameQueue {
-    var frames: std::Array<VideoFrame>
-    var capacity: std::Int
-    var head: std::Int
-    var count: std::Int
-    var generation: std::Long
-    var dropped: std::Long
+    var frames: Array<VideoFrame>
+    var capacity: Int
+    var head: Int
+    var count: Int
+    var generation: Long
+    var dropped: Long
     var policy: VideoQueuePolicy
 }
 
 /** Allocates queue storage once; pushing and popping do not grow it. */
-func videoFrameQueue(capacity: std::Int, policy: VideoQueuePolicy): VideoFrameQueue {
+func videoFrameQueue(capacity: Int, policy: VideoQueuePolicy): VideoFrameQueue {
     var room = capacity
     if room < 1 { room = 1 }
-    var frames: std::Array<VideoFrame> = std::Array::fill<VideoFrame>(room)
+    var frames: Array<VideoFrame> = Array::fill<VideoFrame>(room)
     var index = 0
     while index < room {
         frames[index] = videoFrameEmpty()
@@ -203,7 +203,7 @@ impl VideoFrameQueue {
     }
 
     /** Invalidates every queued and in-flight frame after a seek or stop. */
-    func flush[self: Self!](generation: std::Long) {
+    func flush[self: Self!](generation: Long) {
         self.head = 0
         self.count = 0
         self.generation = generation
@@ -224,14 +224,14 @@ pack VideoSession {
     var selectedVideo: StreamId
     var selectedAudio: StreamId
     var selectedSubtitle: StreamId
-    var hasAudio: std::Bool
-    var hasSubtitle: std::Bool
-    var playbackRate: std::Double
-    var looping: std::Bool
-    var resumeAfterSeek: std::Bool
-    var generation: std::Long
+    var hasAudio: Bool
+    var hasSubtitle: Bool
+    var playbackRate: Double
+    var looping: Bool
+    var resumeAfterSeek: Bool
+    var generation: Long
     var frames: VideoFrameQueue
-    var presentedFrames: std::Long
+    var presentedFrames: Long
 }
 
 /** Finds the first stream id of [kind], or `-1` when none exists. */
@@ -372,7 +372,7 @@ impl VideoSession {
     }
 
     /** Advances the selected clock; decode and presentation remain separate. */
-    func tick[self: Self!](elapsedSeconds: std::Double) {
+    func tick[self: Self!](elapsedSeconds: Double) {
         if self.state != VideoState.Playing || elapsedSeconds <= 0.0 {
             return
         }
@@ -423,7 +423,7 @@ impl VideoSession {
 }
 
 /** Test frame in [generation] at [seconds]. */
-func fakeVideoFrame(sequence: std::Long, generation: std::Long, seconds: std::Double): VideoFrame {
+func fakeVideoFrame(sequence: Long, generation: Long, seconds: Double): VideoFrame {
     return VideoFrame(
         StreamId(10),
         mediaTimeSeconds(seconds),

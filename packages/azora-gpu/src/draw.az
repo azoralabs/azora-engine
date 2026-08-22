@@ -33,7 +33,7 @@ import engine.io
 
 // ── Meshes & 3D drawing ─────────────────────────────────────────────────
 
-func writeMeshVertex(bytes: std::Long, off: std::Long, x: std::Double, y: std::Double, z: std::Double, nx: std::Double, ny: std::Double, nz: std::Double): std::Long {
+func writeMeshVertex(bytes: Long, off: Long, x: Double, y: Double, z: Double, nx: Double, ny: Double, nz: Double): Long {
     azPokeF32(bytes, off, x)
     azPokeF32(bytes, off + 4L, y)
     azPokeF32(bytes, off + 8L, z)
@@ -46,15 +46,15 @@ func writeMeshVertex(bytes: std::Long, off: std::Long, x: std::Double, y: std::D
 impl App {
 
     /// Creates a cube mesh with the given edge length.
-    func meshCube(size: std::Double): Mesh {
+    func meshCube(size: Double): Mesh {
         fin h = size * 0.5
         // Per-face normals; tangent/bitangent derived per face.
-        fin nx = @std::arr[0.0, 0.0, -1.0, 1.0, 0.0, 0.0]
-        fin ny = @std::arr[0.0, 0.0, 0.0, 0.0, 1.0, -1.0]
-        fin nz = @std::arr[1.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+        fin nx = @arr[0.0, 0.0, -1.0, 1.0, 0.0, 0.0]
+        fin ny = @arr[0.0, 0.0, 0.0, 0.0, 1.0, -1.0]
+        fin nz = @arr[1.0, -1.0, 0.0, 0.0, 0.0, 0.0]
         // Two CCW triangles per face in (tangent, bitangent) space.
-        fin cu = @std::arr[-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
-        fin cv = @std::arr[-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+        fin cu = @arr[-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+        fin cv = @arr[-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
 
         fin bytes = azAlloc(864L) // 36 verts × 6 floats × 4 bytes
         var off = 0L
@@ -106,24 +106,24 @@ impl App {
      * The X-axis orientation makes the primitive directly useful for vehicle
      * wheels: X rotation spins the wheel and Y rotation steers it.
      */
-    func meshCylinder(radius: std::Double, length: std::Double, segments: std::Int = 16): Mesh {
+    func meshCylinder(radius: Double, length: Double, segments: Int = 16): Mesh {
         var sides = segments
         if sides < 3 { sides = 3 }
         if sides > 64 { sides = 64 }
         fin vertexCount = sides * 12
-        fin total = (vertexCount * 24) as std::Long
+        fin total = (vertexCount * 24) as Long
         fin bytes = azAlloc(total)
         fin half = length * 0.5
-        fin step = std::PI * 2.0 / (sides as std::Double)
+        fin step = PI * 2.0 / (sides as Double)
         var off = 0L
         var segment = 0
         while segment < sides {
-            fin a0 = (segment as std::Double) * step
-            fin a1 = ((segment + 1) as std::Double) * step
-            fin ny0 = std::cos(a0)
-            fin nz0 = std::sin(a0)
-            fin ny1 = std::cos(a1)
-            fin nz1 = std::sin(a1)
+            fin a0 = (segment as Double) * step
+            fin a1 = ((segment + 1) as Double) * step
+            fin ny0 = cos(a0)
+            fin nz0 = sin(a0)
+            fin ny1 = cos(a1)
+            fin nz1 = sin(a1)
             fin y0 = ny0 * radius
             fin z0 = nz0 * radius
             fin y1 = ny1 * radius
@@ -153,7 +153,7 @@ impl App {
     }
 
     /// Creates a flat grid mesh in the XZ plane (`extent` half-size, `divisions` cells per side).
-    func meshGrid(extent: std::Double, divisions: std::Int): Mesh {
+    func meshGrid(extent: Double, divisions: Int): Mesh {
         var divs = divisions
         if divs < 1 {
             divs = 1
@@ -162,22 +162,22 @@ impl App {
             divs = 64
         }
         fin vertCount = divs * divs * 6
-        fin total = (vertCount * 24) as std::Long
+        fin total = (vertCount * 24) as Long
         fin bytes = azAlloc(total)
-        fin step = 2.0 * extent / (divs as std::Double)
+        fin step = 2.0 * extent / (divs as Double)
         fin origin = 0.0 - extent
 
         // Quad corners in cell space.
-        fin qu = @std::arr[0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
-        fin qv = @std::arr[0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+        fin qu = @arr[0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
+        fin qv = @arr[0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
 
         var off = 0L
         var i = 0
         while i < divs {
             var j = 0
             while j < divs {
-                fin x0 = origin + (i as std::Double) * step
-                fin z0 = origin + (j as std::Double) * step
+                fin x0 = origin + (i as Double) * step
+                fin z0 = origin + (j as Double) * step
                 var c = 0
                 while c < 6 {
                     azPokeF32(bytes, off, x0 + qu[c] * step)
@@ -200,7 +200,7 @@ impl App {
     }
 
     /// Draws a mesh with a model transform and base color (simple lambert shading).
-    func drawMesh(mesh: Mesh, model: Mat4, r: std::Double, g: std::Double, b: std::Double) {
+    func drawMesh(mesh: Mesh, model: Mat4, r: Double, g: Double, b: Double) {
         var gpu = self.gpu
         if !gpu.hasEncoder || mesh.buffer == 0L {
             return
@@ -226,12 +226,12 @@ impl App {
         send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0L, 0L)
         send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
         send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 160L, 1L)
-        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, mesh.count as std::Long)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3L, 0L, mesh.count as Long)
     }
 
     /// Directional light for subsequent 3D draws. Values are normalized.
-    func setLightDirection(x: std::Double, y: std::Double, z: std::Double) {
-        fin len = std::sqrt(x * x + y * y + z * z)
+    func setLightDirection(x: Double, y: Double, z: Double) {
+        fin len = sqrt(x * x + y * y + z * z)
         if len < 0.000001 {
             self.gpu.lightX = 0.5
             self.gpu.lightY = 0.8
@@ -244,7 +244,7 @@ impl App {
     }
 
     /// Ambient light amount clamped into 0..1.
-    func setAmbientLight(value: std::Double) {
+    func setAmbientLight(value: Double) {
         var v = value
         if v < 0.0 { v = 0.0 }
         if v > 1.0 { v = 1.0 }
@@ -254,7 +254,7 @@ impl App {
     // ── 2D drawing (window points, origin top-left) ─────────────────────
 
     /// Filled rectangle (components 0..1).
-    func uiRect(x: std::Double, y: std::Double, w: std::Double, h: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double) {
+    func uiRect(x: Double, y: Double, w: Double, h: Double, r: Double, g: Double, b: Double, a: Double) {
         self.drawQuad2d(x, y, w, h, 0.0, 0.0, 1.0, 1.0, r, g, b, a, 0L)
     }
 
@@ -267,10 +267,10 @@ impl App {
      * a scissor outside it as a programming error and aborts the process, so
      * clamping here is not defensive, it is required.
      */
-    func setScissor(x: std::Double, y: std::Double, w: std::Double, h: std::Double) {
+    func setScissor(x: Double, y: Double, w: Double, h: Double) {
         fin scale = self.gpu.scale
-        fin maxW = (self.width() as std::Double) * scale
-        fin maxH = (self.height() as std::Double) * scale
+        fin maxW = (self.width() as Double) * scale
+        fin maxH = (self.height() as Double) * scale
 
         var px = x * scale
         var py = y * scale
@@ -297,19 +297,19 @@ impl App {
         azSendScissor(
             self.gpu.enc,
             sel("setScissorRect:"),
-            px as std::Long,
-            py as std::Long,
-            pw as std::Long,
-            ph as std::Long
+            px as Long,
+            py as Long,
+            pw as Long,
+            ph as Long
         )
     }
 
     /** Removes any scissor, restoring drawing to the whole window. */
     func clearScissor() {
         fin scale = self.gpu.scale
-        fin w = (self.width() as std::Double) * scale
-        fin h = (self.height() as std::Double) * scale
-        azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0L, 0L, w as std::Long, h as std::Long)
+        fin w = (self.width() as Double) * scale
+        fin h = (self.height() as Double) * scale
+        azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0L, 0L, w as Long, h as Long)
     }
 
     /**
@@ -324,12 +324,12 @@ impl App {
      * [releaseTexture]. It is *not* autoreleased, because a sprite atlas must
      * survive many frames; only the per-frame text textures are transient.
      */
-    func newTexture(width: std::Int, height: std::Int, pixels: std::Long): std::Long {
+    func newTexture(width: Int, height: Int, pixels: Long): Long {
         if width <= 0 || height <= 0 || pixels == 0L {
             return 0L
         }
-        fin pw = width as std::Long
-        fin ph = height as std::Long
+        fin pw = width as Long
+        fin ph = height as Long
         // 70 = MTLPixelFormatRGBA8Unorm.
         fin descriptor = send4(
             cls("MTLTextureDescriptor"),
@@ -354,27 +354,27 @@ impl App {
      * Palette animation rewrites the same image every frame, so reusing one
      * texture avoids allocating and freeing a GPU resource per frame.
      */
-    func updateTexture(tex: std::Long, width: std::Int, height: std::Int, pixels: std::Long) {
+    func updateTexture(tex: Long, width: Int, height: Int, pixels: Long) {
         if tex == 0L || width <= 0 || height <= 0 || pixels == 0L {
             return
         }
-        fin pw = width as std::Long
+        fin pw = width as Long
         fin unused = azSendRegion(
             tex,
             sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
-            0L, 0L, 0L, pw, height as std::Long, 1L, 0L, pixels, pw * 4L
+            0L, 0L, 0L, pw, height as Long, 1L, 0L, pixels, pw * 4L
         )
     }
 
     /// Releases a texture created by [newTexture].
-    func releaseTexture(tex: std::Long) {
+    func releaseTexture(tex: Long) {
         if tex != 0L {
             fin unused = send0(tex, sel("release"))
         }
     }
 
     /// Draws a whole texture into the rectangle at (`x`, `y`), unmodulated.
-    func drawSprite(tex: std::Long, x: std::Double, y: std::Double, w: std::Double, h: std::Double) {
+    func drawSprite(tex: Long, x: Double, y: Double, w: Double, h: Double) {
         self.drawImageQuad(x, y, w, h, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, tex)
     }
 
@@ -385,19 +385,19 @@ impl App {
      * storing a second, flipped copy of every sprite sheet.
      */
     func drawSpriteRegionFlipped(
-        tex: std::Long, texWidth: std::Int, texHeight: std::Int
-        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int
-        x: std::Double, y: std::Double, w: std::Double, h: std::Double
+        tex: Long, texWidth: Int, texHeight: Int
+        srcX: Int, srcY: Int, srcW: Int, srcH: Int
+        x: Double, y: Double, w: Double, h: Double
     ) {
         if texWidth <= 0 || texHeight <= 0 {
             return
         }
-        fin tw = texWidth as std::Double
-        fin th = texHeight as std::Double
+        fin tw = texWidth as Double
+        fin th = texHeight as Double
         self.drawImageQuad(
             x, y, w, h,
-            ((srcX + srcW) as std::Double) / tw, (srcY as std::Double) / th,
-            (srcX as std::Double) / tw, ((srcY + srcH) as std::Double) / th,
+            ((srcX + srcW) as Double) / tw, (srcY as Double) / th,
+            (srcX as Double) / tw, ((srcY + srcH) as Double) / th,
             1.0, 1.0, 1.0, 1.0, tex
         )
     }
@@ -410,19 +410,19 @@ impl App {
      * belongs here rather than at every call site.
      */
     func drawSpriteRegion(
-        tex: std::Long, texWidth: std::Int, texHeight: std::Int
-        srcX: std::Int, srcY: std::Int, srcW: std::Int, srcH: std::Int
-        x: std::Double, y: std::Double, w: std::Double, h: std::Double
+        tex: Long, texWidth: Int, texHeight: Int
+        srcX: Int, srcY: Int, srcW: Int, srcH: Int
+        x: Double, y: Double, w: Double, h: Double
     ) {
         if texWidth <= 0 || texHeight <= 0 {
             return
         }
-        fin tw = texWidth as std::Double
-        fin th = texHeight as std::Double
+        fin tw = texWidth as Double
+        fin th = texHeight as Double
         self.drawImageQuad(
             x, y, w, h,
-            (srcX as std::Double) / tw, (srcY as std::Double) / th,
-            ((srcX + srcW) as std::Double) / tw, ((srcY + srcH) as std::Double) / th,
+            (srcX as Double) / tw, (srcY as Double) / th,
+            ((srcX + srcW) as Double) / tw, ((srcY + srcH) as Double) / th,
             1.0, 1.0, 1.0, 1.0, tex
         )
     }
@@ -433,7 +433,7 @@ impl App {
      * Text rasterizes to an alpha mask tinted by the vertex colour, which is
      * what this mode expresses. Full-colour artwork needs [drawImageQuad].
      */
-    func drawQuad2d(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long) {
+    func drawQuad2d(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long) {
         var mode = 0.0
         if tex != 0L {
             mode = 1.0
@@ -447,7 +447,7 @@ impl App {
      * This is the mode images want: the texture supplies the pixels and the
      * vertex colour tints them, so passing white draws the artwork unchanged.
      */
-    func drawImageQuad(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long) {
+    func drawImageQuad(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long) {
         var mode = 0.0
         if tex != 0L {
             mode = 2.0
@@ -455,7 +455,7 @@ impl App {
         self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
     }
 
-    func drawQuad2dMode(x: std::Double, y: std::Double, w: std::Double, h: std::Double, u0: std::Double, v0: std::Double, u1: std::Double, v1: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double, tex: std::Long, texMode: std::Double) {
+    func drawQuad2dMode(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long, texMode: Double) {
         var gpu = self.gpu
         if !gpu.hasEncoder {
             return
@@ -482,8 +482,8 @@ impl App {
         pokeVert2d(p, 160L, x0, y1, u0, v1, r, g, b, a)
 
         // U2 uniforms: viewport (2 floats) + useTex + pad.
-        azPokeF32(p, 192L, gpu.depthW as std::Double)
-        azPokeF32(p, 196L, gpu.depthH as std::Double)
+        azPokeF32(p, 192L, gpu.depthW as Double)
+        azPokeF32(p, 196L, gpu.depthH as Double)
         azPokeF32(p, 200L, texMode)
         azPokeF32(p, 204L, 0.0)
 
@@ -501,7 +501,7 @@ impl App {
     // ── Text (CoreText rasterization → textured quad) ───────────────────
 
     /// Text at (x, y) with an explicit color.
-    func uiTextColored(text: std::String, x: std::Double, y: std::Double, size: std::Double, r: std::Double, g: std::Double, b: std::Double) {
+    func uiTextColored(text: String, x: Double, y: Double, size: Double, r: Double, g: Double, b: Double) {
         if !self.gpu.hasEncoder {
             return
         }
@@ -519,8 +519,8 @@ impl App {
         }
 
         fin s = self.gpu.scale
-        fin pw = (widthPts * s) as std::Long + 1L
-        fin ph = (heightPts * s) as std::Long + 1L
+        fin pw = (widthPts * s) as Long + 1L
+        fin ph = (heightPts * s) as Long + 1L
 
         // Rasterize white text into an RGBA bitmap (tinted by the quad color).
         fin space = CGColorSpaceCreateDeviceRGB()
@@ -547,7 +547,7 @@ impl App {
     }
 
     /// Measured width in points of `text` at font `size`.
-    func uiTextWidth(text: std::String, size: std::Double): std::Double {
+    func uiTextWidth(text: String, size: Double): Double {
         fin line = ctLineCreate(text, size, self.gpu.scratch)
         if line == 0L {
             return 0.0
@@ -558,7 +558,7 @@ impl App {
     }
 
     /// Measured line height in points of font `size`.
-    func uiTextHeight(size: std::Double): std::Double {
+    func uiTextHeight(size: Double): Double {
         fin line = ctLineCreate("Ag", size, self.gpu.scratch)
         if line == 0L {
             return size
@@ -570,7 +570,7 @@ impl App {
 }
 
 /// Writes one 2D vertex (pos2, uv2, rgba4 — 8 floats) at [off].
-func pokeVert2d(p: std::Long, off: std::Long, x: std::Double, y: std::Double, u: std::Double, v: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double) {
+func pokeVert2d(p: Long, off: Long, x: Double, y: Double, u: Double, v: Double, r: Double, g: Double, b: Double, a: Double) {
     azPokeF32(p, off, x)
     azPokeF32(p, off + 4L, y)
     azPokeF32(p, off + 8L, u)
@@ -584,7 +584,7 @@ func pokeVert2d(p: std::Long, off: std::Long, x: std::Double, y: std::Double, u:
 /// Builds a CTLine for [text] at [size] (system font, white). Writes width /
 /// ascent / descent as doubles at scratch offsets 3840/3848/3856.
 /// Caller releases the returned line with CFRelease.
-func ctLineCreate(text: std::String, size: std::Double, scratch: std::Long): std::Long {
+func ctLineCreate(text: String, size: Double, scratch: Long): Long {
     fin utf8 = 134217984 // kCFStringEncodingUTF8
     fin cfText = CFStringCreateWithCString(0L, text, utf8)
     if cfText == 0L {

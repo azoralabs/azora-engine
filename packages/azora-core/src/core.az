@@ -27,7 +27,7 @@ import engine.io
  * A source fragment rather than an arm: `react [; &]` is a pair of markers the
  * following lambda carries, not an expression a template could rewrite.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 macro @children => inline "react [; &]"
 
 /**
@@ -36,7 +36,7 @@ macro @children => inline "react [; &]"
  * Systems in one phase may run in parallel when their ECS access sets do not
  * conflict. A phase completes before the next phase begins.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 enum SystemPhase {
     Startup
     PreUpdate
@@ -60,26 +60,26 @@ enum SystemPhase {
  * "every fourth frame" staggers expensive work without drifting with the frame
  * rate, which "every 60 milliseconds" does.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 variant enum SystemInterval {
     /** Once per frame. The default, and what most systems want. */
     EveryFrame
     /** Periodically, on the game clock; missed firings are dropped. */
-    Every(std::Duration)
+    Every(Duration)
     /** Every *n*th frame, counted rather than timed. */
-    EveryFrames(std::Int)
+    EveryFrames(Int)
     /** The first time the phase runs, and never again. */
     Once
     /** Once, after the delay has elapsed. */
-    After(std::Duration)
+    After(Duration)
     /** Once, after that many frames. */
-    AfterFrames(std::Int)
+    AfterFrames(Int)
     /** At a fixed simulation step, draining the accumulator. */
-    Fixed(std::Duration)
+    Fixed(Duration)
 }
 
 /** Marks a pack or enum as ECS component data. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 annot Component for [.Pack, .Enum]
 
 /**
@@ -102,8 +102,8 @@ annot Component for [.Pack, .Enum]
  * @param runAfter Comma-separated names of systems this one must follow.
  * @param inSet Name of the system set this belongs to; sets order as a unit.
  */
-@std::Experimental(since: "0.1")
-@std::DeclaresAccess
+@Experimental(since: "0.1")
+@DeclaresAccess
 annot System for [.Func, .AsyncFunc] {
     fin phase: SystemPhase = .Update
     /**
@@ -118,10 +118,10 @@ annot System for [.Func, .AsyncFunc] {
         .Startup -> seal .Once
         else -> .EveryFrame
     }
-    fin order: std::Int = 0
-    fin runBefore: std::String = ""
-    fin runAfter: std::String = ""
-    fin inSet: std::String = ""
+    fin order: Int = 0
+    fin runBefore: String = ""
+    fin runAfter: String = ""
+    fin inSet: String = ""
 }
 
 /**
@@ -132,7 +132,7 @@ annot System for [.Func, .AsyncFunc] {
  * reader scheduled earlier in the frame to still see it, short enough that a
  * queue nobody drains cannot grow without bound.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 annot Event for [.Pack, .Enum]
 
 /**
@@ -142,15 +142,15 @@ annot Event for [.Pack, .Enum]
  * are my children" are both constant-time without either side storing a list
  * the other has to keep in step.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 annot Relation for .Pack
 
 /** Marks a pack as application-wide ECS resource data. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 annot Resource for .Pack
 
 /** Marks a function parameter whose component access is query-derived. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 annot Query for .Param
 
 /**
@@ -159,16 +159,16 @@ annot Query for .Param
  * `deltaSecs` is the clamped variable timestep. `fixedDeltaSecs` is the
  * deterministic simulation step used by `.FixedUpdate`.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Time {
-    var deltaSecs: std::Double
-    var elapsedSecs: std::Double
-    var fixedDeltaSecs: std::Double
-    var frame: std::Long
+    var deltaSecs: Double
+    var elapsedSecs: Double
+    var fixedDeltaSecs: Double
+    var frame: Long
 }
 
 /** Creates a clock with a 60 Hz fixed timestep. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func timeInit(): Time {
     return Time(0.0, 0.0, 1.0 / 60.0, 0L)
 }
@@ -180,7 +180,7 @@ impl Time {
      * Large deltas are clamped to 250 ms so a paused debugger or suspended tab
      * cannot destabilize physics when execution resumes.
      */
-    func advance[self: Self!](deltaSecs: std::Double) {
+    func advance[self: Self!](deltaSecs: Double) {
         var clamped = deltaSecs
         if clamped < 0.0 {
             clamped = 0.0
@@ -194,7 +194,7 @@ impl Time {
     }
 
     /** Replaces the deterministic fixed timestep. */
-    func setFixedDelta[self: Self!](seconds: std::Double) {
+    func setFixedDelta[self: Self!](seconds: Double) {
         assert seconds > 0.0 { "fixed timestep must be positive" }
         self.fixedDeltaSecs = seconds
     }
@@ -206,10 +206,10 @@ impl Time {
  * Reads are allocation-free. Writes increment `revision`, allowing systems and
  * UI hosts to skip work when the observed value did not change.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Signal<T> {
     var value: T
-    var revision: std::Long
+    var revision: Long
 }
 
 func signalInit<T>(value: T): Signal<T> {
@@ -225,11 +225,11 @@ func signalSet<T>(signal: Signal<T>!, value: T) {
     signal.revision = signal.revision + 1
 }
 
-func signalVersion<T>(signal: Signal<T>&): std::Long {
+func signalVersion<T>(signal: Signal<T>&): Long {
     return signal.revision
 }
 
-func signalChangedSince<T>(signal: Signal<T>&, version: std::Long): std::Bool {
+func signalChangedSince<T>(signal: Signal<T>&, version: Long): Bool {
     return signal.revision != version
 }
 
@@ -240,9 +240,9 @@ func signalChangedSince<T>(signal: Signal<T>&, version: std::Long): std::Bool {
  * `frameIndex` and `worldRevision` as cheap change tokens.
  */
 solo pack EngineRegistry {
-    var loadedModules: std::Int = 0
-    var frameIndex: std::Long = 0
-    var worldRevision: std::Long = 0
+    var loadedModules: Int = 0
+    var frameIndex: Long = 0
+    var worldRevision: Long = 0
 }
 
 impl EngineRegistry {
@@ -265,7 +265,7 @@ solo pack EngineClock {
 }
 
 impl EngineClock {
-    func advance[self: Self!](deltaSecs: std::Double) {
+    func advance[self: Self!](deltaSecs: Double) {
         self.value.advance(deltaSecs)
     }
 }
@@ -296,14 +296,14 @@ graph AzEngine {
  */
 realm azora::engine {
     /** Ask the running application to close. Idempotent. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func exit() {
         azRequestExit()
     }
 
     /** Whether `exit()` has been called. The frame loop's stop condition. */
-    @std::Experimental(since: "0.1")
-    func exitRequested(): std::Bool {
+    @Experimental(since: "0.1")
+    func exitRequested(): Bool {
         return azExitRequested() != 0L
     }
 }

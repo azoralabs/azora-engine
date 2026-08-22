@@ -119,7 +119,7 @@ impl BoneTransform {
 }
 
 /** Component-wise interpolation between two transforms. */
-func blendTransform(a: BoneTransform, b: BoneTransform, t: std::Double): BoneTransform {
+func blendTransform(a: BoneTransform, b: BoneTransform, t: Double): BoneTransform {
     return BoneTransform(
         Vec3(
             lerpReal(a.position.x, b.position.x, t),
@@ -146,9 +146,9 @@ func blendTransform(a: BoneTransform, b: BoneTransform, t: std::Double): BoneTra
  * vertex per frame and inverting a matrix there would dominate the cost.
  */
 pack Bone {
-    var name: std::String
+    var name: String
     /** Index of the parent bone, or [noBone] for a root. Always less than this bone's own index. */
-    var parent: std::Int
+    var parent: Int
     /** Rest transform, relative to the parent. */
     var bindLocal: BoneTransform
     var inverseBind: Mat4
@@ -162,28 +162,28 @@ pack Bone {
  * final.
  */
 pack Skeleton {
-    var name: std::String
-    var bones: std::Array<Bone>
-    var count: std::Int
+    var name: String
+    var bones: Array<Bone>
+    var count: Int
 }
 
 /** An empty skeleton with room for [capacity] bones. */
-func skeletonNew(name: std::String, capacity: std::Int): Skeleton {
-    var bones: std::Array<Bone> = std::Array::fill<Bone>(animIntMax(capacity, 0))
+func skeletonNew(name: String, capacity: Int): Skeleton {
+    var bones: Array<Bone> = Array::fill<Bone>(animIntMax(capacity, 0))
     return Skeleton(name, bones, 0)
 }
 
-func animIntMax(a: std::Int, b: std::Int): std::Int {
+func animIntMax(a: Int, b: Int): Int {
     return if a > b { a } else { b }
 }
 
-func animIntMin(a: std::Int, b: std::Int): std::Int {
+func animIntMin(a: Int, b: Int): Int {
     return if a < b { a } else { b }
 }
 
 impl Skeleton {
     /** The bone at [index], or a detached identity bone. */
-    func at(index: std::Int): Bone {
+    func at(index: Int): Bone {
         if index < 0 || index >= self.count {
             return Bone("", noBone, boneTransformIdentity(), mat4Identity())
         }
@@ -191,7 +191,7 @@ impl Skeleton {
     }
 
     /** The index of the bone called [name], or [noBone]. */
-    func indexOf(name: std::String): std::Int {
+    func indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
             if self.bones[i].name == name {
                 return i
@@ -201,19 +201,19 @@ impl Skeleton {
     }
 
     /** True when [index] names a bone. */
-    func has(index: std::Int): std::Bool {
+    func has(index: Int): Bool {
         return index >= 0 && index < self.count
     }
 
     /** The chain from [index] up to its root, nearest first. */
-    func ancestorsOf(index: std::Int): std::Array<std::Int> {
+    func ancestorsOf(index: Int): Array<Int> {
         var depth = 0
         var walk = index
         while self.has(walk) {
             depth = depth + 1
             walk = self.bones[walk].parent
         }
-        var chain: std::Array<std::Int> = std::Array::fill<std::Int>(depth)
+        var chain: Array<Int> = Array::fill<Int>(depth)
         var cursor = 0
         walk = index
         while self.has(walk) {
@@ -234,16 +234,16 @@ impl Skeleton {
  */
 func skeletonAddBone(
     skeleton: Skeleton
-    name: std::String
-    parent: std::Int
+    name: String
+    parent: Int
     bindLocal: BoneTransform
-): std::Int ?! SkeletonFault {
+): Int ?! SkeletonFault {
     if parent != noBone && (parent < 0 || parent >= skeleton.count) {
         return .BadHierarchy
     }
     if skeleton.count >= skeleton.bones.size {
         fin room = animIntMax(skeleton.bones.size * 2, 8)
-        var grown: std::Array<Bone> = std::Array::fill<Bone>(room)
+        var grown: Array<Bone> = Array::fill<Bone>(room)
         for i in 0..(skeleton.count - 1) {
             grown[i] = skeleton.bones[i]
         }
@@ -264,7 +264,7 @@ func skeletonAddBone(
 }
 
 /** The bind-pose world transform of [index], by walking up its parents. */
-func skeletonBindWorld(skeleton: Skeleton, index: std::Int): BoneTransform {
+func skeletonBindWorld(skeleton: Skeleton, index: Int): BoneTransform {
     if !skeleton.has(index) {
         return boneTransformIdentity()
     }
@@ -303,7 +303,7 @@ func inverseOfRigid(transform: BoneTransform): Mat4 {
     return BoneTransform(translated, inverseRotation, inverseScale).matrix()
 }
 
-func safeReciprocal(value: std::Double): std::Double {
+func safeReciprocal(value: Double): Double {
     if animAbs(value) < 0.000001 {
         return 0.0
     }
@@ -321,13 +321,13 @@ func safeReciprocal(value: std::Double): std::Double {
  */
 @Component
 pack Pose {
-    var locals: std::Array<BoneTransform>
-    var count: std::Int
+    var locals: Array<BoneTransform>
+    var count: Int
 }
 
 /** A pose sized for [skeleton], holding its bind transforms. */
 func poseFromBind(skeleton: Skeleton): Pose {
-    var locals: std::Array<BoneTransform> = std::Array::fill<BoneTransform>(animIntMax(skeleton.count, 0))
+    var locals: Array<BoneTransform> = Array::fill<BoneTransform>(animIntMax(skeleton.count, 0))
     for i in 0..(skeleton.count - 1) {
         locals[i] = skeleton.bones[i].bindLocal
     }
@@ -335,8 +335,8 @@ func poseFromBind(skeleton: Skeleton): Pose {
 }
 
 /** A pose of [count] identity transforms. */
-func poseIdentity(count: std::Int): Pose {
-    var locals: std::Array<BoneTransform> = std::Array::fill<BoneTransform>(animIntMax(count, 0))
+func poseIdentity(count: Int): Pose {
+    var locals: Array<BoneTransform> = Array::fill<BoneTransform>(animIntMax(count, 0))
     for i in 0..(count - 1) {
         locals[i] = boneTransformIdentity()
     }
@@ -345,7 +345,7 @@ func poseIdentity(count: std::Int): Pose {
 
 impl Pose {
     /** The local transform of [bone], or identity when out of range. */
-    func at(bone: std::Int): BoneTransform {
+    func at(bone: Int): BoneTransform {
         if bone < 0 || bone >= self.count {
             return boneTransformIdentity()
         }
@@ -353,7 +353,7 @@ impl Pose {
     }
 
     /** Sets the local transform of [bone]. */
-    func set(bone: std::Int, transform: BoneTransform): std::Unit ?! SkeletonFault {
+    func set(bone: Int, transform: BoneTransform): Unit ?! SkeletonFault {
         if bone < 0 || bone >= self.count {
             return .UnknownBone
         }
@@ -362,7 +362,7 @@ impl Pose {
 
     /** An independent copy. */
     func clone(): Pose {
-        var locals: std::Array<BoneTransform> = std::Array::fill<BoneTransform>(self.count)
+        var locals: Array<BoneTransform> = Array::fill<BoneTransform>(self.count)
         for i in 0..(self.count - 1) {
             locals[i] = self.locals[i]
         }
@@ -377,7 +377,7 @@ impl Pose {
  * local: blending world transforms would bend the bones rather than rotate the
  * joints.
  */
-func blendPose(a: Pose, b: Pose, weight: std::Double, into: Pose): std::Unit ?! SkeletonFault {
+func blendPose(a: Pose, b: Pose, weight: Double, into: Pose): Unit ?! SkeletonFault {
     if a.count != b.count || into.count != a.count {
         return .BoneCountMismatch
     }
@@ -398,10 +398,10 @@ func blendPoseMasked(
     skeleton: Skeleton
     a: Pose
     b: Pose
-    weight: std::Double
-    root: std::Int
+    weight: Double
+    root: Int
     into: Pose
-): std::Unit ?! SkeletonFault {
+): Unit ?! SkeletonFault {
     if a.count != b.count || into.count != a.count {
         return .BoneCountMismatch
     }
@@ -420,7 +420,7 @@ func blendPoseMasked(
 }
 
 /** True when [bone] is [root] or lies beneath it. */
-func boneDescendsFrom(skeleton: Skeleton, bone: std::Int, root: std::Int): std::Bool {
+func boneDescendsFrom(skeleton: Skeleton, bone: Int, root: Int): Bool {
     var walk = bone
     while skeleton.has(walk) {
         if walk == root {
@@ -437,8 +437,8 @@ func boneDescendsFrom(skeleton: Skeleton, bone: std::Int, root: std::Int): std::
  * One forward pass: a parent always precedes its children, so its world
  * transform is already final by the time a child reads it.
  */
-func poseToWorld(skeleton: Skeleton, pose: Pose): std::Array<BoneTransform> {
-    var world: std::Array<BoneTransform> = std::Array::fill<BoneTransform>(animIntMax(skeleton.count, 0))
+func poseToWorld(skeleton: Skeleton, pose: Pose): Array<BoneTransform> {
+    var world: Array<BoneTransform> = Array::fill<BoneTransform>(animIntMax(skeleton.count, 0))
     for i in 0..(skeleton.count - 1) {
         fin bone = skeleton.bones[i]
         fin local = pose.at(i)
@@ -453,9 +453,9 @@ func poseToWorld(skeleton: Skeleton, pose: Pose): std::Array<BoneTransform> {
  * This is the only place the two representations meet — everything above works
  * in local transforms, and everything below wants a matrix per bone.
  */
-func poseToSkinning(skeleton: Skeleton, pose: Pose): std::Array<Mat4> {
+func poseToSkinning(skeleton: Skeleton, pose: Pose): Array<Mat4> {
     fin world = poseToWorld(skeleton, pose)
-    var matrices: std::Array<Mat4> = std::Array::fill<Mat4>(animIntMax(skeleton.count, 0))
+    var matrices: Array<Mat4> = Array::fill<Mat4>(animIntMax(skeleton.count, 0))
     for i in 0..(skeleton.count - 1) {
         matrices[i] = mat4Mul(world[i].matrix(), skeleton.bones[i].inverseBind)
     }
@@ -472,14 +472,14 @@ func poseToSkinning(skeleton: Skeleton, pose: Pose): std::Array<Mat4> {
  * differently from the other two.
  */
 pack Transform3DTrack {
-    var bone: std::Int
+    var bone: Int
     var position: Track<Vec3>
     var rotation: Track<Quat>
     var scale: Track<Vec3>
 }
 
 /** Empty curves for [bone], with room for [capacity] keys each. */
-func transform3dTrack(bone: std::Int, capacity: std::Int): Transform3DTrack {
+func transform3dTrack(bone: Int, capacity: Int): Transform3DTrack {
     return Transform3DTrack(
         bone,
         trackNew<Vec3>("position", capacity),
@@ -489,14 +489,14 @@ func transform3dTrack(bone: std::Int, capacity: std::Int): Transform3DTrack {
 }
 
 /** Adds a fully specified key at [time]. */
-func transform3dKey(track: Transform3DTrack, time: std::Double, value: BoneTransform, mode: Interpolation) {
+func transform3dKey(track: Transform3DTrack, time: Double, value: BoneTransform, mode: Interpolation) {
     trackInsert<Vec3>(track.position, Keyframe<Vec3>(time, value.position, mode))
     trackInsert<Quat>(track.rotation, Keyframe<Quat>(time, value.rotation, mode))
     trackInsert<Vec3>(track.scale, Keyframe<Vec3>(time, value.scale, mode))
 }
 
 /** The 3D vector a `Track<Vec3>` holds at [time]. */
-func sampleVec3(track: Track<Vec3>, time: std::Double): Vec3 {
+func sampleVec3(track: Track<Vec3>, time: Double): Vec3 {
     fin span = trackSpanAt<Vec3>(track, time)
     if !span.valid {
         return vec3Zero()
@@ -513,7 +513,7 @@ func sampleVec3(track: Track<Vec3>, time: std::Double): Vec3 {
 }
 
 /** The rotation a `Track<Quat>` holds at [time]. */
-func sampleQuat(track: Track<Quat>, time: std::Double): Quat {
+func sampleQuat(track: Track<Quat>, time: Double): Quat {
     fin span = trackSpanAt<Quat>(track, time)
     if !span.valid {
         return quatIdentity()
@@ -526,7 +526,7 @@ func sampleQuat(track: Track<Quat>, time: std::Double): Quat {
 }
 
 /** The transform a bone curve holds at [time]. */
-func sampleTransform3d(track: Transform3DTrack, time: std::Double): BoneTransform {
+func sampleTransform3d(track: Transform3DTrack, time: Double): BoneTransform {
     fin scale = if trackIsEmpty<Vec3>(track.scale) {
         Vec3(1.0, 1.0, 1.0)
     } else {
@@ -546,22 +546,22 @@ func sampleTransform3d(track: Transform3DTrack, time: std::Double): BoneTransfor
  */
 pack SkeletalAnimation {
     var clip: AnimationClip
-    var tracks: std::Array<Transform3DTrack>
-    var count: std::Int
+    var tracks: Array<Transform3DTrack>
+    var count: Int
 }
 
 /** An animation over [clip] with room for [capacity] bone curves. */
-func skeletalAnimation(clip: AnimationClip, capacity: std::Int): SkeletalAnimation {
-    var tracks: std::Array<Transform3DTrack> = std::Array::fill<Transform3DTrack>(animIntMax(capacity, 0))
+func skeletalAnimation(clip: AnimationClip, capacity: Int): SkeletalAnimation {
+    var tracks: Array<Transform3DTrack> = Array::fill<Transform3DTrack>(animIntMax(capacity, 0))
     return SkeletalAnimation(clip, tracks, 0)
 }
 
 impl SkeletalAnimation {
     /** Appends a bone curve and returns its index. */
-    func add(track: Transform3DTrack): std::Int {
+    func add(track: Transform3DTrack): Int {
         if self.count >= self.tracks.size {
             fin room = animIntMax(self.tracks.size * 2, 4)
-            var grown: std::Array<Transform3DTrack> = std::Array::fill<Transform3DTrack>(room)
+            var grown: Array<Transform3DTrack> = Array::fill<Transform3DTrack>(room)
             for i in 0..(self.count - 1) {
                 grown[i] = self.tracks[i]
             }
@@ -573,7 +573,7 @@ impl SkeletalAnimation {
     }
 
     /** The curve for [bone], or `-1`. */
-    func indexOfBone(bone: std::Int): std::Int {
+    func indexOfBone(bone: Int): Int {
         for i in 0..(self.count - 1) {
             if self.tracks[i].bone == bone {
                 return i
@@ -589,7 +589,7 @@ impl SkeletalAnimation {
  * Bones the animation does not touch keep whatever the pose already held, so
  * sampling a partial animation over a base pose composes without a mask.
  */
-func samplePose(animation: SkeletalAnimation, localTime: std::Double, into: Pose): std::Int {
+func samplePose(animation: SkeletalAnimation, localTime: Double, into: Pose): Int {
     var written = 0
     for i in 0..(animation.count - 1) {
         fin track = animation.tracks[i]
@@ -612,26 +612,26 @@ func samplePose(animation: SkeletalAnimation, localTime: std::Double, into: Pose
  */
 pack MorphTargetAnimation {
     var clip: AnimationClip
-    var names: std::Array<std::String>
-    var weights: std::Array<RealTrack>
-    var count: std::Int
+    var names: Array<String>
+    var weights: Array<RealTrack>
+    var count: Int
 }
 
 /** An empty morph animation over [clip], with room for [capacity] targets. */
-func morphTargetAnimation(clip: AnimationClip, capacity: std::Int): MorphTargetAnimation {
+func morphTargetAnimation(clip: AnimationClip, capacity: Int): MorphTargetAnimation {
     fin room = animIntMax(capacity, 0)
-    var names: std::Array<std::String> = std::Array::fill<std::String>(room)
-    var weights: std::Array<RealTrack> = std::Array::fill<RealTrack>(room)
+    var names: Array<String> = Array::fill<String>(room)
+    var weights: Array<RealTrack> = Array::fill<RealTrack>(room)
     return MorphTargetAnimation(clip, names, weights, 0)
 }
 
 impl MorphTargetAnimation {
     /** Adds a target curve and returns its index. */
-    func add(name: std::String, track: RealTrack): std::Int {
+    func add(name: String, track: RealTrack): Int {
         if self.count >= self.names.size {
             fin room = animIntMax(self.names.size * 2, 4)
-            var grownNames: std::Array<std::String> = std::Array::fill<std::String>(room)
-            var grownWeights: std::Array<RealTrack> = std::Array::fill<RealTrack>(room)
+            var grownNames: Array<String> = Array::fill<String>(room)
+            var grownWeights: Array<RealTrack> = Array::fill<RealTrack>(room)
             for i in 0..(self.count - 1) {
                 grownNames[i] = self.names[i]
                 grownWeights[i] = self.weights[i]
@@ -646,7 +646,7 @@ impl MorphTargetAnimation {
     }
 
     /** The index of the target called [name], or `-1`. */
-    func indexOf(name: std::String): std::Int {
+    func indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
             if self.names[i] == name {
                 return i
@@ -656,7 +656,7 @@ impl MorphTargetAnimation {
     }
 
     /** The weight of target [index] at [localTime]. */
-    func weightAt(index: std::Int, localTime: std::Double): std::Double {
+    func weightAt(index: Int, localTime: Double): Double {
         if index < 0 || index >= self.count {
             return 0.0
         }
@@ -665,7 +665,7 @@ impl MorphTargetAnimation {
 }
 
 /** Samples every target weight into [into] at [localTime]. */
-func sampleMorphWeights(animation: MorphTargetAnimation, localTime: std::Double, into: std::Array<std::Double>): std::Int {
+func sampleMorphWeights(animation: MorphTargetAnimation, localTime: Double, into: Array<Double>): Int {
     fin written = animIntMin(animation.count, into.size)
     for i in 0..(written - 1) {
         into[i] = animation.weightAt(i, localTime)
@@ -701,7 +701,7 @@ func animationRig(skeleton: Skeleton, animation: SkeletalAnimation): AnimationRi
 
 impl AnimationRig {
     /** Advances the clock and samples the pose; returns the playback state. */
-    func advance(dt: std::Double): PlaybackState {
+    func advance(dt: Double): PlaybackState {
         fin state = self.player.advance(dt)
         samplePose(self.animation, self.player.localTime(), self.pose)
         return state
@@ -714,7 +714,7 @@ impl AnimationRig {
     }
 
     /** This frame's skinning matrices. */
-    func skinning(): std::Array<Mat4> {
+    func skinning(): Array<Mat4> {
         return poseToSkinning(self.skeleton, self.pose)
     }
 }
@@ -744,31 +744,31 @@ pack BlendNode {
     var kind: BlendKind
     /** For [BlendKind.Clip], the animation; otherwise ignored. */
     var animation: SkeletalAnimation
-    var left: std::Int
-    var right: std::Int
-    var weight: std::Double
+    var left: Int
+    var right: Int
+    var weight: Double
     /** For [BlendKind.Layer], the bone whose subtree the mix applies to. */
-    var maskRoot: std::Int
+    var maskRoot: Int
 }
 
 /** A tree of blend nodes; the last one added is the root. */
 pack AnimationBlendTree {
-    var nodes: std::Array<BlendNode>
-    var count: std::Int
-    var root: std::Int
+    var nodes: Array<BlendNode>
+    var count: Int
+    var root: Int
 }
 
 /** An empty tree with room for [capacity] nodes. */
-func blendTreeNew(capacity: std::Int): AnimationBlendTree {
-    var nodes: std::Array<BlendNode> = std::Array::fill<BlendNode>(animIntMax(capacity, 0))
+func blendTreeNew(capacity: Int): AnimationBlendTree {
+    var nodes: Array<BlendNode> = Array::fill<BlendNode>(animIntMax(capacity, 0))
     return AnimationBlendTree(nodes, 0, -1)
 }
 
 impl AnimationBlendTree {
-    func add(node: BlendNode): std::Int {
+    func add(node: BlendNode): Int {
         if self.count >= self.nodes.size {
             fin room = animIntMax(self.nodes.size * 2, 4)
-            var grown: std::Array<BlendNode> = std::Array::fill<BlendNode>(room)
+            var grown: Array<BlendNode> = Array::fill<BlendNode>(room)
             for i in 0..(self.count - 1) {
                 grown[i] = self.nodes[i]
             }
@@ -781,26 +781,26 @@ impl AnimationBlendTree {
     }
 
     /** Adds a leaf sampling [animation]. */
-    func addClip(animation: SkeletalAnimation): std::Int {
+    func addClip(animation: SkeletalAnimation): Int {
         return self.add(BlendNode(BlendKind.Clip, animation, -1, -1, 1.0, noBone))
     }
 
     /** Adds a node mixing [left] and [right] by [weight]. */
-    func addMix(left: std::Int, right: std::Int, weight: std::Double): std::Int {
+    func addMix(left: Int, right: Int, weight: Double): Int {
         return self.add(
             BlendNode(BlendKind.Mix, self.nodes[animIntMax(left, 0)].animation, left, right, weight, noBone)
         )
     }
 
     /** Adds a node mixing [right] over [left] beneath [maskRoot]. */
-    func addLayer(left: std::Int, right: std::Int, weight: std::Double, maskRoot: std::Int): std::Int {
+    func addLayer(left: Int, right: Int, weight: Double, maskRoot: Int): Int {
         return self.add(
             BlendNode(BlendKind.Layer, self.nodes[animIntMax(left, 0)].animation, left, right, weight, maskRoot)
         )
     }
 
     /** Sets the weight of node [index]. */
-    func setWeight(index: std::Int, weight: std::Double): std::Unit ?! SkeletonFault {
+    func setWeight(index: Int, weight: Double): Unit ?! SkeletonFault {
         if index < 0 || index >= self.count {
             return .UnknownBone
         }
@@ -817,10 +817,10 @@ impl AnimationBlendTree {
 func evaluateBlendTree(
     tree: AnimationBlendTree
     skeleton: Skeleton
-    node: std::Int
-    localTime: std::Double
+    node: Int
+    localTime: Double
     into: Pose
-): std::Unit ?! SkeletonFault {
+): Unit ?! SkeletonFault {
     if node < 0 || node >= tree.count {
         return .UnknownBone
     }
@@ -853,15 +853,15 @@ func evaluateBlendTree(
  * answer every frame for the same input.
  */
 pack InverseKinematics {
-    var root: std::Int
-    var mid: std::Int
-    var end: std::Int
+    var root: Int
+    var mid: Int
+    var end: Int
     /** The direction the joint should bend toward, in model space. */
     var poleDirection: Vec3
-    var weight: std::Double
+    var weight: Double
 }
 
-func inverseKinematics(root: std::Int, mid: std::Int, end: std::Int, poleDirection: Vec3): InverseKinematics {
+func inverseKinematics(root: Int, mid: Int, end: Int, poleDirection: Vec3): InverseKinematics {
     return InverseKinematics(root, mid, end, poleDirection, 1.0)
 }
 
@@ -878,7 +878,7 @@ func solveIk(
     chain: InverseKinematics
     target: Vec3
     pose: Pose
-): std::Unit ?! SkeletonFault {
+): Unit ?! SkeletonFault {
     if !skeleton.has(chain.root) || !skeleton.has(chain.mid) || !skeleton.has(chain.end) {
         return .UnknownBone
     }
@@ -994,18 +994,18 @@ func rotationBetween(from: Vec3, to: Vec3): Quat {
  * of the pose and hands it to the controller, so the feet stay planted.
  */
 pack RootMotion {
-    var bone: std::Int
+    var bone: Int
     /** Displacement since the previous sample, in model space. */
     var deltaPosition: Vec3
     var deltaRotation: Quat
     /** Where the root was last sampled, for the next delta. */
     var previousPosition: Vec3
     var previousRotation: Quat
-    var enabled: std::Bool
+    var enabled: Bool
 }
 
 /** Root motion tracking [bone], starting from rest. */
-func rootMotion(bone: std::Int): RootMotion {
+func rootMotion(bone: Int): RootMotion {
     return RootMotion(bone, vec3Zero(), quatIdentity(), vec3Zero(), quatIdentity(), true)
 }
 
@@ -1016,7 +1016,7 @@ func rootMotion(bone: std::Int): RootMotion {
  * transform, and the pose is left with the root at the origin so the mesh does
  * not travel twice.
  */
-func extractRootMotion(motion: RootMotion, pose: Pose): std::Unit ?! SkeletonFault {
+func extractRootMotion(motion: RootMotion, pose: Pose): Unit ?! SkeletonFault {
     if !motion.enabled {
         return
     }
@@ -1054,19 +1054,19 @@ fin maxBoneInfluences = 4
  * two allocations.
  */
 pack Skin {
-    var name: std::String
+    var name: String
     /** `vertexCount * maxBoneInfluences` bone indices. */
-    var boneIndices: std::Array<std::Int>
+    var boneIndices: Array<Int>
     /** `vertexCount * maxBoneInfluences` weights, summing to one per vertex. */
-    var weights: std::Array<std::Double>
-    var vertexCount: std::Int
+    var weights: Array<Double>
+    var vertexCount: Int
 }
 
 /** A skin over [vertexCount] vertices, every vertex unweighted. */
-func skinNew(name: std::String, vertexCount: std::Int): Skin {
+func skinNew(name: String, vertexCount: Int): Skin {
     fin slots = animIntMax(vertexCount, 0) * maxBoneInfluences
-    var indices: std::Array<std::Int> = std::Array::fill<std::Int>(slots)
-    var weights: std::Array<std::Double> = std::Array::fill<std::Double>(slots)
+    var indices: Array<Int> = Array::fill<Int>(slots)
+    var weights: Array<Double> = Array::fill<Double>(slots)
     for i in 0..(slots - 1) {
         indices[i] = 0
         weights[i] = 0.0
@@ -1078,7 +1078,7 @@ impl Skin {
     /**
      * Binds vertex [vertex]'s influence [influence] to [bone] with [weight].
      */
-    func setInfluence(vertex: std::Int, influence: std::Int, bone: std::Int, weight: std::Double): std::Unit ?! SkeletonFault {
+    func setInfluence(vertex: Int, influence: Int, bone: Int, weight: Double): Unit ?! SkeletonFault {
         if vertex < 0 || vertex >= self.vertexCount || influence < 0 || influence >= maxBoneInfluences {
             return .UnknownBone
         }
@@ -1088,7 +1088,7 @@ impl Skin {
     }
 
     /** The bone of influence [influence] on [vertex]. */
-    func boneOf(vertex: std::Int, influence: std::Int): std::Int {
+    func boneOf(vertex: Int, influence: Int): Int {
         fin offset = vertex * maxBoneInfluences + influence
         if offset < 0 || offset >= self.boneIndices.size {
             return 0
@@ -1097,7 +1097,7 @@ impl Skin {
     }
 
     /** The weight of influence [influence] on [vertex]. */
-    func weightOf(vertex: std::Int, influence: std::Int): std::Double {
+    func weightOf(vertex: Int, influence: Int): Double {
         fin offset = vertex * maxBoneInfluences + influence
         if offset < 0 || offset >= self.weights.size {
             return 0.0
@@ -1127,7 +1127,7 @@ impl Skin {
     }
 
     /** True when [bone] is within [skeleton] for every influence. */
-    func fits(skeleton: Skeleton): std::Bool {
+    func fits(skeleton: Skeleton): Bool {
         for i in 0..(self.boneIndices.size - 1) {
             if self.weights[i] > 0.0 && !skeleton.has(self.boneIndices[i]) {
                 return false
@@ -1145,7 +1145,7 @@ impl Skin {
  * this on the GPU; having it here is what lets collision, attachment points and
  * tests ask the same question without one.
  */
-func skinVertex(skin: Skin, vertex: std::Int, position: Vec3, matrices: std::Array<Mat4>): Vec3 {
+func skinVertex(skin: Skin, vertex: Int, position: Vec3, matrices: Array<Mat4>): Vec3 {
     var result = vec3Zero()
     var total = 0.0
     for influence in 0..(maxBoneInfluences - 1) {
@@ -1173,7 +1173,7 @@ func transformPoint(m: Mat4, point: Vec3): Vec3 {
     )
 }
 
-func realClampTo(value: std::Double, low: std::Double, high: std::Double): std::Double {
+func realClampTo(value: Double, low: Double, high: Double): Double {
     return if value < low { low } else { if value > high { high } else { value } }
 }
 

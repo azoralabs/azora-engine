@@ -51,19 +51,19 @@ import engine.tilemap.map
  */
 pack TileCamera {
     var center: Vec2
-    var zoom: std::Double
-    var viewWidth: std::Double
-    var viewHeight: std::Double
+    var zoom: Double
+    var viewWidth: Double
+    var viewHeight: Double
 }
 
 /** A camera showing [viewWidth] x [viewHeight] points centred on [center]. */
-func tileCamera(center: Vec2, zoom: std::Double, viewWidth: std::Double, viewHeight: std::Double): TileCamera {
+func tileCamera(center: Vec2, zoom: Double, viewWidth: Double, viewHeight: Double): TileCamera {
     return TileCamera(center, realMax(zoom, 0.0001), viewWidth, viewHeight)
 }
 
 /** A camera filling [app]'s window. */
-func cameraForApp(app: App, center: Vec2, zoom: std::Double): TileCamera {
-    return tileCamera(center, zoom, app.width() as std::Double, app.height() as std::Double)
+func cameraForApp(app: App, center: Vec2, zoom: Double): TileCamera {
+    return tileCamera(center, zoom, app.width() as Double, app.height() as Double)
 }
 
 impl TileCamera {
@@ -157,7 +157,7 @@ func pickTileUnderPointer(app: App, map: Tilemap, camera: TileCamera): TilePick 
  * `app.timeNow()`. Layers are drawn in their `order`, so a map sorted once
  * paints its background first and its foreground last.
  */
-func drawTilemap(app: App, map: Tilemap, camera: TileCamera, seconds: std::Double): std::Int {
+func drawTilemap(app: App, map: Tilemap, camera: TileCamera, seconds: Double): Int {
     if !map.visible || map.opacity <= 0.0 || !map.tiles.ok() {
         return 0
     }
@@ -177,7 +177,7 @@ func drawTilemap(app: App, map: Tilemap, camera: TileCamera, seconds: std::Doubl
  * layers of the same map can scroll at different rates without the caller
  * running the culling twice.
  */
-func drawTileLayer(app: App, map: Tilemap, index: std::Int, camera: TileCamera, seconds: std::Double): std::Int {
+func drawTileLayer(app: App, map: Tilemap, index: Int, camera: TileCamera, seconds: Double): Int {
     if !map.hasLayer(index) {
         return 0
     }
@@ -216,9 +216,9 @@ func drawRows(
     cells: TileRect
     camera: TileCamera
     tint: TileColor
-    opacity: std::Double
-    seconds: std::Double
-): std::Int {
+    opacity: Double
+    seconds: Double
+): Int {
     var drawn = 0
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
@@ -244,9 +244,9 @@ func drawSorted(
     cells: TileRect
     camera: TileCamera
     tint: TileColor
-    opacity: std::Double
-    seconds: std::Double
-): std::Int {
+    opacity: Double
+    seconds: Double
+): Int {
     var drawn = 0
     fin first = cells.minX + cells.minY
     fin last = cells.maxX + cells.maxY
@@ -278,9 +278,9 @@ func drawOneTile(
     pos: TilePos
     camera: TileCamera
     tint: TileColor
-    opacity: std::Double
-    seconds: std::Double
-): std::Bool {
+    opacity: Double
+    seconds: Double
+): Bool {
     if layer.chunks.countAt(pos.x, pos.y) == 0 {
         return false
     }
@@ -319,13 +319,13 @@ func blitTile(
     layer: TileLayer
     pos: TilePos
     atlas: TileAtlas
-    local: std::Int
-    flags: std::Int
-    at: std::Int
+    local: Int
+    flags: Int
+    at: Int
     camera: TileCamera
     tint: TileColor
-    opacity: std::Double
-): std::Bool {
+    opacity: Double
+): Bool {
     if atlas.texture == 0L || atlas.texWidth <= 0 || atlas.texHeight <= 0 {
         return false
     }
@@ -351,12 +351,12 @@ func blitTile(
     // Pixel coordinates become texture coordinates here, and the mirrors are
     // applied by swapping them — which costs nothing and avoids storing a
     // flipped copy of every tile.
-    fin tw = atlas.texWidth as std::Double
-    fin th = atlas.texHeight as std::Double
-    var u0 = (source.x as std::Double) / tw
-    var v0 = (source.y as std::Double) / th
-    var u1 = ((source.x + source.w) as std::Double) / tw
-    var v1 = ((source.y + source.h) as std::Double) / th
+    fin tw = atlas.texWidth as Double
+    fin th = atlas.texHeight as Double
+    var u0 = (source.x as Double) / tw
+    var v0 = (source.y as Double) / th
+    var u1 = ((source.x + source.w) as Double) / tw
+    var v1 = ((source.y + source.h) as Double) / th
     if flagsAny(flags, cellFlipX) {
         fin swap = u0
         u0 = u1
@@ -384,7 +384,7 @@ func blitTile(
  * tile size disagree looks merely "slightly wrong" until the lattice is drawn
  * on top of it.
  */
-func drawTileGrid(app: App, map: Tilemap, camera: TileCamera, color: TileColor): std::Int {
+func drawTileGrid(app: App, map: Tilemap, camera: TileCamera, color: TileColor): Int {
     fin cells = visibleTiles(map.geometry, camera.view())
     if cells.isEmpty() {
         return 0

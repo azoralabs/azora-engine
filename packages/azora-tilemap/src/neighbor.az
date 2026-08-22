@@ -47,16 +47,16 @@ enum SquareDirection {
  * allocation per query.
  */
 pack Neighbors {
-    var xs: std::Array<std::Int>
-    var ys: std::Array<std::Int>
-    var count: std::Int
+    var xs: Array<Int>
+    var ys: Array<Int>
+    var count: Int
 }
 
 /** Room for [capacity] neighbours. */
-func neighborsNew(capacity: std::Int): Neighbors {
+func neighborsNew(capacity: Int): Neighbors {
     fin room = intMax(capacity, 0)
-    var xs: std::Array<std::Int> = std::Array::fill<std::Int>(room)
-    var ys: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+    var xs: Array<Int> = Array::fill<Int>(room)
+    var ys: Array<Int> = Array::fill<Int>(room)
     return Neighbors(xs, ys, 0)
 }
 
@@ -73,7 +73,7 @@ impl Neighbors {
     }
 
     /** The neighbour at [index], or the origin when out of range. */
-    func at(index: std::Int): TilePos {
+    func at(index: Int): TilePos {
         if index < 0 || index >= self.count {
             return TilePos(0, 0)
         }
@@ -81,7 +81,7 @@ impl Neighbors {
     }
 
     /** True when [pos] is among the neighbours. */
-    func contains(pos: TilePos): std::Bool {
+    func contains(pos: TilePos): Bool {
         var i = 0
         while i < self.count {
             if self.xs[i] == pos.x && self.ys[i] == pos.y {
@@ -130,7 +130,7 @@ func squareOpposite(direction: SquareDirection): SquareDirection {
 }
 
 /** True when [direction] crosses a corner rather than an edge. */
-func squareIsDiagonal(direction: SquareDirection): std::Bool {
+func squareIsDiagonal(direction: SquareDirection): Bool {
     when direction {
         SquareDirection.NorthEast -> { return true }
         SquareDirection.SouthEast -> { return true }
@@ -153,7 +153,7 @@ func squareNeighbor(pos: TilePos, direction: SquareDirection): TilePos {
  * Even indices are edges and odd ones corners, so an edge-only walk is
  * `index = index + 2` and never has to consult [squareIsDiagonal].
  */
-func squareDirectionAt(index: std::Int): SquareDirection {
+func squareDirectionAt(index: Int): SquareDirection {
     fin i = tileFloorMod(index, 8)
     if i == 0 {
         return SquareDirection.North
@@ -182,7 +182,7 @@ func squareDirectionAt(index: std::Int): SquareDirection {
 // ── Lattice-aware neighbours ────────────────────────────────────────────
 
 /** How many neighbours a cell of this lattice has. */
-func neighborCount(geo: TilemapGeometry, includeDiagonals: std::Bool): std::Int {
+func neighborCount(geo: TilemapGeometry, includeDiagonals: Bool): Int {
     when geo.kind {
         TilemapKind.Hexagon(system) -> { return 6 }
         else -> {
@@ -202,7 +202,7 @@ func neighborCount(geo: TilemapGeometry, includeDiagonals: std::Bool): std::Int 
  * `0 .. 7` clockwise from north, or `0 .. 3` over the edges alone when
  * diagonals are excluded.
  */
-func neighborAt(geo: TilemapGeometry, pos: TilePos, index: std::Int, includeDiagonals: std::Bool): TilePos {
+func neighborAt(geo: TilemapGeometry, pos: TilePos, index: Int, includeDiagonals: Bool): TilePos {
     when geo.kind {
         TilemapKind.Hexagon(system) -> {
             return hexNeighborAt(pos, system, index)
@@ -218,7 +218,7 @@ func neighborAt(geo: TilemapGeometry, pos: TilePos, index: std::Int, includeDiag
 }
 
 /** Every neighbour of [pos], whether or not it lies on the map. */
-func neighborsOf(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::Bool): Neighbors {
+func neighborsOf(geo: TilemapGeometry, pos: TilePos, includeDiagonals: Bool): Neighbors {
     fin total = neighborCount(geo, includeDiagonals)
     var found = neighborsNew(total)
     var i = 0
@@ -230,7 +230,7 @@ func neighborsOf(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::Bool
 }
 
 /** Every neighbour of [pos] that lies on the map. */
-func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::Bool): Neighbors {
+func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: Bool): Neighbors {
     fin total = neighborCount(geo, includeDiagonals)
     var found = neighborsNew(total)
     var i = 0
@@ -250,7 +250,7 @@ func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: std::
  * This is the admissible heuristic a pathfinder wants: hex distance on a hex
  * lattice, Chebyshev where diagonals are allowed, Manhattan where they are not.
  */
-func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiagonals: std::Bool): std::Int {
+func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiagonals: Bool): Int {
     when geo.kind {
         TilemapKind.Hexagon(system) -> {
             return hexDistanceBetween(from, to, system)
@@ -266,7 +266,7 @@ func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiago
 }
 
 /** True when [a] and [b] touch on this lattice. */
-func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonals: std::Bool): std::Bool {
+func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonals: Bool): Bool {
     if a.same(b) {
         return false
     }
@@ -279,7 +279,7 @@ func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonal
  * On a hex lattice this is the hex range; elsewhere it is the square ring set,
  * which with diagonals is a box and without one is a diamond.
  */
-func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: std::Int, includeDiagonals: std::Bool): Neighbors {
+func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: Int, includeDiagonals: Bool): Neighbors {
     var found = neighborsNew(intMax(radius, 0) * 8 + 1)
     if radius < 0 {
         return found

@@ -62,19 +62,19 @@ pack Collider2D {
     /** Half width and half height, for [ColliderShape2D.Box] and capsule bodies. */
     var halfExtents: Vec2
     /** Radius, for [ColliderShape2D.Circle] and capsule caps. */
-    var radius: std::Double
+    var radius: Double
     /** Offset from the body's position. */
     var offset: Vec2
     var layers: CollisionLayers
-    var sensor: std::Bool
+    var sensor: Bool
 }
 
 /** An axis-aligned rectangle in world space. */
 pack Aabb2D {
-    var minX: std::Double
-    var minY: std::Double
-    var maxX: std::Double
-    var maxY: std::Double
+    var minX: Double
+    var minY: Double
+    var maxX: Double
+    var maxY: Double
 }
 
 // ── Body components ─────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ pack Aabb2D {
 @Component
 pack Transform2D {
     var position: Vec2
-    var rotation: std::Double
+    var rotation: Double
     var scale: Vec2
 }
 
@@ -91,24 +91,24 @@ pack Transform2D {
 @Component
 pack Velocity2D {
     var linear: Vec2
-    var angular: std::Double
+    var angular: Double
 }
 
 /** Force and torque accumulated since the last substep. */
 @Component
 pack Forces2D {
     var force: Vec2
-    var torque: std::Double
+    var torque: Double
 }
 
 /** A body's kind and its derived inverse mass and inertia. */
 @Component
 pack RigidBody2D {
     var kind: RigidBodyKind
-    var inverseMass: std::Double
-    var inverseInertia: std::Double
+    var inverseMass: Double
+    var inverseInertia: Double
     /** Locks rotation — what keeps a platformer character upright. */
-    var fixedRotation: std::Bool
+    var fixedRotation: Bool
 }
 
 /** The gravity a 2D world pulls with. */
@@ -128,8 +128,8 @@ pack Gravity2D {
 pack Contact2D {
     var normal: Vec2
     var point: Vec2
-    var penetration: std::Double
-    var sensor: std::Bool
+    var penetration: Double
+    var sensor: Bool
 }
 
 /** Whether two shapes touch. */
@@ -146,14 +146,14 @@ variant enum Sweep2D {
      * `t` is the fraction of the requested motion completed before contact, so
      * the safe position is `origin + motion * t`.
      */
-    Blocked(t: std::Double, normal: Vec2, point: Vec2)
+    Blocked(t: Double, normal: Vec2, point: Vec2)
     /** Nothing was in the way; the whole motion is safe. */
     Clear
 }
 
 /** What a ray met. */
 variant enum RayHit2D {
-    Hit(t: std::Double, normal: Vec2, point: Vec2)
+    Hit(t: Double, normal: Vec2, point: Vec2)
     Miss
 }
 
@@ -161,15 +161,15 @@ variant enum RayHit2D {
 pack Move2D {
     var position: Vec2
     var velocity: Vec2
-    var hitX: std::Bool
-    var hitY: std::Bool
-    var grounded: std::Bool
-    var ceiling: std::Bool
+    var hitX: Bool
+    var hitY: Bool
+    var grounded: Bool
+    var ceiling: Bool
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
 
-func aabb2d(minX: std::Double, minY: std::Double, maxX: std::Double, maxY: std::Double): Aabb2D {
+func aabb2d(minX: Double, minY: Double, maxX: Double, maxY: Double): Aabb2D {
     return Aabb2D(minX, minY, maxX, maxY)
 }
 
@@ -181,16 +181,16 @@ func aabbAround(center: Vec2, size: Vec2): Aabb2D {
 }
 
 /** The box with its top-left corner at ([x], [y]). */
-func aabbAt(x: std::Double, y: std::Double, width: std::Double, height: std::Double): Aabb2D {
+func aabbAt(x: Double, y: Double, width: Double, height: Double): Aabb2D {
     return Aabb2D(x, y, x + width, y + height)
 }
 
 impl Aabb2D {
-    func width(): std::Double {
+    func width(): Double {
         return self.maxX - self.minX
     }
 
-    func height(): std::Double {
+    func height(): Double {
         return self.maxY - self.minY
     }
 
@@ -202,12 +202,12 @@ impl Aabb2D {
         return Vec2(self.width() * 0.5, self.height() * 0.5)
     }
 
-    func overlaps(other: Aabb2D): std::Bool {
+    func overlaps(other: Aabb2D): Bool {
         return self.minX < other.maxX && other.minX < self.maxX &&
             self.minY < other.maxY && other.minY < self.maxY
     }
 
-    func contains(point: Vec2): std::Bool {
+    func contains(point: Vec2): Bool {
         return point.x >= self.minX && point.x <= self.maxX &&
             point.y >= self.minY && point.y <= self.maxY
     }
@@ -216,7 +216,7 @@ impl Aabb2D {
         return Aabb2D(self.minX + delta.x, self.minY + delta.y, self.maxX + delta.x, self.maxY + delta.y)
     }
 
-    func expand(x: std::Double, y: std::Double): Aabb2D {
+    func expand(x: Double, y: Double): Aabb2D {
         return Aabb2D(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
     }
 
@@ -253,12 +253,12 @@ func boxCollider(halfExtents: Vec2): Collider2D {
 }
 
 /** A circle collider of [radius]. */
-func circleCollider(radius: std::Double): Collider2D {
+func circleCollider(radius: Double): Collider2D {
     return Collider2D(ColliderShape2D.Circle, Vec2(radius, radius), radius, vec2Zero(), allLayers(), false)
 }
 
 /** A vertical capsule [halfHeight] tall through the centre, with caps of [radius]. */
-func capsuleCollider(radius: std::Double, halfHeight: std::Double): Collider2D {
+func capsuleCollider(radius: Double, halfHeight: Double): Collider2D {
     return Collider2D(
         ColliderShape2D.Capsule,
         Vec2(radius, halfHeight),
@@ -329,7 +329,7 @@ func forces2d(): Forces2D {
 }
 
 /** A rigid body of [kind] and [mass], with inertia derived from [collider]. */
-func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: std::Double = 1.0, fixedRotation: std::Bool = false): RigidBody2D {
+func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: Double = 1.0, fixedRotation: Bool = false): RigidBody2D {
     fin inverseMass = inverseMassFor(kind, mass)
     var inverseInertia = 0.0
     if inverseMass > 0.0 && !fixedRotation {
@@ -345,7 +345,7 @@ func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: std::Double = 
  * for the aspect ratios characters actually use and avoids an integral whose
  * accuracy nothing in a 2D game can perceive.
  */
-func inertiaOf(collider: Collider2D, mass: std::Double): std::Double {
+func inertiaOf(collider: Collider2D, mass: Double): Double {
     return when collider.shape {
         ColliderShape2D.Circle -> realMaxOf(0.5 * mass * collider.radius * collider.radius, 0.000001)
         else -> {
@@ -391,7 +391,7 @@ func boxContact(centerA: Vec2, halfA: Vec2, centerB: Vec2, halfB: Vec2): Overlap
 }
 
 /** The contact between two circles, or [Overlap2D.Separate]. */
-func circleContact(centerA: Vec2, radiusA: std::Double, centerB: Vec2, radiusB: std::Double): Overlap2D {
+func circleContact(centerA: Vec2, radiusA: Double, centerB: Vec2, radiusB: Double): Overlap2D {
     fin delta = centerA - centerB
     fin reach = radiusA + radiusB
     fin distanceSquared = delta.lengthSquared()
@@ -411,7 +411,7 @@ func circleContact(centerA: Vec2, radiusA: std::Double, centerB: Vec2, radiusB: 
 }
 
 /** The contact between a circle and a box, or [Overlap2D.Separate]. */
-func circleBoxContact(circleCenter: Vec2, radius: std::Double, boxCenter: Vec2, boxHalf: Vec2): Overlap2D {
+func circleBoxContact(circleCenter: Vec2, radius: Double, boxCenter: Vec2, boxHalf: Vec2): Overlap2D {
     fin closest = Vec2(
         realClampTo(circleCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
         realClampTo(circleCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y)
@@ -480,7 +480,7 @@ func flipOverlap(overlap: Overlap2D): Overlap2D {
 }
 
 /** [overlap] tagged as a sensor contact. */
-func markSensor(overlap: Overlap2D, sensor: std::Bool): Overlap2D {
+func markSensor(overlap: Overlap2D, sensor: Bool): Overlap2D {
     return when overlap {
         Overlap2D.Touching(contact) -> Overlap2D.Touching(
             Contact2D(contact.normal, contact.point, contact.penetration, sensor)
@@ -490,7 +490,7 @@ func markSensor(overlap: Overlap2D, sensor: std::Bool): Overlap2D {
 }
 
 /** True when [overlap] found a contact. */
-func overlapTouching(overlap: Overlap2D): std::Bool {
+func overlapTouching(overlap: Overlap2D): Bool {
     return when overlap {
         Overlap2D.Touching(contact) -> true
         else -> false
@@ -572,7 +572,7 @@ func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
 }
 
 /** True when [sweep] was interrupted. */
-func sweepBlocked(sweep: Sweep2D): std::Bool {
+func sweepBlocked(sweep: Sweep2D): Bool {
     return when sweep {
         Sweep2D.Blocked(t, normal, point) -> true
         else -> false
@@ -580,7 +580,7 @@ func sweepBlocked(sweep: Sweep2D): std::Bool {
 }
 
 /** The safe fraction of the motion [sweep] permits. */
-func sweepFraction(sweep: Sweep2D): std::Double {
+func sweepFraction(sweep: Sweep2D): Double {
     return when sweep {
         Sweep2D.Blocked(t, normal, point) -> t
         else -> 1.0
@@ -609,7 +609,7 @@ func rayBox(origin: Vec2, direction: Vec2, target: Aabb2D): RayHit2D {
 }
 
 /** True when [hit] met something. */
-func rayHit(hit: RayHit2D): std::Bool {
+func rayHit(hit: RayHit2D): Bool {
     return when hit {
         RayHit2D.Hit(t, normal, point) -> true
         else -> false
@@ -617,7 +617,7 @@ func rayHit(hit: RayHit2D): std::Bool {
 }
 
 /** The fraction of the ray travelled before the hit, or `-1`. */
-func rayFraction(hit: RayHit2D): std::Double {
+func rayFraction(hit: RayHit2D): Double {
     return when hit {
         RayHit2D.Hit(t, normal, point) -> t
         else -> -1.0
@@ -641,7 +641,7 @@ func slide(velocity: Vec2, normal: Vec2): Vec2 {
 }
 
 /** The velocity left after bouncing off [normal] with the given restitution. */
-func bounce(velocity: Vec2, normal: Vec2, restitution: std::Double): Vec2 {
+func bounce(velocity: Vec2, normal: Vec2, restitution: Double): Vec2 {
     fin into = velocity.dot(normal)
     if into >= 0.0 {
         return velocity
@@ -655,17 +655,17 @@ func bounce(velocity: Vec2, normal: Vec2, restitution: std::Double): Vec2 {
  * The four modes differ only by a scale factor, which `engine.physics.core`
  * already computes, so both dimensions agree on what an impulse means.
  */
-func applyToVelocity(velocity: Velocity2D, amount: Vec2, mode: ForceMode, inverseMass: std::Double, dt: std::Double) {
+func applyToVelocity(velocity: Velocity2D, amount: Vec2, mode: ForceMode, inverseMass: Double, dt: Double) {
     velocity.linear = velocity.linear + amount.scale(forceScale(mode, inverseMass, dt))
 }
 
 /** Applies gravity to [velocity] for one substep. */
-func applyGravity(velocity: Velocity2D, gravity: Gravity2D, scale: GravityScale, dt: std::Double) {
+func applyGravity(velocity: Velocity2D, gravity: Gravity2D, scale: GravityScale, dt: Double) {
     velocity.linear = velocity.linear + gravity.value.scale(scale.value * dt)
 }
 
 /** Decays [velocity] by [drag] over one substep. */
-func applyDamping(velocity: Velocity2D, drag: Damping, dt: std::Double) {
+func applyDamping(velocity: Velocity2D, drag: Damping, dt: Double) {
     fin keep = realClamp01(1.0 - drag.linear * dt)
     velocity.linear = velocity.linear.scale(keep)
     velocity.angular = velocity.angular * realClamp01(1.0 - drag.angular * dt)
@@ -680,9 +680,9 @@ func applyDamping(velocity: Velocity2D, drag: Damping, dt: std::Double) {
  */
 func resolvePenetration(
     positionA: Vec2
-    inverseMassA: std::Double
+    inverseMassA: Double
     positionB: Vec2
-    inverseMassB: std::Double
+    inverseMassB: Double
     contact: Contact2D
     settings: PhysicsSettings
 ): Vec2 {

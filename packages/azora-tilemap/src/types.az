@@ -33,9 +33,9 @@ module engine.tilemap.types
 import std.container.array
 
 bridge .C {
-    func floor(x: std::Double): std::Double
-    func ceil(x: std::Double): std::Double
-    func fabs(x: std::Double): std::Double
+    func floor(x: Double): Double
+    func ceil(x: Double): Double
+    func fabs(x: Double): Double
 }
 
 // ── Sentinels and bit layouts ───────────────────────────────────────────
@@ -176,7 +176,7 @@ variant enum TilemapAnchor {
      * outside `0 .. 1` anchor outside the map — which is how a map is offset by
      * a multiple of its own size for wrapping or for stacked parallax bands.
      */
-    Custom(x: std::Double, y: std::Double)
+    Custom(x: Double, y: Double)
 }
 
 // ── Faults and lookups ──────────────────────────────────────────────────
@@ -219,7 +219,7 @@ error TilemapFault {
  */
 variant enum TileLookup {
     /** A tile is present, with its cell flags and packed tint. */
-    Tile(index: std::Int, flags: std::Int, tint: std::Int)
+    Tile(index: Int, flags: Int, tint: Int)
     /** The cell is inside the map and holds no tile. */
     Empty
     /** The coordinate is outside the map. */
@@ -227,7 +227,7 @@ variant enum TileLookup {
 }
 
 /** The tile index of [lookup], or [tileEmpty] when it holds no tile. */
-func tileLookupIndex(lookup: TileLookup): std::Int {
+func tileLookupIndex(lookup: TileLookup): Int {
     when lookup {
         TileLookup.Tile(index, flags, tint) -> { return index }
         else -> { return tileEmpty }
@@ -236,7 +236,7 @@ func tileLookupIndex(lookup: TileLookup): std::Int {
 }
 
 /** The cell flags of [lookup], or `0` when it holds no tile. */
-func tileLookupFlags(lookup: TileLookup): std::Int {
+func tileLookupFlags(lookup: TileLookup): Int {
     when lookup {
         TileLookup.Tile(index, flags, tint) -> { return flags }
         else -> { return 0 }
@@ -245,7 +245,7 @@ func tileLookupFlags(lookup: TileLookup): std::Int {
 }
 
 /** The packed tint of [lookup], or [tileTintNone] when it holds no tile. */
-func tileLookupTint(lookup: TileLookup): std::Int {
+func tileLookupTint(lookup: TileLookup): Int {
     when lookup {
         TileLookup.Tile(index, flags, tint) -> { return tint }
         else -> { return tileTintNone }
@@ -254,7 +254,7 @@ func tileLookupTint(lookup: TileLookup): std::Int {
 }
 
 /** True when [lookup] found a tile. */
-func tileLookupPresent(lookup: TileLookup): std::Bool {
+func tileLookupPresent(lookup: TileLookup): Bool {
     when lookup {
         TileLookup.Tile(index, flags, tint) -> { return true }
         else -> { return false }
@@ -263,7 +263,7 @@ func tileLookupPresent(lookup: TileLookup): std::Bool {
 }
 
 /** True when [lookup] addressed a cell outside the map. */
-func tileLookupOffMap(lookup: TileLookup): std::Bool {
+func tileLookupOffMap(lookup: TileLookup): Bool {
     when lookup {
         TileLookup.OutOfBounds() -> { return true }
         else -> { return false }
@@ -275,14 +275,14 @@ func tileLookupOffMap(lookup: TileLookup): std::Bool {
 
 /** An integer position in tile space. */
 pack TilePos {
-    var x: std::Int
-    var y: std::Int
+    var x: Int
+    var y: Int
 }
 
 /** A real position in world space. */
 pack WorldPos {
-    var x: std::Double
-    var y: std::Double
+    var x: Double
+    var y: Double
 }
 
 /**
@@ -293,30 +293,30 @@ pack WorldPos {
  * culling and fill helpers say "nothing to do" without a second flag.
  */
 pack TileRect {
-    var minX: std::Int
-    var minY: std::Int
-    var maxX: std::Int
-    var maxY: std::Int
+    var minX: Int
+    var minY: Int
+    var maxX: Int
+    var maxY: Int
 }
 
 /** An axis-aligned rectangle in world space. */
 pack WorldRect {
-    var minX: std::Double
-    var minY: std::Double
-    var maxX: std::Double
-    var maxY: std::Double
+    var minX: Double
+    var minY: Double
+    var maxX: Double
+    var maxY: Double
 }
 
 /** A map's extent in tiles. */
 pack TilemapSize {
-    var x: std::Int
-    var y: std::Int
+    var x: Int
+    var y: Int
 }
 
 /** The size one tile is drawn at, in world units. */
 pack TileSize {
-    var x: std::Double
-    var y: std::Double
+    var x: Double
+    var y: Double
 }
 
 /**
@@ -328,44 +328,44 @@ pack TileSize {
  * height depending on orientation.
  */
 pack GridSize {
-    var x: std::Double
-    var y: std::Double
+    var x: Double
+    var y: Double
 }
 
 /** A straight RGBA colour with components in `0.0 .. 1.0`. */
 pack TileColor {
-    var r: std::Double
-    var g: std::Double
-    var b: std::Double
-    var a: std::Double
+    var r: Double
+    var g: Double
+    var b: Double
+    var a: Double
 }
 
 /** The eight square symmetries as three independent mirrors. */
 pack TileFlip {
-    var x: std::Bool
-    var y: std::Bool
-    var d: std::Bool
+    var x: Bool
+    var y: Bool
+    var d: Bool
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
 
-func tilePos(x: std::Int, y: std::Int): TilePos {
+func tilePos(x: Int, y: Int): TilePos {
     return TilePos(x, y)
 }
 
-func worldPos(x: std::Double, y: std::Double): WorldPos {
+func worldPos(x: Double, y: Double): WorldPos {
     return WorldPos(x, y)
 }
 
-func tilemapSize(x: std::Int, y: std::Int): TilemapSize {
+func tilemapSize(x: Int, y: Int): TilemapSize {
     return TilemapSize(x, y)
 }
 
-func tileSize(x: std::Double, y: std::Double): TileSize {
+func tileSize(x: Double, y: Double): TileSize {
     return TileSize(x, y)
 }
 
-func gridSize(x: std::Double, y: std::Double): GridSize {
+func gridSize(x: Double, y: Double): GridSize {
     return GridSize(x, y)
 }
 
@@ -374,7 +374,7 @@ func gridSizeFromTile(size: TileSize): GridSize {
     return GridSize(size.x, size.y)
 }
 
-func tileRect(minX: std::Int, minY: std::Int, maxX: std::Int, maxY: std::Int): TileRect {
+func tileRect(minX: Int, minY: Int, maxX: Int, maxY: Int): TileRect {
     return TileRect(minX, minY, maxX, maxY)
 }
 
@@ -383,16 +383,16 @@ func tileRectEmpty(): TileRect {
     return TileRect(0, 0, -1, -1)
 }
 
-func worldRect(minX: std::Double, minY: std::Double, maxX: std::Double, maxY: std::Double): WorldRect {
+func worldRect(minX: Double, minY: Double, maxX: Double, maxY: Double): WorldRect {
     return WorldRect(minX, minY, maxX, maxY)
 }
 
 /** A world rectangle from its top-left corner and its size. */
-func worldRectAt(x: std::Double, y: std::Double, width: std::Double, height: std::Double): WorldRect {
+func worldRectAt(x: Double, y: Double, width: Double, height: Double): WorldRect {
     return WorldRect(x, y, x + width, y + height)
 }
 
-func tileColor(r: std::Double, g: std::Double, b: std::Double, a: std::Double): TileColor {
+func tileColor(r: Double, g: Double, b: Double, a: Double): TileColor {
     return TileColor(r, g, b, a)
 }
 
@@ -405,7 +405,7 @@ func tileFlipNone(): TileFlip {
     return TileFlip(false, false, false)
 }
 
-func tileFlip(x: std::Bool, y: std::Bool, d: std::Bool): TileFlip {
+func tileFlip(x: Bool, y: Bool, d: Bool): TileFlip {
     return TileFlip(x, y, d)
 }
 
@@ -417,7 +417,7 @@ func tileFlip(x: std::Bool, y: std::Bool, d: std::Bool): TileFlip {
 // uniform across the origin.
 
 /** Integer division that rounds toward negative infinity. */
-func tileFloorDiv(a: std::Int, b: std::Int): std::Int {
+func tileFloorDiv(a: Int, b: Int): Int {
     var q = a / b
     if (a % b != 0) && ((a < 0) != (b < 0)) {
         q = q - 1
@@ -426,7 +426,7 @@ func tileFloorDiv(a: std::Int, b: std::Int): std::Int {
 }
 
 /** The non-negative remainder of `a / b` for positive `b`. */
-func tileFloorMod(a: std::Int, b: std::Int): std::Int {
+func tileFloorMod(a: Int, b: Int): Int {
     fin r = a % b
     if r < 0 {
         return r + b
@@ -434,21 +434,21 @@ func tileFloorMod(a: std::Int, b: std::Int): std::Int {
     return r
 }
 
-func intMin(a: std::Int, b: std::Int): std::Int {
+func intMin(a: Int, b: Int): Int {
     if a < b {
         return a
     }
     return b
 }
 
-func intMax(a: std::Int, b: std::Int): std::Int {
+func intMax(a: Int, b: Int): Int {
     if a > b {
         return a
     }
     return b
 }
 
-func intClamp(value: std::Int, low: std::Int, high: std::Int): std::Int {
+func intClamp(value: Int, low: Int, high: Int): Int {
     if value < low {
         return low
     }
@@ -458,7 +458,7 @@ func intClamp(value: std::Int, low: std::Int, high: std::Int): std::Int {
     return value
 }
 
-func intAbs(value: std::Int): std::Int {
+func intAbs(value: Int): Int {
     if value < 0 {
         return 0 - value
     }
@@ -466,25 +466,25 @@ func intAbs(value: std::Int): std::Int {
 }
 
 /** True when [value] is odd, for negative values as well as positive ones. */
-func intIsOdd(value: std::Int): std::Bool {
+func intIsOdd(value: Int): Bool {
     return tileFloorMod(value, 2) == 1
 }
 
-func realMin(a: std::Double, b: std::Double): std::Double {
+func realMin(a: Double, b: Double): Double {
     if a < b {
         return a
     }
     return b
 }
 
-func realMax(a: std::Double, b: std::Double): std::Double {
+func realMax(a: Double, b: Double): Double {
     if a > b {
         return a
     }
     return b
 }
 
-func realClamp(value: std::Double, low: std::Double, high: std::Double): std::Double {
+func realClamp(value: Double, low: Double, high: Double): Double {
     if value < low {
         return low
     }
@@ -494,74 +494,74 @@ func realClamp(value: std::Double, low: std::Double, high: std::Double): std::Do
     return value
 }
 
-func realAbs(value: std::Double): std::Double {
+func realAbs(value: Double): Double {
     return fabs(value)
 }
 
 /** The largest integer not greater than [value]. */
-func realFloorToInt(value: std::Double): std::Int {
-    return floor(value) as std::Int
+func realFloorToInt(value: Double): Int {
+    return floor(value) as Int
 }
 
 /** The smallest integer not less than [value]. */
-func realCeilToInt(value: std::Double): std::Int {
-    return ceil(value) as std::Int
+func realCeilToInt(value: Double): Int {
+    return ceil(value) as Int
 }
 
 /** [value] rounded half away from zero. */
-func realRoundToInt(value: std::Double): std::Int {
+func realRoundToInt(value: Double): Int {
     if value < 0.0 {
-        return 0 - (floor(0.5 - value) as std::Int)
+        return 0 - (floor(0.5 - value) as Int)
     }
-    return floor(value + 0.5) as std::Int
+    return floor(value + 0.5) as Int
 }
 
 // ── Flag helpers ────────────────────────────────────────────────────────
 
 /** True when every bit of [mask] is set in [flags]. */
-func flagsAll(flags: std::Int, mask: std::Int): std::Bool {
+func flagsAll(flags: Int, mask: Int): Bool {
     return (flags & mask) == mask
 }
 
 /** True when any bit of [mask] is set in [flags]. */
-func flagsAny(flags: std::Int, mask: std::Int): std::Bool {
+func flagsAny(flags: Int, mask: Int): Bool {
     return (flags & mask) != 0
 }
 
-func flagsSet(flags: std::Int, mask: std::Int): std::Int {
+func flagsSet(flags: Int, mask: Int): Int {
     return flags | mask
 }
 
-func flagsClear(flags: std::Int, mask: std::Int): std::Int {
+func flagsClear(flags: Int, mask: Int): Int {
     return flags & (0 - 1 - mask)
 }
 
-func flagsToggle(flags: std::Int, mask: std::Int): std::Int {
+func flagsToggle(flags: Int, mask: Int): Int {
     return flags ^ mask
 }
 
 /** Packs a game's own flag value into the bits above [cellUserShift]. */
-func cellUserFlags(value: std::Int): std::Int {
+func cellUserFlags(value: Int): Int {
     return value << cellUserShift
 }
 
 /** Reads back the game-owned bits of a cell's flags. */
-func cellUserValue(flags: std::Int): std::Int {
+func cellUserValue(flags: Int): Int {
     return flags >> cellUserShift
 }
 
 /** Packs a game's own trait value into the bits above [traitUserShift]. */
-func traitUserFlags(value: std::Int): std::Int {
+func traitUserFlags(value: Int): Int {
     return value << traitUserShift
 }
 
 /** Reads back the game-owned bits of a tile's traits. */
-func traitUserValue(traits: std::Int): std::Int {
+func traitUserValue(traits: Int): Int {
     return traits >> traitUserShift
 }
 
 /** The cell flags describing [mirrors]. */
-func tileFlipToFlags(mirrors: TileFlip): std::Int {
+func tileFlipToFlags(mirrors: TileFlip): Int {
     var flags = 0
     if (mirrors.x) {
         flags = flags | cellFlipX
@@ -576,7 +576,7 @@ func tileFlipToFlags(mirrors: TileFlip): std::Int {
 }
 
 /** The mirrors encoded in [flags]. */
-func tileFlipFromFlags(flags: std::Int): TileFlip {
+func tileFlipFromFlags(flags: Int): TileFlip {
     return TileFlip(
         (flags & cellFlipX) != 0,
         (flags & cellFlipY) != 0,
@@ -592,21 +592,21 @@ func tileFlipFromFlags(flags: std::Int): TileFlip {
 // actually drawn.
 
 /** Packs a colour into `0xAARRGGBB`. */
-func tileColorPack(color: TileColor): std::Int {
-    fin r = (realClamp(color.r, 0.0, 1.0) * 255.0 + 0.5) as std::Int
-    fin g = (realClamp(color.g, 0.0, 1.0) * 255.0 + 0.5) as std::Int
-    fin b = (realClamp(color.b, 0.0, 1.0) * 255.0 + 0.5) as std::Int
-    fin a = (realClamp(color.a, 0.0, 1.0) * 255.0 + 0.5) as std::Int
+func tileColorPack(color: TileColor): Int {
+    fin r = (realClamp(color.r, 0.0, 1.0) * 255.0 + 0.5) as Int
+    fin g = (realClamp(color.g, 0.0, 1.0) * 255.0 + 0.5) as Int
+    fin b = (realClamp(color.b, 0.0, 1.0) * 255.0 + 0.5) as Int
+    fin a = (realClamp(color.a, 0.0, 1.0) * 255.0 + 0.5) as Int
     return (a << 24) | (r << 16) | (g << 8) | b
 }
 
 /** Unpacks a `0xAARRGGBB` value written by [tileColorPack]. */
-func tileColorUnpack(packed: std::Int): TileColor {
+func tileColorUnpack(packed: Int): TileColor {
     return TileColor(
-        (((packed >> 16) & 0xFF) as std::Double) / 255.0,
-        (((packed >> 8) & 0xFF) as std::Double) / 255.0,
-        ((packed & 0xFF) as std::Double) / 255.0,
-        (((packed >> 24) & 0xFF) as std::Double) / 255.0
+        (((packed >> 16) & 0xFF) as Double) / 255.0,
+        (((packed >> 8) & 0xFF) as Double) / 255.0,
+        ((packed & 0xFF) as Double) / 255.0,
+        (((packed >> 24) & 0xFF) as Double) / 255.0
     )
 }
 
@@ -616,7 +616,7 @@ func tileColorModulate(a: TileColor, b: TileColor): TileColor {
 }
 
 /** [color] with its alpha scaled by [opacity]. */
-func tileColorFade(color: TileColor, opacity: std::Double): TileColor {
+func tileColorFade(color: TileColor, opacity: Double): TileColor {
     return TileColor(color.r, color.g, color.b, color.a * opacity)
 }
 
@@ -624,27 +624,27 @@ func tileColorFade(color: TileColor, opacity: std::Double): TileColor {
 
 impl TilePos {
     /** True when both coordinates match [other]. */
-    func same(other: TilePos): std::Bool {
+    func same(other: TilePos): Bool {
         return self.x == other.x && self.y == other.y
     }
 
     /** This position moved by [dx], [dy]. */
-    func offset(dx: std::Int, dy: std::Int): TilePos {
+    func offset(dx: Int, dy: Int): TilePos {
         return TilePos(self.x + dx, self.y + dy)
     }
 
     /** The Manhattan distance to [other]: the step count on a 4-way square grid. */
-    func manhattan(other: TilePos): std::Int {
+    func manhattan(other: TilePos): Int {
         return intAbs(self.x - other.x) + intAbs(self.y - other.y)
     }
 
     /** The Chebyshev distance to [other]: the step count on an 8-way square grid. */
-    func chebyshev(other: TilePos): std::Int {
+    func chebyshev(other: TilePos): Int {
         return intMax(intAbs(self.x - other.x), intAbs(self.y - other.y))
     }
 
     /** The row-major index of this position in a map [width] tiles across. */
-    func linearIndex(width: std::Int): std::Int {
+    func linearIndex(width: Int): Int {
         return self.y * width + self.x
     }
 }
@@ -658,12 +658,12 @@ impl WorldPos {
         return WorldPos(self.x - other.x, self.y - other.y)
     }
 
-    func scale(k: std::Double): WorldPos {
+    func scale(k: Double): WorldPos {
         return WorldPos(self.x * k, self.y * k)
     }
 
     /** The squared distance to [other]; comparing squares avoids a square root. */
-    func distanceSquared(other: WorldPos): std::Double {
+    func distanceSquared(other: WorldPos): Double {
         fin dx = self.x - other.x
         fin dy = self.y - other.y
         return dx * dx + dy * dy
@@ -672,17 +672,17 @@ impl WorldPos {
 
 impl TilemapSize {
     /** The number of cells in a map of this size. */
-    func count(): std::Int {
+    func count(): Int {
         return self.x * self.y
     }
 
     /** True when [pos] addresses a cell inside a map of this size. */
-    func contains(pos: TilePos): std::Bool {
+    func contains(pos: TilePos): Bool {
         return pos.x >= 0 && pos.y >= 0 && pos.x < self.x && pos.y < self.y
     }
 
     /** True when both extents are positive. */
-    func isValid(): std::Bool {
+    func isValid(): Bool {
         return self.x > 0 && self.y > 0
     }
 
@@ -694,18 +694,18 @@ impl TilemapSize {
 
 impl TileRect {
     /** True when the rectangle covers no cell at all. */
-    func isEmpty(): std::Bool {
+    func isEmpty(): Bool {
         return self.maxX < self.minX || self.maxY < self.minY
     }
 
-    func width(): std::Int {
+    func width(): Int {
         if self.isEmpty() {
             return 0
         }
         return self.maxX - self.minX + 1
     }
 
-    func height(): std::Int {
+    func height(): Int {
         if self.isEmpty() {
             return 0
         }
@@ -713,11 +713,11 @@ impl TileRect {
     }
 
     /** The number of cells the rectangle covers. */
-    func area(): std::Int {
+    func area(): Int {
         return self.width() * self.height()
     }
 
-    func contains(pos: TilePos): std::Bool {
+    func contains(pos: TilePos): Bool {
         return pos.x >= self.minX && pos.x <= self.maxX &&
             pos.y >= self.minY && pos.y <= self.maxY
     }
@@ -749,7 +749,7 @@ impl TileRect {
     }
 
     /** This rectangle grown by [amount] cells on every side. */
-    func expand(amount: std::Int): TileRect {
+    func expand(amount: Int): TileRect {
         if self.isEmpty() {
             return self
         }
@@ -768,11 +768,11 @@ impl TileRect {
 }
 
 impl WorldRect {
-    func width(): std::Double {
+    func width(): Double {
         return self.maxX - self.minX
     }
 
-    func height(): std::Double {
+    func height(): Double {
         return self.maxY - self.minY
     }
 
@@ -780,24 +780,24 @@ impl WorldRect {
         return WorldPos((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
     }
 
-    func contains(point: WorldPos): std::Bool {
+    func contains(point: WorldPos): Bool {
         return point.x >= self.minX && point.x <= self.maxX &&
             point.y >= self.minY && point.y <= self.maxY
     }
 
     /** True when the two rectangles share any area. */
-    func overlaps(other: WorldRect): std::Bool {
+    func overlaps(other: WorldRect): Bool {
         return self.minX < other.maxX && other.minX < self.maxX &&
             self.minY < other.maxY && other.minY < self.maxY
     }
 
     /** This rectangle grown by [x] horizontally and [y] vertically. */
-    func expand(x: std::Double, y: std::Double): WorldRect {
+    func expand(x: Double, y: Double): WorldRect {
         return WorldRect(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
     }
 
     /** This rectangle moved by [dx], [dy]. */
-    func translate(dx: std::Double, dy: std::Double): WorldRect {
+    func translate(dx: Double, dy: Double): WorldRect {
         return WorldRect(self.minX + dx, self.minY + dy, self.maxX + dx, self.maxY + dy)
     }
 
@@ -838,7 +838,7 @@ func anchorFraction(anchor: TilemapAnchor): WorldPos {
 }
 
 /** False only for [TilemapAnchor.Origin], which leaves the lattice unshifted. */
-func anchorShifts(anchor: TilemapAnchor): std::Bool {
+func anchorShifts(anchor: TilemapAnchor): Bool {
     when anchor {
         TilemapAnchor.Origin() -> { return false }
         else -> { return true }
@@ -848,14 +848,14 @@ func anchorShifts(anchor: TilemapAnchor): std::Bool {
 
 // ── Dense integer grids ─────────────────────────────────────────────────
 //
-// Every grid in the package is one flat, row-major `std::Array<Int>`. Keeping the
+// Every grid in the package is one flat, row-major `Array<Int>`. Keeping the
 // allocation to a single block per plane is what lets a 512x512 map be a few
 // megabytes of contiguous memory instead of a quarter of a million objects.
 
 /** Allocates a row-major `width * height` plane filled with [value]. */
-func intGridFill(width: std::Int, height: std::Int, value: std::Int): std::Array<std::Int> {
+func intGridFill(width: Int, height: Int, value: Int): Array<Int> {
     fin count = intMax(width * height, 0)
-    var cells: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+    var cells: Array<Int> = Array::fill<Int>(count)
     var i = 0
     while i < count {
         cells[i] = value
@@ -865,7 +865,7 @@ func intGridFill(width: std::Int, height: std::Int, value: std::Int): std::Array
 }
 
 /** Overwrites every cell of [cells] with [value]. */
-func intGridClear(cells: std::Array<std::Int>, value: std::Int) {
+func intGridClear(cells: Array<Int>, value: Int) {
     var i = 0
     while i < cells.size {
         cells[i] = value
@@ -874,8 +874,8 @@ func intGridClear(cells: std::Array<std::Int>, value: std::Int) {
 }
 
 /** Copies [count] cells of [source] into a fresh plane of [capacity] cells. */
-func intGridResize(source: std::Array<std::Int>, count: std::Int, capacity: std::Int, value: std::Int): std::Array<std::Int> {
-    var grown: std::Array<std::Int> = std::Array::fill<std::Int>(intMax(capacity, 0))
+func intGridResize(source: Array<Int>, count: Int, capacity: Int, value: Int): Array<Int> {
+    var grown: Array<Int> = Array::fill<Int>(intMax(capacity, 0))
     var i = 0
     while i < grown.size {
         if i < count && i < source.size {

@@ -33,21 +33,21 @@ import engine.platform
 
 pack Camera {
     var pos: Vec3
-    var yaw: std::Double
-    var pitch: std::Double
-    var fovDeg: std::Double
+    var yaw: Double
+    var pitch: Double
+    var fovDeg: Double
 }
 
 pack Color {
-    var r: std::Double
-    var g: std::Double
-    var b: std::Double
-    var a: std::Double
+    var r: Double
+    var g: Double
+    var b: Double
+    var a: Double
 }
 
 pack Material {
     var color: Color
-    var roughness: std::Double
+    var roughness: Double
 }
 
 pack Transform3d {
@@ -80,19 +80,19 @@ pack RenderItem {
 }
 
 pack RenderQueue {
-    var items: std::Array<RenderItem>
-    var itemCount: std::Int
+    var items: Array<RenderItem>
+    var itemCount: Int
 }
 
 func cameraDefault(): Camera {
     return Camera(Vec3(0.0, 1.5, 5.0), 0.0, -0.15, 60.0)
 }
 
-func colorRgb(r: std::Double, g: std::Double, b: std::Double): Color {
+func colorRgb(r: Double, g: Double, b: Double): Color {
     return Color(r, g, b, 1.0)
 }
 
-func colorRgba(r: std::Double, g: std::Double, b: std::Double, a: std::Double): Color {
+func colorRgba(r: Double, g: Double, b: Double, a: Double): Color {
     return Color(r, g, b, a)
 }
 
@@ -111,7 +111,7 @@ func transformAt(position: Vec3): Transform3d {
 func renderQueueInit(): RenderQueue {
     // Enough room for a streamed city neighborhood, landmark geometry and
     // traffic without replacing a persistent queue inside a frame arena.
-    var items: std::Array<RenderItem> = std::Array::fill<RenderItem>(2048)
+    var items: Array<RenderItem> = Array::fill<RenderItem>(2048)
     return RenderQueue(items, 0)
 }
 
@@ -127,7 +127,7 @@ impl Camera {
     }
 
     /// The view-projection matrix for this camera at the given aspect ratio.
-    func viewProj(aspect: std::Double): Mat4 {
+    func viewProj(aspect: Double): Mat4 {
         fin rotP = mat4RotationX(0.0 - self.pitch)
         fin rotY = mat4RotationY(0.0 - self.yaw)
         fin trans = mat4Translation(0.0 - self.pos.x, 0.0 - self.pos.y, 0.0 - self.pos.z)
@@ -138,7 +138,7 @@ impl Camera {
 
     /// Standard fly controls: WASD moves in the yaw plane, Q/E (or
     /// Space/Shift) moves down/up, arrow keys look around.
-    func update(app: App, dt: std::Double, moveSpeed: std::Double, lookSpeed: std::Double) {
+    func update(app: App, dt: Double, moveSpeed: Double, lookSpeed: Double) {
         var move = vec3Zero()
         if app.keyDown(keyW) { move = move + self.forward() }
         if app.keyDown(keyS) { move = move - self.forward() }
@@ -176,7 +176,7 @@ impl Transform3d {
 impl RenderQueue {
     func add(mesh: Mesh, transform: Transform3d, material: Material) {
         if self.itemCount >= self.items.size {
-            var grown: std::Array<RenderItem> = std::Array::fill<RenderItem>(self.items.size * 2)
+            var grown: Array<RenderItem> = Array::fill<RenderItem>(self.items.size * 2)
             var i = 0
             while i < self.itemCount {
                 grown[i] = self.items[i]
@@ -192,7 +192,7 @@ impl RenderQueue {
         self.itemCount = 0
     }
 
-    func count(): std::Int {
+    func count(): Int {
         return self.itemCount
     }
 }
@@ -203,7 +203,7 @@ impl App {
         var aspect = 1.0
         fin h = self.height()
         if h > 0 {
-            aspect = (self.width() as std::Double) / (h as std::Double)
+            aspect = (self.width() as Double) / (h as Double)
         }
         pokeMat4(self.gpu.viewProj, 0L, cam.viewProj(aspect))
     }

@@ -38,38 +38,38 @@ import engine.gpu.draw
  * than letting a mismatched layer draw into the wrong cells.
  */
 pack Tilemap {
-    var name: std::String
+    var name: String
     var geometry: TilemapGeometry
-    var layers: std::Array<TileLayer>
-    var count: std::Int
+    var layers: Array<TileLayer>
+    var count: Int
     var tiles: TileSet
     /** Whether the renderer draws the map at all. */
-    var visible: std::Bool
+    var visible: Bool
     /** Map-wide opacity, multiplied into every layer's own. */
-    var opacity: std::Double
+    var opacity: Double
     /** Map-wide tint, multiplied into every layer's own. */
     var tint: TileColor
 }
 
 /** Where a named layer was found. */
 variant enum LayerPick {
-    Found(index: std::Int, layer: TileLayer)
+    Found(index: Int, layer: TileLayer)
     Absent
 }
 
 /** An empty map on [geometry], drawing from [tiles]. */
-func tilemapNew(name: std::String, geometry: TilemapGeometry, tiles: TileSet): Tilemap {
-    var layers: std::Array<TileLayer> = std::Array::fill<TileLayer>(0)
+func tilemapNew(name: String, geometry: TilemapGeometry, tiles: TileSet): Tilemap {
+    var layers: Array<TileLayer> = Array::fill<TileLayer>(0)
     return Tilemap(name, geometry, layers, 0, tiles, true, 1.0, tileColorWhite())
 }
 
 /** A square map of [width] x [height] tiles with one empty layer. */
 func tilemapSquare(
-    name: std::String
-    width: std::Int
-    height: std::Int
-    tileWidth: std::Double
-    tileHeight: std::Double
+    name: String
+    width: Int
+    height: Int
+    tileWidth: Double
+    tileHeight: Double
     tiles: TileSet
 ): Tilemap {
     var map = tilemapNew(name, squareGeometry(width, height, tileWidth, tileHeight), take tiles)
@@ -84,7 +84,7 @@ impl Tilemap {
     }
 
     /** The layer at [index], or an empty one-cell layer when the index is unknown. */
-    func layerAt(index: std::Int): TileLayer {
+    func layerAt(index: Int): TileLayer {
         if index < 0 || index >= self.count {
             return tileLayerNew("", TilemapSize(0, 0))
         }
@@ -92,7 +92,7 @@ impl Tilemap {
     }
 
     /** True when [index] names a layer of this map. */
-    func hasLayer(index: std::Int): std::Bool {
+    func hasLayer(index: Int): Bool {
         return index >= 0 && index < self.count
     }
 }
@@ -105,13 +105,13 @@ impl Tilemap {
  * loader bug, and quietly padding it turns a loud failure into a level that is
  * subtly wrong.
  */
-func tilemapAddLayer(map: Tilemap!, layer: TileLayer): std::Int {
+func tilemapAddLayer(map: Tilemap!, layer: TileLayer): Int {
     if layer.size.x != map.geometry.size.x || layer.size.y != map.geometry.size.y {
         return -1
     }
     if map.count >= map.layers.size {
         fin room = intMax(map.layers.size * 2, 4)
-        var grown: std::Array<TileLayer> = std::Array::fill<TileLayer>(room)
+        var grown: Array<TileLayer> = Array::fill<TileLayer>(room)
         var i = 0
         while i < map.count {
             grown[i] = map.layers[i]
@@ -126,12 +126,12 @@ func tilemapAddLayer(map: Tilemap!, layer: TileLayer): std::Int {
 }
 
 /** Creates and appends an empty layer sized to the map. */
-func tilemapNewLayer(map: Tilemap!, name: std::String): std::Int {
+func tilemapNewLayer(map: Tilemap!, name: String): Int {
     return tilemapAddLayer(map, tileLayerNew(name, map.geometry.size))
 }
 
 /** The layer called [name]. */
-func tilemapFindLayer(map: Tilemap&, name: std::String): LayerPick {
+func tilemapFindLayer(map: Tilemap&, name: String): LayerPick {
     var i = 0
     while i < map.count {
         if map.layers[i].name == name {
@@ -143,7 +143,7 @@ func tilemapFindLayer(map: Tilemap&, name: std::String): LayerPick {
 }
 
 /** The index of the layer called [name], or `-1`. */
-func tilemapLayerIndex(map: Tilemap&, name: std::String): std::Int {
+func tilemapLayerIndex(map: Tilemap&, name: String): Int {
     when tilemapFindLayer(map, name) {
         LayerPick.Found(index, layer) -> { return index }
         else -> { return -1 }
@@ -152,7 +152,7 @@ func tilemapLayerIndex(map: Tilemap&, name: std::String): std::Int {
 }
 
 /** Removes the layer at [index], keeping the order of the rest. */
-func tilemapRemoveLayer(map: Tilemap!, index: std::Int): std::Bool {
+func tilemapRemoveLayer(map: Tilemap!, index: Int): Bool {
     if index < 0 || index >= map.count {
         return false
     }
@@ -194,7 +194,7 @@ func tilemapSortLayers(map: Tilemap!) {
 // ── Cell access ─────────────────────────────────────────────────────────
 
 /** The cell at [pos] of layer [index]. */
-func tilemapLookup(map: Tilemap&, index: std::Int, pos: TilePos): TileLookup {
+func tilemapLookup(map: Tilemap&, index: Int, pos: TilePos): TileLookup {
     if !map.hasLayer(index) {
         return TileLookup.OutOfBounds
     }
@@ -202,7 +202,7 @@ func tilemapLookup(map: Tilemap&, index: std::Int, pos: TilePos): TileLookup {
 }
 
 /** The tile index at [pos] of layer [index], or [tileEmpty]. */
-func tilemapIndexAt(map: Tilemap&, index: std::Int, pos: TilePos): std::Int {
+func tilemapIndexAt(map: Tilemap&, index: Int, pos: TilePos): Int {
     if !map.hasLayer(index) {
         return tileEmpty
     }
@@ -210,7 +210,7 @@ func tilemapIndexAt(map: Tilemap&, index: std::Int, pos: TilePos): std::Int {
 }
 
 /** Writes [tile] at [pos] of layer [index]. */
-func tilemapSet(map: Tilemap!, index: std::Int, pos: TilePos, tile: std::Int): std::Unit ?! TilemapFault {
+func tilemapSet(map: Tilemap!, index: Int, pos: TilePos, tile: Int): Unit ?! TilemapFault {
     if !map.hasLayer(index) {
         return .OutOfBounds
     }
@@ -218,7 +218,7 @@ func tilemapSet(map: Tilemap!, index: std::Int, pos: TilePos, tile: std::Int): s
 }
 
 /** Clears [pos] on layer [index]. */
-func tilemapClear(map: Tilemap!, index: std::Int, pos: TilePos): std::Unit ?! TilemapFault {
+func tilemapClear(map: Tilemap!, index: Int, pos: TilePos): Unit ?! TilemapFault {
     try tilemapSet(map, index, pos, tileEmpty)
 }
 
@@ -228,7 +228,7 @@ func tilemapClear(map: Tilemap!, index: std::Int, pos: TilePos): std::Unit ?! Ti
  * This is what a cursor, a pick or a "what am I standing on" query wants: the
  * tile the player can see, not the ground hidden three layers below it.
  */
-func tilemapTopLayerAt(map: Tilemap&, pos: TilePos): std::Int {
+func tilemapTopLayerAt(map: Tilemap&, pos: TilePos): Int {
     var i = map.count - 1
     while i >= 0 {
         if layerHasTile(map.layers[i], pos) {
@@ -252,7 +252,7 @@ func tilemapTopTileAt(map: Tilemap&, pos: TilePos): TileLookup {
 }
 
 /** The union of the trait bits of every tile at [pos], across every layer. */
-func tilemapTraitsAt(map: Tilemap&, pos: TilePos): std::Int {
+func tilemapTraitsAt(map: Tilemap&, pos: TilePos): Int {
     var traits = 0
     var i = 0
     while i < map.count {
@@ -266,7 +266,7 @@ func tilemapTraitsAt(map: Tilemap&, pos: TilePos): std::Int {
 }
 
 /** The trait bits of the tile at [pos] on layer [index]. */
-func tilemapLayerTraitsAt(map: Tilemap&, index: std::Int, pos: TilePos): std::Int {
+func tilemapLayerTraitsAt(map: Tilemap&, index: Int, pos: TilePos): Int {
     fin tile = tilemapIndexAt(map, index, pos)
     if tile == tileEmpty {
         return 0
@@ -275,7 +275,7 @@ func tilemapLayerTraitsAt(map: Tilemap&, index: std::Int, pos: TilePos): std::In
 }
 
 /** True when any layer's tile at [pos] carries any bit of [mask]. */
-func tilemapHasTrait(map: Tilemap&, pos: TilePos, mask: std::Int): std::Bool {
+func tilemapHasTrait(map: Tilemap&, pos: TilePos, mask: Int): Bool {
     return flagsAny(tilemapTraitsAt(map, pos), mask)
 }
 
@@ -328,7 +328,7 @@ func tilemapSetAnchor(map: Tilemap!, anchor: TilemapAnchor) {
  * extent cannot be drawn or queried consistently; doing it in one call is what
  * keeps them in step.
  */
-func tilemapResize(map: Tilemap!, size: TilemapSize): std::Unit ?! TilemapFault {
+func tilemapResize(map: Tilemap!, size: TilemapSize): Unit ?! TilemapFault {
     if !size.isValid {
         return .EmptySize
     }
@@ -341,7 +341,7 @@ func tilemapResize(map: Tilemap!, size: TilemapSize): std::Unit ?! TilemapFault 
 }
 
 /** The number of cells holding a tile, across every layer. */
-func tilemapTileCount(map: Tilemap&): std::Int {
+func tilemapTileCount(map: Tilemap&): Int {
     var total = 0
     var i = 0
     while i < map.count {

@@ -44,7 +44,7 @@ import engine.ecs
  */
 @Component
 pack Key {
-    fin value: std::String = ""
+    fin value: String = ""
 }
 
 /** The parent this node hangs from. One parent per node, no cycles (§10.3). */
@@ -62,7 +62,7 @@ pack Child {
  */
 @Component
 pack SiblingOrder {
-    var index: std::Int = 0
+    var index: Int = 0
 }
 
 /**
@@ -80,20 +80,20 @@ pack SiblingOrder {
  */
 @Component
 pack Cursor {
-    var next: std::Int = 0
+    var next: Int = 0
 }
 
 /** Text to display. */
 @Component
 pack Text derives [Copy, Clone, Equal, Hash, Display, Compose] {
-    var value: std::String = ""
+    var value: String = ""
 }
 
 impl Text {
     react ctor[self: Self!, anchor: Anchor&](
-        value: std::String
+        value: String
         modifier: Modifier& = .()
-        key: std::String = ""
+        key: String = ""
     ): Entity {
         self.value = value
 
@@ -106,7 +106,7 @@ impl Text {
 /** Marks a node as activatable, and whether it currently is. */
 @Component
 pack Clickable {
-    var enabled: std::Bool = true
+    var enabled: Bool = true
 }
 
 /**
@@ -118,7 +118,7 @@ pack Clickable {
  */
 @Component
 pack Button derives [Copy, Clone, Equal, Hash, Display] {
-    var action: std::Int = 0
+    var action: Int = 0
 }
 
 /**
@@ -132,7 +132,7 @@ pack Button derives [Copy, Clone, Equal, Hash, Display] {
 impl Compose for Button {
     func compose[self: Self&, composition: Composition!](
         parent: Entity
-        key: std::String
+        key: String
         modifier: Modifier&
     ): Entity {
         fin node = composition.claim(parent, key)
@@ -148,8 +148,8 @@ impl Compose for Button {
 impl Button {
     react ctor<R>[self: Self!, anchor: Anchor&](
         modifier: Modifier& = .()
-        action: std::Int = 0
-        key: std::String = ""
+        action: Int = 0
+        key: String = ""
         children: react [Anchor&]() -> R
     ): Entity {
         self.action = action
@@ -167,27 +167,27 @@ impl Button {
 /** What the node was asked to do when activated; 0 means nothing. */
 @Component
 pack Action {
-    var code: std::Int = 0
+    var code: Int = 0
 }
 
 /** The rectangle a node occupies, once arranged. */
 @Component
 pack Rect {
-    var x: std::Double = 0.0
-    var y: std::Double = 0.0
-    var width: std::Double = 0.0
-    var height: std::Double = 0.0
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var width: Double = 0.0
+    var height: Double = 0.0
 }
 
 /** How a node paints: colour and coverage. */
 @Component
 pack Paint {
-    var r: std::Double = 0.0
-    var g: std::Double = 0.0
-    var b: std::Double = 0.0
-    var alpha: std::Double = 1.0
+    var r: Double = 0.0
+    var g: Double = 0.0
+    var b: Double = 0.0
+    var alpha: Double = 1.0
     /** Text size; 0 for nodes that draw no text. */
-    var size: std::Double = 0.0
+    var size: Double = 0.0
 }
 
 /**
@@ -200,8 +200,8 @@ pack Paint {
  */
 @Component
 pack Owned {
-    fin owner: std::String = ""
-    var claimed: std::Bool = false
+    fin owner: String = ""
+    var claimed: Bool = false
 }
 
 /**
@@ -214,13 +214,13 @@ pack Owned {
 @Component
 pack Layout {
     /** 0 stacks children downward, 1 lays them across. */
-    var direction: std::Int = 0
+    var direction: Int = 0
     /** How leftover space along the container's own axis is distributed. */
     var arrangement: Arrangement = .Start
     /** Where each child sits on the axis across this one. */
     var alignment: Alignment = .Start
     /** A fixed gap between children, added before [arrangement] distributes. */
-    var spacing: std::Double = 0.0
+    var spacing: Double = 0.0
 }
 
 /** Stacks children downward. */
@@ -237,9 +237,9 @@ fin layoutRow = 1
  */
 @Component
 pack Scroll {
-    var offset: std::Double = 0.0
+    var offset: Double = 0.0
     /** Total height the children needed, so scrolling can be bounded. */
-    var contentExtent: std::Double = 0.0
+    var contentExtent: Double = 0.0
 }
 
 /**
@@ -250,7 +250,7 @@ pack Scroll {
  */
 @Component
 pack Tag {
-    fin name: std::String = ""
+    fin name: String = ""
 }
 
 /**
@@ -263,7 +263,7 @@ pack Tag {
  */
 @Component
 pack TagI {
-    fin index: std::Int = 0
+    fin index: Int = 0
 }
 
 
@@ -315,10 +315,10 @@ enum ModifierKind {
  */
 pack ModifierEntry {
     fin kind: ModifierKind
-    fin a: std::Double = 0.0
-    fin b: std::Double = 0.0
-    fin c: std::Double = 0.0
-    fin d: std::Double = 0.0
+    fin a: Double = 0.0
+    fin b: Double = 0.0
+    fin c: Double = 0.0
+    fin d: Double = 0.0
 }
 
 /**
@@ -333,13 +333,13 @@ pack ModifierEntry {
  * systems decide what that means.
  */
 pack Modifier {
-    fin entries: std::Array<ModifierEntry> = std::Array::fill<ModifierEntry>(0)
+    fin entries: Array<ModifierEntry> = Array::fill<ModifierEntry>(0)
 }
 
 impl Modifier {
     /** This chain with [entry] appended. */
     func then[self: Self&](entry: ModifierEntry): Modifier {
-        var grown: std::Array<ModifierEntry> = std::Array::fill<ModifierEntry>(self.entries.size + 1)
+        var grown: Array<ModifierEntry> = Array::fill<ModifierEntry>(self.entries.size + 1)
         var index = 0
         while index < self.entries.size {
             grown[index] = self.entries[index]
@@ -365,17 +365,17 @@ impl Modifier {
     }
 
     /** A fixed width. */
-    func width[self: Self&](value: std::Double): Modifier {
+    func width[self: Self&](value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Width, value, 0.0, 0.0, 0.0))
     }
 
     /** A fixed height. */
-    func height[self: Self&](value: std::Double): Modifier {
+    func height[self: Self&](value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Height, value, 0.0, 0.0, 0.0))
     }
 
     /** A fixed size on both axes. */
-    func size[self: Self&](width: std::Double, height: std::Double): Modifier {
+    func size[self: Self&](width: Double, height: Double): Modifier {
         return self.width(width).height(height)
     }
 
@@ -386,11 +386,11 @@ impl Modifier {
      * `padding(all: 8.0, top: 16.0)` reads the way it looks.
      */
     func padding[self: Self&](
-        all: std::Double = 0.0
-        start: std::Double = 0 - 1.0
-        top: std::Double = 0 - 1.0
-        end: std::Double = 0 - 1.0
-        bottom: std::Double = 0 - 1.0
+        all: Double = 0.0
+        start: Double = 0 - 1.0
+        top: Double = 0 - 1.0
+        end: Double = 0 - 1.0
+        bottom: Double = 0 - 1.0
     ): Modifier {
         fin l = if start < 0.0 { all } else { start }
         fin t = if top < 0.0 { all } else { top }
@@ -401,16 +401,16 @@ impl Modifier {
 
     /** Fill the node's rectangle with a colour. */
     func background[self: Self&](
-        r: std::Double
-        g: std::Double
-        b: std::Double
-        alpha: std::Double = 1.0
+        r: Double
+        g: Double
+        b: Double
+        alpha: Double = 1.0
     ): Modifier {
         return self.then(ModifierEntry(ModifierKind.Background, r, g, b, alpha))
     }
 
     /** Share of the leftover space along the parent's axis. */
-    func weight[self: Self&](value: std::Double): Modifier {
+    func weight[self: Self&](value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Weight, value, 0.0, 0.0, 0.0))
     }
 }
@@ -441,43 +441,43 @@ impl Modifier:: {
     }
 
     /** A fixed width. */
-    func width(value: std::Double): Modifier {
+    func width(value: Double): Modifier {
         return Modifier().width(value)
     }
 
     /** A fixed height. */
-    func height(value: std::Double): Modifier {
+    func height(value: Double): Modifier {
         return Modifier().height(value)
     }
 
     /** A fixed size on both axes. */
-    func size(width: std::Double, height: std::Double): Modifier {
+    func size(width: Double, height: Double): Modifier {
         return Modifier().size(width, height)
     }
 
     /** Inset from the edges. */
     func padding(
-        all: std::Double = 0.0
-        start: std::Double = 0.0
-        top: std::Double = 0.0
-        end: std::Double = 0.0
-        bottom: std::Double = 0.0
+        all: Double = 0.0
+        start: Double = 0.0
+        top: Double = 0.0
+        end: Double = 0.0
+        bottom: Double = 0.0
     ): Modifier {
         return .().padding(all: all, start: start, top: top, end: end, bottom: bottom)
     }
 
     /** Fill the node's rectangle with a colour. */
     func background(
-        r: std::Double
-        g: std::Double
-        b: std::Double
-        alpha: std::Double = 1.0
+        r: Double
+        g: Double
+        b: Double
+        alpha: Double = 1.0
     ): Modifier {
         return .().background(r, g, b, alpha)
     }
 
     /** Share of the leftover space along the parent's axis. */
-    func weight(value: std::Double): Modifier {
+    func weight(value: Double): Modifier {
         return .().weight(value)
     }
 }
@@ -489,20 +489,20 @@ impl Modifier:: {
  */
 @Component
 pack Size {
-    var fillWidth: std::Bool = false
-    var fillHeight: std::Bool = false
+    var fillWidth: Bool = false
+    var fillHeight: Bool = false
     /** Fixed extent, or 0 when none was asked for. */
-    var width: std::Double = 0.0
-    var height: std::Double = 0.0
+    var width: Double = 0.0
+    var height: Double = 0.0
     /** Share of leftover space along the parent's axis; 0 when none. */
-    var weight: std::Double = 0.0
+    var weight: Double = 0.0
 }
 
 /** Inset between a node's rectangle and its children's. */
 @Component
 pack Padding {
-    var start: std::Double = 0.0
-    var top: std::Double = 0.0
-    var end: std::Double = 0.0
-    var bottom: std::Double = 0.0
+    var start: Double = 0.0
+    var top: Double = 0.0
+    var end: Double = 0.0
+    var bottom: Double = 0.0
 }

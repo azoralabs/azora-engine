@@ -35,8 +35,8 @@ error MathError {
     ZeroLength
 }
 
-@std::Experimental(since: "0.1")
-pack Vec<T, N: std::Int> where T is Number && N in 2..4 {
+@Experimental(since: "0.1")
+pack Vec<T, N: Int> where T is Number && N in 2..4 {
     var x: T = 0
     var y: T = 0
     var z: T = 0 where N >= 3
@@ -45,24 +45,24 @@ pack Vec<T, N: std::Int> where T is Number && N in 2..4 {
 
 impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     ctor [self: Self!](all: T) {
-        inline for f in std::reflect<Self>.fields {
+        inline for f in reflect<Self>.fields {
             self.${f.name} = all
         }
     }
 
-    inline for op in @std::arr["+", "-", "*", "/", "%"] {
+    inline for op in @arr["+", "-", "*", "/", "%"] {
         inline fin assignOp = "${op}="
         inline fin zeroDivisorFails = (op == "/" || op == "%") && T is Integer
 
         oper $op [self: Self&](rhs: Self&): Self
         inline if zeroDivisorFails { inline "?! MathError" } {
             inline if zeroDivisorFails {
-                inline for f in std::reflect<Self>.fields {
+                inline for f in reflect<Self>.fields {
                     if rhs.${f.name} == 0 { return .DivisionByZero }
                 }
             }
             return Self(
-                inline for f in std::reflect<Self>.fields {
+                inline for f in reflect<Self>.fields {
                     self.${f.name} $op rhs.${f.name}
                 }
             )
@@ -74,7 +74,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
                 if rhs == 0 { return .DivisionByZero }
             }
             return Self(
-                inline for f in std::reflect<Self>.fields {
+                inline for f in reflect<Self>.fields {
                     self.${f.name} $op rhs
                 }
             )
@@ -83,11 +83,11 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         oper $assignOp [self: Self!](rhs: Self&)
         inline if zeroDivisorFails { inline "?! MathError" } {
             inline if zeroDivisorFails {
-                inline for f in std::reflect<Self>.fields {
+                inline for f in reflect<Self>.fields {
                     if rhs.${f.name} == 0 { return .DivisionByZero }
                 }
             }
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs.${f.name}
             }
         }
@@ -97,35 +97,35 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
             inline if zeroDivisorFails {
                 if rhs == 0 { return .DivisionByZero }
             }
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs
             }
         }
     }
 
-    inline for op in @std::arr["&", "|", "^"] {
+    inline for op in @arr["&", "|", "^"] {
         inline fin assignOp = "${op}="
 
         oper $op [self: Self&](rhs: Self&): Self where T is Integer = Self(
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs.${f.name}
             }
         )
 
         oper $op [self: Self&](rhs: T&): Self where T is Integer = Self(
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs
             }
         )
 
         oper $assignOp [self: Self!](rhs: Self&) where T is Integer {
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs.${f.name}
             }
         }
 
         oper $assignOp [self: Self!](rhs: T&) where T is Integer {
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs
             }
         }
@@ -134,36 +134,36 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper+ [self: Self&]: Self = self
 
     oper- [self: Self&]: Self where T is SignedNumber = Self(
-        inline for f in std::reflect<Self>.fields {
+        inline for f in reflect<Self>.fields {
             -self.${f.name}
         }
     )
 
     oper~ [self: Self&]: Self where T is Integer = Self(
-        inline for f in std::reflect<Self>.fields {
+        inline for f in reflect<Self>.fields {
             ~self.${f.name}
         }
     )
 
-    inline for op in @std::arr["<<", ">>"] {
+    inline for op in @arr["<<", ">>"] {
         inline fin assignOp = "${op}="
 
-        oper $op [self: Self&](rhs: std::Int&): Self where T is Integer = Self(
-            inline for f in std::reflect<Self>.fields {
+        oper $op [self: Self&](rhs: Int&): Self where T is Integer = Self(
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs
             }
         )
 
-        oper $assignOp [self: Self!](rhs: std::Int&) where T is Integer {
-            inline for f in std::reflect<Self>.fields {
+        oper $assignOp [self: Self!](rhs: Int&) where T is Integer {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs
             }
         }
     }
 
-    inline for ref in @std::arr["&", "!"] {
-        oper[] [self: Self$ref](index: std::Int): T$ref ?! IndexError {
-            inline for f in std::reflect<Self>.fields with i {
+    inline for ref in @arr["&", "!"] {
+        oper[] [self: Self$ref](index: Int): T$ref ?! IndexError {
+            inline for f in reflect<Self>.fields with i {
                 if index == i { return self.${f.name}$ref }
             }
             return .OutOfBounds(index, N)
@@ -175,7 +175,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper reverse.. [self: Self&](rhs: Self&) by Self::one
 
     oper as<U> [self: Vec<U, N>&] = Self(
-        inline for f in std::reflect<Vec<U, N>>.fields {
+        inline for f in reflect<Vec<U, N>>.fields {
             self.${f.name} as T
         }
     )
@@ -183,12 +183,12 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     /**
      * Vector magnitude.
      */
-    prop length[self: Self&]: std::Double = std::sqrt(self.lengthSquared)
+    prop length[self: Self&]: Double = sqrt(self.lengthSquared)
 
-    prop lengthSquared[self: Self&]: std::Double {
-        var result: std::Double = 0
-        inline for f in std::reflect<Self>.fields {
-            fin value = self.${f.name} as std::Double
+    prop lengthSquared[self: Self&]: Double {
+        var result: Double = 0
+        inline for f in reflect<Self>.fields {
+            fin value = self.${f.name} as Double
             result += value * value
         }
         return result
@@ -200,15 +200,15 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
      * Accumulated in `Double` for the same reason [lengthSquared] is: the sum of
      * products overflows a narrow element type long before the result would.
      */
-    func dot[self: Self&](rhs: Self&): std::Double {
-        var result: std::Double = 0
-        inline for f in std::reflect<Self>.fields {
-            result += (self.${f.name} as std::Double) * (rhs.${f.name} as std::Double)
+    func dot[self: Self&](rhs: Self&): Double {
+        var result: Double = 0
+        inline for f in reflect<Self>.fields {
+            result += (self.${f.name} as Double) * (rhs.${f.name} as Double)
         }
         return result
     }
 
-    func distanceTo[self: Self&](other: Self&): std::Double {
+    func distanceTo[self: Self&](other: Self&): Double {
         return (self - other).length
     }
 
@@ -218,7 +218,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     prop normalized[self: Self&]: Self ?! MathError where T is FloatingPoint {
         if self.length == 0 { return .ZeroLength }
         return Self(
-            inline for f in std::reflect<Self>.fields {
+            inline for f in reflect<Self>.fields {
                 self.${f.name} / self.length as T
             }
         )
@@ -231,7 +231,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         fin length = self.length
         if length == 0 { return .ZeroLength }
         fin divisor = length as T
-        inline for f in std::reflect<Self>.fields {
+        inline for f in reflect<Self>.fields {
             self.${f.name} /= divisor
         }
     }
@@ -252,20 +252,20 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     }
 }
 
-inline for op in @std::arr["+", "-", "*", "/", "%"] {
+inline for op in @arr["+", "-", "*", "/", "%"] {
     inline for Ty in Numbers {
         inline fin zeroDivisorFails = (op == "/" || op == "%") && Ty is Integer
 
-        oper $op <N: std::Int>[self: Ty&](rhs: Vec<Ty, N>&): Vec<Ty, N>
+        oper $op <N: Int>[self: Ty&](rhs: Vec<Ty, N>&): Vec<Ty, N>
         inline if zeroDivisorFails { inline "?! MathError" }
         where N in 2..4 {
             inline if zeroDivisorFails {
-                inline for f in std::reflect<Vec<Ty, N>>.fields {
+                inline for f in reflect<Vec<Ty, N>>.fields {
                     if rhs.${f.name} == 0 { return .DivisionByZero }
                 }
             }
             return Vec<Ty, N>(
-                inline for f in std::reflect<Vec<Ty, N>>.fields {
+                inline for f in reflect<Vec<Ty, N>>.fields {
                     self $op rhs.${f.name}
                 }
             )
@@ -274,13 +274,13 @@ inline for op in @std::arr["+", "-", "*", "/", "%"] {
 }
 
 inline for Ty in Numbers {
-    oper as<N: std::Int> [self: Ty&]: Vec<Ty, N> where N in 2..4 {
+    oper as<N: Int> [self: Ty&]: Vec<Ty, N> where N in 2..4 {
         return Vec<Ty, N>(self)
     }
 }
 
 impl Vec<T, N>:: {
-    inline func axis<I: std::Int>(value: T = 1): Vec<T, N> where I in 0..<N {
+    inline func axis<I: Int>(value: T = 1): Vec<T, N> where I in 0..<N {
         return Vec<T, N>(
             inline for i in 0..<N {
                 if i == I { value } else { 0 as T }
@@ -301,7 +301,7 @@ impl Vec<T, N>:: where T is SignedNumber {
     inline if N >= 3 { fin back = axis<2>(-1 as T) }
 }
 
-inline for [t, Ty] in [@std::arr["i", "u", "f", ""], [std::Int, std::UInt, std::Float, std::Double]] {
+inline for [t, Ty] in [@arr["i", "u", "f", ""], [Int, UInt, Float, Double]] {
     inline for i in 2..4 {
         typealias Vec$i$t = Vec<Ty, i>
     }

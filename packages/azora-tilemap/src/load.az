@@ -29,7 +29,7 @@ import engine.tilemap.types
 import engine.tilemap.storage
 
 /** The ASCII code of a one-character string, or `-1`. */
-func asciiCodeOf(ch: std::String): std::Int {
+func asciiCodeOf(ch: String): Int {
     var code = 32
     while code < 127 {
         if asciiChar(code) == ch {
@@ -51,8 +51,8 @@ inline fin gidIndexMask = 0x1FFFFFFF
 
 /** A decoded global tile id: the tile, and the cell flags that go with it. */
 pack GidCell {
-    var index: std::Int
-    var flags: std::Int
+    var index: Int
+    var flags: Int
 }
 
 // ── Global tile ids ─────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ pack GidCell {
  * names, so the `- 1` here is what keeps the rest of the package's indices
  * zero-based.
  */
-func decodeGid(gid: std::Int): GidCell {
+func decodeGid(gid: Int): GidCell {
     fin raw = gid & gidIndexMask
     if raw == 0 {
         return GidCell(tileEmpty, 0)
@@ -83,7 +83,7 @@ func decodeGid(gid: std::Int): GidCell {
 }
 
 /** Packs a tile index and cell flags back into a global tile id. */
-func encodeGid(index: std::Int, flags: std::Int): std::Int {
+func encodeGid(index: Int, flags: Int): Int {
     if index == tileEmpty {
         return 0
     }
@@ -113,7 +113,7 @@ func encodeGid(index: std::Int, flags: std::Int): std::Int {
  * layer is hundreds of thousands of digits, and building a string per number
  * would cost more than reading the file did.
  */
-func layerFromCsv(name: std::String, source: Blob, size: TilemapSize): TileLayer ?! TilemapFault {
+func layerFromCsv(name: String, source: Blob, size: TilemapSize): TileLayer ?! TilemapFault {
     if !size.isValid {
         return .EmptySize
     }
@@ -168,7 +168,7 @@ func layerFromCsv(name: std::String, source: Blob, size: TilemapSize): TileLayer
 }
 
 /** Reads a comma-separated layer from the file at [path]. */
-func layerFromCsvFile(name: std::String, path: std::String, size: TilemapSize): TileLayer ?! TilemapFault {
+func layerFromCsvFile(name: String, path: String, size: TilemapSize): TileLayer ?! TilemapFault {
     var blob = readFile(path)
     if !blob.ok() {
         return .IoFailed
@@ -202,12 +202,12 @@ func layerFromCsvFile(name: std::String, path: std::String, size: TilemapSize): 
  * same as this package's [tileEmpty]: `255` and `0` are both common.
  */
 func layerFromBytes(
-    name: std::String
+    name: String
     source: Blob
-    offset: std::Int
+    offset: Int
     size: TilemapSize
-    bytesPerCell: std::Int
-    empty: std::Int
+    bytesPerCell: Int
+    empty: Int
 ): TileLayer ?! TilemapFault {
     if !size.isValid {
         return .EmptySize
@@ -245,7 +245,7 @@ func layerFromBytes(
  * hot path: building the text concatenates a string per cell, which is fine for
  * a save and wasteful in a frame.
  */
-func layerToCsv(layer: TileLayer&): std::String {
+func layerToCsv(layer: TileLayer&): String {
     var text = ""
     var y = 0
     while y < layer.size.y {
@@ -264,7 +264,7 @@ func layerToCsv(layer: TileLayer&): std::String {
 }
 
 /** Writes [layer] to [path] as comma-separated global tile ids. */
-func layerWriteCsv(layer: TileLayer&, path: std::String): std::Bool {
+func layerWriteCsv(layer: TileLayer&, path: String): Bool {
     return writeTextFile(path, layerToCsv(layer))
 }
 
@@ -275,18 +275,18 @@ func layerWriteCsv(layer: TileLayer&, path: std::String): std::Bool {
  * is how a level held in memory as text — one just written, or one embedded in
  * the program — is handed to it without a detour through the filesystem.
  */
-func textBlob(text: std::String): Blob {
-    fin length = std::strLength(text)
+func textBlob(text: String): Blob {
+    fin length = strLength(text)
     if length <= 0 {
         return blobEmpty()
     }
-    fin data = azAlloc(length as std::Long)
+    fin data = azAlloc(length as Long)
     if data == 0L {
         return blobEmpty()
     }
     var i = 0
     while i < length {
-        azPoke8(data, i as std::Long, asciiCodeOf(std::strSlice(text, i, i + 1)))
+        azPoke8(data, i as Long, asciiCodeOf(strSlice(text, i, i + 1)))
         i = i + 1
     }
     return Blob(data, length)
@@ -299,7 +299,7 @@ func textBlob(text: std::String): Blob {
  * the occasional number; this exists so the CSV writer is not the only reason
  * this module reaches for it.
  */
-func intToText(value: std::Int): std::String {
+func intToText(value: Int): String {
     return "${value}"
 }
 

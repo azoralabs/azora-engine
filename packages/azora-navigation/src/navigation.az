@@ -23,20 +23,20 @@ import engine.core
 
 /** Stable identity of one occurrence in a back stack. */
 pack NavEntryId derives [Copy, Clone, Equal, Hash] {
-    fin value: std::Long
-    fin generation: std::Long
+    fin value: Long
+    fin generation: Long
 }
 
 /** Stable identity used by reactive content. */
 pack NavContentKey derives [Copy, Clone, Equal, Hash] {
-    fin value: std::Long
-    fin generation: std::Long
+    fin value: Long
+    fin generation: Long
 }
 
 /** Stable identity of an entry-owned reactive scope. */
 pack NavOwnerId derives [Copy, Clone, Equal, Hash] {
-    fin value: std::Long
-    fin generation: std::Long
+    fin value: Long
+    fin generation: Long
 }
 
 /** One typed route occurrence. Equal keys still receive different IDs. */
@@ -107,27 +107,27 @@ enum NavWindowClass {
 
 /** Renderer-neutral environment used by displays and strategies. */
 pack NavEnvironment {
-    fin width: std::Double
-    fin height: std::Double
-    fin scale: std::Double
+    fin width: Double
+    fin height: Double
+    fin scale: Double
     fin windowClass: NavWindowClass
-    fin safeStart: std::Double
-    fin safeTop: std::Double
-    fin safeEnd: std::Double
-    fin safeBottom: std::Double
-    fin keyboardVisible: std::Bool
-    fin pointerAvailable: std::Bool
-    fin controllerAvailable: std::Bool
-    fin reducedMotion: std::Bool
-    fin revision: std::Long
+    fin safeStart: Double
+    fin safeTop: Double
+    fin safeEnd: Double
+    fin safeBottom: Double
+    fin keyboardVisible: Bool
+    fin pointerAvailable: Bool
+    fin controllerAvailable: Bool
+    fin reducedMotion: Bool
+    fin revision: Long
 }
 
 /** Creates a deterministic headless environment. */
 func navEnvironment(
-    width: std::Double = 1280.0
-    height: std::Double = 720.0
+    width: Double = 1280.0
+    height: Double = 720.0
     windowClass: NavWindowClass = .Expanded
-    revision: std::Long = 0L
+    revision: Long = 0L
 ): NavEnvironment {
     return .(
         width,
@@ -162,25 +162,25 @@ func navOwnerIdInvalid(): NavOwnerId {
 func navEntryIdEqual(
     a: NavEntryId&
     b: NavEntryId&
-): std::Bool {
+): Bool {
     return a.value == b.value && a.generation == b.generation
 }
 
 func navOwnerIdEqual(
     a: NavOwnerId&
     b: NavOwnerId&
-): std::Bool {
+): Bool {
     return a.value == b.value && a.generation == b.generation
 }
 
 /** One committed, observable stack mutation. */
 pack NavChange {
-    fin revision: std::Long
+    fin revision: Long
     fin direction: NavDirection
     fin from: NavEntryId
     fin to: NavEntryId
-    fin added: std::Int
-    fin removed: std::Int
+    fin added: Int
+    fin removed: Int
 }
 
 func navChangeNone(): NavChange {
@@ -200,18 +200,18 @@ variant enum NavMotion {
     Fade
     Slide(
         edge: NavEdge,
-        distance: std::Double
+        distance: Double
     )
-    Scale(from: std::Double)
-    Shared(group: std::String)
+    Scale(from: Double)
+    Shared(group: String)
 }
 
 pack NavMotionFrame {
-    fin opacity: std::Double
-    fin offsetX: std::Double
-    fin offsetY: std::Double
-    fin scaleX: std::Double
-    fin scaleY: std::Double
+    fin opacity: Double
+    fin offsetX: Double
+    fin offsetY: Double
+    fin scaleX: Double
+    fin scaleY: Double
 }
 
 variant enum NavSizeTransform {
@@ -223,9 +223,9 @@ variant enum NavSizeTransform {
 pack NavContentTransform {
     fin entering: NavMotion
     fin exiting: NavMotion
-    fin durationSeconds: std::Double
+    fin durationSeconds: Double
     fin size: NavSizeTransform
-    fin clip: std::Bool
+    fin clip: Bool
 }
 
 pack NavTransitionSet {
@@ -245,7 +245,7 @@ func navNoTransform(): NavContentTransform {
     return .(.None, .None, 0.0, .Snap, true)
 }
 
-func navFadeTransform(durationSeconds: std::Double = 0.18): NavContentTransform {
+func navFadeTransform(durationSeconds: Double = 0.18): NavContentTransform {
     return .(.Fade, .Fade, durationSeconds, .Snap, true)
 }
 
@@ -257,8 +257,8 @@ func navDefaultTransitions(): NavTransitionSet {
 /** Samples built-in motion without depending on a renderer. */
 func navSampleMotion(
     motion: NavMotion&
-    progress: std::Double
-    entering: std::Bool = true
+    progress: Double
+    entering: Bool = true
 ): NavMotionFrame {
     var p = progress
     if p < 0.0 { p = 0.0 }
@@ -289,8 +289,8 @@ func navSampleMotion(
 pack NavOptions {
     fin reuse: NavReuse
     fin popTo: NavEntryId?
-    fin inclusive: std::Bool
-    fin restoreOwner: std::Bool
+    fin inclusive: Bool
+    fin restoreOwner: Bool
     fin transition: NavTransitionOverride
 }
 
@@ -300,51 +300,51 @@ func navOptions(): NavOptions {
 
 /** Typed, bounded navigation history with stable entry identity. */
 pack NavBackStack<K> {
-    var _items: std::Array<NavStackItem<K>>
-    var _size: std::Int
-    var _revision: std::Long
-    var _nextId: std::Long
+    var _items: Array<NavStackItem<K>>
+    var _size: Int
+    var _revision: Long
+    var _nextId: Long
     var _lastChange: NavChange
 }
 
 /** Creates a non-empty back stack. */
 func navBackStack<K>(
     root: K
-    capacity: std::Int = 32
+    capacity: Int = 32
 ): NavBackStack<K>
 in {
     assert capacity > 0 { "navigation capacity must be positive" }
 } scope {
-    var items: std::Array<NavStackItem<K>> = std::Array::fill<NavStackItem<K>>(capacity)
+    var items: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(capacity)
     items[0] = NavStackItem<K>(NavEntryId(1L, 1L), root)
     return NavBackStack<K>(items, 1, 0L, 2L, navChangeNone())
 }
 
 impl NavBackStack<K> {
-    prop count[self: Self&]: std::Int = self._size
-    prop capacity[self: Self&]: std::Int = self._items.size
-    prop canPop[self: Self&]: std::Bool = self._size > 1
-    prop version[self: Self&]: std::Long = self._revision
+    prop count[self: Self&]: Int = self._size
+    prop capacity[self: Self&]: Int = self._items.size
+    prop canPop[self: Self&]: Bool = self._size > 1
+    prop version[self: Self&]: Long = self._revision
     prop current[self: Self&]: K = self._items[self._size - 1].key
     prop currentItem[self: Self&]: NavStackItem<K> = self._items[self._size - 1]
     prop lastChange[self: Self&]: NavChange = self._lastChange
     prop lastDirection[self: Self&]: NavDirection = self._lastChange.direction
 
-    func at[self: Self&](index: std::Int): K
+    func at[self: Self&](index: Int): K
     in {
         assert index >= 0 && index < self._size { "navigation index out of bounds" }
     } scope {
         return self._items[index].key
     }
 
-    func itemAt[self: Self&](index: std::Int): NavStackItem<K>
+    func itemAt[self: Self&](index: Int): NavStackItem<K>
     in {
         assert index >= 0 && index < self._size { "navigation index out of bounds" }
     } scope {
         return self._items[index]
     }
 
-    func indexOf[self: Self&](id: NavEntryId&): std::Int {
+    func indexOf[self: Self&](id: NavEntryId&): Int {
         var index = 0
         while index < self._size {
             if navEntryIdEqual(self._items[index].id, id) { return index }
@@ -357,8 +357,8 @@ impl NavBackStack<K> {
         direction: NavDirection
         from: NavEntryId
         to: NavEntryId
-        added: std::Int
-        removed: std::Int
+        added: Int
+        removed: Int
     ): NavChange {
         self._revision = self._revision + 1L
         self._lastChange = NavChange(self._revision, direction, from, to, added, removed)
@@ -399,8 +399,8 @@ impl NavBackStack<K> {
     /** Pops to one exact entry occurrence. */
     func popTo[self: Self!](
         id: NavEntryId&
-        inclusive: std::Bool = false
-    ): std::Int ?! NavError {
+        inclusive: Bool = false
+    ): Int ?! NavError {
         fin target = self.indexOf(id)
         if target < 0 { return .EntryNotFound }
         fin desired = if inclusive { target } else { target + 1 }
@@ -414,7 +414,7 @@ impl NavBackStack<K> {
     }
 
     /** Pops every item above the root and returns the number removed. */
-    func popToRoot[self: Self!](): std::Int {
+    func popToRoot[self: Self!](): Int {
         if self._size <= 1 { return 0 }
         fin from = self.currentItem.id
         fin removed = self._size - 1
@@ -438,21 +438,21 @@ impl NavBackStack<K> {
 
 /** Staged stack state used by an atomic navigation transaction. */
 pack NavMutation<K> {
-    var _items: std::Array<NavStackItem<K>>
-    var _size: std::Int
-    var _nextId: std::Long
+    var _items: Array<NavStackItem<K>>
+    var _size: Int
+    var _nextId: Long
     var _from: NavEntryId
     var _direction: NavDirection
-    var _added: std::Int
-    var _removed: std::Int
-    var _failed: std::Bool
-    var _fault: std::Int
+    var _added: Int
+    var _removed: Int
+    var _failed: Bool
+    var _fault: Int
 }
 
 impl NavBackStack<K> {
     /** Creates an isolated staging copy for one transaction. */
     func beginMutation[self: Self&](): NavMutation<K> {
-        var items: std::Array<NavStackItem<K>> = std::Array::fill<NavStackItem<K>>(self.capacity)
+        var items: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(self.capacity)
         var index = 0
         while index < self.count {
             items[index] = self.itemAt(index)
@@ -473,14 +473,14 @@ impl NavBackStack<K> {
 
     /** Applies already validated staged state and publishes exactly once. */
     func applyMutation[self: Self!](
-        items: std::Array<NavStackItem<K>>&
-        size: std::Int
-        nextId: std::Long
+        items: Array<NavStackItem<K>>&
+        size: Int
+        nextId: Long
         direction: NavDirection
         from: NavEntryId
         to: NavEntryId
-        added: std::Int
-        removed: std::Int
+        added: Int
+        removed: Int
     ): NavChange {
         var index = 0
         while index < size {
@@ -498,11 +498,11 @@ func navMutation<K>(stack: NavBackStack<K>&): NavMutation<K> {
 }
 
 impl NavMutation<K> {
-    prop count[self: Self&]: std::Int = self._size
-    prop valid[self: Self&]: std::Bool = !self._failed
+    prop count[self: Self&]: Int = self._size
+    prop valid[self: Self&]: Bool = !self._failed
     prop currentItem[self: Self&]: NavStackItem<K> = self._items[self._size - 1]
 
-    func _fail[self: Self!](fault: std::Int) {
+    func _fail[self: Self!](fault: Int) {
         if !self._failed {
             self._failed = true
             self._fault = fault
@@ -548,7 +548,7 @@ impl NavMutation<K> {
 
     func popTo[self: Self!](
         id: NavEntryId&
-        inclusive: std::Bool = false
+        inclusive: Bool = false
     ) {
         if self._failed { return }
         var target = -1
@@ -608,7 +608,7 @@ impl NavMutation<K> {
     }
 }
 
-typealias NavTransaction<K> = (NavMutation<K>!) -> std::Unit
+typealias NavTransaction<K> = (NavMutation<K>!) -> Unit
 
 /** Stages, validates, and publishes several operations as one revision. */
 func navTransaction<K>(
@@ -632,15 +632,15 @@ enum NavPaneRole {
 variant enum NavDimension {
     Content
     Fill
-    Points(value: std::Double)
-    Fraction(value: std::Double)
+    Points(value: Double)
+    Fraction(value: Double)
 }
 
 variant enum NavAnchor {
-    Node(key: std::String)
+    Node(key: String)
     Point(
-        x: std::Double,
-        y: std::Double
+        x: Double,
+        y: Double
     )
     Pointer
 }
@@ -651,30 +651,30 @@ enum NavModality {
 }
 
 pack DialogProperties {
-    fin modal: std::Bool
-    fin dismissOnBack: std::Bool
-    fin dismissOnOutsidePress: std::Bool
-    fin dismissOnEscape: std::Bool
-    fin trapFocus: std::Bool
-    fin restoreFocus: std::Bool
+    fin modal: Bool
+    fin dismissOnBack: Bool
+    fin dismissOnOutsidePress: Bool
+    fin dismissOnEscape: Bool
+    fin trapFocus: Bool
+    fin restoreFocus: Bool
     fin width: NavDimension
     fin height: NavDimension
-    fin scrimAlpha: std::Double
+    fin scrimAlpha: Double
 }
 
 pack SheetProperties {
-    fin modal: std::Bool
-    fin dismissOnBack: std::Bool
-    fin dismissOnOutsidePress: std::Bool
+    fin modal: Bool
+    fin dismissOnBack: Bool
+    fin dismissOnOutsidePress: Bool
     fin extent: NavDimension
-    fin scrimAlpha: std::Double
+    fin scrimAlpha: Double
 }
 
 pack PopoverProperties {
-    fin modal: std::Bool
-    fin dismissOnBack: std::Bool
-    fin dismissOnOutsidePress: std::Bool
-    fin keepInsideWindow: std::Bool
+    fin modal: Bool
+    fin dismissOnBack: Bool
+    fin dismissOnOutsidePress: Bool
+    fin keepInsideWindow: Bool
 }
 
 func dialogProperties(): DialogProperties {
@@ -703,14 +703,14 @@ variant enum NavPresentation {
 }
 
 pack NavStatePolicy {
-    fin retainWhileSuspended: std::Bool
-    fin preserveSnapshot: std::Bool
-    fin evictableUnderPressure: std::Bool
+    fin retainWhileSuspended: Bool
+    fin preserveSnapshot: Bool
+    fin evictableUnderPressure: Bool
 }
 
 variant enum NavFocusPolicy {
     Restore
-    Default(key: std::String)
+    Default(key: String)
     FirstEligible
     DisplayRoot
 }
@@ -730,7 +730,7 @@ enum NavChromePolicy {
 
 /** Extensible metadata values are nominal specs, never string casts. */
 spec NavMetadataValue {
-    func symbol[self: Self&](): std::String
+    func symbol[self: Self&](): String
 }
 
 /** Immutable metadata for one resolved entry revision. */
@@ -742,9 +742,9 @@ pack NavEntryMetadata {
     var focusPolicy: NavFocusPolicy
     var backPolicy: NavBackPolicy
     var chrome: NavChromePolicy
-    var title: std::String
-    var testId: std::String
-    var custom: std::Array<NavMetadataValue>
+    var title: String
+    var testId: String
+    var custom: Array<NavMetadataValue>
 }
 
 func navMetadata(): NavEntryMetadata {
@@ -758,7 +758,7 @@ func navMetadata(): NavEntryMetadata {
         .Inherit,
         "",
         "",
-        std::Array::fill<NavMetadataValue>(0)
+        Array::fill<NavMetadataValue>(0)
     )
 }
 
@@ -798,15 +798,15 @@ enum NavDismissReason {
 pack NavResultScope {
     fin owner: NavOwnerId
     fin entry: NavEntryId
-    fin generation: std::Long
+    fin generation: Long
 }
 
 /** Capabilities exposed to entry content by its containing display. */
 pack NavActions<K> {
-    fin push: (K) -> std::Unit
-    fin replace: (K) -> std::Unit
-    fin back: () -> std::Unit
-    fin popTo: (NavEntryId, std::Bool) -> std::Unit
+    fin push: (K) -> Unit
+    fin replace: (K) -> Unit
+    fin back: () -> Unit
+    fin popTo: (NavEntryId, Bool) -> Unit
 }
 
 /** Context installed while one entry's reactive content is invoked. */
@@ -818,7 +818,7 @@ pack NavEntryContext<K> {
     fin environment: NavEnvironment
 }
 
-typealias NavContent<K> = (NavEntryContext<K>!) -> std::Unit
+typealias NavContent<K> = (NavEntryContext<K>!) -> Unit
 typealias NavResolver<K> = (NavStackItem<K>&) -> NavEntry<K> ?! NavError
 
 /** One resolved route occurrence. */
@@ -845,7 +845,7 @@ func navEntry<K>(
 /** Resolver-based provider that handles route symbols and carried payloads. */
 pack NavEntryProvider<K> {
     fin resolver: NavResolver<K>
-    var revision: std::Long
+    var revision: Long
 }
 
 func navEntryProvider<K>(resolver: NavResolver<K>): NavEntryProvider<K> {
@@ -888,22 +888,22 @@ pack NavEntryOwner {
     fin entry: NavEntryId
     fin parent: NavOwnerId?
     var lifecycle: NavLifecycle
-    var revision: std::Long
+    var revision: Long
 }
 
 /** Bounded owner table. Entries are never addressed by route name. */
 pack NavOwnerStore {
-    var owners: std::Array<NavEntryOwner>
-    var size: std::Int
-    var nextId: std::Long
+    var owners: Array<NavEntryOwner>
+    var size: Int
+    var nextId: Long
 }
 
-func navOwnerStore(capacity: std::Int = 32): NavOwnerStore {
-    return .(std::Array::fill<NavEntryOwner>(capacity), 0, 1L)
+func navOwnerStore(capacity: Int = 32): NavOwnerStore {
+    return .(Array::fill<NavEntryOwner>(capacity), 0, 1L)
 }
 
 impl NavOwnerStore {
-    func indexOfEntry[self: Self&](entry: NavEntryId&): std::Int {
+    func indexOfEntry[self: Self&](entry: NavEntryId&): Int {
         var index = 0
         while index < self.size {
             if navEntryIdEqual(self.owners[index].entry, entry) { return index }
@@ -935,7 +935,7 @@ impl NavOwnerStore {
     func setLifecycle[self: Self!](
         entry: NavEntryId&
         lifecycle: NavLifecycle
-    ): std::Bool {
+    ): Bool {
         fin index = self.indexOfEntry(entry)
         if index < 0 { return false }
         if self.owners[index].lifecycle != lifecycle {
@@ -975,39 +975,39 @@ enum NavSceneKind {
 }
 
 pack NavSceneKey {
-    fin kind: std::String
-    fin value: std::Long
+    fin kind: String
+    fin value: Long
 }
 
 pack NavSceneMetadata {
     var transitions: NavTransitionSet
-    var forceTransitions: std::Bool
-    var title: std::String
-    var semanticRole: std::String
+    var forceTransitions: Bool
+    var title: String
+    var semanticRole: String
 }
 
-typealias NavSceneContent<K> = (NavSceneContext<K>!) -> std::Unit
+typealias NavSceneContent<K> = (NavSceneContext<K>!) -> Unit
 
 pack NavSceneContext<K> {
-    fin entries: std::Array<NavEntry<K>>
+    fin entries: Array<NavEntry<K>>
     fin environment: NavEnvironment
     fin direction: NavDirection
-    fin transitionProgress: std::Double
+    fin transitionProgress: Double
 }
 
 pack NavScene<K> {
     fin key: NavSceneKey
-    fin entries: std::Array<NavEntry<K>>
-    fin previousEntries: std::Array<NavEntry<K>>
+    fin entries: Array<NavEntry<K>>
+    fin previousEntries: Array<NavEntry<K>>
     fin metadata: NavSceneMetadata
     fin content: NavSceneContent<K>
 }
 
 pack NavSceneScope<K> {
-    fin entries: std::Array<NavEntry<K>>
-    fin entryCount: std::Int
-    fin previousEntries: std::Array<NavEntry<K>>
-    fin previousCount: std::Int
+    fin entries: Array<NavEntry<K>>
+    fin entryCount: Int
+    fin previousEntries: Array<NavEntry<K>>
+    fin previousCount: Int
     fin environment: NavEnvironment
     fin direction: NavDirection
 }
@@ -1018,23 +1018,23 @@ enum NavSceneResult {
 }
 
 spec NavSceneStrategy<K> {
-    func accepts[self: Self&](sceneScope: NavSceneScope<K>&): std::Bool
+    func accepts[self: Self&](sceneScope: NavSceneScope<K>&): Bool
     func calculate[self: Self&](sceneScope: NavSceneScope<K>&): NavScene<K>
 }
 
 /** Compact scene selection result used by the renderer-neutral runtime. */
 pack NavScenePlan {
     fin kind: NavSceneKind
-    fin primary: std::Int
-    fin detail: std::Int
-    fin supporting: std::Int
-    fin baseCount: std::Int
-    fin overlayStart: std::Int
-    fin overlayCount: std::Int
-    fin revision: std::Long
+    fin primary: Int
+    fin detail: Int
+    fin supporting: Int
+    fin baseCount: Int
+    fin overlayStart: Int
+    fin overlayCount: Int
+    fin revision: Long
 }
 
-func navPresentationIsOverlay(presentation: NavPresentation&): std::Bool {
+func navPresentationIsOverlay(presentation: NavPresentation&): Bool {
     return when presentation {
         NavPresentation.Screen -> false
         else -> true
@@ -1043,10 +1043,10 @@ func navPresentationIsOverlay(presentation: NavPresentation&): std::Bool {
 
 /** Selects single, list-detail, or supporting panes without mutating history. */
 func navSelectScene<K>(
-    entries: std::Array<NavEntry<K>>&
-    count: std::Int
+    entries: Array<NavEntry<K>>&
+    count: Int
     environment: NavEnvironment&
-    revision: std::Long
+    revision: Long
 ): NavScenePlan {
     var baseCount = count
     while baseCount > 1 && navPresentationIsOverlay(entries[baseCount - 1].metadata.presentation) {
@@ -1090,9 +1090,9 @@ pack NavTransitionState {
     var direction: NavDirection
     var from: NavEntryId
     var to: NavEntryId
-    var progress: std::Double
-    var interactive: std::Bool
-    var revision: std::Long
+    var progress: Double
+    var interactive: Bool
+    var revision: Long
 }
 
 func navTransitionState(): NavTransitionState {
@@ -1102,7 +1102,7 @@ func navTransitionState(): NavTransitionState {
 impl NavTransitionState {
     func start[self: Self!](
         change: NavChange&
-        reducedMotion: std::Bool
+        reducedMotion: Bool
     ) {
         self.direction = change.direction
         self.from = change.from
@@ -1113,7 +1113,7 @@ impl NavTransitionState {
         self.revision = self.revision + 1L
     }
 
-    func advance[self: Self!](progress: std::Double) {
+    func advance[self: Self!](progress: Double) {
         var value = progress
         if value < 0.0 { value = 0.0 }
         if value > 1.0 { value = 1.0 }
@@ -1130,33 +1130,33 @@ impl NavTransitionState {
 
 /** Renderer-neutral display state and owner reconciliation. */
 pack NavDisplay<K> {
-    var observedRevision: std::Long
-    var observedProviderRevision: std::Long
-    var observedEnvironmentRevision: std::Long
-    var entries: std::Array<NavEntry<K>>
-    var entryCount: std::Int
+    var observedRevision: Long
+    var observedProviderRevision: Long
+    var observedEnvironmentRevision: Long
+    var entries: Array<NavEntry<K>>
+    var entryCount: Int
     var owners: NavOwnerStore
-    var decorators: std::Array<NavEntryDecorator<K>>
-    var decoratorCount: std::Int
+    var decorators: Array<NavEntryDecorator<K>>
+    var decoratorCount: Int
     var scene: NavScenePlan
     var transition: NavTransitionState
     var lifecycle: NavLifecycle
     var parent: NavOwnerId?
-    var revision: std::Long
+    var revision: Long
 }
 
 func navDisplay<K>(
-    capacity: std::Int = 32
+    capacity: Int = 32
     parent: NavOwnerId? = null
 ): NavDisplay<K> {
     return NavDisplay<K>(
         (0L - 1L),
         (0L - 1L),
         (0L - 1L),
-        std::Array::fill<NavEntry<K>>(capacity),
+        Array::fill<NavEntry<K>>(capacity),
         0,
         navOwnerStore(capacity),
-        std::Array::fill<NavEntryDecorator<K>>(capacity),
+        Array::fill<NavEntryDecorator<K>>(capacity),
         0,
         .(.SinglePane, -1, -1, -1, 0, 0, 0, 0L),
         navTransitionState(),
@@ -1167,7 +1167,7 @@ func navDisplay<K>(
 }
 
 impl NavDisplay<K> {
-    func indexOf[self: Self&](id: NavEntryId&): std::Int {
+    func indexOf[self: Self&](id: NavEntryId&): Int {
         var index = 0
         while index < self.entryCount {
             if navEntryIdEqual(self.entries[index].item.id, id) { return index }
@@ -1187,14 +1187,14 @@ impl NavDisplay<K> {
         stack: NavBackStack<K>&
         provider: NavEntryProvider<K>&
         environment: NavEnvironment&
-    ): std::Bool ?! NavError {
+    ): Bool ?! NavError {
         if self.observedRevision == stack.version &&
             self.observedProviderRevision == provider.revision &&
             self.observedEnvironmentRevision == environment.revision {
             return false
         }
 
-        var next: std::Array<NavEntry<K>> = std::Array::fill<NavEntry<K>>(self.entries.size)
+        var next: Array<NavEntry<K>> = Array::fill<NavEntry<K>>(self.entries.size)
         var index = 0
         while index < stack.count {
             fin item = stack.itemAt(index)
@@ -1285,7 +1285,7 @@ impl NavDisplay<K> {
 
     /** Invokes one entry exactly once under a caller-supplied context. */
     func present[self: Self!](
-        index: std::Int
+        index: Int
         context: NavEntryContext<K>!
     ) ?! NavError {
         if index < 0 || index >= self.entryCount { return .EntryNotFound }
@@ -1297,17 +1297,17 @@ impl NavDisplay<K> {
 /** Overlay scene selected above one or more ordinary scenes. */
 pack NavOverlayScene<K> {
     fin scene: NavScene<K>
-    fin overlaidEntries: std::Array<NavEntry<K>>
+    fin overlaidEntries: Array<NavEntry<K>>
     fin modality: NavModality
-    fin layer: std::Int
-    fin dismiss: (NavDismissReason) -> std::Unit
+    fin layer: Int
+    fin dismiss: (NavDismissReason) -> Unit
 }
 
 /** Returns whether presentation policy permits this dismissal source. */
 func navCanDismiss(
     metadata: NavEntryMetadata&
     reason: NavDismissReason
-): std::Bool {
+): Bool {
     return when metadata.presentation {
         NavPresentation.Screen -> false
         NavPresentation.FullscreenOverlay -> metadata.backPolicy == NavBackPolicy.Dismiss
@@ -1345,11 +1345,11 @@ enum NavBackPhase {
 
 pack NavBackGesture {
     var phase: NavBackPhase
-    var progress: std::Double
+    var progress: Double
     var edge: NavEdge
-    var pointer: std::Int
+    var pointer: Int
     var target: NavEntryId
-    var generation: std::Long
+    var generation: Long
 }
 
 func navBackGesture(): NavBackGesture {
@@ -1360,7 +1360,7 @@ impl NavBackGesture {
     func begin[self: Self!](
         target: NavEntryId
         edge: NavEdge = .Start
-        pointer: std::Int = -1
+        pointer: Int = -1
     ) {
         self.phase = NavBackPhase.Started
         self.progress = 0.0
@@ -1370,7 +1370,7 @@ impl NavBackGesture {
         self.generation = self.generation + 1L
     }
 
-    func update[self: Self!](progress: std::Double) {
+    func update[self: Self!](progress: Double) {
         var value = progress
         if value < 0.0 { value = 0.0 }
         if value > 1.0 { value = 1.0 }
@@ -1396,7 +1396,7 @@ enum NavBackPriority {
     Overlay
 }
 
-func navBackPriorityRank(priority: NavBackPriority): std::Int {
+func navBackPriorityRank(priority: NavBackPriority): Int {
     return when priority {
         .PlatformExit -> 0
         .Display -> 1
@@ -1407,8 +1407,8 @@ func navBackPriorityRank(priority: NavBackPriority): std::Int {
 }
 
 spec NavBackHandler {
-    func enabled[self: Self&](): std::Bool
-    func begin[self: Self!](event: NavBackGesture&): std::Bool
+    func enabled[self: Self&](): Bool
+    func begin[self: Self!](event: NavBackGesture&): Bool
     func progress[self: Self!](event: NavBackGesture&)
     func cancel[self: Self!]()
     func complete[self: Self!]()
@@ -1416,33 +1416,33 @@ spec NavBackHandler {
 
 pack NavBackRegistration {
     fin owner: NavOwnerId
-    fin scopeId: std::Int
+    fin scopeId: Int
     fin priority: NavBackPriority
-    fin depth: std::Int
-    fin order: std::Long
-    var active: std::Bool
+    fin depth: Int
+    fin order: Long
+    var active: Bool
     var handler: NavBackHandler
 }
 
 /** Scoped hierarchical dispatcher with deterministic winner ordering. */
 pack NavBackDispatcher {
-    var registrations: std::Array<NavBackRegistration>
-    var size: std::Int
-    var scopeParents: std::Array<std::Int>
-    var scopeCount: std::Int
-    var nextOrder: std::Long
-    var activeRegistration: std::Int
+    var registrations: Array<NavBackRegistration>
+    var size: Int
+    var scopeParents: Array<Int>
+    var scopeCount: Int
+    var nextOrder: Long
+    var activeRegistration: Int
 }
 
-func navBackDispatcher(capacity: std::Int = 32): NavBackDispatcher {
-    var parents: std::Array<std::Int> = std::Array::fill<std::Int>(capacity)
+func navBackDispatcher(capacity: Int = 32): NavBackDispatcher {
+    var parents: Array<Int> = Array::fill<Int>(capacity)
     parents[0] = -1
-    return .(std::Array::fill<NavBackRegistration>(capacity), 0, parents, 1, 1L, -1)
+    return .(Array::fill<NavBackRegistration>(capacity), 0, parents, 1, 1L, -1)
 }
 
 impl NavBackDispatcher {
     /** Creates a child scope. Unhandled events bubble through its parent. */
-    func child[self: Self!](parentScope: std::Int = 0): std::Int ?! NavError {
+    func child[self: Self!](parentScope: Int = 0): Int ?! NavError {
         if parentScope < 0 || parentScope >= self.scopeCount { return .InvalidMutation }
         if self.scopeCount >= self.scopeParents.size { return .CapacityExceeded }
         fin id = self.scopeCount
@@ -1453,9 +1453,9 @@ impl NavBackDispatcher {
 
     func register[self: Self!](
         owner: NavOwnerId
-        scopeId: std::Int
+        scopeId: Int
         priority: NavBackPriority
-        depth: std::Int
+        depth: Int
         handler: NavBackHandler
     ) ?! NavError {
         if scopeId < 0 || scopeId >= self.scopeCount { return .InvalidMutation }
@@ -1487,7 +1487,7 @@ impl NavBackDispatcher {
         self.activeRegistration = -1
     }
 
-    func winnerIn[self: Self&](scopeId: std::Int): std::Int {
+    func winnerIn[self: Self&](scopeId: Int): Int {
         var winner = -1
         var index = 0
         while index < self.size {
@@ -1511,7 +1511,7 @@ impl NavBackDispatcher {
         return winner
     }
 
-    func winner[self: Self&](scopeId: std::Int = 0): std::Int {
+    func winner[self: Self&](scopeId: Int = 0): Int {
         var current = scopeId
         while current >= 0 {
             fin found = self.winnerIn(current)
@@ -1522,7 +1522,7 @@ impl NavBackDispatcher {
     }
 
     /** Completes an ordinary Escape/controller/platform back event. */
-    func dispatch[self: Self!](scopeId: std::Int = 0): NavOwnerId {
+    func dispatch[self: Self!](scopeId: Int = 0): NavOwnerId {
         fin selected = self.winner(scopeId)
         if selected < 0 { return navOwnerIdInvalid() }
         self.registrations[selected].handler.complete()
@@ -1530,7 +1530,7 @@ impl NavBackDispatcher {
     }
 
     func beginPredictive[self: Self!](
-        scopeId: std::Int
+        scopeId: Int
         event: NavBackGesture&
     ): NavOwnerId {
         fin selected = self.winner(scopeId)
@@ -1563,7 +1563,7 @@ impl NavBackDispatcher {
 
 /** Typed result names are symbols, not nearest matching route names. */
 pack NavResultKey<T> {
-    fin symbol: std::String
+    fin symbol: String
 }
 
 enum NavResultPolicy {
@@ -1577,20 +1577,20 @@ pack NavResultChannel<T> {
     fin sender: NavEntryId
     fin receiver: NavEntryId
     fin policy: NavResultPolicy
-    var values: std::Array<T>
-    var count: std::Int
-    var revision: std::Long
-    var closed: std::Bool
+    var values: Array<T>
+    var count: Int
+    var revision: Long
+    var closed: Bool
 }
 
 func navResultChannel<T>(
     key: NavResultKey<T>
     sender: NavEntryId
     receiver: NavEntryId
-    capacity: std::Int = 1
+    capacity: Int = 1
     policy: NavResultPolicy = .Once
 ): NavResultChannel<T> {
-    return .(key, sender, receiver, policy, std::Array::fill<T>(capacity), 0, 0L, false)
+    return .(key, sender, receiver, policy, Array::fill<T>(capacity), 0, 0L, false)
 }
 
 impl NavResultChannel<T> {
@@ -1635,47 +1635,47 @@ impl NavResultChannel<T> {
 
 /** Application codec required only for preserved or externally linked routes. */
 spec NavRouteCodec<K> {
-    func version[self: Self&](): std::Int
-    func encode[self: Self&](key: K&): std::SerialValue ?! NavError
-    func decode[self: Self&](value: std::SerialValue&): K ?! NavError
+    func version[self: Self&](): Int
+    func encode[self: Self&](key: K&): SerialValue ?! NavError
+    func decode[self: Self&](value: SerialValue&): K ?! NavError
 }
 
 pack NavItemSnapshot {
-    fin id: std::Long
-    fin generation: std::Long
-    fin key: std::SerialValue
+    fin id: Long
+    fin generation: Long
+    fin key: SerialValue
 }
 
 pack NavPreservedValue {
-    fin owner: std::Long
-    fin symbol: std::String
-    fin value: std::SerialValue
+    fin owner: Long
+    fin symbol: String
+    fin value: SerialValue
 }
 
 pack NavOwnerSnapshot {
-    fin id: std::Long
-    fin generation: std::Long
-    fin entry: std::Long
-    fin parent: std::Long
-    fin values: std::Array<NavPreservedValue>
+    fin id: Long
+    fin generation: Long
+    fin entry: Long
+    fin parent: Long
+    fin values: Array<NavPreservedValue>
 }
 
 pack NavStackSnapshot {
-    fin formatVersion: std::Int
-    fin routeVersion: std::Int
-    fin stackId: std::Long
-    fin items: std::Array<NavItemSnapshot>
-    fin itemCount: std::Int
-    fin selected: std::Int
-    fin owners: std::Array<NavOwnerSnapshot>
+    fin formatVersion: Int
+    fin routeVersion: Int
+    fin stackId: Long
+    fin items: Array<NavItemSnapshot>
+    fin itemCount: Int
+    fin selected: Int
+    fin owners: Array<NavOwnerSnapshot>
 }
 
 func navSnapshot<K>(
     stack: NavBackStack<K>&
     codec: NavRouteCodec<K>
-    stackId: std::Long = 1L
+    stackId: Long = 1L
 ): NavStackSnapshot ?! NavError {
-    var items: std::Array<NavItemSnapshot> = std::Array::fill<NavItemSnapshot>(stack.count)
+    var items: Array<NavItemSnapshot> = Array::fill<NavItemSnapshot>(stack.count)
     var index = 0
     while index < stack.count {
         fin item = stack.itemAt(index)
@@ -1689,16 +1689,16 @@ func navSnapshot<K>(
         items,
         stack.count,
         stack.count - 1,
-        std::Array::fill<NavOwnerSnapshot>(0)
+        Array::fill<NavOwnerSnapshot>(0)
     )
 }
 
 impl NavBackStack<K> {
     /** Installs a fully decoded snapshot after all validation succeeds. */
     func restoreItems[self: Self!](
-        items: std::Array<NavStackItem<K>>&
-        count: std::Int
-        nextId: std::Long
+        items: Array<NavStackItem<K>>&
+        count: Int
+        nextId: Long
     ): NavChange ?! NavError {
         if count < 1 { return .SnapshotMalformed }
         if count > self.capacity { return .CapacityExceeded }
@@ -1719,7 +1719,7 @@ impl NavBackStack<K> {
 func navRestore<K>(
     snapshot: NavStackSnapshot&
     codec: NavRouteCodec<K>
-    capacity: std::Int = 32
+    capacity: Int = 32
 ): NavBackStack<K> ?! NavError {
     if snapshot.formatVersion != 1 || snapshot.routeVersion != codec.version() {
         return .SnapshotVersion
@@ -1728,7 +1728,7 @@ func navRestore<K>(
         return .SnapshotMalformed
     }
 
-    var decoded: std::Array<NavStackItem<K>> = std::Array::fill<NavStackItem<K>>(capacity)
+    var decoded: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(capacity)
     var maximum = 0L
     var index = 0
     while index < snapshot.itemCount {
@@ -1748,22 +1748,22 @@ func navRestore<K>(
 }
 
 pack NavQueryValue {
-    fin name: std::String
-    fin value: std::String
+    fin name: String
+    fin value: String
 }
 
 pack NavUri {
-    fin scheme: std::String
-    fin host: std::String
-    fin path: std::Array<std::String>
-    fin query: std::Array<NavQueryValue>
+    fin scheme: String
+    fin host: String
+    fin path: Array<String>
+    fin query: Array<NavQueryValue>
 }
 
 impl NavUri {
     func queryValue[self: Self&](
-        name: std::String
-        fallback: std::String = ""
-    ): std::String {
+        name: String
+        fallback: String = ""
+    ): String {
         var index = 0
         while index < self.query.size {
             if self.query[index].name == name { return self.query[index].value }
@@ -1775,15 +1775,15 @@ impl NavUri {
 
 pack NavNestedPlan {
     fin parent: NavEntryId
-    fin slot: std::String
-    fin snapshot: std::SerialValue
+    fin slot: String
+    fin snapshot: SerialValue
 }
 
 pack NavStackPlan<K> {
     fin root: K
-    fin pushes: std::Array<K>
-    fin nested: std::Array<NavNestedPlan>
-    fin replaceCurrent: std::Bool
+    fin pushes: Array<K>
+    fin nested: Array<NavNestedPlan>
+    fin replaceCurrent: Bool
 }
 
 spec NavLinkResolver<K> {
@@ -1818,26 +1818,26 @@ enum NavTopLevelPolicy {
 
 /** Bounded set of independent top-level histories. */
 pack NavStackSet<T, K> {
-    var roots: std::Array<T>
-    var stacks: std::Array<NavBackStack<K>>
-    var size: std::Int
-    var selected: std::Int
-    var starting: std::Int
-    var revision: std::Long
-    fin equals: (T&, T&) -> std::Bool
+    var roots: Array<T>
+    var stacks: Array<NavBackStack<K>>
+    var size: Int
+    var selected: Int
+    var starting: Int
+    var revision: Long
+    fin equals: (T&, T&) -> Bool
 }
 
 func navStackSet<T, K>(
-    roots: std::Array<T>&
-    routeRoots: std::Array<K>&
-    equals: (T&, T&) -> std::Bool
-    capacityPerStack: std::Int = 32
+    roots: Array<T>&
+    routeRoots: Array<K>&
+    equals: (T&, T&) -> Bool
+    capacityPerStack: Int = 32
 ): NavStackSet<T, K>
 in {
     assert roots.size > 0 { "a stack set needs one top-level root" }
     assert roots.size == routeRoots.size { "top-level roots and route roots must align" }
 } scope {
-    var stacks: std::Array<NavBackStack<K>> = std::Array::fill<NavBackStack<K>>(roots.size)
+    var stacks: Array<NavBackStack<K>> = Array::fill<NavBackStack<K>>(roots.size)
     var index = 0
     while index < roots.size {
         stacks[index] = navBackStack<K>(routeRoots[index], capacityPerStack)
@@ -1847,7 +1847,7 @@ in {
 }
 
 impl NavStackSet<T, K> {
-    func indexOf[self: Self&](root: T&): std::Int {
+    func indexOf[self: Self&](root: T&): Int {
         var index = 0
         while index < self.size {
             if self.equals(self.roots[index], root) { return index }
@@ -1896,14 +1896,14 @@ spec NavEntryPreparation<K> {
 
 /** Immutable debugger/profiler snapshot of a display. */
 pack NavInspection {
-    fin entries: std::Int
-    fin activeOwners: std::Int
-    fin suspendedOwners: std::Int
-    fin overlays: std::Int
+    fin entries: Int
+    fin activeOwners: Int
+    fin suspendedOwners: Int
+    fin overlays: Int
     fin direction: NavDirection
     fin transition: NavTransitionPhase
-    fin transitionProgress: std::Double
-    fin revision: std::Long
+    fin transitionProgress: Double
+    fin revision: Long
 }
 
 func navInspect<K>(display: NavDisplay<K>&): NavInspection {
@@ -1934,11 +1934,11 @@ func navInspect<K>(display: NavDisplay<K>&): NavInspection {
 pack TestNavDisplay<K> {
     var display: NavDisplay<K>
     var environment: NavEnvironment
-    var clockSeconds: std::Double
+    var clockSeconds: Double
 }
 
 func testNavDisplay<K>(
-    capacity: std::Int = 32
+    capacity: Int = 32
     environment: NavEnvironment = navEnvironment()
 ): TestNavDisplay<K> {
     return .(navDisplay<K>(capacity), environment, 0.0)
@@ -1948,37 +1948,37 @@ impl TestNavDisplay<K> {
     func sync[self: Self!](
         stack: NavBackStack<K>&
         provider: NavEntryProvider<K>&
-    ): std::Bool ?! NavError {
+    ): Bool ?! NavError {
         return try self.display.sync(stack, provider, self.environment)
     }
 
-    func advance[self: Self!](seconds: std::Double) {
+    func advance[self: Self!](seconds: Double) {
         if seconds < 0.0 { return }
         self.clockSeconds = self.clockSeconds + seconds
         self.display.transition.advance(1.0)
     }
 }
 
-func navTestContent(context: NavEntryContext<std::Int>!) { }
+func navTestContent(context: NavEntryContext<Int>!) { }
 
-func navTestEntry(item: NavStackItem<std::Int>&): NavEntry<std::Int> ?! NavError {
+func navTestEntry(item: NavStackItem<Int>&): NavEntry<Int> ?! NavError {
     var metadata = navMetadata()
     if item.key == 1 { metadata = metadata.inPane(.Primary) }
     if item.key == 2 { metadata = metadata.inPane(.Detail) }
     if item.key == 3 { metadata = metadata.asDialog() }
-    return navEntry<std::Int>(item, { context -> navTestContent(context) }, take metadata)
+    return navEntry<Int>(item, { context -> navTestContent(context) }, take metadata)
 }
 
 pack NavTestBackHandler {
-    var available: std::Bool
+    var available: Bool
 }
 
 impl NavBackHandler for NavTestBackHandler {
-    func enabled[self: Self&](): std::Bool {
+    func enabled[self: Self&](): Bool {
         return self.available
     }
 
-    func begin[self: Self!](event: NavBackGesture&): std::Bool {
+    func begin[self: Self!](event: NavBackGesture&): Bool {
         return self.available
     }
 
@@ -1991,31 +1991,31 @@ impl NavBackHandler for NavTestBackHandler {
 
 pack NavIntCodec
 
-impl NavRouteCodec<std::Int> for NavIntCodec {
-    func version[self: Self&](): std::Int {
+impl NavRouteCodec<Int> for NavIntCodec {
+    func version[self: Self&](): Int {
         return 1
     }
 
-    func encode[self: Self&](key: std::Int&): std::SerialValue ?! NavError {
-        return std::SerialValue.Number("${key}")
+    func encode[self: Self&](key: Int&): SerialValue ?! NavError {
+        return SerialValue.Number("${key}")
     }
 
-    func decode[self: Self&](value: std::SerialValue&): std::Int ?! NavError {
-        fin decoded = std::serialAsInt(value) catch -1
+    func decode[self: Self&](value: SerialValue&): Int ?! NavError {
+        fin decoded = serialAsInt(value) catch -1
         if decoded < 0 { return .SnapshotMalformed }
         return decoded
     }
 }
 
 func navTestIntEqual(
-    a: std::Int&
-    b: std::Int&
-): std::Bool {
+    a: Int&
+    b: Int&
+): Bool {
     return a == b
 }
 
 test "navigation assigns identity by occurrence" {
-    var stack = navBackStack<std::Int>(1, 5)
+    var stack = navBackStack<Int>(1, 5)
     fin first = stack.currentItem.id
     fin second = stack.push(1) catch navEntryIdInvalid()
     fin third = stack.push(1) catch navEntryIdInvalid()
@@ -2031,9 +2031,9 @@ test "navigation assigns identity by occurrence" {
 }
 
 test "transactions publish once and roll back invalid staging" {
-    var stack = navBackStack<std::Int>(1, 4)
+    var stack = navBackStack<Int>(1, 4)
     fin before = stack.version
-    fin change = navTransaction<std::Int>(stack) { mutation ->
+    fin change = navTransaction<Int>(stack) { mutation ->
         mutation.push(2)
         mutation.push(3)
     } catch navChangeNone()
@@ -2043,10 +2043,10 @@ test "transactions publish once and roll back invalid staging" {
         "one transaction must publish one revision"
     }
 
-    var small = navBackStack<std::Int>(1, 2)
+    var small = navBackStack<Int>(1, 2)
     var failed = false
     try {
-        navTransaction<std::Int>(small) { mutation ->
+        navTransaction<Int>(small) { mutation ->
             mutation.push(2)
             mutation.push(3)
         }
@@ -2060,11 +2060,11 @@ test "transactions publish once and roll back invalid staging" {
 }
 
 test "display resolves owners and adaptive overlays by entry id" {
-    var stack = navBackStack<std::Int>(1, 6)
+    var stack = navBackStack<Int>(1, 6)
     stack.push(2) catch navEntryIdInvalid()
-    var provider = navEntryProvider<std::Int>({ item -> navTestEntry(item) })
+    var provider = navEntryProvider<Int>({ item -> navTestEntry(item) })
     fin environment = navEnvironment(1400.0, 900.0, .Expanded, 1L)
-    var display = navDisplay<std::Int>(6)
+    var display = navDisplay<Int>(6)
 
     fin changed = display.sync(stack, provider, environment) catch false
     assert changed { "first display sync must resolve entries" }
@@ -2098,7 +2098,7 @@ test "overlay dismissal follows typed presentation policy" {
 }
 
 test "predictive back clamps progress without mutating the stack" {
-    var stack = navBackStack<std::Int>(1, 3)
+    var stack = navBackStack<Int>(1, 3)
     stack.push(2) catch navEntryIdInvalid()
     fin version = stack.version
     var gesture = navBackGesture()
@@ -2134,8 +2134,8 @@ test "back dispatch prefers overlay then nested depth" {
 test "typed results reject the wrong entry generation" {
     fin sender = NavEntryId(4L, 1L)
     fin receiver = NavEntryId(2L, 1L)
-    fin key = NavResultKey<std::Int>("picker.value")
-    var channel = navResultChannel<std::Int>(key, sender, receiver, 1, .Once)
+    fin key = NavResultKey<Int>("picker.value")
+    var channel = navResultChannel<Int>(key, sender, receiver, 1, .Once)
     channel.send(sender, 42) catch { }
     fin value = channel.take(receiver) catch -1
     assert value == 42 { "typed result was not delivered to its receiver" }
@@ -2150,20 +2150,20 @@ test "typed results reject the wrong entry generation" {
 }
 
 test "snapshots preserve stable ids and advance allocation" {
-    var stack = navBackStack<std::Int>(10, 5)
+    var stack = navBackStack<Int>(10, 5)
     stack.push(20) catch navEntryIdInvalid()
     stack.push(30) catch navEntryIdInvalid()
     fin last = stack.currentItem.id
-    fin snapshot = navSnapshot<std::Int>(stack, NavIntCodec()) catch NavStackSnapshot(
+    fin snapshot = navSnapshot<Int>(stack, NavIntCodec()) catch NavStackSnapshot(
         0,
         0,
         0L,
-        std::Array::fill<NavItemSnapshot>(0),
+        Array::fill<NavItemSnapshot>(0),
         0,
         0,
-        std::Array::fill<NavOwnerSnapshot>(0)
+        Array::fill<NavOwnerSnapshot>(0)
     )
-    var restored = navRestore<std::Int>(snapshot, NavIntCodec(), 5) catch navBackStack<std::Int>(0)
+    var restored = navRestore<Int>(snapshot, NavIntCodec(), 5) catch navBackStack<Int>(0)
     assert restored.count == 3 && restored.current == 30 { "snapshot did not restore route order" }
     assert navEntryIdEqual(restored.currentItem.id, last) { "snapshot changed entry identity" }
     fin next = restored.push(40) catch navEntryIdInvalid()
@@ -2171,18 +2171,18 @@ test "snapshots preserve stable ids and advance allocation" {
 }
 
 test "deep-link plans apply atomically" {
-    var pushes: std::Array<std::Int> = std::Array::fill<std::Int>(2)
+    var pushes: Array<Int> = Array::fill<Int>(2)
     pushes[0] = 8
     pushes[1] = 9
-    fin plan = NavStackPlan<std::Int>(
+    fin plan = NavStackPlan<Int>(
         7,
         pushes,
-        std::Array::fill<NavNestedPlan>(0),
+        Array::fill<NavNestedPlan>(0),
         false
     )
-    var stack = navBackStack<std::Int>(1, 5)
+    var stack = navBackStack<Int>(1, 5)
     fin before = stack.version
-    fin change = navApplyPlan<std::Int>(stack, plan) catch navChangeNone()
+    fin change = navApplyPlan<Int>(stack, plan) catch navChangeNone()
     assert stack.count == 3 && stack.at(0) == 7 && stack.current == 9 {
         "deep-link plan exposed the wrong history"
     }
@@ -2192,13 +2192,13 @@ test "deep-link plans apply atomically" {
 }
 
 test "top-level stack sets preserve independent histories" {
-    var roots: std::Array<std::Int> = std::Array::fill<std::Int>(2)
+    var roots: Array<Int> = Array::fill<Int>(2)
     roots[0] = 0
     roots[1] = 1
-    var routeRoots: std::Array<std::Int> = std::Array::fill<std::Int>(2)
+    var routeRoots: Array<Int> = Array::fill<Int>(2)
     routeRoots[0] = 10
     routeRoots[1] = 20
-    var stacks = navStackSet<std::Int, std::Int>(
+    var stacks = navStackSet<Int, Int>(
         roots,
         routeRoots,
         { a, b -> navTestIntEqual(a, b) },

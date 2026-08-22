@@ -34,57 +34,57 @@ enum ColliderShape {
 
 /** Bit masks controlling broad-phase pair filtering. */
 pack CollisionLayers {
-    var memberships: std::Int
-    var filters: std::Int
+    var memberships: Int
+    var filters: Int
 }
 
 /** Surface response shared by all contacts involving a body. */
 pack PhysicsMaterial {
-    var friction: std::Double
-    var restitution: std::Double
+    var friction: Double
+    var restitution: Double
 }
 
 /** Box or sphere geometry attached at an offset from a body. */
 pack Collider {
     var shape: ColliderShape
     var halfExtents: Vec3
-    var radius: std::Double
+    var radius: Double
     var offset: Vec3
     var layers: CollisionLayers
-    var sensor: std::Bool
+    var sensor: Bool
 }
 
 /** Runtime body state. Static and kinematic bodies have zero inverse mass. */
 pack PhysicsBody {
-    var id: std::Int
+    var id: Int
     var kind: RigidBodyKind
     var position: Vec3
     var velocity: Vec3
     var force: Vec3
-    var inverseMass: std::Double
+    var inverseMass: Double
     var collider: Collider
     var material: PhysicsMaterial
-    var awake: std::Bool
+    var awake: Bool
 }
 
 /** A contact normal points in the direction that moves body A out of body B. */
 pack Contact {
-    var hit: std::Bool
-    var bodyA: std::Int
-    var bodyB: std::Int
+    var hit: Bool
+    var bodyA: Int
+    var bodyB: Int
     var normal: Vec3
     var point: Vec3
-    var penetration: std::Double
-    var sensor: std::Bool
+    var penetration: Double
+    var sensor: Bool
 }
 
 /** A fixed-substep physics world with stable body identifiers. */
 pack PhysicsWorld {
-    var bodies: std::Array<PhysicsBody>
-    var contacts: std::Array<Contact>
+    var bodies: Array<PhysicsBody>
+    var contacts: Array<Contact>
     var gravity: Vec3
-    var substeps: std::Int
-    var nextId: std::Int
+    var substeps: Int
+    var nextId: Int
 }
 
 realm engine::physics {
@@ -94,15 +94,15 @@ realm engine::physics {
         return CollisionLayers(allLayers, allLayers)
     }
 
-    func layers(memberships: std::Int, filters: std::Int): CollisionLayers {
+    func layers(memberships: Int, filters: Int): CollisionLayers {
         return CollisionLayers(memberships, filters)
     }
 
-    func layersInteract(a: CollisionLayers, b: CollisionLayers): std::Bool {
+    func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool {
         return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
     }
 
-    func material(friction: std::Double = 0.65, restitution: std::Double = 0.05): PhysicsMaterial {
+    func material(friction: Double = 0.65, restitution: Double = 0.05): PhysicsMaterial {
         return PhysicsMaterial(clamp(friction, 0.0, 1.0), clamp(restitution, 0.0, 1.0))
     }
 
@@ -110,7 +110,7 @@ realm engine::physics {
         return Collider(ColliderShape.Box, halfExtents, 0.0, vec3Zero(), layersAll(), false)
     }
 
-    func sphere(radius: std::Double): Collider {
+    func sphere(radius: Double): Collider {
         return Collider(ColliderShape.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), layersAll(), false)
     }
 
@@ -126,7 +126,7 @@ realm engine::physics {
         return Collider(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
     }
 
-    func body(kind: RigidBodyKind, position: Vec3, collider: Collider, mass: std::Double = 1.0): PhysicsBody {
+    func body(kind: RigidBodyKind, position: Vec3, collider: Collider, mass: Double = 1.0): PhysicsBody {
         var inverseMass = 0.0
         if kind == RigidBodyKind.Dynamic && mass > 0.0 {
             inverseMass = 1.0 / mass
@@ -138,7 +138,7 @@ realm engine::physics {
         return body(RigidBodyKind.Static, position, collider)
     }
 
-    func dynamicBody(position: Vec3, collider: Collider, mass: std::Double = 1.0): PhysicsBody {
+    func dynamicBody(position: Vec3, collider: Collider, mass: Double = 1.0): PhysicsBody {
         return body(RigidBodyKind.Dynamic, position, collider, mass)
     }
 
@@ -175,12 +175,12 @@ realm engine::physics {
         return Contact(true, -1, -1, normal, centerA - normal.scale(penetration * 0.5), penetration, false)
     }
 
-    func aabbOverlaps(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): std::Bool {
+    func aabbOverlaps(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Bool {
         return aabbContact(centerA, halfA, centerB, halfB).hit
     }
 
     /** Sphere-sphere contact, including coincident centers. */
-    func sphereContact(centerA: Vec3, radiusA: std::Double, centerB: Vec3, radiusB: std::Double): Contact {
+    func sphereContact(centerA: Vec3, radiusA: Double, centerB: Vec3, radiusB: Double): Contact {
         fin delta = centerA - centerB
         fin radius = radiusA + radiusB
         fin distanceSquared = delta.dot(delta)
@@ -196,7 +196,7 @@ realm engine::physics {
     }
 
     /** Sphere-box contact. The normal moves the sphere out of the box. */
-    func sphereAabbContact(sphereCenter: Vec3, radius: std::Double, boxCenter: Vec3, boxHalf: Vec3): Contact {
+    func sphereAabbContact(sphereCenter: Vec3, radius: Double, boxCenter: Vec3, boxHalf: Vec3): Contact {
         fin closest = Vec3(
             clamp(sphereCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
             clamp(sphereCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y),
@@ -243,27 +243,27 @@ realm engine::physics {
         return contact
     }
 
-    func world(gravity: Vec3 = Vec3(0.0, -9.81, 0.0), substeps: std::Int = 4): PhysicsWorld {
+    func world(gravity: Vec3 = Vec3(0.0, -9.81, 0.0), substeps: Int = 4): PhysicsWorld {
         var steps = substeps
         if steps < 1 { steps = 1 }
         if steps > 16 { steps = 16 }
         return PhysicsWorld(
-            @std::arr[body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
-            @std::arr[noContact()],
+            @arr[body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
+            @arr[noContact()],
             gravity,
             steps,
             1
         )
     }
 
-    func addBody(world: PhysicsWorld, value: PhysicsBody): std::Int {
+    func addBody(world: PhysicsWorld, value: PhysicsBody): Int {
         value.id = world.nextId
         world.nextId = world.nextId + 1
         world.bodies.add(value)
         return value.id
     }
 
-    func bodyById(world: PhysicsWorld, id: std::Int): PhysicsBody {
+    func bodyById(world: PhysicsWorld, id: Int): PhysicsBody {
         var i = 1
         while i < world.bodies.size {
             fin value: PhysicsBody = world.bodies[i]
@@ -280,11 +280,11 @@ realm engine::physics {
         }
     }
 
-    func step(world: PhysicsWorld, deltaTime: std::Double) {
+    func step(world: PhysicsWorld, deltaTime: Double) {
         var dt = deltaTime
         if dt < 0.0 { dt = 0.0 }
         if dt > 0.1 { dt = 0.1 }
-        fin substep = dt / (world.substeps as std::Double)
+        fin substep = dt / (world.substeps as Double)
         var iteration = 0
         while iteration < world.substeps {
             integrate(world, substep)
@@ -293,7 +293,7 @@ realm engine::physics {
         }
     }
 
-    func integrate(world: PhysicsWorld, dt: std::Double) {
+    func integrate(world: PhysicsWorld, dt: Double) {
         var i = 1
         while i < world.bodies.size {
             fin value: PhysicsBody = world.bodies[i]
@@ -312,7 +312,7 @@ realm engine::physics {
     }
 
     func collide(world: PhysicsWorld) {
-        world.contacts = @std::arr[noContact()]
+        world.contacts = @arr[noContact()]
         var i = 1
         while i < world.bodies.size {
             var j = i + 1
@@ -356,23 +356,23 @@ realm engine::physics {
         if inverseB > 0.0 { b.velocity = b.velocity - impulse.scale(inverseB) }
     }
 
-    func clamp(value: std::Double, lo: std::Double, hi: std::Double): std::Double {
+    func clamp(value: Double, lo: Double, hi: Double): Double {
         if value < lo { return lo }
         if value > hi { return hi }
         return value
     }
 
-    func abs(value: std::Double): std::Double {
+    func abs(value: Double): Double {
         if value < 0.0 { return 0.0 - value }
         return value
     }
 
-    func sign(value: std::Double): std::Double {
+    func sign(value: Double): Double {
         if value < 0.0 { return -1.0 }
         return 1.0
     }
 
-    func min(a: std::Double, b: std::Double): std::Double {
+    func min(a: Double, b: Double): Double {
         if a < b { return a }
         return b
     }

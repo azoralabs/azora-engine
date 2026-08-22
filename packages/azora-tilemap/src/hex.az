@@ -37,8 +37,8 @@ import engine.tilemap.types
 
 /** An axial hex coordinate: two axes, one of them skewed. */
 pack HexAxial {
-    var q: std::Int
-    var r: std::Int
+    var q: Int
+    var r: Int
 }
 
 /**
@@ -50,15 +50,15 @@ pack HexAxial {
  * expressed in two axes.
  */
 pack HexCube {
-    var q: std::Int
-    var r: std::Int
-    var s: std::Int
+    var q: Int
+    var r: Int
+    var s: Int
 }
 
 /** A fractional axial coordinate, produced by inverting a pixel position. */
 pack HexFrac {
-    var q: std::Double
-    var r: std::Double
+    var q: Double
+    var r: Double
 }
 
 /** The six directions of a pointy-top (row) hex lattice. */
@@ -89,20 +89,20 @@ enum HexColumnDirection {
  * walk to two indexed loads with no per-element allocation.
  */
 pack HexPath {
-    var q: std::Array<std::Int>
-    var r: std::Array<std::Int>
-    var count: std::Int
+    var q: Array<Int>
+    var r: Array<Int>
+    var count: Int
 }
 
-func hexAxial(q: std::Int, r: std::Int): HexAxial {
+func hexAxial(q: Int, r: Int): HexAxial {
     return HexAxial(q, r)
 }
 
-func hexCube(q: std::Int, r: std::Int, s: std::Int): HexCube {
+func hexCube(q: Int, r: Int, s: Int): HexCube {
     return HexCube(q, r, s)
 }
 
-func hexFrac(q: std::Double, r: std::Double): HexFrac {
+func hexFrac(q: Double, r: Double): HexFrac {
     return HexFrac(q, r)
 }
 
@@ -127,16 +127,16 @@ impl HexAxial {
         return HexAxial(self.q - other.q, self.r - other.r)
     }
 
-    func scale(k: std::Int): HexAxial {
+    func scale(k: Int): HexAxial {
         return HexAxial(self.q * k, self.r * k)
     }
 
-    func same(other: HexAxial): std::Bool {
+    func same(other: HexAxial): Bool {
         return self.q == other.q && self.r == other.r
     }
 
     /** The third, redundant cube axis of this coordinate. */
-    func s(): std::Int {
+    func s(): Int {
         return 0 - self.q - self.r
     }
 
@@ -146,14 +146,14 @@ impl HexAxial {
      * In cube space this is half the sum of the three axis differences, which
      * is why the formula reaches for `s` even though the value is axial.
      */
-    func distance(other: HexAxial): std::Int {
+    func distance(other: HexAxial): Int {
         fin dq = self.q - other.q
         fin dr = self.r - other.r
         return (intAbs(dq) + intAbs(dq + dr) + intAbs(dr)) / 2
     }
 
     /** The ring index this coordinate sits on, relative to the axial origin. */
-    func ringRadius(): std::Int {
+    func ringRadius(): Int {
         return self.distance(HexAxial(0, 0))
     }
 }
@@ -167,16 +167,16 @@ impl HexCube {
         return HexCube(self.q - other.q, self.r - other.r, self.s - other.s)
     }
 
-    func scale(k: std::Int): HexCube {
+    func scale(k: Int): HexCube {
         return HexCube(self.q * k, self.r * k, self.s * k)
     }
 
     /** True when the cube constraint `q + r + s == 0` still holds. */
-    func isValid(): std::Bool {
+    func isValid(): Bool {
         return self.q + self.r + self.s == 0
     }
 
-    func distance(other: HexCube): std::Int {
+    func distance(other: HexCube): Int {
         return (intAbs(self.q - other.q) + intAbs(self.r - other.r) + intAbs(self.s - other.s)) / 2
     }
 }
@@ -196,7 +196,7 @@ impl HexCube {
  * Out-of-range indices wrap, so stepping `index + 1` around a ring never needs
  * a modulo at the call site.
  */
-func hexDelta(index: std::Int): HexAxial {
+func hexDelta(index: Int): HexAxial {
     fin i = tileFloorMod(index, 6)
     if i == 0 {
         return HexAxial(1, 0)
@@ -217,7 +217,7 @@ func hexDelta(index: std::Int): HexAxial {
 }
 
 /** The neighbour index of a pointy-top direction. */
-func hexRowDirectionIndex(direction: HexRowDirection): std::Int {
+func hexRowDirectionIndex(direction: HexRowDirection): Int {
     when direction {
         HexRowDirection.East -> { return 0 }
         HexRowDirection.NorthEast -> { return 1 }
@@ -230,7 +230,7 @@ func hexRowDirectionIndex(direction: HexRowDirection): std::Int {
 }
 
 /** The neighbour index of a flat-top direction. */
-func hexColumnDirectionIndex(direction: HexColumnDirection): std::Int {
+func hexColumnDirectionIndex(direction: HexColumnDirection): Int {
     when direction {
         HexColumnDirection.SouthEast -> { return 0 }
         HexColumnDirection.NorthEast -> { return 1 }
@@ -253,7 +253,7 @@ func hexColumnDelta(direction: HexColumnDirection): HexAxial {
 }
 
 /** The neighbour of [axial] in direction [index]. */
-func hexNeighbor(axial: HexAxial, index: std::Int): HexAxial {
+func hexNeighbor(axial: HexAxial, index: Int): HexAxial {
     return axial.plus(hexDelta(index))
 }
 
@@ -263,7 +263,7 @@ func hexNeighbor(axial: HexAxial, index: std::Int): HexAxial {
  * Diagonal neighbours are two steps away and share only a vertex; they are what
  * a "knight's move" or a wide area-of-effect walks over.
  */
-func hexDiagonal(axial: HexAxial, index: std::Int): HexAxial {
+func hexDiagonal(axial: HexAxial, index: Int): HexAxial {
     fin i = tileFloorMod(index, 6)
     fin a = hexDelta(i)
     fin b = hexDelta(i + 1)
@@ -271,7 +271,7 @@ func hexDiagonal(axial: HexAxial, index: std::Int): HexAxial {
 }
 
 /** [axial] rotated [steps] sixths of a turn about [center]. */
-func hexRotate(axial: HexAxial, center: HexAxial, steps: std::Int): HexAxial {
+func hexRotate(axial: HexAxial, center: HexAxial, steps: Int): HexAxial {
     fin relative = hexAxialToCube(axial.minus(center))
     var q = relative.q
     var r = relative.r
@@ -315,9 +315,9 @@ func hexRound(frac: HexFrac): HexAxial {
     var r = realRoundToInt(fr)
     var s = realRoundToInt(fs)
 
-    fin dq = realAbs((q as std::Double) - fq)
-    fin dr = realAbs((r as std::Double) - fr)
-    fin ds = realAbs((s as std::Double) - fs)
+    fin dq = realAbs((q as Double) - fq)
+    fin dr = realAbs((r as Double) - fr)
+    fin ds = realAbs((s as Double) - fs)
 
     if dq > dr && dq > ds {
         q = 0 - r - s
@@ -332,10 +332,10 @@ func hexRound(frac: HexFrac): HexAxial {
 }
 
 /** Linear interpolation between two hexes, in fractional axial space. */
-func hexLerp(a: HexAxial, b: HexAxial, t: std::Double): HexFrac {
+func hexLerp(a: HexAxial, b: HexAxial, t: Double): HexFrac {
     return HexFrac(
-        (a.q as std::Double) + ((b.q - a.q) as std::Double) * t,
-        (a.r as std::Double) + ((b.r - a.r) as std::Double) * t
+        (a.q as Double) + ((b.q - a.q) as Double) * t,
+        (a.r as Double) + ((b.r - a.r) as Double) * t
     )
 }
 
@@ -401,7 +401,7 @@ func hexFromAxial(axial: HexAxial, system: HexCoordSystem): TilePos {
 }
 
 /** True when [system] describes a pointy-top lattice. */
-func hexIsPointyTop(system: HexCoordSystem): std::Bool {
+func hexIsPointyTop(system: HexCoordSystem): Bool {
     when system {
         HexCoordSystem.Row -> { return true }
         HexCoordSystem.RowEven -> { return true }
@@ -412,22 +412,22 @@ func hexIsPointyTop(system: HexCoordSystem): std::Bool {
 }
 
 /** The number of hex steps between two stored positions under [system]. */
-func hexDistanceBetween(a: TilePos, b: TilePos, system: HexCoordSystem): std::Int {
+func hexDistanceBetween(a: TilePos, b: TilePos, system: HexCoordSystem): Int {
     return hexToAxial(a, system).distance(hexToAxial(b, system))
 }
 
 /** The stored neighbour of [pos] in direction [index], `0 .. 5`. */
-func hexNeighborAt(pos: TilePos, system: HexCoordSystem, index: std::Int): TilePos {
+func hexNeighborAt(pos: TilePos, system: HexCoordSystem, index: Int): TilePos {
     return hexFromAxial(hexNeighbor(hexToAxial(pos, system), index), system)
 }
 
 // ── Paths ───────────────────────────────────────────────────────────────
 
 /** An empty path with room for [capacity] coordinates. */
-func hexPathNew(capacity: std::Int): HexPath {
+func hexPathNew(capacity: Int): HexPath {
     fin room = intMax(capacity, 0)
-    var q: std::Array<std::Int> = std::Array::fill<std::Int>(room)
-    var r: std::Array<std::Int> = std::Array::fill<std::Int>(room)
+    var q: Array<Int> = Array::fill<Int>(room)
+    var r: Array<Int> = Array::fill<Int>(room)
     return HexPath(q, r, 0)
 }
 
@@ -445,7 +445,7 @@ impl HexPath {
     }
 
     /** The coordinate at [index], or the origin when out of range. */
-    func at(index: std::Int): HexAxial {
+    func at(index: Int): HexAxial {
         if index < 0 || index >= self.count {
             return HexAxial(0, 0)
         }
@@ -453,7 +453,7 @@ impl HexPath {
     }
 
     /** The coordinate at [index] as a stored position under [system]. */
-    func posAt(index: std::Int, system: HexCoordSystem): TilePos {
+    func posAt(index: Int, system: HexCoordSystem): TilePos {
         return hexFromAxial(self.at(index), system)
     }
 
@@ -481,7 +481,7 @@ func hexLine(a: HexAxial, b: HexAxial): HexPath {
     // alternating between them.
     var i = 0
     while i <= steps {
-        fin t = (i as std::Double) / (steps as std::Double)
+        fin t = (i as Double) / (steps as Double)
         fin point = hexLerp(a, b, t)
         path.add(hexRound(HexFrac(point.q + 0.000001, point.r + 0.000001)))
         i = i + 1
@@ -494,7 +494,7 @@ func hexLine(a: HexAxial, b: HexAxial): HexPath {
  *
  * A ring of radius `n` holds `6n` hexes; radius `0` is the centre alone.
  */
-func hexRing(center: HexAxial, radius: std::Int): HexPath {
+func hexRing(center: HexAxial, radius: Int): HexPath {
     if radius <= 0 {
         var single = hexPathNew(1)
         single.add(center)
@@ -522,7 +522,7 @@ func hexRing(center: HexAxial, radius: std::Int): HexPath {
  * The result holds `1 + 3n(n + 1)` hexes, which is what a blast radius or a
  * unit's movement range walks.
  */
-func hexSpiral(center: HexAxial, radius: std::Int): HexPath {
+func hexSpiral(center: HexAxial, radius: Int): HexPath {
     fin capacity = 1 + 3 * radius * (radius + 1)
     var path = hexPathNew(intMax(capacity, 1))
     path.add(center)
@@ -540,12 +540,12 @@ func hexSpiral(center: HexAxial, radius: std::Int): HexPath {
 }
 
 /** Every hex within [radius] steps of [center], as stored positions. */
-func hexRange(center: TilePos, system: HexCoordSystem, radius: std::Int): HexPath {
+func hexRange(center: TilePos, system: HexCoordSystem, radius: Int): HexPath {
     return hexSpiral(hexToAxial(center, system), radius)
 }
 
 test "axial and offset coordinates round-trip in every system" {
-    var systems: std::Array<HexCoordSystem> = std::Array::fill<HexCoordSystem>(4)
+    var systems: Array<HexCoordSystem> = Array::fill<HexCoordSystem>(4)
     systems[0] = HexCoordSystem.RowEven
     systems[1] = HexCoordSystem.RowOdd
     systems[2] = HexCoordSystem.ColumnEven

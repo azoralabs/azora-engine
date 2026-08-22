@@ -50,21 +50,21 @@ fin colorKeyIndex = 255
  * `offsets` holds the x pixel offset of each character's cell in the strip,
  * indexed by ASCII code, or -1 where the font has no glyph.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack BitmapFont {
     var image: Image
-    var texture: std::Long
-    var cellWidth: std::Int
-    var cellHeight: std::Int
-    var sourceY: std::Int
-    var offsets: std::Array<std::Int>
-    var ready: std::Bool
+    var texture: Long
+    var cellWidth: Int
+    var cellHeight: Int
+    var sourceY: Int
+    var offsets: Array<Int>
+    var ready: Bool
 }
 
 /** The font returned when loading fails; drawing with it is a no-op. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func fontEmpty(): BitmapFont {
-    return BitmapFont(imageEmpty(), 0L, 0, 0, 0, std::Array::fill<std::Int>(0), false)
+    return BitmapFont(imageEmpty(), 0L, 0, 0, 0, Array::fill<Int>(0), false)
 }
 
 /**
@@ -73,19 +73,19 @@ func fontEmpty(): BitmapFont {
  * Values are separated from the key by whitespace of any width, so everything
  * after the colon is taken and trimmed rather than split on a fixed column.
  */
-func manifestValue(text: std::String, key: std::String): std::String {
+func manifestValue(text: String, key: String): String {
     fin marker = "*" + key + ":"
-    fin at = std::strIndexOf(text, marker)
+    fin at = strIndexOf(text, marker)
     if at < 0 {
         return ""
     }
-    fin from = at + std::strLength(marker)
+    fin from = at + strLength(marker)
     var end = from
-    fin total = std::strLength(text)
-    while end < total && std::strSlice(text, end, end + 1) != "\n" {
+    fin total = strLength(text)
+    while end < total && strSlice(text, end, end + 1) != "\n" {
         end = end + 1
     }
-    return trimBlanks(std::strSlice(text, from, end))
+    return trimBlanks(strSlice(text, from, end))
 }
 
 /**
@@ -94,35 +94,35 @@ func manifestValue(text: std::String, key: std::String): std::String {
  * These manifests separate key from value with tabs, and `strTrim` only removes
  * spaces — leaving a tab in a filename, which then fails to open.
  */
-func trimBlanks(text: std::String): std::String {
-    fin length = std::strLength(text)
+func trimBlanks(text: String): String {
+    fin length = strLength(text)
     var start = 0
-    while start < length && isBlank(std::strSlice(text, start, start + 1)) {
+    while start < length && isBlank(strSlice(text, start, start + 1)) {
         start = start + 1
     }
     var end = length
-    while end > start && isBlank(std::strSlice(text, end - 1, end)) {
+    while end > start && isBlank(strSlice(text, end - 1, end)) {
         end = end - 1
     }
-    return std::strSlice(text, start, end)
+    return strSlice(text, start, end)
 }
 
 /// Whether a one-character string is a space, tab or carriage return.
-func isBlank(ch: std::String): std::Bool {
+func isBlank(ch: String): Bool {
     return ch == " " || ch == "\t" || ch == "\r"
 }
 
 /** Reads a numeric manifest value, or [fallback] when absent or malformed. */
-func manifestInt(text: std::String, key: std::String, fallback: std::Int): std::Int {
+func manifestInt(text: String, key: String, fallback: Int): Int {
     fin raw = manifestValue(text, key)
     if raw == "" {
         return fallback
     }
     var digits = 0
     var i = 0
-    fin length = std::strLength(raw)
+    fin length = strLength(raw)
     while i < length {
-        fin ch = std::strSlice(raw, i, i + 1)
+        fin ch = strSlice(raw, i, i + 1)
         fin code = asciiCodeOf(ch)
         if code < 48 || code > 57 {
             return digits
@@ -137,7 +137,7 @@ func manifestInt(text: std::String, key: std::String, fallback: std::Int): std::
 }
 
 /** The ASCII code of a one-character string, or -1. */
-func asciiCodeOf(ch: std::String): std::Int {
+func asciiCodeOf(ch: String): Int {
     var code = 32
     while code < 127 {
         if asciiChar(code) == ch {
@@ -149,12 +149,12 @@ func asciiCodeOf(ch: std::String): std::Int {
 }
 
 /** Byte offset of a manifest value, preserving legacy non-ASCII glyph bytes. */
-func manifestByteValueStart(blob: Blob, key: std::String): std::Int {
+func manifestByteValueStart(blob: Blob, key: String): Int {
     fin marker = "*" + key + ":"
     var at = 0
     while at < blob.size {
         if blob.matches(at, marker) {
-            var value = at + std::strLength(marker)
+            var value = at + strLength(marker)
             while value < blob.size &&
                 (blob.u8(value) == 32 || blob.u8(value) == 9) {
                 value = value + 1
@@ -177,8 +177,8 @@ func manifestByteValueStart(blob: Blob, key: std::String): std::Int {
  * than carrying an alpha channel, so without this every glyph would draw on an
  * opaque block.
  */
-@std::Experimental(since: "0.1")
-func loadBitmapFont(app: App, directory: std::String, manifestFile: std::String): BitmapFont {
+@Experimental(since: "0.1")
+func loadBitmapFont(app: App, directory: String, manifestFile: String): BitmapFont {
     var manifestBlob = readFile(directory + "/" + manifestFile)
     if !manifestBlob.ok() {
         return fontEmpty()
@@ -211,7 +211,7 @@ func loadBitmapFont(app: App, directory: std::String, manifestFile: std::String)
     image.applyPalette()
 
     fin texture = app.newTexture(image.width, image.height, image.pixels)
-    var offsets: std::Array<std::Int> = std::Array::fill<std::Int>(charCodes)
+    var offsets: Array<Int> = Array::fill<Int>(charCodes)
     var code = 0
     while code < charCodes {
         offsets[code] = -1
@@ -251,8 +251,8 @@ func loadBitmapFont(app: App, directory: std::String, manifestFile: std::String)
 impl BitmapFont {
 
     /** The width in pixels [text] occupies at scale 1. */
-    func measure(text: std::String): std::Int {
-        return std::strLength(text) * self.cellWidth
+    func measure(text: String): Int {
+        return strLength(text) * self.cellWidth
     }
 
     /**
@@ -261,17 +261,17 @@ impl BitmapFont {
      * Characters with no glyph advance the cursor without drawing, so spaces
      * and unsupported punctuation keep the layout aligned.
      */
-    func draw(app: App, text: std::String, x: std::Double, y: std::Double, scale: std::Double) {
+    func draw(app: App, text: String, x: Double, y: Double, scale: Double) {
         if !self.ready {
             return
         }
-        fin width = (self.cellWidth as std::Double) * scale
-        fin height = (self.cellHeight as std::Double) * scale
+        fin width = (self.cellWidth as Double) * scale
+        fin height = (self.cellHeight as Double) * scale
         var cursor = x
         var i = 0
-        fin length = std::strLength(text)
+        fin length = strLength(text)
         while i < length {
-            fin code = asciiCodeOf(std::strSlice(text, i, i + 1))
+            fin code = asciiCodeOf(strSlice(text, i, i + 1))
             i = i + 1
             if code < 0 || code >= charCodes {
                 cursor = cursor + width
@@ -292,8 +292,8 @@ impl BitmapFont {
     }
 
     /** Draws [text] horizontally centred on [centerX]. */
-    func drawCentered(app: App, text: std::String, centerX: std::Double, y: std::Double, scale: std::Double) {
-        fin width = (self.measure(text) as std::Double) * scale
+    func drawCentered(app: App, text: String, centerX: Double, y: Double, scale: Double) {
+        fin width = (self.measure(text) as Double) * scale
         self.draw(app, text, centerX - width * 0.5, y, scale)
     }
 

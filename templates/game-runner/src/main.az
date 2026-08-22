@@ -30,14 +30,14 @@ module game
 import engine
 
 bridge .C {
-    func @foreignName("arc4random_uniform")(bound: std::Int): std::Int
+    func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
 fin laneWidth = 2.2
 fin obstacleCount = 10
 
-func laneX(lane: std::Int): std::Double {
-    return ((lane - 1) as std::Double) * laneWidth
+func laneX(lane: Int): Double {
+    return ((lane - 1) as Double) * laneWidth
 }
 
 func main() {
@@ -51,12 +51,12 @@ func main() {
     fin ground = app.meshGrid(40.0, 40)
 
     // Obstacles: parallel arrays of lane + distance ahead (negative z).
-    var obsLane = @std::arr[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
-    var obsZ = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var obsLane = @arr[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+    var obsZ = @arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     var i = 0
     while i < obstacleCount {
         obsLane[i] = arc4randomUniform(3)
-        obsZ[i] = -20.0 - (i as std::Double) * 9.0
+        obsZ[i] = -20.0 - (i as Double) * 9.0
         i = i + 1
     }
 
@@ -112,7 +112,7 @@ func main() {
             while o < obstacleCount {
                 obsZ[o] = obsZ[o] + speed * dt
                 if obsZ[o] > 6.0 {
-                    obsZ[o] = -70.0 - (arc4randomUniform(30) as std::Double)
+                    obsZ[o] = -70.0 - (arc4randomUniform(30) as Double)
                     obsLane[o] = arc4randomUniform(3)
                 }
                 // Collision: same lane, close in z, and not jumped over.
@@ -130,7 +130,7 @@ func main() {
                 var o2 = 0
                 while o2 < obstacleCount {
                     obsLane[o2] = arc4randomUniform(3)
-                    obsZ[o2] = -20.0 - (o2 as std::Double) * 9.0
+                    obsZ[o2] = -20.0 - (o2 as Double) * 9.0
                     o2 = o2 + 1
                 }
                 lane = 1
@@ -156,7 +156,7 @@ func main() {
         }
         var m = 0
         while m < 8 {
-            fin mz = 0.0 - ((distance * 1.0 + (m as std::Double) * 10.0) - ((((distance + (m as std::Double) * 10.0) / 80.0) as std::Int) as std::Double) * 80.0)
+            fin mz = 0.0 - ((distance * 1.0 + (m as Double) * 10.0) - ((((distance + (m as Double) * 10.0) / 80.0) as Int) as Double) * 80.0)
             fin marker = mat4Mul(mat4Translation(0.0, 0.02, mz), mat4Scale(0.2, 0.02, 2.0))
             app.drawMesh(cube, marker, 0.85, 0.85, 0.55)
             m = m + 1
@@ -176,7 +176,7 @@ func main() {
         }
 
         // ── HUD ──
-        fin score = distance as std::Int
+        fin score = distance as Int
         app.uiText("Score ${score}", 16.0, 14.0, 17.0)
         if !alive {
             app.uiTitle("CRASHED — press ENTER to run again", 300.0, 24.0)

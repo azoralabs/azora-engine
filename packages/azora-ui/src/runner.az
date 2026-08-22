@@ -29,7 +29,7 @@
  *
  * `engine.core`'s `@System` decorator says the engine finds systems by
  * compile-time reflection. This is where that happens:
- * `std::reflect<*>.withAnnot<System>` enumerates every annotated function in the
+ * `reflect<*>.withAnnot<System>` enumerates every annotated function in the
  * whole program, `inline for` unrolls the list at compile time, and each
  * system's `phase` is read from its own decorator. There is no registry to keep
  * in step and no list to forget to add to - what is written *is* the schedule.
@@ -69,23 +69,23 @@ pack Ui {
      * Hit-testing is the engine's job, so a system reads the *result* of a
      * click rather than the mouse position that produced it.
      */
-    var action: std::Int
+    var action: Int
     /** Seconds since the previous frame. */
-    var deltaSecs: std::Double
+    var deltaSecs: Double
     /** Time accumulated since each system last ran, by slot. */
-    var elapsed: std::Array<std::Double>
+    var elapsed: Array<Double>
     /** Frames counted since each system last ran, by slot. */
-    var frames: std::Array<std::Int>
+    var frames: Array<Int>
     /** Whether each `Once`-style system has already run. */
-    var ran: std::Array<std::Bool>
+    var ran: Array<Bool>
     /** The action last written to [UiInput], so an unchanged one is not rewritten. */
-    var lastAction: std::Int
+    var lastAction: Int
     /** The width last written to [Viewport]. */
-    var lastWidth: std::Double
+    var lastWidth: Double
     /** The height last written to [Viewport]. */
-    var lastHeight: std::Double
+    var lastHeight: Double
     /** Whether the composition anchor has been put in the world. */
-    var seededScope: std::Bool
+    var seededScope: Bool
     /**
      * The stamp each system's parameters last showed, by slot.
      *
@@ -94,27 +94,27 @@ pack Ui {
      * of its parameters gives one number per system that moves exactly when one
      * of them does.
      */
-    var stamps: std::Array<std::Int>
+    var stamps: Array<Int>
 }
 
 impl Ui {
     /** Window width in points. */
-    func width[self: Self&](): std::Double {
-        return self.app.width() as std::Double
+    func width[self: Self&](): Double {
+        return self.app.width() as Double
     }
 
     /** Window height in points. */
-    func height[self: Self&](): std::Double {
-        return self.app.height() as std::Double
+    func height[self: Self&](): Double {
+        return self.app.height() as Double
     }
 
     /** Whether [key] is held this frame. */
-    func keyDown[self: Self&](key: std::Int): std::Bool {
+    func keyDown[self: Self&](key: Int): Bool {
         return self.app.keyDown(key)
     }
 
     /** Whether [key] went down this frame. */
-    func keyPressed[self: Self&](key: std::Int): std::Bool {
+    func keyPressed[self: Self&](key: Int): Bool {
         return self.app.keyPressed(key)
     }
 
@@ -131,7 +131,7 @@ impl Ui {
      * This is what makes a description re-run because something it reads
      * changed, rather than because a frame happened.
      */
-    func moved[self: Self!](slot: std::Int, stamp: std::Int): std::Bool {
+    func moved[self: Self!](slot: Int, stamp: Int): Bool {
         if slot < 0 || slot >= maxSystems {
             return true
         }
@@ -142,7 +142,7 @@ impl Ui {
         return true
     }
 
-    func due[self: Self!](slot: std::Int, interval: SystemInterval): std::Bool {
+    func due[self: Self!](slot: Int, interval: SystemInterval): Bool {
         if slot < 0 || slot >= maxSystems {
             return true
         }
@@ -218,8 +218,8 @@ impl Ui {
 fin maxSystems = 256
 
 /** A duration in seconds, as the scheduler counts time. */
-func durationSecs(d: std::Duration&): std::Double {
-    return (d.seconds as std::Double) + (d.nanosecondAdjustment as std::Double) / 1000000000.0
+func durationSecs(d: Duration&): Double {
+    return (d.seconds as Double) + (d.nanosecondAdjustment as Double) / 1000000000.0
 }
 
 /**
@@ -236,10 +236,10 @@ func durationSecs(d: std::Duration&): std::Double {
  * Hit-testing is the engine's job, so a system reads the *result* of a click -
  * the action code a button carried - rather than a mouse position.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack UiInput {
     /** The action code of a button pressed this frame, or 0. */
-    var action: std::Int = 0
+    var action: Int = 0
 }
 
 /**
@@ -249,12 +249,12 @@ pack UiInput {
  * about it, so that is what it is handed. Reading it from a resource rather
  * than from `Ui` is what lets such a system take `world: World&` alone.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Viewport {
     /** Window width in points. */
-    var width: std::Double = 0.0
+    var width: Double = 0.0
     /** Window height in points. */
-    var height: std::Double = 0.0
+    var height: Double = 0.0
 }
 
 /**
@@ -265,8 +265,8 @@ pack Viewport {
  * composition rather than copying it. That is what makes composition reachable
  * from the world, and a system that composes need not be handed `Ui` to do it.
  */
-@std::Experimental(since: "0.1")
-@std::ProvidesAccess
+@Experimental(since: "0.1")
+@ProvidesAccess
 inline func composeIn(world: World&): Anchor {
     return resource<Anchor>(world)
 }
@@ -297,7 +297,7 @@ macro @compose {
  * it gets is a copy, so a system that changes a resource puts it back with
  * [insertResource] - the same discipline component storages have.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Res<T> {
     var value: T
 }
@@ -310,34 +310,26 @@ impl Res<T>:: {
      * parameter is erased: one body shared by every `T` has no name to look
      * up. Expanding at the call site is what puts the concrete type back.
      */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     /** How many times this resource has been written. */
-    @std::ProvidesAccess
-    inline func stamp(world: World&): std::Int {
+    @ProvidesAccess
+    inline func stamp(world: World&): Int {
         return resourceStamp(world, T.typeName)
     }
 
-    @std::ProvidesAccess
+    @ProvidesAccess
     inline func from(ui: Ui!): Res<T> {
         return Res(resource<T>(ui.at.pass.world))
     }
 }
 
-impl World:: {
-    /**
-     * The frame's world, as a system parameter.
-     *
-     * A system that asks for the world gets the one this frame composed into,
-     * so it can query and write without being handed anything else. This is the
-     * one line that says where a frame keeps its world.
-     */
-    /** How far the world's structure has moved: spawns and despawns. */
-    @std::ProvidesAccess
-    func stamp(world: World&): std::Int {
-        return world.revision as std::Int
-    }
+impl World {
 
-    @std::Experimental(since: "0.1")
+}
+
+impl World:: {
+
+    @Experimental(since: "0.1")
     func from(ui: Ui!): World& {
         return ui.at.pass.world
     }
@@ -345,7 +337,7 @@ impl World:: {
 
 impl QueryWith<Q, ...T>:: {
     /** A narrowed query over the frame's world. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func from(ui: Ui!): QueryWith<Q, ...T> {
         return QueryWith::provide(ui.at.pass.world)
     }
@@ -353,7 +345,7 @@ impl QueryWith<Q, ...T>:: {
 
 impl QueryWithout<Q, ...T>:: {
     /** A narrowed query over the frame's world. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func from(ui: Ui!): QueryWithout<Q, ...T> {
         return QueryWithout::provide(ui.at.pass.world)
     }
@@ -361,7 +353,7 @@ impl QueryWithout<Q, ...T>:: {
 
 impl QueryOf<...T>:: {
     /** A query over the frame's world - the frame is what a system is handed. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func from(ui: Ui!): QueryOf<...T> {
         return QueryOf::provide(ui.at.pass.world)
     }
@@ -376,7 +368,7 @@ impl Ui:: {
      * itself from the world; this is the one that cannot, because a frame is
      * more than the world it carries.
      */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func from(ui: Ui!): Ui! {
         return ui
     }
@@ -396,7 +388,7 @@ react func seedFrameResources(ui: Ui!) {
     // asks for the clock is asking to run on every one.
     fin clock = insertResource<Time>(
         ui.at.pass.world,
-        Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as std::Long),
+        Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as Long),
     )
     // The rest are written only when they differ. A resource's stamp moves when
     // it is written, and a description re-runs when a stamp it reads moves - so
@@ -426,8 +418,8 @@ react func seedFrameResources(ui: Ui!) {
 
 react func dispatch(phase: SystemPhase, ui: Ui!) {
     var slot = 0
-    inline for F in std::reflect<*>.withAnnot<System> {
-        if std::reflect<F>.annotMeta<System>.phase == phase {
+    inline for F in reflect<*>.withAnnot<System> {
+        if reflect<F>.annotMeta<System>.phase == phase {
             // A `.Startup` system describes rather than repeats, so it runs
             // when what it reads differs from when it last ran - which the
             // first time is always. Its parameters are that list, so their
@@ -435,17 +427,17 @@ react func dispatch(phase: SystemPhase, ui: Ui!) {
             //
             // Every other phase runs on its declared interval.
             var inputs = 0
-            inline for P in std::reflect<F>.params {
+            inline for P in reflect<F>.params {
                 inputs = inputs + P::stamp(ui.at.pass.world)
             }
             if (phase == SystemPhase.Startup && ui.moved(slot, inputs)) ||
                 (phase != SystemPhase.Startup &&
-                    ui.due(slot, std::reflect<F>.annotMeta<System>.interval)) {
+                    ui.due(slot, reflect<F>.annotMeta<System>.interval)) {
                 // Each parameter is built from the frame, by its own type: a
                 // system says what it wants and is handed it. Nothing here
                 // knows any system's signature, so adding a parameter to one
                 // changes only that system.
-                F(inline for P in std::reflect<F>.params { P::from(ui) })
+                F(inline for P in reflect<F>.params { P::from(ui) })
             }
         }
         slot = slot + 1
@@ -486,15 +478,15 @@ realm engine {
      * }
      * ```
      */
-    react func run(title: std::String, width: std::Int, height: std::Int) {
+    react func run(title: String, width: Int, height: Int) {
         runUiColored(title, width, height, 0.07, 0.08, 0.10)
     }
 }
 
 /** [runUi] with an explicit background colour. */
 /** [count] zeroed slots; `Array::fill` leaves them unset. */
-func zeroDoubles(count: std::Int): std::Array<std::Double> {
-    var slots: std::Array<std::Double> = std::Array::fill<std::Double>(count)
+func zeroDoubles(count: Int): Array<Double> {
+    var slots: Array<Double> = Array::fill<Double>(count)
     var i = 0
     while i < count {
         slots[i] = 0.0
@@ -504,8 +496,8 @@ func zeroDoubles(count: std::Int): std::Array<std::Double> {
 }
 
 /** [count] slots, each holding [value]. */
-func filledInts(count: std::Int, value: std::Int): std::Array<std::Int> {
-    var slots: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+func filledInts(count: Int, value: Int): Array<Int> {
+    var slots: Array<Int> = Array::fill<Int>(count)
     var i = 0
     while i < count {
         slots[i] = value
@@ -514,8 +506,8 @@ func filledInts(count: std::Int, value: std::Int): std::Array<std::Int> {
     return slots
 }
 
-func zeroInts(count: std::Int): std::Array<std::Int> {
-    var slots: std::Array<std::Int> = std::Array::fill<std::Int>(count)
+func zeroInts(count: Int): Array<Int> {
+    var slots: Array<Int> = Array::fill<Int>(count)
     var i = 0
     while i < count {
         slots[i] = 0
@@ -524,8 +516,8 @@ func zeroInts(count: std::Int): std::Array<std::Int> {
     return slots
 }
 
-func zeroBools(count: std::Int): std::Array<std::Bool> {
-    var slots: std::Array<std::Bool> = std::Array::fill<std::Bool>(count)
+func zeroBools(count: Int): Array<Bool> {
+    var slots: Array<Bool> = Array::fill<Bool>(count)
     var i = 0
     while i < count {
         slots[i] = false
@@ -535,12 +527,12 @@ func zeroBools(count: std::Int): std::Array<std::Bool> {
 }
 
 react func runUiColored(
-    title: std::String
-    width: std::Int
-    height: std::Int
-    r: std::Double
-    g: std::Double
-    b: std::Double
+    title: String
+    width: Int
+    height: Int
+    r: Double
+    g: Double
+    b: Double
 ) {
     var window = appInit(title, width, height)
     if !window.ok {

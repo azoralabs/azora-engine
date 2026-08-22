@@ -30,61 +30,61 @@ import engine.io
 
 bridge .C {
     // Metal / QuartzCore C entry points
-    func MTLCreateSystemDefaultDevice(): std::Long
+    func MTLCreateSystemDefaultDevice(): Long
 
     // CoreFoundation / CoreText / CoreGraphics (text rasterization)
-    func CFStringCreateWithCString(allocator: std::Long, str: std::String, encoding: std::Int): std::Long
-    func CFRelease(cf: std::Long)
-    func CFDictionaryCreate(allocator: std::Long, keys: std::Long, values: std::Long, numValues: std::Long, keyCallBacks: std::Long, valueCallBacks: std::Long): std::Long
-    func CFAttributedStringCreate(allocator: std::Long, str: std::Long, attributes: std::Long): std::Long
-    func CTFontCreateWithName(name: std::Long, size: std::Double, matrix: std::Long): std::Long
-    func CTLineCreateWithAttributedString(attrString: std::Long): std::Long
-    func CTLineGetTypographicBounds(line: std::Long, ascent: std::Long, descent: std::Long, leading: std::Long): std::Double
-    func CTLineDraw(line: std::Long, context: std::Long)
-    func CGColorSpaceCreateDeviceRGB(): std::Long
-    func CGColorSpaceRelease(space: std::Long)
-    func CGColorCreateGenericRGB(r: std::Double, g: std::Double, b: std::Double, a: std::Double): std::Long
-    func CGColorRelease(color: std::Long)
-    func CGBitmapContextCreate(data: std::Long, width: std::Long, height: std::Long, bitsPerComponent: std::Long, bytesPerRow: std::Long, space: std::Long, bitmapInfo: std::Int): std::Long
-    func CGBitmapContextGetData(context: std::Long): std::Long
-    func CGContextRelease(context: std::Long)
-    func CGContextScaleCTM(context: std::Long, sx: std::Double, sy: std::Double)
-    func CGContextSetTextPosition(context: std::Long, x: std::Double, y: std::Double)
+    func CFStringCreateWithCString(allocator: Long, str: String, encoding: Int): Long
+    func CFRelease(cf: Long)
+    func CFDictionaryCreate(allocator: Long, keys: Long, values: Long, numValues: Long, keyCallBacks: Long, valueCallBacks: Long): Long
+    func CFAttributedStringCreate(allocator: Long, str: Long, attributes: Long): Long
+    func CTFontCreateWithName(name: Long, size: Double, matrix: Long): Long
+    func CTLineCreateWithAttributedString(attrString: Long): Long
+    func CTLineGetTypographicBounds(line: Long, ascent: Long, descent: Long, leading: Long): Double
+    func CTLineDraw(line: Long, context: Long)
+    func CGColorSpaceCreateDeviceRGB(): Long
+    func CGColorSpaceRelease(space: Long)
+    func CGColorCreateGenericRGB(r: Double, g: Double, b: Double, a: Double): Long
+    func CGColorRelease(color: Long)
+    func CGBitmapContextCreate(data: Long, width: Long, height: Long, bitsPerComponent: Long, bytesPerRow: Long, space: Long, bitmapInfo: Int): Long
+    func CGBitmapContextGetData(context: Long): Long
+    func CGContextRelease(context: Long)
+    func CGContextScaleCTM(context: Long, sx: Double, sy: Double)
+    func CGContextSetTextPosition(context: Long, x: Double, y: Double)
 }
 
 // ── State ───────────────────────────────────────────────────────────────
 
 pack AzGpu {
-    var ok: std::Bool
-    var device: std::Long
-    var queue: std::Long
-    var layer: std::Long
-    var pipe3d: std::Long
-    var pipe2d: std::Long
-    var depthOn: std::Long
-    var depthOff: std::Long
-    var sampler: std::Long
-    var depthTex: std::Long
-    var depthW: std::Long
-    var depthH: std::Long
-    var drawable: std::Long
-    var cmd: std::Long
-    var enc: std::Long
-    var hasEncoder: std::Bool
-    var mode: std::Int
-    var viewProj: std::Long
-    var scratch: std::Long
-    var scale: std::Double
-    var lightX: std::Double
-    var lightY: std::Double
-    var lightZ: std::Double
-    var ambient: std::Double
+    var ok: Bool
+    var device: Long
+    var queue: Long
+    var layer: Long
+    var pipe3d: Long
+    var pipe2d: Long
+    var depthOn: Long
+    var depthOff: Long
+    var sampler: Long
+    var depthTex: Long
+    var depthW: Long
+    var depthH: Long
+    var drawable: Long
+    var cmd: Long
+    var enc: Long
+    var hasEncoder: Bool
+    var mode: Int
+    var viewProj: Long
+    var scratch: Long
+    var scale: Double
+    var lightX: Double
+    var lightY: Double
+    var lightZ: Double
+    var ambient: Double
 }
 
 /// A GPU mesh: vertex buffer handle + vertex count (interleaved pos+normal).
 pack Mesh {
-    var buffer: std::Long
-    var count: std::Int
+    var buffer: Long
+    var count: Int
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
@@ -93,10 +93,10 @@ func gpuFailed(): AzGpu {
     return AzGpu(false, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, false, -1, 0L, 0L, 1.0, 0.5, 0.8, 0.3, 0.35)
 }
 
-func gpuInit(scale: std::Double): AzGpu {
+func gpuInit(scale: Double): AzGpu {
     fin device = MTLCreateSystemDefaultDevice()
     if device == 0L {
-        std::println("azora-engine: no Metal device")
+        println("azora-engine: no Metal device")
         return gpuFailed()
     }
     fin queue = send0(device, sel("newCommandQueue"))
@@ -110,7 +110,7 @@ func gpuInit(scale: std::Double): AzGpu {
     // Shader library from MSL source.
     fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), 0L, 0L)
     if lib == 0L {
-        std::println("azora-engine: shader compilation failed")
+        println("azora-engine: shader compilation failed")
         return gpuFailed()
     }
 
@@ -123,7 +123,7 @@ func gpuInit(scale: std::Double): AzGpu {
     send1(d3, sel("setDepthAttachmentPixelFormat:"), 252L)
     fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, 0L)
     if pipe3d == 0L {
-        std::println("azora-engine: 3D pipeline failed")
+        println("azora-engine: 3D pipeline failed")
         return gpuFailed()
     }
 
@@ -141,7 +141,7 @@ func gpuInit(scale: std::Double): AzGpu {
     send1(d2, sel("setDepthAttachmentPixelFormat:"), 252L)
     fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, 0L)
     if pipe2d == 0L {
-        std::println("azora-engine: 2D pipeline failed")
+        println("azora-engine: 2D pipeline failed")
         return gpuFailed()
     }
 
@@ -177,20 +177,20 @@ func gpuInit(scale: std::Double): AzGpu {
     return gpu
 }
 
-func pokeIdentity(buf: std::Long) {
+func pokeIdentity(buf: Long) {
     var i = 0
     while i < 16 {
         var v = 0.0
         if i == 0 || i == 5 || i == 10 || i == 15 {
             v = 1.0
         }
-        azPokeF32(buf, (i * 4) as std::Long, v)
+        azPokeF32(buf, (i * 4) as Long, v)
         i = i + 1
     }
 }
 
 /// Writes a row-major Mat4 into [buf] as column-major float16 (GPU layout).
-func pokeMat4(buf: std::Long, offset: std::Long, m: Mat4) {
+func pokeMat4(buf: Long, offset: Long, m: Mat4) {
     azPokeF32(buf, offset, m.m00)
     azPokeF32(buf, offset + 4L, m.m10)
     azPokeF32(buf, offset + 8L, m.m20)

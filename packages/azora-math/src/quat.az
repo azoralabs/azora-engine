@@ -30,10 +30,10 @@ import engine.math.mat
  * this way rather than as the [Vec3] a transform uses.
  */
 pack Quat {
-    var x: std::Double
-    var y: std::Double
-    var z: std::Double
-    var w: std::Double
+    var x: Double
+    var y: Double
+    var z: Double
+    var w: Double
 }
 
 /** The rotation that does nothing. */
@@ -41,26 +41,26 @@ func quatIdentity(): Quat {
     return Quat(0.0, 0.0, 0.0, 1.0)
 }
 
-func quat(x: std::Double, y: std::Double, z: std::Double, w: std::Double): Quat {
+func quat(x: Double, y: Double, z: Double, w: Double): Quat {
     return Quat(x, y, z, w)
 }
 
 /** The rotation of [radians] about [axis], which need not be normalised. */
-func quatAxisAngle(axis: Vec3, radians: std::Double): Quat {
+func quatAxisAngle(axis: Vec3, radians: Double): Quat {
     fin unit = axis.normalized
     fin half = radians * 0.5
-    fin s = std::sin(half)
-    return Quat(unit.x * s, unit.y * s, unit.z * s, std::cos(half))
+    fin s = sin(half)
+    return Quat(unit.x * s, unit.y * s, unit.z * s, cos(half))
 }
 
 /** The rotation of an X-then-Y-then-Z Euler triple, in radians. */
-func quatEuler(pitch: std::Double, yaw: std::Double, roll: std::Double): Quat {
-    fin cp = std::cos(pitch * 0.5)
-    fin sp = std::sin(pitch * 0.5)
-    fin cy = std::cos(yaw * 0.5)
-    fin sy = std::sin(yaw * 0.5)
-    fin cr = std::cos(roll * 0.5)
-    fin sr = std::sin(roll * 0.5)
+func quatEuler(pitch: Double, yaw: Double, roll: Double): Quat {
+    fin cp = cos(pitch * 0.5)
+    fin sp = sin(pitch * 0.5)
+    fin cy = cos(yaw * 0.5)
+    fin sy = sin(yaw * 0.5)
+    fin cr = cos(roll * 0.5)
+    fin sr = sin(roll * 0.5)
     return Quat(
         sp * cy * cr - cp * sy * sr,
         cp * sy * cr + sp * cy * sr,
@@ -70,15 +70,15 @@ func quatEuler(pitch: std::Double, yaw: std::Double, roll: std::Double): Quat {
 }
 
 impl Quat {
-    func dot(o: Quat): std::Double {
+    func dot(o: Quat): Double {
         return self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
     }
 
-    func length(): std::Double {
-        return std::sqrt(self.dot(self))
+    func length(): Double {
+        return sqrt(self.dot(self))
     }
 
-    func scale(k: std::Double): Quat {
+    func scale(k: Double): Quat {
         return Quat(self.x * k, self.y * k, self.z * k, self.w * k)
     }
 
@@ -145,7 +145,7 @@ impl Quat {
  * The sign fix picks the shorter arc: `q` and `-q` are the same rotation, so
  * without it a blend can take the long way round.
  */
-func quatNlerp(a: Quat, b: Quat, t: std::Double): Quat {
+func quatNlerp(a: Quat, b: Quat, t: Double): Quat {
     fin target = if a.dot(b) < 0.0 { b.scale(-1.0) } else { b }
     return a.scale(1.0 - t).plus(target.scale(t)).normalized
 }
@@ -158,7 +158,7 @@ func quatNlerp(a: Quat, b: Quat, t: std::Double): Quat {
  * Falls back to [quatNlerp] when the rotations are nearly equal, where the
  * division would lose precision.
  */
-func quatSlerp(a: Quat, b: Quat, t: std::Double): Quat {
+func quatSlerp(a: Quat, b: Quat, t: Double): Quat {
     var cosine = a.dot(b)
     var target = b
     if cosine < 0.0 {
@@ -168,9 +168,9 @@ func quatSlerp(a: Quat, b: Quat, t: std::Double): Quat {
     if cosine > 0.9995 {
         return quatNlerp(a, target, t)
     }
-    fin angle = std::acos(cosine)
-    fin s = std::sin(angle)
-    fin fromWeight = std::sin((1.0 - t) * angle) / s
-    fin to = std::sin(t * angle) / s
+    fin angle = acos(cosine)
+    fin s = sin(angle)
+    fin fromWeight = sin((1.0 - t) * angle) / s
+    fin to = sin(t * angle) / s
     return a.scale(fromWeight).plus(target.scale(to)).normalized
 }

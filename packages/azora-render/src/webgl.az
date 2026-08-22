@@ -30,7 +30,7 @@ import engine.shaders
 
 realm engine {
     /** Rendering device selected for the current compilation target. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     enum RenderBackend {
         Metal,
         Vulkan,
@@ -38,7 +38,7 @@ realm engine {
     }
 
     /** Dimensionality of the active rendering surface. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     enum RenderMode {
         TwoD,
         ThreeD
@@ -49,91 +49,91 @@ realm engine {
      * typed WASM imports; public engine behavior remains in Azora below.
      */
     bridge [.WebAssembly] {
-        func engineWebOpen2d(width: std::Int, height: std::Int, vertexShader: std::String, fragmentShader: std::String): std::Unit
-        func engineWebOpen3d(width: std::Int, height: std::Int, vertexShader: std::String, fragmentShader: std::String): std::Unit
-        func engineWebNextFrame(): std::Double
-        func engineWebPresent(): std::Unit
-        func engineWebClear(r: std::Double, g: std::Double, b: std::Double): std::Unit
-        func engineWebRect(x: std::Double, y: std::Double, width: std::Double, height: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double): std::Unit
-        func engineWebCircle(x: std::Double, y: std::Double, radius: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double): std::Unit
-        func engineWebCubeAt(x: std::Double, y: std::Double, z: std::Double, size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double): std::Unit
-        func engineWebCamera(distance: std::Double, fov: std::Double): std::Unit
-        func engineWebLog(message: std::String): std::Unit
+        func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+        func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+        func engineWebNextFrame(): Double
+        func engineWebPresent(): Unit
+        func engineWebClear(r: Double, g: Double, b: Double): Unit
+        func engineWebRect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double): Unit
+        func engineWebCircle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double): Unit
+        func engineWebCubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double): Unit
+        func engineWebCamera(distance: Double, fov: Double): Unit
+        func engineWebLog(message: String): Unit
     }
 
     /** Returns the rendering backend used by a WebAssembly build. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     prop renderBackend[self: Self&]: RenderBackend = RenderBackend.WebGL
 
     /** Opens a resolution-independent 2D surface. Call once from `main`. */
-    @std::Experimental(since: "0.1")
-    func run2d(width: std::Int, height: std::Int) {
+    @Experimental(since: "0.1")
+    func run2d(width: Int, height: Int) {
         engineWebOpen2d(width, height, webgl2dVertexShaderSource(), webgl2dFragmentShaderSource())
     }
 
     /** Opens a hardware-accelerated 3D surface. Call once from `main`. */
-    @std::Experimental(since: "0.1")
-    func run3d(width: std::Int, height: std::Int) {
+    @Experimental(since: "0.1")
+    func run3d(width: Int, height: Int) {
         engineWebOpen3d(width, height, webgl3dVertexShaderSource(), webgl3dFragmentShaderSource())
     }
 
     /** Suspends the current task until the display is ready for another frame. */
-    @std::Experimental(since: "0.1")
-    async func nextFrame(): std::Double {
+    @Experimental(since: "0.1")
+    async func nextFrame(): Double {
         return engineWebNextFrame()
     }
 
     /** Submits the commands recorded since [nextFrame] to the active device. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func present() {
         engineWebPresent()
     }
 
     /** Clears the active frame with a linear RGB color. */
-    @std::Experimental(since: "0.1")
-    func clear(r: std::Double, g: std::Double, b: std::Double) {
+    @Experimental(since: "0.1")
+    func clear(r: Double, g: Double, b: Double) {
         engineWebClear(r, g, b)
     }
 
     /** Draws a filled rectangle in logical 2D coordinates. */
-    @std::Experimental(since: "0.1")
-    func rect(x: std::Double, y: std::Double, width: std::Double, height: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double = 1.0) {
+    @Experimental(since: "0.1")
+    func rect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
         engineWebRect(x, y, width, height, r, g, b, a)
     }
 
     /** Draws a filled circle in logical 2D coordinates. */
-    @std::Experimental(since: "0.1")
-    func circle(x: std::Double, y: std::Double, radius: std::Double, r: std::Double, g: std::Double, b: std::Double, a: std::Double = 1.0) {
+    @Experimental(since: "0.1")
+    func circle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
         engineWebCircle(x, y, radius, r, g, b, a)
     }
 
     /** Draws or updates a lit cube. Rotation angles are radians. */
-    @std::Experimental(since: "0.1")
-    func cube(size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double) {
+    @Experimental(since: "0.1")
+    func cube(size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
         engineWebCubeAt(0.0, 0.0, 0.0, size, rotateX, rotateY, rotateZ, r, g, b)
     }
 
     /** Draws or updates a lit cube at the given world-space position. */
-    @std::Experimental(since: "0.1")
-    func cubeAt(x: std::Double, y: std::Double, z: std::Double, size: std::Double, rotateX: std::Double, rotateY: std::Double, rotateZ: std::Double, r: std::Double, g: std::Double, b: std::Double) {
+    @Experimental(since: "0.1")
+    func cubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
         engineWebCubeAt(x, y, z, size, rotateX, rotateY, rotateZ, r, g, b)
     }
 
     /** Configures the perspective camera for the active 3D surface. */
-    @std::Experimental(since: "0.1")
-    func camera(distance: std::Double, fov: std::Double = 48.0) {
+    @Experimental(since: "0.1")
+    func camera(distance: Double, fov: Double = 48.0) {
         engineWebCamera(distance, fov)
     }
 
     /** Returns a smooth sine wave for procedural animation. */
-    @std::Experimental(since: "0.1")
-    func wave(time: std::Double, amplitude: std::Double = 1.0, speed: std::Double = 1.0): std::Double {
-        return std::sin(time * speed) * amplitude
+    @Experimental(since: "0.1")
+    func wave(time: Double, amplitude: Double = 1.0, speed: Double = 1.0): Double {
+        return sin(time * speed) * amplitude
     }
 
     /** Writes a message to the engine console. */
-    @std::Experimental(since: "0.1")
-    func log(message: std::String) {
+    @Experimental(since: "0.1")
+    func log(message: String) {
         engineWebLog(message)
     }
 }

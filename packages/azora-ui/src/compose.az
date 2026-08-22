@@ -46,9 +46,7 @@
 module engine.ui.compose
 
 import std.container.array
-import engine.core
-import engine.ecs
-import engine.ui.node
+import engine.[core, ecs, ui.node]
 
 /**
  * One composition pass over [world].
@@ -69,7 +67,7 @@ pack Composition {
      */
     var world: World
     /** Names the composition, so one owner cannot dispose another's nodes. */
-    fin owner: std::String = ""
+    fin owner: String = ""
     /** The entity claims hang from when no other parent is given. */
     var root: Entity
     /**
@@ -80,14 +78,14 @@ pack Composition {
      * sweep at [commit] runs only when something actually claimed, which is what
      * lets a tree built once in `.Startup` outlive the frames after it.
      */
-    var composed: std::Bool = false
+    var composed: Bool = false
     /** Next sibling index, per pass. */
-    var cursor: std::Int = 0
+    var cursor: Int = 0
     /**
      * Child counter for the root, whose parent is not a live entity and so has
      * nowhere to carry a [Cursor] of its own.
      */
-    var rootCursor: std::Int = 0
+    var rootCursor: Int = 0
 }
 
 /**
@@ -98,39 +96,39 @@ pack Composition {
  * the same door. Marked as providing access because the caller already declared
  * the world it is composing into.
  */
-@std::Experimental(since: "0.1")
-@std::ProvidesAccess
+@Experimental(since: "0.1")
+@ProvidesAccess
 inline func store<T>(pass: Composition&): Storage<T> {
     return storageOf<T>(pass.world)
 }
 
 impl Composition {
     /** The world's storage for [Key]. */
-    @std::ProvidesAccess
+    @ProvidesAccess
     prop keys[self: Self&]: Storage<Key> {
         return store<Key>(self)
     }
 
     /** The world's storage for [Child]. */
-    @std::ProvidesAccess
+    @ProvidesAccess
     prop children[self: Self&]: Storage<Child> {
         return store<Child>(self)
     }
 
     /** The world's storage for [SiblingOrder]. */
-    @std::ProvidesAccess
+    @ProvidesAccess
     prop order[self: Self&]: Storage<SiblingOrder> {
         return store<SiblingOrder>(self)
     }
 
     /** The world's storage for [Owned]. */
-    @std::ProvidesAccess
+    @ProvidesAccess
     prop owned[self: Self&]: Storage<Owned> {
         return store<Owned>(self)
     }
 
     /** The world's storage for [Cursor]. */
-    @std::ProvidesAccess
+    @ProvidesAccess
     prop cursors[self: Self&]: Storage<Cursor> {
         return store<Cursor>(self)
     }
@@ -140,7 +138,7 @@ impl Composition {
 
 impl Composition:: {
     /** A composition over [world], owned by [owner]. */
-    func of(world: World, owner: std::String): Composition {
+    func of(world: World, owner: String): Composition {
         // No storage is registered here. A world grows one the first time a
         // component of that type is asked for, so declaring a component is the
         // whole of what it takes to store one - including components declared by
@@ -180,7 +178,7 @@ impl Composition {
      * The root has no entity to hang a [Cursor] on, so its count lives on the
      * self. Every other parent carries its own, reset when it is claimed.
      */
-    func nextChildIndex[self: Composition!](parent: Entity): std::Int {
+    func nextChildIndex[self: Composition!](parent: Entity): Int {
         if !parent.isValid {
             fin position = self.rootCursor
             self.rootCursor = position + 1
@@ -198,7 +196,7 @@ impl Composition {
      * loudly - the key stops matching and the node is rebuilt - rather than
      * silently reusing a column's entity for a button.
      */
-    func positionalKey[self: Composition!](parent: Entity, role: std::String): std::String {
+    func positionalKey[self: Composition!](parent: Entity, role: String): String {
         return "${role}#${self.peekChildIndex(parent)}"
     }
 
@@ -209,7 +207,7 @@ impl Composition {
      * counter - so reading it here must not. Peeking keeps the key and the sibling
      * order the node ends up with in step, which is what [childAt] relies on.
      */
-    func peekChildIndex[self: Composition&](parent: Entity): std::Int {
+    func peekChildIndex[self: Composition&](parent: Entity): Int {
         if !parent.isValid {
             return self.rootCursor
         }
@@ -222,7 +220,7 @@ impl Composition {
      * The same key yields the same entity on every self, which is what makes a
      * recomposition an update rather than a rebuild.
      */
-    func claim[self: Composition!](parent: Entity, key: std::String): Entity {
+    func claim[self: Composition!](parent: Entity, key: String): Entity {
         self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
@@ -252,7 +250,7 @@ impl Composition {
     }
 
     /** The child of [parent] keyed [key], or an invalid entity. */
-    func findChild[self: Composition&](parent: Entity, key: std::String): Entity {
+    func findChild[self: Composition&](parent: Entity, key: String): Entity {
         var index = 0
         while index < storageLength<Key>(self.keys) {
             fin entity = storageEntityAt<Key>(self.keys, index)
@@ -278,7 +276,7 @@ impl Composition {
      * children unclaimed in the same self, so both go. Ordering matters once
      * disposal runs user code, which it does not yet (§10.3).
      */
-    func commit[self: Composition!](): std::Int {
+    func commit[self: Composition!](): Int {
         // Nothing described the tree this pass, so nothing about it is stale.
         if !self.composed {
             return 0
@@ -306,7 +304,7 @@ impl Composition {
     }
 
     /** How many nodes this composition currently holds. */
-    func nodeCount[self: Composition&](): std::Int {
+    func nodeCount[self: Composition&](): Int {
         var live = 0
         var index = 0
         while index < storageLength<Owned>(self.owned) {
@@ -347,7 +345,7 @@ impl Composition {
 spec Compose {
     func compose[self: Self&, composition: Composition!](
         parent: Entity
-        key: std::String
+        key: String
         modifier: Modifier&
     ): Entity {
         fin node = composition.claim(parent, key)
@@ -386,8 +384,8 @@ impl Anchor {
         modifier: Modifier& = .()
         verticalArrangement: Arrangement = .Start
         horizontalAlignment: Alignment = .Start
-        spacing: std::Double = 0.0
-        key: std::String = ""
+        spacing: Double = 0.0
+        key: String = ""
         children: react [Anchor&]() -> R
     ): Entity {
         fin id = if key == "" { self.pass.positionalKey(self.parent, "column") } else { key }
@@ -403,8 +401,8 @@ impl Anchor {
         modifier: Modifier& = .()
         horizontalArrangement: Arrangement = .Start
         verticalAlignment: Alignment = .Start
-        spacing: std::Double = 0.0
-        key: std::String = ""
+        spacing: Double = 0.0
+        key: String = ""
         children: react [Anchor&]() -> R
     ): Entity {
         fin id = if key == "" { self.pass.positionalKey(self.parent, "row") } else { key }
@@ -420,8 +418,8 @@ impl Anchor {
         modifier: Modifier& = .()
         verticalArrangement: Arrangement = .Start
         horizontalAlignment: Alignment = .Start
-        spacing: std::Double = 0.0
-        key: std::String = ""
+        spacing: Double = 0.0
+        key: String = ""
         children: react [Anchor&]() -> R
     ): Entity {
         fin id = if key == "" { self.pass.positionalKey(self.parent, "scroll") } else { key }
@@ -436,8 +434,8 @@ impl Anchor {
     /** A plain rectangle, tagged so a query can find it later. */
     react func Shape[self: Self&](
         modifier: Modifier& = .()
-        group: std::Int = 0
-        key: std::String = ""
+        group: Int = 0
+        key: String = ""
     ): Entity {
         fin id = if key == "" { self.pass.positionalKey(self.parent, "shape") } else { key }
         return self.pass.shape(self.parent, id, modifier, group)
@@ -446,10 +444,10 @@ impl Anchor {
     /** Places [node] explicitly, as the flat [place] does. */
     func place[self: Self&](
         node: Entity
-        x: std::Double
-        y: std::Double
-        width: std::Double
-        height: std::Double
+        x: Double
+        y: Double
+        width: Double
+        height: Double
     ) {
         self.pass.place(node, x, y, width, height)
     }
@@ -457,11 +455,11 @@ impl Anchor {
     /** Sets how [node] paints. */
     func paint[self: Self&](
         node: Entity
-        r: std::Double
-        g: std::Double
-        b: std::Double
-        alpha: std::Double = 1.0
-        size: std::Double = 0.0
+        r: Double
+        g: Double
+        b: Double
+        alpha: Double = 1.0
+        size: Double = 0.0
     ) {
         self.pass.paint(node, r, g, b, alpha, size)
     }
@@ -475,7 +473,7 @@ impl Anchor {
  * tree every time and no node would keep anything. Returns the number of nodes
  * the pass removed by not mentioning them.
  */
-react func compose<R>(pass: Composition!, children: react [Anchor&]() -> R): std::Int {
+react func compose<R>(pass: Composition!, children: react [Anchor&]() -> R): Int {
     pass.begin()
     with Anchor(pass, pass.root) {
         children()
@@ -546,11 +544,11 @@ impl Composition {
     /** A container that stacks its children downward. */
     func column[self: Self!](
         parent: Entity
-        key: std::String
+        key: String
         modifier: Modifier&
         verticalArrangement: Arrangement
         horizontalAlignment: Alignment
-        spacing: std::Double
+        spacing: Double
     ): Entity {
         fin node = self.claim(parent, key)
         storageInsert<Layout>(store(self), node, .(layoutColumn, verticalArrangement, horizontalAlignment, spacing))
@@ -561,11 +559,11 @@ impl Composition {
     /** A container that lays its children across. */
     func row[self: Self!](
         parent: Entity
-        key: std::String
+        key: String
         modifier: Modifier&
         horizontalArrangement: Arrangement
         verticalAlignment: Alignment
-        spacing: std::Double
+        spacing: Double
     ): Entity {
         fin node = self.claim(parent, key)
         storageInsert<Layout>(store(self), node, .(layoutRow, horizontalArrangement, verticalAlignment, spacing))
@@ -576,11 +574,11 @@ impl Composition {
     /** A column whose children are offset by a scroll position. */
     func scrollColumn[self: Self!](
         parent: Entity
-        key: std::String
+        key: String
         modifier: Modifier&
         verticalArrangement: Arrangement
         horizontalAlignment: Alignment
-        spacing: std::Double
+        spacing: Double
     ): Entity {
         fin node = self.column(parent, key, modifier, verticalArrangement, horizontalAlignment, spacing)
         fin existing = storageGetOrDefault<Scroll>(store(self), node, .())
@@ -589,7 +587,7 @@ impl Composition {
     }
 
     /** A plain rectangle, tagged so a query can find it later. */
-    func shape[self: Self!](parent: Entity, key: std::String, modifier: Modifier&, group: std::Int): Entity {
+    func shape[self: Self!](parent: Entity, key: String, modifier: Modifier&, group: Int): Entity {
         fin node = self.claim(parent, key)
         storageInsert<TagI>(store(self), node, .(group))
         self.applyModifier(node, modifier)
@@ -609,10 +607,10 @@ impl Composition {
     /** Places [node] - the arrangement a layout self would otherwise compute. */
     func place[self: Self!](
         node: Entity
-        x: std::Double
-        y: std::Double
-        width: std::Double
-        height: std::Double
+        x: Double
+        y: Double
+        width: Double
+        height: Double
     ) {
         storageInsert<Rect>(store(self), node, Rect(x, y, width, height))
     }
@@ -620,11 +618,11 @@ impl Composition {
     /** Sets how [node] paints. */
     func paint[self: Self!](
         node: Entity
-        r: std::Double
-        g: std::Double
-        b: std::Double
-        alpha: std::Double
-        size: std::Double
+        r: Double
+        g: Double
+        b: Double
+        alpha: Double
+        size: Double
     ) {
         storageInsert<Paint>(store(self), node, .(r, g, b, alpha, size))
     }

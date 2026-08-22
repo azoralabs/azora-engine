@@ -30,17 +30,17 @@ module game
 import engine
 
 bridge .C {
-    func @foreignName("arc4random_uniform")(bound: std::Int): std::Int
+    func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
 fin platformCount = 12
 fin playerSize = 34.0
 
 /// Re-seeds platform [i] to start after [prevEnd], stepping from [prevY].
-func regenPlatform(px: std::Array<std::Double>, py: std::Array<std::Double>, pw: std::Array<std::Double>, i: std::Int, prevEnd: std::Double, prevY: std::Double) {
-    fin gap = 50.0 + (arc4randomUniform(70) as std::Double)
-    fin w = 130.0 + (arc4randomUniform(150) as std::Double)
-    var y = prevY + (arc4randomUniform(170) as std::Double) - 85.0
+func regenPlatform(px: Array<Double>, py: Array<Double>, pw: Array<Double>, i: Int, prevEnd: Double, prevY: Double) {
+    fin gap = 50.0 + (arc4randomUniform(70) as Double)
+    fin w = 130.0 + (arc4randomUniform(150) as Double)
+    var y = prevY + (arc4randomUniform(170) as Double) - 85.0
     if y < 240.0 {
         y = 240.0
     }
@@ -52,7 +52,7 @@ func regenPlatform(px: std::Array<std::Double>, py: std::Array<std::Double>, pw:
     pw[i] = w
 }
 
-func resetLevel(px: std::Array<std::Double>, py: std::Array<std::Double>, pw: std::Array<std::Double>) {
+func resetLevel(px: Array<Double>, py: Array<Double>, pw: Array<Double>) {
     // A wide, safe starting platform, then a procedural chain.
     px[0] = -100.0
     py[0] = 440.0
@@ -71,9 +71,9 @@ func main() {
     }
     app.setClearColor(0.36, 0.56, 0.78) // sky
 
-    var px = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    var py = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    var pw = @std::arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var px = @arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var py = @arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var pw = @arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     resetLevel(px, py, pw)
 
     var playerX = 60.0
@@ -85,8 +85,8 @@ func main() {
 
     while app.frame() {
         fin dt = app.deltaTime()
-        fin w = app.width() as std::Double
-        fin h = app.height() as std::Double
+        fin w = app.width() as Double
+        fin h = app.height() as Double
 
         if alive {
             // ── Controls ──
@@ -147,7 +147,7 @@ func main() {
                 k = k + 1
             }
 
-            fin dist = (playerX / 10.0) as std::Int
+            fin dist = (playerX / 10.0) as Int
             if dist > best {
                 best = dist
             }
@@ -170,12 +170,12 @@ func main() {
         var c = 0
         while c < 4 {
             fin span = w + 320.0
-            var cx = (c as std::Double) * 330.0 + 60.0 - camX * 0.35
-            cx = cx - (((cx / span) as std::Int) as std::Double) * span
+            var cx = (c as Double) * 330.0 + 60.0 - camX * 0.35
+            cx = cx - (((cx / span) as Int) as Double) * span
             if cx < 0.0 {
                 cx = cx + span
             }
-            fin cy = 60.0 + (c as std::Double) * 42.0
+            fin cy = 60.0 + (c as Double) * 42.0
             app.uiRect(cx - 160.0, cy, 120.0, 26.0, 1.0, 1.0, 1.0, 0.55)
             app.uiRect(cx - 130.0, cy - 14.0, 60.0, 20.0, 1.0, 1.0, 1.0, 0.45)
             c = c + 1

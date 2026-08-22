@@ -21,12 +21,12 @@ import engine.io
 
 /** Stable identity of one stream inside a media source. */
 pack StreamId {
-    fin value: std::Int
+    fin value: Int
 }
 
 /** Stable identity of a user-facing track assembled from one or more streams. */
 pack TrackId {
-    fin value: std::Int
+    fin value: Int
 }
 
 /**
@@ -36,9 +36,9 @@ pack TrackId {
  * during long playback and preserves the time bases found in media containers.
  */
 pack MediaTime {
-    fin ticks: std::Long
-    fin timeBaseNum: std::Int
-    fin timeBaseDen: std::Int
+    fin ticks: Long
+    fin timeBaseNum: Int
+    fin timeBaseDen: Int
 }
 
 /** Zero seconds in the engine's default microsecond time base. */
@@ -47,7 +47,7 @@ func mediaTimeZero(): MediaTime {
 }
 
 /** Builds a timestamp in a `1 / scale` time base. */
-func mediaTime(value: std::Long, scale: std::Int): MediaTime {
+func mediaTime(value: Long, scale: Int): MediaTime {
     if scale <= 0 {
         return MediaTime(value, 1, 1000000)
     }
@@ -55,39 +55,39 @@ func mediaTime(value: std::Long, scale: std::Int): MediaTime {
 }
 
 /** Converts seconds to the default microsecond time base. */
-func mediaTimeSeconds(seconds: std::Double): MediaTime {
-    return MediaTime((seconds * 1000000.0) as std::Long, 1, 1000000)
+func mediaTimeSeconds(seconds: Double): MediaTime {
+    return MediaTime((seconds * 1000000.0) as Long, 1, 1000000)
 }
 
 /** Converts seconds to a provider's native time base. */
-func mediaTimeFromSecs(seconds: std::Double, timeBaseNum: std::Int, timeBaseDen: std::Int): MediaTime {
+func mediaTimeFromSecs(seconds: Double, timeBaseNum: Int, timeBaseDen: Int): MediaTime {
     if timeBaseNum <= 0 || timeBaseDen <= 0 {
         return mediaTimeSeconds(seconds)
     }
-    fin ticks = (seconds * (timeBaseDen as std::Double) / (timeBaseNum as std::Double)) as std::Long
+    fin ticks = (seconds * (timeBaseDen as Double) / (timeBaseNum as Double)) as Long
     return MediaTime(ticks, timeBaseNum, timeBaseDen)
 }
 
 /** Converts a timestamp to seconds for presentation and user interfaces. */
-func mediaTimeSecs(time: MediaTime&): std::Double {
+func mediaTimeSecs(time: MediaTime&): Double {
     if time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
         return 0.0
     }
-    return (time.ticks as std::Double) * (time.timeBaseNum as std::Double) / (time.timeBaseDen as std::Double)
+    return (time.ticks as Double) * (time.timeBaseNum as Double) / (time.timeBaseDen as Double)
 }
 
 /** Compatibility spelling retained for engine internals. */
-func mediaTimeAsSeconds(time: MediaTime&): std::Double {
+func mediaTimeAsSeconds(time: MediaTime&): Double {
     return mediaTimeSecs(time)
 }
 
 /** Converts [time] to another rational time base. */
-func mediaTimeRescale(time: MediaTime&, scale: std::Int): MediaTime {
+func mediaTimeRescale(time: MediaTime&, scale: Int): MediaTime {
     if scale <= 0 || time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
         return mediaTimeZero()
     }
-    fin numerator = time.ticks * (time.timeBaseNum as std::Long) * (scale as std::Long)
-    return MediaTime(numerator / (time.timeBaseDen as std::Long), 1, scale)
+    fin numerator = time.ticks * (time.timeBaseNum as Long) * (scale as Long)
+    return MediaTime(numerator / (time.timeBaseDen as Long), 1, scale)
 }
 
 /** Adds timestamps without first converting them to floating point. */
@@ -95,8 +95,8 @@ func mediaTimeAdd(left: MediaTime&, right: MediaTime&): MediaTime {
     if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
         return mediaTimeZero()
     }
-    fin numerator = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
-    fin denominator = (right.timeBaseDen as std::Long) * (left.timeBaseNum as std::Long)
+    fin numerator = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
+    fin denominator = (right.timeBaseDen as Long) * (left.timeBaseNum as Long)
     return MediaTime(left.ticks + numerator / denominator, left.timeBaseNum, left.timeBaseDen)
 }
 
@@ -105,15 +105,15 @@ func mediaTimeSubtract(left: MediaTime&, right: MediaTime&): MediaTime {
     if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
         return mediaTimeZero()
     }
-    fin numerator = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
-    fin denominator = (right.timeBaseDen as std::Long) * (left.timeBaseNum as std::Long)
+    fin numerator = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
+    fin denominator = (right.timeBaseDen as Long) * (left.timeBaseNum as Long)
     return MediaTime(left.ticks - numerator / denominator, left.timeBaseNum, left.timeBaseDen)
 }
 
 /** Returns a negative value, zero, or a positive value according to ordering. */
-func mediaTimeCompare(left: MediaTime&, right: MediaTime&): std::Int {
-    fin leftValue = left.ticks * (left.timeBaseNum as std::Long) * (right.timeBaseDen as std::Long)
-    fin rightValue = right.ticks * (right.timeBaseNum as std::Long) * (left.timeBaseDen as std::Long)
+func mediaTimeCompare(left: MediaTime&, right: MediaTime&): Int {
+    fin leftValue = left.ticks * (left.timeBaseNum as Long) * (right.timeBaseDen as Long)
+    fin rightValue = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
     if leftValue < rightValue { return -1 }
     if leftValue > rightValue { return 1 }
     return 0
@@ -132,9 +132,9 @@ func mediaTimeClamp(value: MediaTime&, minimum: MediaTime&, maximum: MediaTime&)
 
 /** A source accepted by a media provider. Byte storage remains caller-owned. */
 variant enum MediaSource {
-    Path(path: std::String)
+    Path(path: String)
     Bytes(bytes: Blob)
-    Uri(uri: std::String)
+    Uri(uri: String)
 }
 
 /** Broad role of one stream in a container. */
@@ -150,33 +150,33 @@ enum MediaStreamKind {
 pack MediaStreamInfo {
     fin id: StreamId
     fin kind: MediaStreamKind
-    fin codec: std::String
-    fin language: std::String
-    fin title: std::String
-    fin width: std::Int
-    fin height: std::Int
-    fin frameRate: std::Double
-    fin sampleRate: std::Int
-    fin channels: std::Int
-    fin isDefault: std::Bool
+    fin codec: String
+    fin language: String
+    fin title: String
+    fin width: Int
+    fin height: Int
+    fin frameRate: Double
+    fin sampleRate: Int
+    fin channels: Int
+    fin isDefault: Bool
 }
 
 /** Metadata discovered by probing a source without starting playback. */
 pack MediaInfo {
-    fin format: std::String
+    fin format: String
     fin duration: MediaTime
-    fin seekable: std::Bool
-    fin live: std::Bool
-    fin streams: std::Array<MediaStreamInfo>
+    fin seekable: Bool
+    fin live: Bool
+    fin streams: Array<MediaStreamInfo>
 }
 
 /** An empty probe result used as a safe fallback in tools and tests. */
 func mediaInfoEmpty(): MediaInfo {
-    return MediaInfo("", mediaTimeZero(), false, false, std::Array::fill<MediaStreamInfo>(0))
+    return MediaInfo("", mediaTimeZero(), false, false, Array::fill<MediaStreamInfo>(0))
 }
 
 /** Number of streams of [kind] in [info]. */
-func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): std::Int {
+func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): Int {
     var count = 0
     var index = 0
     while index < info.streams.size {
@@ -189,12 +189,12 @@ func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): std::Int {
 }
 
 /** True when a caller-owned byte source has storage to probe. */
-func mediaBytesValid(bytes: Blob&): std::Bool {
+func mediaBytesValid(bytes: Blob&): Bool {
     return bytes.data != 0L && bytes.size > 0
 }
 
 /** True when [source] contains enough information for a provider to open it. */
-func mediaSourceValid(source: MediaSource&): std::Bool {
+func mediaSourceValid(source: MediaSource&): Bool {
     return when source {
         MediaSource.Path(path) -> path != ""
         MediaSource.Bytes(bytes) -> mediaBytesValid(bytes)
@@ -216,14 +216,14 @@ error MediaError {
 
 /** Capabilities used by provider selection before a source is opened. */
 pack MediaProviderCapabilities {
-    fin localFiles: std::Bool
-    fin memory: std::Bool
-    fin network: std::Bool
-    fin softwareDecode: std::Bool
-    fin hardwareVideoDecode: std::Bool
-    fin zeroCopyVideo: std::Bool
-    fin audioDecode: std::Bool
-    fin subtitleDecode: std::Bool
+    fin localFiles: Bool
+    fin memory: Bool
+    fin network: Bool
+    fin softwareDecode: Bool
+    fin hardwareVideoDecode: Bool
+    fin zeroCopyVideo: Bool
+    fin audioDecode: Bool
+    fin subtitleDecode: Bool
 }
 
 /**
@@ -233,9 +233,9 @@ pack MediaProviderCapabilities {
  * by [StreamId], never by a display name or codec string.
  */
 spec MediaProvider {
-    func name[self: Self&](): std::String
+    func name[self: Self&](): String
     func capabilities[self: Self&](): MediaProviderCapabilities
-    func canOpen[self: Self&](source: MediaSource&): std::Bool
+    func canOpen[self: Self&](source: MediaSource&): Bool
     func probe[self: Self&](source: MediaSource&): MediaInfo ?! MediaError
 }
 
@@ -244,12 +244,12 @@ spec MediaProvider {
  * It describes one H.264 video stream, one AAC stream and one subtitle stream.
  */
 pack FakeMediaProvider {
-    fin available: std::Bool
+    fin available: Bool
 }
 
 /** A representative movie returned by [FakeMediaProvider]. */
 func fakeMovieInfo(): MediaInfo {
-    var streams: std::Array<MediaStreamInfo> = std::Array::fill<MediaStreamInfo>(3)
+    var streams: Array<MediaStreamInfo> = Array::fill<MediaStreamInfo>(3)
     streams[0] = MediaStreamInfo(
         StreamId(10),
         MediaStreamKind.Video,
@@ -293,7 +293,7 @@ func fakeMovieInfo(): MediaInfo {
 }
 
 impl MediaProvider for FakeMediaProvider {
-    func name[self: Self&](): std::String {
+    func name[self: Self&](): String {
         return "azora.fake-media"
     }
 
@@ -301,7 +301,7 @@ impl MediaProvider for FakeMediaProvider {
         return MediaProviderCapabilities(true, true, false, true, false, false, true, true)
     }
 
-    func canOpen[self: Self&](source: MediaSource&): std::Bool {
+    func canOpen[self: Self&](source: MediaSource&): Bool {
         return self.available && mediaSourceValid(source)
     }
 

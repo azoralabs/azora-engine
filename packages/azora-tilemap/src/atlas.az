@@ -34,10 +34,10 @@ import engine.gpu.draw
 
 /** A rectangle in texture pixels. */
 pack AtlasRect {
-    var x: std::Int
-    var y: std::Int
-    var w: std::Int
-    var h: std::Int
+    var x: Int
+    var y: Int
+    var w: Int
+    var h: Int
 }
 
 /**
@@ -48,27 +48,27 @@ pack AtlasRect {
  */
 pack TileAtlas {
     /** The GPU texture handle, or `0` when the sheet failed to load. */
-    var texture: std::Long
-    var texWidth: std::Int
-    var texHeight: std::Int
-    var tileWidth: std::Int
-    var tileHeight: std::Int
-    var columns: std::Int
-    var rows: std::Int
+    var texture: Long
+    var texWidth: Int
+    var texHeight: Int
+    var tileWidth: Int
+    var tileHeight: Int
+    var columns: Int
+    var rows: Int
     /** Gap between neighbouring tiles, in pixels. */
-    var spacingX: std::Int
-    var spacingY: std::Int
+    var spacingX: Int
+    var spacingY: Int
     /** Border between the sheet edge and the first tile, in pixels. */
-    var marginX: std::Int
-    var marginY: std::Int
+    var marginX: Int
+    var marginY: Int
     /** The global tile index of this sheet's first tile. */
-    var firstIndex: std::Int
+    var firstIndex: Int
 }
 
 /** Several sheets sharing one global tile index space. */
 pack TileAtlasSet {
-    var atlases: std::Array<TileAtlas>
-    var count: std::Int
+    var atlases: Array<TileAtlas>
+    var count: Int
 }
 
 /**
@@ -85,7 +85,7 @@ variant enum TilemapTexture {
 /** Which sheet owns a global tile index. */
 variant enum AtlasPick {
     /** The sheet, and the index of the tile within it. */
-    Found(atlas: TileAtlas, local: std::Int)
+    Found(atlas: TileAtlas, local: Int)
     /** No sheet covers the index. */
     Missing
 }
@@ -105,16 +105,16 @@ func tileAtlasEmpty(): TileAtlas {
  * mismatched count silently samples past the last tile.
  */
 func tileAtlasNew(
-    texture: std::Long
-    texWidth: std::Int
-    texHeight: std::Int
-    tileWidth: std::Int
-    tileHeight: std::Int
-    spacingX: std::Int
-    spacingY: std::Int
-    marginX: std::Int
-    marginY: std::Int
-    firstIndex: std::Int
+    texture: Long
+    texWidth: Int
+    texHeight: Int
+    tileWidth: Int
+    tileHeight: Int
+    spacingX: Int
+    spacingY: Int
+    marginX: Int
+    marginY: Int
+    firstIndex: Int
 ): TileAtlas {
     var columns = 0
     var rows = 0
@@ -141,7 +141,7 @@ func tileAtlasNew(
 }
 
 /** A sheet of tightly packed tiles with no margin or spacing. */
-func tileAtlasSimple(texture: std::Long, texWidth: std::Int, texHeight: std::Int, tileWidth: std::Int, tileHeight: std::Int): TileAtlas {
+func tileAtlasSimple(texture: Long, texWidth: Int, texHeight: Int, tileWidth: Int, tileHeight: Int): TileAtlas {
     return tileAtlasNew(texture, texWidth, texHeight, tileWidth, tileHeight, 0, 0, 0, 0, 0)
 }
 
@@ -155,12 +155,12 @@ func tileAtlasSimple(texture: std::Long, texWidth: std::Int, texHeight: std::Int
 func tileAtlasFromImage(
     app: App
     picture: Image
-    tileWidth: std::Int
-    tileHeight: std::Int
-    spacingX: std::Int
-    spacingY: std::Int
-    marginX: std::Int
-    marginY: std::Int
+    tileWidth: Int
+    tileHeight: Int
+    spacingX: Int
+    spacingY: Int
+    marginX: Int
+    marginY: Int
 ): TileAtlas ?! TilemapFault {
     if !picture.ok() {
         return .MissingTexture
@@ -192,7 +192,7 @@ func tileAtlasFromImage(
  * The format is sniffed from the file's own magic bytes by the image decoder,
  * so callers never name one.
  */
-func tileAtlasLoad(app: App, path: std::String, tileWidth: std::Int, tileHeight: std::Int): TileAtlas ?! TilemapFault {
+func tileAtlasLoad(app: App, path: String, tileWidth: Int, tileHeight: Int): TileAtlas ?! TilemapFault {
     var blob = readFile(path)
     if !blob.ok() {
         return .IoFailed
@@ -244,22 +244,22 @@ func tileAtlasRelease(app: App, atlas: TileAtlas) {
 
 impl TileAtlas {
     /** True when the sheet has a usable texture and at least one tile. */
-    func ok(): std::Bool {
+    func ok(): Bool {
         return self.texture != 0L && self.columns > 0 && self.rows > 0
     }
 
     /** The number of tiles on the sheet. */
-    func count(): std::Int {
+    func count(): Int {
         return self.columns * self.rows
     }
 
     /** The global index just past this sheet's last tile. */
-    func endIndex(): std::Int {
+    func endIndex(): Int {
         return self.firstIndex + self.count()
     }
 
     /** True when [index] is a global index this sheet owns. */
-    func owns(index: std::Int): std::Bool {
+    func owns(index: Int): Bool {
         return index >= self.firstIndex && index < self.endIndex()
     }
 
@@ -269,7 +269,7 @@ impl TileAtlas {
      * An out-of-range tile yields a zero rectangle rather than sampling
      * whatever pixels happen to follow the sheet.
      */
-    func rectOf(local: std::Int): AtlasRect {
+    func rectOf(local: Int): AtlasRect {
         if local < 0 || local >= self.count() || self.columns <= 0 {
             return AtlasRect(0, 0, 0, 0)
         }
@@ -284,14 +284,14 @@ impl TileAtlas {
     }
 
     /** The source rectangle of the global tile [index]. */
-    func rectOfGlobal(index: std::Int): AtlasRect {
+    func rectOfGlobal(index: Int): AtlasRect {
         return self.rectOf(index - self.firstIndex)
     }
 }
 
 /** An empty set with room for [capacity] sheets. */
-func tileAtlasSetNew(capacity: std::Int): TileAtlasSet {
-    var sheets: std::Array<TileAtlas> = std::Array::fill<TileAtlas>(intMax(capacity, 0))
+func tileAtlasSetNew(capacity: Int): TileAtlasSet {
+    var sheets: Array<TileAtlas> = Array::fill<TileAtlas>(intMax(capacity, 0))
     return TileAtlasSet(sheets, 0)
 }
 
@@ -303,10 +303,10 @@ impl TileAtlasSet {
      * letting two sheets claim overlapping ranges is a whole class of "the
      * wrong tile is drawn" bugs that cannot happen if the set assigns them.
      */
-    func add(atlas: TileAtlas): std::Int {
+    func add(atlas: TileAtlas): Int {
         if self.count >= self.atlases.size {
             fin room = intMax(self.atlases.size * 2, 4)
-            var grown: std::Array<TileAtlas> = std::Array::fill<TileAtlas>(room)
+            var grown: Array<TileAtlas> = Array::fill<TileAtlas>(room)
             var i = 0
             while i < self.count {
                 grown[i] = self.atlases[i]
@@ -325,7 +325,7 @@ impl TileAtlasSet {
     }
 
     /** The sheet owning the global tile [index]. */
-    func find(index: std::Int): AtlasPick {
+    func find(index: Int): AtlasPick {
         var i = 0
         while i < self.count {
             fin atlas = self.atlases[i]
@@ -338,7 +338,7 @@ impl TileAtlasSet {
     }
 
     /** The total number of tiles across every sheet. */
-    func total(): std::Int {
+    func total(): Int {
         var sum = 0
         var i = 0
         while i < self.count {
@@ -349,7 +349,7 @@ impl TileAtlasSet {
     }
 
     /** The sheet at [index] in the set, or an empty sheet. */
-    func at(index: std::Int): TileAtlas {
+    func at(index: Int): TileAtlas {
         if index < 0 || index >= self.count {
             return tileAtlasEmpty()
         }
@@ -363,7 +363,7 @@ impl TileAtlasSet {
 // to be made where the value is a plainly typed parameter again.
 
 /** The sheet owning [index], when the sheet is asked directly. */
-func atlasFindIn(atlas: TileAtlas, index: std::Int): AtlasPick {
+func atlasFindIn(atlas: TileAtlas, index: Int): AtlasPick {
     if atlas.owns(index) {
         return AtlasPick.Found(atlas, index - atlas.firstIndex)
     }
@@ -371,27 +371,27 @@ func atlasFindIn(atlas: TileAtlas, index: std::Int): AtlasPick {
 }
 
 /** The number of tiles on [atlas]. */
-func atlasTileCount(atlas: TileAtlas): std::Int {
+func atlasTileCount(atlas: TileAtlas): Int {
     return atlas.count()
 }
 
 /** True when [atlas] has usable artwork. */
-func atlasUsable(atlas: TileAtlas): std::Bool {
+func atlasUsable(atlas: TileAtlas): Bool {
     return atlas.ok()
 }
 
 /** The sheet owning the global tile [index]. */
-func atlasSetFind(sheets: TileAtlasSet&, index: std::Int): AtlasPick {
+func atlasSetFind(sheets: TileAtlasSet&, index: Int): AtlasPick {
     return sheets.find(index)
 }
 
 /** The total number of tiles across every sheet of [sheets]. */
-func atlasSetTotal(sheets: TileAtlasSet&): std::Int {
+func atlasSetTotal(sheets: TileAtlasSet&): Int {
     return sheets.total()
 }
 
 /** True when any sheet of [sheets] has usable artwork. */
-func atlasSetOk(sheets: TileAtlasSet&): std::Bool {
+func atlasSetOk(sheets: TileAtlasSet&): Bool {
     var i = 0
     while i < sheets.count {
         if sheets.at(i).ok() {
@@ -422,7 +422,7 @@ func tilemapTextureVector(sheets: TileAtlasSet): TilemapTexture {
 }
 
 /** The sheet owning the global tile [index], whichever form [texture] takes. */
-func textureFind(texture: TilemapTexture&, index: std::Int): AtlasPick {
+func textureFind(texture: TilemapTexture&, index: Int): AtlasPick {
     when texture {
         TilemapTexture.Single(atlas) -> { return atlasFindIn(atlas, index) }
         TilemapTexture.Vector(sheets) -> {
@@ -433,7 +433,7 @@ func textureFind(texture: TilemapTexture&, index: std::Int): AtlasPick {
 }
 
 /** The number of tiles [texture] can address. */
-func textureTileCount(texture: TilemapTexture&): std::Int {
+func textureTileCount(texture: TilemapTexture&): Int {
     when texture {
         TilemapTexture.Single(atlas) -> { return atlasTileCount(atlas) }
         TilemapTexture.Vector(sheets) -> { return atlasSetTotal(sheets) }
@@ -442,7 +442,7 @@ func textureTileCount(texture: TilemapTexture&): std::Int {
 }
 
 /** True when [texture] has at least one usable sheet. */
-func textureOk(texture: TilemapTexture&): std::Bool {
+func textureOk(texture: TilemapTexture&): Bool {
     when texture {
         TilemapTexture.Single(atlas) -> { return atlasUsable(atlas) }
         TilemapTexture.Vector(sheets) -> { return atlasSetOk(sheets) }
@@ -465,7 +465,7 @@ func textureRelease(app: App, texture: TilemapTexture!) {
  * down, which is what a game wants during development; a tool that needs to
  * report the fault calls [tileAtlasLoad] and handles it.
  */
-func tileAtlasLoadOrEmpty(app: App, path: std::String, tileWidth: std::Int, tileHeight: std::Int): TileAtlas {
+func tileAtlasLoadOrEmpty(app: App, path: String, tileWidth: Int, tileHeight: Int): TileAtlas {
     return tileAtlasLoad(app, path, tileWidth, tileHeight) catch tileAtlasEmpty()
 }
 
@@ -508,7 +508,7 @@ test "a set chains sheets into one continuous index space" {
 }
 
 /** True when [pick] resolved to a sheet. */
-func atlasPickFound(pick: AtlasPick): std::Bool {
+func atlasPickFound(pick: AtlasPick): Bool {
     when pick {
         AtlasPick.Found(atlas, local) -> { return true }
         else -> { return false }

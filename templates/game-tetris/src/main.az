@@ -31,7 +31,7 @@ module game
 import engine
 
 bridge .C {
-    func @foreignName("arc4random_uniform")(bound: std::Int): std::Int
+    func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
 fin boardW = 10
@@ -40,8 +40,8 @@ fin CELL = 26.0
 
 /// The 4 rotation bitmasks of the 7 tetrominoes (4x4 grid, row-wise from the,
 /// top, most significant bit = top-left).
-func pieceMasks(): std::Array<std::Int> {
-    return @std::arr[
+func pieceMasks(): Array<Int> {
+    return @arr[
         0x0F00, 0x2222, 0x00F0, 0x4444, // I
         0x8E00, 0x6440, 0x0E20, 0x44C0, // J
         0x2E00, 0x4460, 0x0E80, 0xC440, // L
@@ -53,14 +53,14 @@ func pieceMasks(): std::Array<std::Int> {
 }
 
 /// True when cell (i, j) of the piece's 4x4 grid is occupied.
-func pieceCell(masks: std::Array<std::Int>, p: std::Int, r: std::Int, i: std::Int, j: std::Int): std::Bool {
+func pieceCell(masks: Array<Int>, p: Int, r: Int, i: Int, j: Int): Bool {
     fin mask = masks[p * 4 + r]
     fin bit = (3 - j) * 4 + (3 - i)
     return ((mask >> bit) & 1) != 0
 }
 
 /// True when the piece at (x, y) would overlap the walls, floor or stack.
-func collides(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: std::Int, x: std::Int, y: std::Int): std::Bool {
+func collides(board: Long, masks: Array<Int>, p: Int, r: Int, x: Int, y: Int): Bool {
     var j = 0
     while j < 4 {
         var i = 0
@@ -72,7 +72,7 @@ func collides(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: std
                     return true
                 }
                 if bj >= 0 {
-                    if azPeek8(board, (bj * boardW + bx) as std::Long) != 0 {
+                    if azPeek8(board, (bj * boardW + bx) as Long) != 0 {
                         return true
                     }
                 }
@@ -84,7 +84,7 @@ func collides(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: std
     return false
 }
 
-func lockPiece(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: std::Int, x: std::Int, y: std::Int) {
+func lockPiece(board: Long, masks: Array<Int>, p: Int, r: Int, x: Int, y: Int) {
     var j = 0
     while j < 4 {
         var i = 0
@@ -92,7 +92,7 @@ func lockPiece(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: st
             if pieceCell(masks, p, r, i, j) {
                 fin bj = y + j
                 if bj >= 0 {
-                    azPoke8(board, (bj * boardW + x + i) as std::Long, p + 1)
+                    azPoke8(board, (bj * boardW + x + i) as Long, p + 1)
                 }
             }
             i = i + 1
@@ -102,14 +102,14 @@ func lockPiece(board: std::Long, masks: std::Array<std::Int>, p: std::Int, r: st
 }
 
 /// Removes full rows, returns how many were cleared.
-func clearLines(board: std::Long): std::Int {
+func clearLines(board: Long): Int {
     var cleared = 0
     var j = boardH - 1
     while j >= 0 {
         var full = true
         var i = 0
         while i < boardW {
-            if azPeek8(board, (j * boardW + i) as std::Long) == 0 {
+            if azPeek8(board, (j * boardW + i) as Long) == 0 {
                 full = false
             }
             i = i + 1
@@ -121,15 +121,15 @@ func clearLines(board: std::Long): std::Int {
             while k > 0 {
                 var i2 = 0
                 while i2 < boardW {
-                    fin above = azPeek8(board, ((k - 1) * boardW + i2) as std::Long)
-                    azPoke8(board, (k * boardW + i2) as std::Long, above)
+                    fin above = azPeek8(board, ((k - 1) * boardW + i2) as Long)
+                    azPoke8(board, (k * boardW + i2) as Long, above)
                     i2 = i2 + 1
                 }
                 k = k - 1
             }
             var i3 = 0
             while i3 < boardW {
-                azPoke8(board, i3 as std::Long, 0)
+                azPoke8(board, i3 as Long, 0)
                 i3 = i3 + 1
             }
         } else {
@@ -139,17 +139,17 @@ func clearLines(board: std::Long): std::Int {
     return cleared
 }
 
-func clearBoard(board: std::Long) {
+func clearBoard(board: Long) {
     var k = 0
     while k < boardW * boardH {
-        azPoke8(board, k as std::Long, 0)
+        azPoke8(board, k as Long, 0)
         k = k + 1
     }
 }
 
-func drawCell(app: App, ox: std::Double, oy: std::Double, i: std::Int, j: std::Int, colors: std::Array<std::Double>, c: std::Int) {
-    fin x = ox + (i as std::Double) * CELL
-    fin y = oy + (j as std::Double) * CELL
+func drawCell(app: App, ox: Double, oy: Double, i: Int, j: Int, colors: Array<Double>, c: Int) {
+    fin x = ox + (i as Double) * CELL
+    fin y = oy + (j as Double) * CELL
     fin r = colors[c * 3]
     fin g = colors[c * 3 + 1]
     fin b = colors[c * 3 + 2]
@@ -165,7 +165,7 @@ func main() {
 
     fin masks = pieceMasks()
     // Per-piece colors (index 1..7): I J L O S T Z.
-    fin colors = @std::arr[
+    fin colors = @arr[
         0.0, 0.0, 0.0
         0.20, 0.75, 0.90, // I  cyan
         0.25, 0.40, 0.90, // J  blue
@@ -176,7 +176,7 @@ func main() {
         0.90, 0.30, 0.30  // Z  red
     ]
 
-    fin board = azAlloc((boardW * boardH) as std::Long)
+    fin board = azAlloc((boardW * boardH) as Long)
 
     var piece = arc4randomUniform(7)
     var rot = 0
@@ -189,8 +189,8 @@ func main() {
 
     while app.frame() {
         fin dt = app.deltaTime()
-        fin w = app.width() as std::Double
-        fin ox = (w - (boardW as std::Double) * CELL) * 0.5
+        fin w = app.width() as Double
+        fin ox = (w - (boardW as Double) * CELL) * 0.5
         fin oy = 40.0
 
         if !gameOver {
@@ -220,7 +220,7 @@ func main() {
             }
 
             // ── Gravity ──
-            var interval = 0.55 - (lines as std::Double) * 0.02
+            var interval = 0.55 - (lines as Double) * 0.02
             if interval < 0.1 {
                 interval = 0.1
             }
@@ -260,8 +260,8 @@ func main() {
         }
 
         // ── Render ──
-        fin bw = (boardW as std::Double) * CELL
-        fin bh = (boardH as std::Double) * CELL
+        fin bw = (boardW as Double) * CELL
+        fin bh = (boardH as Double) * CELL
         app.uiRect(ox - 4.0, oy - 4.0, bw + 8.0, bh + 8.0, 0.18, 0.19, 0.24, 1.0)
         app.uiRect(ox, oy, bw, bh, 0.05, 0.05, 0.07, 1.0)
 
@@ -269,7 +269,7 @@ func main() {
         while j < boardH {
             var i = 0
             while i < boardW {
-                fin c = azPeek8(board, (j * boardW + i) as std::Long)
+                fin c = azPeek8(board, (j * boardW + i) as Long)
                 if c != 0 {
                     drawCell(app, ox, oy, i, j, colors, c)
                 }

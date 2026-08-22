@@ -46,13 +46,13 @@ enum GameRoute {
 @Component
 pack Player {
     var velocity: Vec3
-    var grounded: std::Bool
-    var coyoteTime: std::Double
-    var jumpBuffer: std::Double
-    var health: std::Int
-    var score: std::Int
-    var invulnerableFor: std::Double
-    var facing: std::Double
+    var grounded: Bool
+    var coyoteTime: Double
+    var jumpBuffer: Double
+    var health: Int
+    var score: Int
+    var invulnerableFor: Double
+    var facing: Double
 }
 
 @Component
@@ -65,22 +65,22 @@ pack Platform {
 @Component
 pack Coin {
     var center: Vec3
-    var collected: std::Bool
-    var phase: std::Double
+    var collected: Bool
+    var phase: Double
 }
 
 @Component
 pack Walker {
     var center: Vec3
-    var velocityX: std::Double
-    var minX: std::Double
-    var maxX: std::Double
+    var velocityX: Double
+    var minX: Double
+    var maxX: Double
 }
 
 pack GameSession {
-    var elapsed: std::Double
-    var cameraX: std::Double
-    var bestScore: std::Int
+    var elapsed: Double
+    var cameraX: Double
+    var bestScore: Int
 }
 
 fin moveSpeed = 7.8
@@ -93,20 +93,20 @@ func playerHalf(): Vec3 {
     return Vec3(0.42, 0.72, 0.38)
 }
 
-func absReal(value: std::Double): std::Double {
+func absReal(value: Double): Double {
     if value < 0.0 {
         return 0.0 - value
     }
     return value
 }
 
-func clampReal(value: std::Double, lo: std::Double, hi: std::Double): std::Double {
+func clampReal(value: Double, lo: Double, hi: Double): Double {
     if value < lo { return lo }
     if value > hi { return hi }
     return value
 }
 
-func approach(current: std::Double, target: std::Double, amount: std::Double): std::Double {
+func approach(current: Double, target: Double, amount: Double): Double {
     if current < target {
         return clampReal(current + amount, current, target)
     }
@@ -116,13 +116,13 @@ func approach(current: std::Double, target: std::Double, amount: std::Double): s
 func addPlatform(
     world: World
     platforms: Storage<Platform>
-    x: std::Double
-    y: std::Double
-    width: std::Double
-    depth: std::Double
-    r: std::Double
-    g: std::Double
-    b: std::Double
+    x: Double
+    y: Double
+    width: Double
+    depth: Double
+    r: Double
+    g: Double
+    b: Double
 ) {
     spawnWith<Platform>(world, platforms, Platform(
         Vec3(x, y, 0.0)
@@ -131,18 +131,18 @@ func addPlatform(
     ))
 }
 
-func addCoin(world: World, coins: Storage<Coin>, x: std::Double, y: std::Double, phase: std::Double) {
+func addCoin(world: World, coins: Storage<Coin>, x: Double, y: Double, phase: Double) {
     spawnWith<Coin>(world, coins, Coin(Vec3(x, y, 0.0), false, phase))
 }
 
 func addWalker(
     world: World
     walkers: Storage<Walker>
-    x: std::Double
-    y: std::Double
-    minX: std::Double
-    maxX: std::Double
-    speed: std::Double
+    x: Double
+    y: Double
+    minX: Double
+    maxX: Double
+    speed: Double
 ) {
     spawnWith<Walker>(world, walkers, Walker(Vec3(x, y, 0.0), speed, minX, maxX))
 }
@@ -195,7 +195,7 @@ func resetSession(
     transforms: Storage<Transform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
-    score: ReactiveResource<std::Int>
+    score: ReactiveResource<Int>
     session: GameSession
 ) {
     fin player: Player = storageGet<Player>(players, playerEntity)
@@ -238,7 +238,7 @@ func resetSession(
     session.cameraX = -1.0
 }
 
-func readMoveInput(app: App): std::Double {
+func readMoveInput(app: App): Double {
     var movement = 0.0
     if app.keyDown(keyA) || app.keyDown(keyArrowLeft) {
         movement = movement - 1.0
@@ -247,7 +247,7 @@ func readMoveInput(app: App): std::Double {
         movement = movement + 1.0
     }
     if app.controllerConnected(0) {
-        fin axis = app.controllerAxis(0, GamepadAxis.LeftX as std::Int)
+        fin axis = app.controllerAxis(0, GamepadAxis.LeftX as Int)
         if absReal(axis) > 0.18 {
             movement = axis
         }
@@ -255,14 +255,14 @@ func readMoveInput(app: App): std::Double {
     return clampReal(movement, -1.0, 1.0)
 }
 
-func jumpPressed(app: App): std::Bool {
+func jumpPressed(app: App): Bool {
     if app.keyPressed(keySpace) || app.keyPressed(keyArrowUp) {
         return true
     }
-    return app.controllerConnected(0) && app.controllerButtonValue(0, GamepadButton.South as std::Int) > 0.5
+    return app.controllerConnected(0) && app.controllerButtonValue(0, GamepadButton.South as Int) > 0.5
 }
 
-func updateWalkers(walkers: Storage<Walker>, dt: std::Double) {
+func updateWalkers(walkers: Storage<Walker>, dt: Double) {
     var queryIndex = 1
     while queryIndex < storageLength<Walker>(walkers) {
         fin entity = storageEntityAt<Walker>(walkers, queryIndex)
@@ -282,7 +282,7 @@ func updateWalkers(walkers: Storage<Walker>, dt: std::Double) {
     }
 }
 
-func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>): std::Bool {
+func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>): Bool {
     var grounded = false
     var i = 1
     while i < storageLength<Platform>(platforms) {
@@ -315,7 +315,7 @@ func collectCoins(
     position: Vec3
     player: Player
     coins: Storage<Coin>
-    score: ReactiveResource<std::Int>
+    score: ReactiveResource<Int>
 ) {
     var i = 1
     while i < storageLength<Coin>(coins) {
@@ -340,7 +340,7 @@ func collectCoins(
     }
 }
 
-func hitWalker(position: Vec3, walkers: Storage<Walker>): std::Bool {
+func hitWalker(position: Vec3, walkers: Storage<Walker>): Bool {
     var i = 1
     while i < storageLength<Walker>(walkers) {
         fin entity = storageEntityAt<Walker>(walkers, i)
@@ -368,10 +368,10 @@ func updatePlayer(
     platforms: Storage<Platform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
-    score: ReactiveResource<std::Int>
+    score: ReactiveResource<Int>
     audio: AudioScene
-    dt: std::Double
-): std::Bool {
+    dt: Double
+): Bool {
     var query = queryFromStorage<Player>(world, players, false)
     queryWith<Transform>(query, transforms)
     fin only = query.single()
@@ -446,21 +446,21 @@ func drawBox(app: App, cube: Mesh, center: Vec3, size: Vec3, color: Color) {
     app.drawMesh(cube, model, color.r, color.g, color.b)
 }
 
-func drawBackdrop(app: App, cube: Mesh, cameraX: std::Double, elapsed: std::Double) {
+func drawBackdrop(app: App, cube: Mesh, cameraX: Double, elapsed: Double) {
     // Layered geometry gives the side camera depth and parallax.
     var i = -5
     while i < 18 {
-        fin x = (i as std::Double) * 7.0 + cameraX * 0.22
-        fin h = 3.0 + (((i + 7) % 5) as std::Double) * 1.2
+        fin x = (i as Double) * 7.0 + cameraX * 0.22
+        fin h = 3.0 + (((i + 7) % 5) as Double) * 1.2
         drawBox(app, cube, Vec3(x, h * 0.5 - 1.5, -12.0), Vec3(5.5, h, 2.4), colorRgb(0.18, 0.28, 0.42))
         i = i + 1
     }
 
     var cloud = -3
     while cloud < 12 {
-        fin drift = elapsed * (0.18 + (((cloud + 4) % 3) as std::Double) * 0.05)
-        fin x = (cloud as std::Double) * 11.0 + drift + cameraX * 0.45
-        fin y = 6.0 + (((cloud + 8) % 4) as std::Double) * 0.75
+        fin drift = elapsed * (0.18 + (((cloud + 4) % 3) as Double) * 0.05)
+        fin x = (cloud as Double) * 11.0 + drift + cameraX * 0.45
+        fin y = 6.0 + (((cloud + 8) % 4) as Double) * 0.75
         drawBox(app, cube, Vec3(x, y, -7.0), Vec3(2.8, 0.45, 1.0), colorRgb(0.84, 0.90, 0.98))
         drawBox(app, cube, Vec3(x + 0.9, y + 0.3, -7.0), Vec3(1.4, 0.55, 1.0), colorRgb(0.90, 0.94, 1.0))
         cloud = cloud + 1
@@ -533,7 +533,7 @@ func renderWorld(
     fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
     var visible = true
     if player.invulnerableFor > 0.0 {
-        visible = ((player.invulnerableFor * 12.0) as std::Int) % 2 == 0
+        visible = ((player.invulnerableFor * 12.0) as Int) % 2 == 0
     }
     if visible {
         fin bodyColor = colorRgb(0.16, 0.62, 0.96)
@@ -544,15 +544,15 @@ func renderWorld(
     }
 }
 
-func drawHud(app: App, player: Player, score: ReactiveResource<std::Int>) {
-    fin displayScore: std::Int = score.value
+func drawHud(app: App, player: Player, score: ReactiveResource<Int>) {
+    fin displayScore: Int = score.value
     app.uiRect(18.0, 18.0, 250.0, 76.0, 0.03, 0.05, 0.09, 0.82)
     app.uiText("SCORE  ${displayScore}", 34.0, 31.0, 18.0)
     app.uiText("HEALTH ${player.health} / 3", 34.0, 61.0, 15.0)
-    app.uiText("A/D move   SPACE jump   ESC pause", 20.0, (app.height() as std::Double) - 34.0, 13.0)
+    app.uiText("A/D move   SPACE jump   ESC pause", 20.0, (app.height() as Double) - 34.0, 13.0)
 }
 
-func drawMenuScene(app: App, cube: Mesh, elapsed: std::Double) {
+func drawMenuScene(app: App, cube: Mesh, elapsed: Double) {
     var cam = cameraDefault()
     cam.pos = Vec3(sin(elapsed * 0.18) * 2.0, 3.5, 11.5)
     cam.pitch = -0.16
@@ -563,9 +563,9 @@ func drawMenuScene(app: App, cube: Mesh, elapsed: std::Double) {
     drawBox(app, cube, Vec3(0.0, 1.0 + sin(elapsed * 1.8) * 0.12, 0.0), Vec3(0.9, 1.5, 0.8), colorRgb(0.16, 0.62, 0.96))
 }
 
-func drawMenu(app: App, bestScore: std::Int): std::Int {
-    fin width = app.width() as std::Double
-    fin height = app.height() as std::Double
+func drawMenu(app: App, bestScore: Int): Int {
+    fin width = app.width() as Double
+    fin height = app.height() as Double
     fin panelWidth = 420.0
     fin panelX = (width - panelWidth) * 0.5
     fin panelY = height * 0.19
@@ -586,9 +586,9 @@ func drawMenu(app: App, bestScore: std::Int): std::Int {
     return 0
 }
 
-func drawPause(app: App): std::Int {
-    fin width = app.width() as std::Double
-    fin height = app.height() as std::Double
+func drawPause(app: App): Int {
+    fin width = app.width() as Double
+    fin height = app.height() as Double
     fin x = (width - 360.0) * 0.5
     fin y = height * 0.25
     app.uiRect(0.0, 0.0, width, height, 0.01, 0.02, 0.04, 0.62)
@@ -603,9 +603,9 @@ func drawPause(app: App): std::Int {
     return 0
 }
 
-func drawGameOver(app: App, score: std::Int, bestScore: std::Int): std::Int {
-    fin width = app.width() as std::Double
-    fin height = app.height() as std::Double
+func drawGameOver(app: App, score: Int, bestScore: Int): Int {
+    fin width = app.width() as Double
+    fin height = app.height() as Double
     fin x = (width - 410.0) * 0.5
     fin y = height * 0.20
     app.uiRect(0.0, 0.0, width, height, 0.02, 0.01, 0.025, 0.68)
@@ -652,7 +652,7 @@ async func main() {
     var route = navBackStack<GameRoute>(GameRoute.Menu, 8)
     var navigationDisplay = navDisplay()
     var observer = ecsObserver()
-    var score = reactiveResource<std::Int>(0)
+    var score = reactiveResource<Int>(0)
     var session = GameSession(0.0, -1.0, 0)
     resetSession(playerEntity, players, transforms, coins, walkers, score, session)
 

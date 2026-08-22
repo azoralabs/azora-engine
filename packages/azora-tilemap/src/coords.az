@@ -77,7 +77,7 @@ func tilePickPos(pick: TilePick): TilePos {
 }
 
 /** True when [pick] landed on a cell of the map. */
-func tilePickOnMap(pick: TilePick): std::Bool {
+func tilePickOnMap(pick: TilePick): Bool {
     when pick {
         TilePick.At(pos) -> { return true }
         else -> { return false }
@@ -113,7 +113,7 @@ func tilemapGeometry(
 }
 
 /** A square map of [width] x [height] tiles, top-left anchored at the origin. */
-func squareGeometry(width: std::Int, height: std::Int, tileWidth: std::Double, tileHeight: std::Double): TilemapGeometry {
+func squareGeometry(width: Int, height: Int, tileWidth: Double, tileHeight: Double): TilemapGeometry {
     return tilemapGeometry(
         TilemapKind.Square,
         TilemapSize(width, height),
@@ -127,10 +127,10 @@ func squareGeometry(width: std::Int, height: std::Int, tileWidth: std::Double, t
 /** An isometric map in the given coordinate system, top-left anchored. */
 func isoGeometry(
     system: IsoCoordSystem
-    width: std::Int
-    height: std::Int
-    tileWidth: std::Double
-    tileHeight: std::Double
+    width: Int
+    height: Int
+    tileWidth: Double
+    tileHeight: Double
 ): TilemapGeometry {
     return tilemapGeometry(
         TilemapKind.Isometric(system),
@@ -145,10 +145,10 @@ func isoGeometry(
 /** A hexagonal map in the given coordinate system, top-left anchored. */
 func hexGeometry(
     system: HexCoordSystem
-    width: std::Int
-    height: std::Int
-    tileWidth: std::Double
-    tileHeight: std::Double
+    width: Int
+    height: Int
+    tileWidth: Double
+    tileHeight: Double
 ): TilemapGeometry {
     return tilemapGeometry(
         TilemapKind.Hexagon(system),
@@ -194,7 +194,7 @@ func geometryStep(geo: TilemapGeometry): WorldPos {
 }
 
 /** True when the lattice draws overlapping tiles that must be painted in depth order. */
-func geometryDepthSorted(geo: TilemapGeometry): std::Bool {
+func geometryDepthSorted(geo: TilemapGeometry): Bool {
     when geo.kind {
         TilemapKind.Isometric(system) -> { return true }
         else -> { return false }
@@ -213,14 +213,14 @@ func geometryDepthSorted(geo: TilemapGeometry): std::Bool {
 func latticeCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
     when geo.kind {
         TilemapKind.Square() -> {
-            return WorldPos((pos.x as std::Double) * geo.grid.x, (pos.y as std::Double) * geo.grid.y)
+            return WorldPos((pos.x as Double) * geo.grid.x, (pos.y as Double) * geo.grid.y)
         }
         TilemapKind.Isometric(system) -> {
             when system {
                 IsoCoordSystem.Diamond -> {
                     return WorldPos(
-                        ((pos.x - pos.y) as std::Double) * geo.grid.x * 0.5,
-                        ((pos.x + pos.y) as std::Double) * geo.grid.y * 0.5
+                        ((pos.x - pos.y) as Double) * geo.grid.x * 0.5,
+                        ((pos.x + pos.y) as Double) * geo.grid.y * 0.5
                     )
                 }
                 IsoCoordSystem.Staggered -> {
@@ -229,8 +229,8 @@ func latticeCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
                         indent = geo.grid.x * 0.5
                     }
                     return WorldPos(
-                        (pos.x as std::Double) * geo.grid.x + indent,
-                        (pos.y as std::Double) * geo.grid.y * 0.5
+                        (pos.x as Double) * geo.grid.x + indent,
+                        (pos.y as Double) * geo.grid.y * 0.5
                     )
                 }
             }
@@ -242,13 +242,13 @@ func latticeCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
                 // Pointy-top: rows are straight, and the skewed axis leans the
                 // lattice half a hex right per row.
                 return WorldPos(
-                    geo.grid.x * ((axial.q as std::Double) + (axial.r as std::Double) * 0.5),
-                    geo.grid.y * 0.75 * (axial.r as std::Double)
+                    geo.grid.x * ((axial.q as Double) + (axial.r as Double) * 0.5),
+                    geo.grid.y * 0.75 * (axial.r as Double)
                 )
             }
             return WorldPos(
-                geo.grid.x * 0.75 * (axial.q as std::Double),
-                geo.grid.y * ((axial.r as std::Double) + (axial.q as std::Double) * 0.5)
+                geo.grid.x * 0.75 * (axial.q as Double),
+                geo.grid.y * ((axial.r as Double) + (axial.q as Double) * 0.5)
             )
         }
     }
@@ -290,7 +290,7 @@ func tileCorner(geo: TilemapGeometry, pos: TilePos): WorldPos {
  * which is what makes a click near a shared edge pick the hex the cursor is
  * actually over.
  */
-func latticeCellAt(geo: TilemapGeometry, x: std::Double, y: std::Double): TilePos {
+func latticeCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
     when geo.kind {
         TilemapKind.Square() -> {
             return TilePos(
@@ -338,7 +338,7 @@ func latticeCellAt(geo: TilemapGeometry, x: std::Double, y: std::Double): TilePo
  * be read off its `y` alone near a row boundary. Three candidate rows are
  * tested and the nearest centre wins.
  */
-func staggeredCellAt(geo: TilemapGeometry, x: std::Double, y: std::Double): TilePos {
+func staggeredCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
     fin rowStep = geo.grid.y * 0.5
     fin approxRow = realFloorToInt(y / rowStep + 0.5)
 
@@ -587,7 +587,7 @@ test "a top-left anchored map starts at its own origin" {
 }
 
 test "every lattice round-trips its own tile centres" {
-    var maps: std::Array<TilemapGeometry> = std::Array::fill<TilemapGeometry>(5)
+    var maps: Array<TilemapGeometry> = Array::fill<TilemapGeometry>(5)
     maps[0] = squareGeometry(6, 6, 32.0, 32.0)
     maps[1] = isoGeometry(IsoCoordSystem.Diamond, 6, 6, 64.0, 32.0)
     maps[2] = isoGeometry(IsoCoordSystem.Staggered, 6, 6, 64.0, 32.0)

@@ -23,89 +23,44 @@
 module engine.ecs
 
 import std.container.*
-import std.container.tuple
 import engine.core
 
 
 pack Entity {
-    var id: std::Int
-    var generation: std::Int
+    var id: Int
+    var generation: Int
 }
 
 impl Entity {
-    prop isValid: std::Bool = self.id >= 0
-}
-
-impl Entity:: {
+    prop isValid[self: Self&]: Bool = self.id >= 0
     fin invalid: Entity = .(-1, 0)
 }
 
 pack World {
-    var generations: std::Array<std::Int>
-    var alive: std::Array<std::Bool>
-    var names: std::Array<std::String>
-    var parents: std::Array<std::Int>
-    var childCounts: std::Array<std::Int>
-    var prefabs: std::Array<std::Bool>
-    /**
-     * Per-entity flag: whether this entity was marked a resource entity.
-     *
-     * Indexed by entity id, like every array above it, and unrelated to the
-     * keyed [resources] store further down - that one holds the values a system
-     * asks for by type. Named apart because they were once both `resources`,
-     * and every read of the second silently reached the first.
-     */
-    var resourceMarks: std::Array<std::Bool>
-    var freeIds: std::Array<std::Int>
-    var entityCount: std::Int
-    var aliveCount: std::Int
-    var tick: std::Int
-    /**
-     * Component storages, keyed by the component's type name.
-     *
-     * The world owns them because a query is asked of the world and nothing
-     * else: `@query Position` names a component, not a place to find it. The
-     * list is erased because the types are not known here - a component is
-     * declared by whoever needs it - and [storageOf] is what puts the type back.
-     */
-    var storageNames: std::MutableList<std::String>
-    var storages: std::MutableList<std::Any>
-    /**
-     * Resources, keyed by their type name.
-     *
-     * A resource is a value there is exactly one of - the frame's clock, the
-     * input read this frame - so it is keyed by its type and nothing else. Held
-     * like storages are, and read the same way: what the world hands back is a
-     * copy, so a system that changes one puts it back.
-     */
-    var resourceNames: std::MutableList<std::String>
-    var resources: std::MutableList<std::Any>
-    var totalTime: std::Double
-    var fixedTimestep: std::Double
-    var fixedAccumulator: std::Double
-    var revision: std::Long
+    var generations: Array<Int> = @arr[1]
+    var alive: Array<Bool> = @arr[false]
+    var names: Array<String> = @arr[""]
+    var parents: Array<Int> = @arr[-1]
+    var childCounts: Array<Int> = @arr[0]
+    var prefabs: Array<Bool> = @arr[false]
+    var resourceMarks: Array<Bool> = @arr[false]
+    var freeIds: Array<Int> = @arr[-1]
+    var entityCount: Int = 0
+    var aliveCount: Int = 0
+    var tick: Int = 0
+    var storageNames: MutableList<String> = @vec![]
+    var storages: MutableList<Any> = @vec![]
+    var resourceNames: MutableList<String> = @vec![]
+    var resources: MutableList<Any> = @vec![]
+    var totalTime: Double = 0.0
+    var fixedTimestep: Double = 1.0 / 60.0
+    var fixedAccumulator: Double = 0.0
+    var revision: Long = 0L
 }
 
-impl World:: {
-    func init(): World {
-        var generations = @std::arr[0]
-        var alive = @std::arr[false]
-        var names = @std::arr[""]
-        var parents = @std::arr[-1]
-        var childCounts = @std::arr[0]
-        var prefabs = @std::arr[false]
-        var resourceMarks = @std::arr[false]
-        var freeIds = @std::arr[-1]
-        return World(generations, alive, names, parents, childCounts,
-            prefabs, resourceMarks, freeIds, 0, 0, 0,
-            std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
-            std::emptyMutableList<std::String>(), std::emptyMutableList<std::Any>(),
-            0.0, 1.0 / 60.0, 0.0, 0L)
-    }
-}
 
 impl World {
-    func spawn(): Entity {
+    func spawn[self: Self&](): Entity {
         if self.freeIds.size > 1 {
             fin last = self.freeIds.size - 1
             fin id = self.freeIds[last]
@@ -148,13 +103,13 @@ impl World {
         return Entity(id, 0)
     }
 
-    func spawnNamed(name: std::String): Entity {
+    func spawnNamed[self: Self&](name: String): Entity {
         fin entity = self.spawn()
         self.names[entity.id] = name
         return entity
     }
 
-    func despawn(entity: Entity) {
+    func despawn[self: Self&](entity: Entity) {
         if !self.isAlive(entity) {
             return
         }
@@ -175,38 +130,36 @@ impl World {
         self.revision = self.revision + 1
     }
 
-    func isAlive(entity: Entity): std::Bool {
+    func isAlive[self: Self&](entity: Entity): Bool {
         if entity.id < 0 || entity.id >= self.entityCount {
             return false
         }
         return self.alive[entity.id] && self.generations[entity.id] == entity.generation
     }
 
-    func count(): std::Int {
-        return self.aliveCount
-    }
+    prop count[self: Self&]: Int = self.aliveCount
 
-    func entityAt(id: std::Int): Entity {
+    func entityAt[self: Self&](id: Int): Entity {
         if id < 0 || id >= self.entityCount {
             return Entity::invalid
         }
         return Entity(id, self.generations[id])
     }
 
-    func setName(entity: Entity, name: std::String) {
+    func setName[self: Self&](entity: Entity, name: String) {
         if self.isAlive(entity) {
             self.names[entity.id] = name
         }
     }
 
-    func getName(entity: Entity): std::String {
+    func getName[self: Self&](entity: Entity): String {
         if !self.isAlive(entity) {
             return ""
         }
         return self.names[entity.id]
     }
 
-    func lookup(name: std::String): Entity {
+    func lookup[self: Self&](name: String): Entity {
         var i = 0
         while i < self.entityCount {
             if self.alive[i] && self.names[i] == name {
@@ -217,7 +170,7 @@ impl World {
         return Entity::invalid
     }
 
-    func setParent(child: Entity, parent: Entity) {
+    func setParent[self: Self&](child: Entity, parent: Entity) {
         if !self.isAlive(child) || !self.isAlive(parent) {
             return
         }
@@ -229,7 +182,7 @@ impl World {
         self.childCounts[parent.id] = self.childCounts[parent.id] + 1
     }
 
-    func removeParent(entity: Entity) {
+    func removeParent[self: Self&](entity: Entity) {
         if !self.isAlive(entity) {
             return
         }
@@ -240,7 +193,7 @@ impl World {
         self.parents[entity.id] = -1
     }
 
-    func getParent(entity: Entity): Entity {
+    func getParent[self: Self&](entity: Entity): Entity {
         if !self.isAlive(entity) {
             return Entity::invalid
         }
@@ -251,81 +204,86 @@ impl World {
         return Entity(parentId, self.generations[parentId])
     }
 
-    func getChildCount(entity: Entity): std::Int {
+    func getChildCount[self: Self&](entity: Entity): Int {
         if !self.isAlive(entity) {
             return 0
         }
         return self.childCounts[entity.id]
     }
 
-    func markPrefab(entity: Entity) {
+    func markPrefab[self: Self&](entity: Entity) {
         if self.isAlive(entity) {
             self.prefabs[entity.id] = true
         }
     }
 
-    func isPrefab(entity: Entity): std::Bool {
+    func isPrefab[self: Self&](entity: Entity): Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.prefabs[entity.id]
     }
 
-    func spawnResource(name: std::String): Entity {
+    func spawnResource[self: Self&](name: String): Entity {
         fin entity = self.spawnNamed(name)
         self.resourceMarks[entity.id] = true
         return entity
     }
 
-    func markResource(entity: Entity) {
+    func markResource[self: Self&](entity: Entity) {
         if self.isAlive(entity) {
             self.resourceMarks[entity.id] = true
         }
     }
 
-    func isResource(entity: Entity): std::Bool {
+    func isResource[self: Self&](entity: Entity): Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.resourceMarks[entity.id]
     }
 
-    func progress(deltaTime: std::Double) {
+    func progress[self: Self&](deltaTime: Double) {
         self.tick = self.tick + 1
         self.totalTime = self.totalTime + deltaTime
         self.fixedAccumulator = self.fixedAccumulator + deltaTime
     }
 
-    func setFixedTimestep(timestep: std::Double) {
+    func setFixedTimestep[self: Self&](timestep: Double) {
         self.fixedTimestep = timestep
     }
 
-    func consumeFixedStep(): std::Bool {
+    func consumeFixedStep[self: Self&](): Bool {
         if self.fixedAccumulator >= self.fixedTimestep {
             self.fixedAccumulator = self.fixedAccumulator - self.fixedTimestep
             return true
         }
         return false
     }
+
+    @ProvidesAccess
+    prop stamp[self: Self&]: Int {
+        return self.revision as Int
+    }
 }
 
 pack Storage<T> {
-    var entities: std::Array<Entity>
-    var values: std::Array<T>
-    var added: std::Array<std::Bool>
-    var changed: std::Array<std::Bool>
-    var revision: std::Long
+    var entities: Array<Entity>
+    var values: Array<T>
+    var added: Array<Bool>
+    var changed: Array<Bool>
+    var revision: Long
 }
 
 func storageInit<T>(defaultValue: T): Storage<T> {
-    var entities = @std::arr[Entity::invalid]
-    var values = @std::arr[defaultValue]
-    var added = @std::arr[false]
-    var changed = @std::arr[false]
+    var entities = @arr[Entity::invalid]
+    var values = @arr[defaultValue]
+    var added = @arr[false]
+    var changed = @arr[false]
     return Storage<T>(entities, values, added, changed, 0)
 }
 
-func storageIndexOf<T>(store: Storage<T>&, entity: Entity): std::Int {
+func storageIndexOf<T>(store: Storage<T>&, entity: Entity): Int {
     if !entity.isValid {
         return -1
     }
@@ -340,7 +298,7 @@ func storageIndexOf<T>(store: Storage<T>&, entity: Entity): std::Int {
     return -1
 }
 
-func storageHas<T>(store: Storage<T>&, entity: Entity): std::Bool {
+func storageHas<T>(store: Storage<T>&, entity: Entity): Bool {
     return storageIndexOf<T>(store, entity) >= 0
 }
 
@@ -372,7 +330,7 @@ func storageGetOrDefault<T>(store: Storage<T>&, entity: Entity, defaultValue: T)
     return store.values[index]
 }
 
-func storageRemove<T>(store: Storage<T>!, entity: Entity): std::Bool {
+func storageRemove<T>(store: Storage<T>!, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
         return false
@@ -394,13 +352,13 @@ func storageRemove<T>(store: Storage<T>!, entity: Entity): std::Bool {
  *
  * Answers how many storages carried the entity.
  */
-@std::Experimental(since: "0.1")
-func removeFromEveryStorage(world: World!, entity: Entity): std::Int {
+@Experimental(since: "0.1")
+func removeFromEveryStorage(world: World!, entity: Entity): Int {
     var dropped = 0
     var i = 0
     while i < world.storages.size {
-        var store = world.storages[i] as Storage<std::Any>
-        if storageRemove<std::Any>(store, entity) {
+        var store = world.storages[i] as Storage<Any>
+        if storageRemove<Any>(store, entity) {
             dropped = dropped + 1
         }
         i = i + 1
@@ -408,12 +366,12 @@ func removeFromEveryStorage(world: World!, entity: Entity): std::Int {
     return dropped
 }
 
-func storageWasAdded<T>(store: Storage<T>&, entity: Entity): std::Bool {
+func storageWasAdded<T>(store: Storage<T>&, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.added[index]
 }
 
-func storageWasChanged<T>(store: Storage<T>&, entity: Entity): std::Bool {
+func storageWasChanged<T>(store: Storage<T>&, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.changed[index]
 }
@@ -427,7 +385,7 @@ func storageClearTracking<T>(store: Storage<T>!) {
     }
 }
 
-func storageCount<T>(store: Storage<T>&): std::Int {
+func storageCount<T>(store: Storage<T>&): Int {
     var total = 0
     var i = 0
     while i < store.entities.size {
@@ -439,15 +397,15 @@ func storageCount<T>(store: Storage<T>&): std::Int {
     return total
 }
 
-func storageEntityAt<T>(store: Storage<T>&, index: std::Int): Entity {
+func storageEntityAt<T>(store: Storage<T>&, index: Int): Entity {
     return store.entities[index]
 }
 
-func storageValueAt<T>(store: Storage<T>&, index: std::Int): T {
+func storageValueAt<T>(store: Storage<T>&, index: Int): T {
     return store.values[index]
 }
 
-func storageLength<T>(store: Storage<T>&): std::Int {
+func storageLength<T>(store: Storage<T>&): Int {
     return store.entities.size
 }
 
@@ -459,13 +417,13 @@ func storageLength<T>(store: Storage<T>&): std::Int {
  * package that merely passes a `World` through could not spawn from it. The
  * free form has no such reach problem.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func spawnEntity(world: World!): Entity {
     return world.spawn()
 }
 
 /** Destroys [entity]. The free counterpart to `World.despawn`, as above. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func despawnEntity(world: World!, entity: Entity) {
     world.despawn(entity)
 }
@@ -482,23 +440,23 @@ func copyComponent<T>(store: Storage<T>!, source: Entity, target: Entity) {
     }
 }
 
-func spawnResourceWith<T>(world: World!, store: Storage<T>!, name: std::String, value: T): Entity {
+func spawnResourceWith<T>(world: World!, store: Storage<T>!, name: String, value: T): Entity {
     fin entity = world.spawnResource(name)
     storageInsert<T>(store, entity, value)
     return entity
 }
 
 pack QueryFetch {
-    var ok: std::Bool
+    var ok: Bool
     var entity: Entity
-    var error: std::String
+    var error: String
 }
 
 pack QueryCursor {
-    var entities: std::Array<Entity>
-    var cursor: std::Int
-    var ok: std::Bool
-    var error: std::String
+    var entities: Array<Entity>
+    var cursor: Int
+    var ok: Bool
+    var error: String
 }
 
 /**
@@ -507,7 +465,7 @@ pack QueryCursor {
  * The component value remains borrowed from its storage. `single.*`
  * exposes it explicitly; the entity is retained for commands and diagnostics.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Single<...T> where (...T).size >= 1 {
     var entity: Entity
     // The field generator emits a *string fragment* because the field's name is
@@ -539,7 +497,7 @@ impl Single<...T> {
  * one compact entity cursor, so adding component types does not increase the
  * handle's allocation count.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack QueryOf<...T> {
     var cursor: QueryCursor
     /**
@@ -559,13 +517,13 @@ pack QueryOf<...T> {
  * present makes the requirement checkable - `loop q { … }` asks for an
  * `Iterator`, and a query is one.
  */
-impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
+impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
     /** Advances the cursor, answering whether a row was found. */
-    prop hasNext[self: Self!]: std::Bool {
+    prop hasNext[self: Self!]: Bool {
         return self.cursor.hasNext()
     }
 
@@ -580,13 +538,13 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
      * storage sees it. That is what makes a fetch a *borrow* rather than a read,
      * and what lets a system stop reaching for a storage mid-body.
      */
-    @std::ProvidesAccess
-    prop next[self: Self!]: std::Tuple<Entity, ...T> {
+    @ProvidesAccess
+    prop next[self: Self!]: Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
         // Spelled with its type arguments: the row's element types cannot be
         // read back off the fetches, whose types come from calls, and a variadic
         // callee is specialized from the types it is given.
-        return std::tupleOf<Entity, ...T>(row, inline for Ty in ...T {
+        return tupleOf<Entity, ...T>(row, inline for Ty in ...T {
             storageGet<Ty>(storageOf<Ty>(self.world), row)
         })
     }
@@ -594,13 +552,13 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
     /**
      * Walks the rows, handing each one to [body] as a whole.
      *
-     * Written out rather than inherited from `std::Iterator`: a provided
+     * Written out rather than inherited from `Iterator`: a provided
      * member's copy keeps the spec's `Item` unspecialized in its callable
      * parameter, so the block is offered a bare `Tuple` and the concrete row
      * does not match it.
      */
-    @std::ProvidesAccess
-    func forEach[self: Self!](body: inline (std::Tuple<Entity, ...T>) -> std::Unit) {
+    @ProvidesAccess
+    func forEach[self: Self!](body: inline (Tuple<Entity, ...T>) -> Unit) {
         self.reset()
         while self.hasNext {
             body(self.next)
@@ -622,8 +580,8 @@ impl std::Iterator for QueryOf<...T> assoc Item = std::Tuple<Entity, ...T> {
      * No tuple is built here - each component is fetched straight from its
      * storage, so `unpack` costs a walk and nothing more.
      */
-    @std::ProvidesAccess
-    func unpack[self: Self!](body: inline (Entity, ...T) -> std::Unit) {
+    @ProvidesAccess
+    func unpack[self: Self!](body: inline (Entity, ...T) -> Unit) {
         self.reset()
         while self.hasNext {
             fin row: Entity = self.cursor.next()
@@ -647,7 +605,7 @@ impl QueryOf<...T>:: {
      * the component's own name. Nothing is passed in but the world, which is
      * what lets a system declare a query as a parameter and receive it built.
      */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     /**
      * How far the storages this query reads have moved.
      *
@@ -655,16 +613,16 @@ impl QueryOf<...T>:: {
      * its own writes, so the sum over the fetch terms answers for the whole
      * query in one number.
      */
-    @std::ProvidesAccess
-    func stamp(world: World&): std::Int {
+    @ProvidesAccess
+    func stamp(world: World&): Int {
         var total = 0
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as std::Int)
+            total = total + (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
 
-    @std::ProvidesAccess
+    @ProvidesAccess
     func provide(world: World&): QueryOf<...T> {
         var cursor = queryAll(world, false)
         inline for Ty in ...T {
@@ -693,14 +651,14 @@ impl QueryOf<...T> {
  * Answers whether it replaced one, which is how a system that inserts on first
  * use can tell. There is one resource per type, so inserting twice replaces.
  */
-@std::Experimental(since: "0.1")
-inline func insertResource<T>(world: World!, value: T): std::Bool {
+@Experimental(since: "0.1")
+inline func insertResource<T>(world: World!, value: T): Bool {
     return insertResourceNamed<T>(world, T.typeName, take value)
 }
 
 /** Puts [value] under an explicit [name]. See [insertResource]. */
-@std::Experimental(since: "0.1")
-func insertResourceNamed<T>(world: World!, name: std::String, value: T): std::Bool {
+@Experimental(since: "0.1")
+func insertResourceNamed<T>(world: World!, name: String, value: T): Bool {
     // Appended rather than replaced in place, and read back to front: the newest
     // entry for a name is the one that answers, so inserting is one operation
     // whether or not the resource was already there.
@@ -724,8 +682,8 @@ func insertResourceNamed<T>(world: World!, name: std::String, value: T): std::Bo
  * moves exactly when the resource is written and never otherwise. That is all a
  * reader needs to tell "the same as last time" from "different".
  */
-@std::Experimental(since: "0.1")
-func resourceStamp(world: World&, name: std::String): std::Int {
+@Experimental(since: "0.1")
+func resourceStamp(world: World&, name: String): Int {
     var found = 0 - 1
     var i = 0
     while i < world.resourceNames.size {
@@ -744,15 +702,15 @@ func resourceStamp(world: World&, name: std::String): std::Int {
  * not a condition to handle: nothing sensible can be returned in its place, and
  * carrying on would hide where it was supposed to be inserted.
  */
-@std::Experimental(since: "0.1")
-@std::SignatureOnly
+@Experimental(since: "0.1")
+@SignatureOnly
 inline func resource<T>(world: World&): T {
     return resourceNamed<T>(world, T.typeName)
 }
 
 /** The resource under an explicit [name]. See [resource]. */
-@std::Experimental(since: "0.1")
-func resourceNamed<T>(world: World&, name: std::String): T {
+@Experimental(since: "0.1")
+func resourceNamed<T>(world: World&, name: String): T {
     var i = world.resourceNames.size - 1
     while i >= 0 {
         if world.resourceNames[i] == name {
@@ -769,15 +727,15 @@ func resourceNamed<T>(world: World&, name: std::String): T {
  * A fallback rather than a failure: a system that runs before whatever inserts
  * the resource should see a defined value, not stop the frame.
  */
-@std::Experimental(since: "0.1")
-@std::SignatureOnly
+@Experimental(since: "0.1")
+@SignatureOnly
 inline func resourceOr<T>(world: World&, fallback: T): T {
     return resourceNamedOr<T>(world, T.typeName, take fallback)
 }
 
 /** The resource under an explicit [name], or [fallback]. See [resourceOr]. */
-@std::Experimental(since: "0.1")
-func resourceNamedOr<T>(world: World&, name: std::String, fallback: T): T {
+@Experimental(since: "0.1")
+func resourceNamedOr<T>(world: World&, name: String, fallback: T): T {
     var i = world.resourceNames.size - 1
     while i >= 0 {
         if world.resourceNames[i] == name {
@@ -795,8 +753,8 @@ func resourceNamedOr<T>(world: World&, name: std::String, fallback: T): T {
  * than adding a second one, so a system that registers on first use is safe to
  * run every frame. Answers whether it replaced one.
  */
-@std::Experimental(since: "0.1")
-inline func registerStorage<T>(world: World!, store: Storage<T>): std::Bool {
+@Experimental(since: "0.1")
+inline func registerStorage<T>(world: World!, store: Storage<T>): Bool {
     return registerStorageNamed<T>(world, T.typeName, take store)
 }
 
@@ -807,8 +765,8 @@ inline func registerStorage<T>(world: World!, store: Storage<T>): std::Bool {
  * `inline` body is folded only when it is a single expression - which is what
  * [registerStorage] is, so the type's own name is filled in there.
  */
-@std::Experimental(since: "0.1")
-func registerStorageNamed<T>(world: World!, name: std::String, store: Storage<T>): std::Bool {
+@Experimental(since: "0.1")
+func registerStorageNamed<T>(world: World!, name: String, store: Storage<T>): Bool {
     var i = 0
     while i < world.storageNames.size {
         if world.storageNames[i] == name {
@@ -836,15 +794,15 @@ func registerStorageNamed<T>(world: World!, name: std::String, store: Storage<T>
  * an empty storage gives - the alternative is an error at the one moment a
  * caller can do least about it, midway through a frame.
  */
-@std::Experimental(since: "0.1")
-@std::SignatureOnly
+@Experimental(since: "0.1")
+@SignatureOnly
 inline func storageOf<T>(world: World&): Storage<T> {
     return storageNamed<T>(world, T.typeName)
 }
 
 /** The world's storage registered under an explicit [name]. See [storageOf]. */
-@std::Experimental(since: "0.1")
-func storageNamed<T>(world: World&, name: std::String): Storage<T> {
+@Experimental(since: "0.1")
+func storageNamed<T>(world: World&, name: String): Storage<T> {
     var i = 0
     while i < world.storageNames.size {
         if world.storageNames[i] == name {
@@ -857,14 +815,14 @@ func storageNamed<T>(world: World&, name: std::String): Storage<T> {
     // is all there is to do, and no list has to be kept in step with the types
     // that exist.
     //
-    // Built without `@std::arr[]`: this fallback is reached from a
+    // Built without `@arr[]`: this fallback is reached from a
     // specialization created after macros are expanded, so a macro left here
     // would still be one when the resolver arrived.
     fin fresh = Storage<T>(
-        std::Array::fill<Entity>(0),
-        std::Array::fill<T>(0),
-        std::Array::fill<std::Bool>(0),
-        std::Array::fill<std::Bool>(0),
+        Array::fill<Entity>(0),
+        Array::fill<T>(0),
+        Array::fill<Bool>(0),
+        Array::fill<Bool>(0),
         0L,
     )
     world.storageNames.add(name)
@@ -880,13 +838,13 @@ func storageNamed<T>(world: World&, name: std::String): Storage<T> {
  * what was asked for. Nesting is what composes them, so `with` and `without`
  * can be written in either order and as many times as a system needs.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack QueryWith<Q, ...T> {
     var cursor: QueryCursor
 }
 
 /** A query narrowed to rows that do *not* carry `T`. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack QueryWithout<Q, ...T> {
     var cursor: QueryCursor
 }
@@ -903,7 +861,7 @@ pack QueryWithout<Q, ...T> {
  * type is written rather than where a call is, and the parameter's declared
  * type becomes the query handle the system receives.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 macro @query {
     $Q => QueryOf<$Q>
     $Q with $T => QueryWith<QueryOf<$Q>, $T>
@@ -935,18 +893,18 @@ impl QueryWith<Q, ...T>:: {
      * removes the rows that do not carry it. Filters nest, so this holds however
      * many clauses were written.
      */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     /** How far the storages this query reads have moved. See [QueryOf::stamp]. */
-    @std::ProvidesAccess
-    func stamp(world: World&): std::Int {
+    @ProvidesAccess
+    func stamp(world: World&): Int {
         var total = Q::stamp(world)
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as std::Int)
+            total = total + (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
 
-    @std::ProvidesAccess
+    @ProvidesAccess
     func provide(world: World&): QueryWith<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {
@@ -959,18 +917,18 @@ impl QueryWith<Q, ...T>:: {
 impl QueryWithout<Q, ...T>:: {
 
     /** The same, keeping only the rows that carry *none* of `...T`. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     /** How far the storages this query reads have moved. See [QueryOf::stamp]. */
-    @std::ProvidesAccess
-    func stamp(world: World&): std::Int {
+    @ProvidesAccess
+    func stamp(world: World&): Int {
         var total = Q::stamp(world)
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as std::Int)
+            total = total + (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
 
-    @std::ProvidesAccess
+    @ProvidesAccess
     func provide(world: World&): QueryWithout<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {
@@ -981,23 +939,23 @@ impl QueryWithout<Q, ...T>:: {
 }
 
 /** Rows matching every one of the filters. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack QueryAnd<Q, ...T> {
     var cursor: QueryCursor
 }
 
 /** Rows matching any one of the filters. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack QueryOr<Q, ...T> {
     var cursor: QueryCursor
 }
 
-impl std::Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
+impl Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: std::Bool {
+    prop hasNext[self: Self!]: Bool {
         return self.cursor.hasNext()
     }
 
@@ -1007,12 +965,12 @@ impl std::Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
     }
 }
 
-impl std::Iterator for QueryOr<Q, ...T> assoc Item = Entity {
+impl Iterator for QueryOr<Q, ...T> assoc Item = Entity {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: std::Bool {
+    prop hasNext[self: Self!]: Bool {
         return self.cursor.hasNext()
     }
 
@@ -1030,21 +988,21 @@ impl std::Iterator for QueryOr<Q, ...T> assoc Item = Entity {
  * wanted rather than which components are read. [Changed] and [Removed] are the
  * same idea over the other two things that can happen to a component.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Added<T>
 
 /** Rows whose `T` was written this frame. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Changed<T>
 
 /** Rows whose `T` was taken away this frame. */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack Removed<T>
 
 /** A narrowed query walks its rows exactly as the query it narrowed does. */
 impl QueryWith<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func nextEntity[self: Self!](): Entity {
         return self.cursor.next()
     }
@@ -1052,18 +1010,18 @@ impl QueryWith<Q, ...T> {
 
 impl QueryWithout<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
-    @std::Experimental(since: "0.1")
+    @Experimental(since: "0.1")
     func nextEntity[self: Self!](): Entity {
         return self.cursor.next()
     }
 }
 
-impl std::Iterator for QueryWith<Q, ...T> assoc Item = Entity {
+impl Iterator for QueryWith<Q, ...T> assoc Item = Entity {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: std::Bool {
+    prop hasNext[self: Self!]: Bool {
         return self.cursor.hasNext()
     }
 
@@ -1073,12 +1031,12 @@ impl std::Iterator for QueryWith<Q, ...T> assoc Item = Entity {
     }
 }
 
-impl std::Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
+impl Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
     func reset[self: Self!]() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: std::Bool {
+    prop hasNext[self: Self!]: Bool {
         return self.cursor.hasNext()
     }
 
@@ -1089,11 +1047,11 @@ impl std::Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
 }
 
 func queryEmpty(): QueryCursor {
-    return QueryCursor(@std::arr[Entity::invalid], 1, true, "")
+    return QueryCursor(@arr[Entity::invalid], 1, true, "")
 }
 
-func queryError(message: std::String): QueryCursor {
-    return QueryCursor(@std::arr[Entity::invalid], 1, false, message)
+func queryError(message: String): QueryCursor {
+    return QueryCursor(@arr[Entity::invalid], 1, false, message)
 }
 
 impl QueryCursor {
@@ -1107,18 +1065,18 @@ impl QueryCursor {
         self.cursor = 1
     }
 
-    func markFailed(message: std::String) {
+    func markFailed(message: String) {
         self.ok = false
         self.error = message
     }
 
-    func invalidateAt(index: std::Int) {
+    func invalidateAt(index: Int) {
         if index > 0 && index < self.entities.size {
             self.entities[index] = Entity::invalid
         }
     }
 
-    func hasNext(): std::Bool {
+    func hasNext(): Bool {
         var i = self.cursor
         while i < self.entities.size {
             if self.entities[i].isValid {
@@ -1140,7 +1098,7 @@ impl QueryCursor {
         return Entity::invalid
     }
 
-    func count(): std::Int {
+    func count(): Int {
         var total = 0
         var i = 1
         while i < self.entities.size {
@@ -1152,7 +1110,7 @@ impl QueryCursor {
         return total
     }
 
-    func isEmpty(): std::Bool {
+    func isEmpty(): Bool {
         return self.count() <= 0
     }
 
@@ -1178,7 +1136,7 @@ impl QueryCursor {
     }
 }
 
-func queryAll(world: World&, includeResources: std::Bool): QueryCursor {
+func queryAll(world: World&, includeResources: Bool): QueryCursor {
     var query = queryEmpty()
     var i = 0
     while i < world.entityCount {
@@ -1232,7 +1190,7 @@ func queryRetainScene(query: QueryCursor!, world: World&) {
     }
 }
 
-func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: std::Bool): QueryCursor {
+func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: Bool): QueryCursor {
     var query = queryEmpty()
     var i = 0
     while i < store.entities.size {
@@ -1296,25 +1254,25 @@ func queryResources<T>(world: World&, store: Storage<T>&): QueryCursor {
 }
 
 pack QueryAccess {
-    var system: std::String
-    var reads: std::Array<std::String>
-    var writes: std::Array<std::String>
-    var withs: std::Array<std::String>
-    var withouts: std::Array<std::String>
-    var added: std::Array<std::String>
-    var changed: std::Array<std::String>
-    var broad: std::Bool
-    var includeResources: std::Bool
-    var single: std::Bool
-    var valid: std::Bool
-    var error: std::String
+    var system: String
+    var reads: Array<String>
+    var writes: Array<String>
+    var withs: Array<String>
+    var withouts: Array<String>
+    var added: Array<String>
+    var changed: Array<String>
+    var broad: Bool
+    var includeResources: Bool
+    var single: Bool
+    var valid: Bool
+    var error: String
 }
 
-func queryAccessInit(system: std::String): QueryAccess {
-    return QueryAccess(system, @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], @std::arr[""], false, false, false, true, "")
+func queryAccessInit(system: String): QueryAccess {
+    return QueryAccess(system, @arr[""], @arr[""], @arr[""], @arr[""], @arr[""], @arr[""], false, false, false, true, "")
 }
 
-func queryNameListHas(list: std::Array<std::String>, name: std::String): std::Bool {
+func queryNameListHas(list: Array<String>, name: String): Bool {
     var i = 1
     while i < list.size {
         if list[i] == name {
@@ -1325,7 +1283,7 @@ func queryNameListHas(list: std::Array<std::String>, name: std::String): std::Bo
     return false
 }
 
-func queryNameListsOverlap(left: std::Array<std::String>, right: std::Array<std::String>): std::Bool {
+func queryNameListsOverlap(left: Array<String>, right: Array<String>): Bool {
     var i = 1
     while i < left.size {
         if queryNameListHas(right, left[i]) {
@@ -1336,43 +1294,43 @@ func queryNameListsOverlap(left: std::Array<std::String>, right: std::Array<std:
     return false
 }
 
-func queryAccessRead(access: QueryAccess!, component: std::String) {
+func queryAccessRead(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.reads, component) {
         access.reads.add(component)
     }
 }
 
-func queryAccessWrite(access: QueryAccess!, component: std::String) {
+func queryAccessWrite(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.writes, component) {
         access.writes.add(component)
     }
 }
 
-func queryAccessWith(access: QueryAccess!, component: std::String) {
+func queryAccessWith(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.withs, component) {
         access.withs.add(component)
     }
 }
 
-func queryAccessWithout(access: QueryAccess!, component: std::String) {
+func queryAccessWithout(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.withouts, component) {
         access.withouts.add(component)
     }
 }
 
-func queryAccessAdded(access: QueryAccess!, component: std::String) {
+func queryAccessAdded(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.added, component) {
         access.added.add(component)
     }
 }
 
-func queryAccessChanged(access: QueryAccess!, component: std::String) {
+func queryAccessChanged(access: QueryAccess!, component: String) {
     if component != "" && !queryNameListHas(access.changed, component) {
         access.changed.add(component)
     }
 }
 
-func queryAccessBroad(access: QueryAccess!, includeResources: std::Bool) {
+func queryAccessBroad(access: QueryAccess!, includeResources: Bool) {
     access.broad = true
     access.includeResources = includeResources
 }
@@ -1381,16 +1339,16 @@ func queryAccessSingle(access: QueryAccess!) {
     access.single = true
 }
 
-func queryAccessFail(access: QueryAccess!, message: std::String) {
+func queryAccessFail(access: QueryAccess!, message: String) {
     access.valid = false
     access.error = message
 }
 
-func queryAccessDisjoint(left: QueryAccess&, right: QueryAccess&): std::Bool {
+func queryAccessDisjoint(left: QueryAccess&, right: QueryAccess&): Bool {
     return queryNameListsOverlap(left.withs, right.withouts) || queryNameListsOverlap(right.withs, left.withouts)
 }
 
-func queryAccessConflicts(left: QueryAccess&, right: QueryAccess&): std::Bool {
+func queryAccessConflicts(left: QueryAccess&, right: QueryAccess&): Bool {
     if queryAccessDisjoint(left, right) {
         return false
     }
@@ -1407,16 +1365,16 @@ func queryAccessConflicts(left: QueryAccess&, right: QueryAccess&): std::Bool {
 }
 
 pack ResourceCell<T> {
-    var hasValue: std::Bool
+    var hasValue: Bool
     var value: T
-    var revision: std::Int
+    var revision: Int
 }
 
 func resourceInit<T>(defaultValue: T): ResourceCell<T> {
     return ResourceCell<T>(false, defaultValue, 0)
 }
 
-func resourceExists<T>(resource: ResourceCell<T>&): std::Bool {
+func resourceExists<T>(resource: ResourceCell<T>&): Bool {
     return resource.hasValue
 }
 
@@ -1438,12 +1396,12 @@ func resourceGetOrDefault<T>(resource: ResourceCell<T>&, defaultValue: T): T {
 }
 
 pack EventQueue<T> {
-    var events: std::Array<T>
-    var cursor: std::Int
+    var events: Array<T>
+    var cursor: Int
 }
 
 func eventQueueInit<T>(defaultEvent: T): EventQueue<T> {
-    var events = @std::arr[defaultEvent]
+    var events = @arr[defaultEvent]
     return EventQueue<T>(events, 1)
 }
 
@@ -1451,19 +1409,19 @@ func eventSend<T>(queue: EventQueue<T>!, event: T) {
     queue.events.add(event)
 }
 
-func eventLength<T>(queue: EventQueue<T>&): std::Int {
+func eventLength<T>(queue: EventQueue<T>&): Int {
     return queue.events.size - queue.cursor
 }
 
-func eventIsEmpty<T>(queue: EventQueue<T>&): std::Bool {
+func eventIsEmpty<T>(queue: EventQueue<T>&): Bool {
     return eventLength<T>(queue) <= 0
 }
 
-func eventPeek<T>(queue: EventQueue<T>&, index: std::Int): T {
+func eventPeek<T>(queue: EventQueue<T>&, index: Int): T {
     return queue.events[queue.cursor + index]
 }
 
-func eventHasNext<T>(queue: EventQueue<T>&): std::Bool {
+func eventHasNext<T>(queue: EventQueue<T>&): Bool {
     return queue.cursor < queue.events.size
 }
 
@@ -1474,12 +1432,12 @@ func eventNext<T>(queue: EventQueue<T>!): T {
 }
 
 pack CommandBuffer {
-    var despawns: std::Array<Entity>
-    var cursor: std::Int
+    var despawns: Array<Entity>
+    var cursor: Int
 }
 
 func commandBufferInit(): CommandBuffer {
-    var despawns = @std::arr[Entity::invalid]
+    var despawns = @arr[Entity::invalid]
     return CommandBuffer(despawns, 1)
 }
 
@@ -1504,19 +1462,19 @@ impl CommandBuffer {
  * decorator is the only place a system's place in the frame is written down,
  * which is what stops the two from drifting apart.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack ScheduledSystem {
     /** The function's own name, as `runBefore`/`runAfter` spell it. */
-    fin name: std::String
+    fin name: String
     fin phase: SystemPhase
-    fin order: std::Int
+    fin order: Int
     /** Comma-separated names of systems (or sets) this one must precede. */
-    fin runBefore: std::String
+    fin runBefore: String
     /** Comma-separated names of systems (or sets) this one must follow. */
-    fin runAfter: std::String
-    fin inSet: std::String
+    fin runAfter: String
+    fin inSet: String
     /** Cleared to skip the system without removing its decorator. */
-    var enabled: std::Bool
+    var enabled: Bool
 }
 
 /**
@@ -1526,7 +1484,7 @@ pack ScheduledSystem {
  * a substring test would silently create ordering edges nobody asked for.
  * Surrounding spaces are ignored so `"input, physics"` reads naturally.
  */
-func systemNameListed(list: std::String, name: std::String): std::Bool {
+func systemNameListed(list: String, name: String): Bool {
     if list == "" || name == "" {
         return false
     }
@@ -1572,7 +1530,7 @@ func systemNameListed(list: std::String, name: std::String): std::Bool {
  * *within* a phase, so a stray `runAfter` cannot pull rendering into the middle
  * of simulation.
  */
-func systemPhaseRank(phase: SystemPhase): std::Int {
+func systemPhaseRank(phase: SystemPhase): Int {
     return when phase {
         .Startup -> 0
         .PreUpdate -> 1
@@ -1596,26 +1554,26 @@ func systemPhaseRank(phase: SystemPhase): std::Int {
  * [runPhase] dispatch to the right function from a plain integer. See the note
  * on [systemPlan].
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 pack SystemPlan {
-    var systems: std::Array<ScheduledSystem>
-    var count: std::Int
-    var resolved: std::Array<std::Int>
-    var resolvedCount: std::Int
+    var systems: Array<ScheduledSystem>
+    var count: Int
+    var resolved: Array<Int>
+    var resolvedCount: Int
     /** Set when the constraints contradict each other. */
-    var cyclic: std::Bool
-    var cycleReport: std::String
+    var cyclic: Bool
+    var cycleReport: String
 }
 
 /** Records one decorated system. Called only by the [systemPlan] expansion. */
 func systemPlanDeclare(
     plan: SystemPlan!
-    name: std::String
+    name: String
     phase: SystemPhase
-    order: std::Int
-    runBefore: std::String
-    runAfter: std::String
-    inSet: std::String
+    order: Int
+    runBefore: String
+    runAfter: String
+    inSet: String
 ) {
     plan.systems.add(ScheduledSystem(name, phase, order, runBefore, runAfter, inSet, true))
     plan.count = plan.count + 1
@@ -1623,7 +1581,7 @@ func systemPlanDeclare(
 
 impl SystemPlan {
     /** The index of the system called [name], or `-1`. */
-    func indexOf(name: std::String): std::Int {
+    func indexOf(name: String): Int {
         var i = 0
         while i < self.count {
             if self.systems[i].name == name {
@@ -1641,7 +1599,7 @@ impl SystemPlan {
      * runtime decision, so this is the one part of a system's schedule that is
      * not fixed at compile time.
      */
-    func setEnabled(name: std::String, enabled: std::Bool): std::Bool {
+    func setEnabled(name: String, enabled: Bool): Bool {
         fin found = self.indexOf(name)
         if found < 0 {
             return false
@@ -1658,7 +1616,7 @@ impl SystemPlan {
      * constrains every member of it, so two packages can order their sets
      * without knowing each other's system names.
      */
-    func constrains(earlier: std::Int, later: std::Int): std::Bool {
+    func constrains(earlier: Int, later: Int): Bool {
         fin a = self.systems[earlier]
         fin b = self.systems[later]
         if a.phase != b.phase {
@@ -1694,7 +1652,7 @@ impl SystemPlan {
         self.cycleReport = ""
         self.resolvedCount = 0
 
-        var placed: std::Array<std::Bool> = std::Array::fill<std::Bool>(self.count)
+        var placed: Array<Bool> = Array::fill<Bool>(self.count)
         var i = 0
         while i < self.count {
             placed[i] = false
@@ -1761,8 +1719,8 @@ impl SystemPlan {
     }
 
     /** The names of [phase]'s systems, in the order they will run. */
-    func orderOf(phase: SystemPhase): std::Array<std::String> {
-        var names = @std::arr[""]
+    func orderOf(phase: SystemPhase): Array<String> {
+        var names = @arr[""]
         var i = 0
         while i < self.resolvedCount {
             fin system = self.systems[self.resolved[i]]
@@ -1778,7 +1736,7 @@ impl SystemPlan {
 /**
  * The schedule, built from every `@System` function in the program.
  *
- * There is no registration: `std::reflect<*>.withAnnot<System>` enumerates the
+ * There is no registration: `reflect<*>.withAnnot<System>` enumerates the
  * decorated functions at compile time, and each one's decorator supplies its
  * phase, order and ordering constraints. Adding a system to the frame is
  * writing `@System` above it.
@@ -1795,26 +1753,26 @@ impl SystemPlan {
  * Build it once and keep it; the ordering is fixed at compile time and cannot
  * change while the program runs.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func systemPlan(): SystemPlan {
     var plan = SystemPlan(
-        std::Array::fill<ScheduledSystem>(0),
+        Array::fill<ScheduledSystem>(0),
         0,
-        std::Array::fill<std::Int>(0),
+        Array::fill<Int>(0),
         0,
         false,
         ""
     )
 
-    inline for S in std::reflect<*>.withAnnot<System> {
+    inline for S in reflect<*>.withAnnot<System> {
         systemPlanDeclare(
             plan,
-            std::reflect<S>.declName,
-            std::reflect<S>.decoMeta<System>.phase,
-            std::reflect<S>.decoMeta<System>.order,
-            std::reflect<S>.decoMeta<System>.runBefore,
-            std::reflect<S>.decoMeta<System>.runAfter,
-            std::reflect<S>.decoMeta<System>.inSet
+            reflect<S>.declName,
+            reflect<S>.decoMeta<System>.phase,
+            reflect<S>.decoMeta<System>.order,
+            reflect<S>.decoMeta<System>.runBefore,
+            reflect<S>.decoMeta<System>.runAfter,
+            reflect<S>.decoMeta<System>.inSet
         )
         plan.resolved.add(0)
     }
@@ -1832,14 +1790,14 @@ func systemPlan(): SystemPlan {
  * design exists to avoid. See [systemPlan] for why the index identifies the
  * function.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
     var step = 0
     while step < plan.resolvedCount {
         fin due = plan.resolved[step]
         if plan.systems[due].phase == phase && plan.systems[due].enabled {
             var cursor = 0
-            inline for S in std::reflect<*>.withAnnot<System> {
+            inline for S in reflect<*>.withAnnot<System> {
                 if cursor == due {
                     S(world)
                 }
@@ -1865,7 +1823,7 @@ macro @applyKey => inline """
  * those systems afterwards — [SystemPlan.setEnabled] — rather than this
  * deciding on their behalf.
  */
-@std::Experimental(since: "0.1")
+@Experimental(since: "0.1")
 func runSystems(plan: SystemPlan&, world: World!) {
     runPhase(plan, .Startup, world)
     runPhase(plan, .PreUpdate, world)
@@ -1878,7 +1836,7 @@ func runSystems(plan: SystemPlan&, world: World!) {
 
 /** An empty plan, for tests and for hosts that build a schedule by hand. */
 func systemPlanEmpty(): SystemPlan {
-    return SystemPlan(std::Array::fill<ScheduledSystem>(0), 0, std::Array::fill<std::Int>(0), 0, false, "")
+    return SystemPlan(Array::fill<ScheduledSystem>(0), 0, Array::fill<Int>(0), 0, false, "")
 }
 
 test "constraints order systems regardless of declaration order" {

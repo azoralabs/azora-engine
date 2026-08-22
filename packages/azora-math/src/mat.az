@@ -33,8 +33,8 @@ enum MatrixOrder {
     ColumnMajor
 }
 
-@std::Experimental(since: "0.1")
-pack Mat<T, R: std::Int, C: std::Int, O: MatrixOrder = .RowMajor>
+@Experimental(since: "0.1")
+pack Mat<T, R: Int, C: Int, O: MatrixOrder = .RowMajor>
 where T is Number && R in 2..4 && C in 2..4 {
     inline when O {
         .RowMajor => {
@@ -56,7 +56,7 @@ where T is Number && R in 2..4 && C in 2..4 {
 
 impl Mat<T, R, C, O> {
     ctor [self: Self!](all: T) {
-        inline for f in std::reflect<Self>.fields {
+        inline for f in reflect<Self>.fields {
             self.${f.name} = all
         }
     }
@@ -64,7 +64,7 @@ impl Mat<T, R, C, O> {
     /**
      * Element-wise arithmetic against another matrix of the same shape.
      */
-    inline for op in @std::arr["+", "-"] {
+    inline for op in @arr["+", "-"] {
         inline fin assignOp = "${op}="
 
         oper $op [self: Self&](rhs: Self&): Self {
@@ -89,7 +89,7 @@ impl Mat<T, R, C, O> {
     /**
      * Element-wise arithmetic against a scalar.
      */
-    inline for op in @std::arr["*", "/"] {
+    inline for op in @arr["*", "/"] {
         inline fin assignOp = "${op}="
 
         oper $op [self: Self&](rhs: T&): Self {
@@ -123,7 +123,7 @@ impl Mat<T, R, C, O> {
         return result
     }
 
-    oper== [self: Self&](rhs: Self&): std::Bool {
+    oper== [self: Self&](rhs: Self&): Bool {
         inline for r in 0..<R {
             inline for c in 0..<C {
                 if self.m$r$c != rhs.m$r$c { return false }
@@ -193,7 +193,7 @@ impl Mat<T, R, C, O>:: where R == C {
     }
 }
 
-inline for [t, Ty] in [@std::arr["i", "u", "f", ""], [std::Int, std::UInt, std::Float, std::Double]] {
+inline for [t, Ty] in [@arr["i", "u", "f", ""], [Int, UInt, Float, Double]] {
     inline for n in 2..4 {
         typealias Mat$n$t = Mat<Ty, n, n>
     }

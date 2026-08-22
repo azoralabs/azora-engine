@@ -39,7 +39,7 @@ import engine.ui.compose
 
 
 /** A child's extent across the container's axis. */
-func crossExtent(asked: std::Double, fills: std::Bool, available: std::Double): std::Double {
+func crossExtent(asked: Double, fills: Bool, available: Double): Double {
     if asked > 0.0 {
         return asked
     }
@@ -47,7 +47,7 @@ func crossExtent(asked: std::Double, fills: std::Bool, available: std::Double): 
 }
 
 /** Where a child of [extent] sits within [available], for [alignment]. */
-func alignOffset(alignment: Alignment, available: std::Double, extent: std::Double): std::Double {
+func alignOffset(alignment: Alignment, available: Double, extent: Double): Double {
     when alignment {
         Alignment.Start -> { return 0.0 }
         Alignment.Center -> { return (available - extent) * 0.5 }
@@ -67,10 +67,10 @@ impl Composition {
      */
     func arrange[self: Composition!](
         node: Entity
-        x: std::Double
-        y: std::Double
-        width: std::Double
-        height: std::Double
+        x: Double
+        y: Double
+        width: Double
+        height: Double
     ) {
         self.place(node, x, y, width, height)
 
@@ -100,8 +100,8 @@ impl Composition {
         // column of plain rows look right without anyone stating a size.
         // Annotated because `Array::fill` alone yields `Array<Any>`: the element
         // type does not survive into the local, and every write then fails.
-        var extents: std::Array<std::Double> = std::Array::fill<std::Double>(count)
-        var weights: std::Array<std::Double> = std::Array::fill<std::Double>(count)
+        var extents: Array<Double> = Array::fill<Double>(count)
+        var weights: Array<Double> = Array::fill<Double>(count)
         var fixedTotal = 0.0
         var weightTotal = 0.0
         var flexible = 0
@@ -128,7 +128,7 @@ impl Composition {
             index = index + 1
         }
 
-        fin gaps = layout.spacing * ((count - 1) as std::Double)
+        fin gaps = layout.spacing * ((count - 1) as Double)
         var leftover = along - fixedTotal - gaps
         if leftover < 0.0 {
             leftover = 0.0
@@ -152,7 +152,7 @@ impl Composition {
             }
         }
         if flexible > 0 {
-            fin share = leftover / (flexible as std::Double)
+            fin share = leftover / (flexible as Double)
             index = 0
             while index < count {
                 fin child = self.childAt(node, index)
@@ -173,7 +173,7 @@ impl Composition {
         // is exactly when an arrangement has something to distribute.
         var lead = 0.0
         var between = layout.spacing
-        fin holes = (count - 1) as std::Double
+        fin holes = (count - 1) as Double
         when layout.arrangement {
             Arrangement.Start -> { }
             Arrangement.Center -> { lead = leftover * 0.5 }
@@ -184,12 +184,12 @@ impl Composition {
                 }
             }
             Arrangement.SpaceAround -> {
-                fin unit = leftover / (count as std::Double)
+                fin unit = leftover / (count as Double)
                 lead = unit * 0.5
                 between = between + unit
             }
             Arrangement.SpaceEvenly -> {
-                fin unit = leftover / ((count + 1) as std::Double)
+                fin unit = leftover / ((count + 1) as Double)
                 lead = unit
                 between = between + unit
             }
@@ -241,11 +241,11 @@ impl Composition {
      * Returns the number of nodes moved.
      */
     func applyScroll[self: Composition!](
-        pointerX: std::Double
-        pointerY: std::Double
-        wheelDelta: std::Double
-        keyDelta: std::Double
-    ): std::Int {
+        pointerX: Double
+        pointerY: Double
+        wheelDelta: Double
+        keyDelta: Double
+    ): Int {
         if wheelDelta == 0.0 && keyDelta == 0.0 {
             return 0
         }
@@ -276,7 +276,7 @@ impl Composition {
     }
 
     /** How many children [parent] has. */
-    func childCount[self: Composition&](parent: Entity): std::Int {
+    func childCount[self: Composition&](parent: Entity): Int {
         var total = 0
         var index = 0
         while index < storageLength<Child>(self.children) {
@@ -293,7 +293,7 @@ impl Composition {
     }
 
     /** [parent]'s child at composition position [position]. */
-    func childAt[self: Composition&](parent: Entity, position: std::Int): Entity {
+    func childAt[self: Composition&](parent: Entity, position: Int): Entity {
         var index = 0
         while index < storageLength<Child>(self.children) {
             fin entity = storageEntityAt<Child>(self.children, index)
@@ -319,17 +319,17 @@ impl Composition {
      * which is exactly why a button can recolour a set of shapes it never named.
      */
     /** Writes [colour] onto [entity]'s paint, keeping its alpha and text size. */
-    func setPaint[self: Composition!](entity: Entity, r: std::Double, g: std::Double, b: std::Double) {
+    func setPaint[self: Composition!](entity: Entity, r: Double, g: Double, b: Double) {
         fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
         storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
     }
 
     func tintGroup[self: Composition!](
-        group: std::Int
-        r: std::Double
-        g: std::Double
-        b: std::Double
-    ): std::Int {
+        group: Int
+        r: Double
+        g: Double
+        b: Double
+    ): Int {
         var touched = 0
         var index = 0
         while index < storageLength<TagI>(store<TagI>(self)) {
@@ -353,7 +353,7 @@ impl Composition {
      * Later siblings are tested first because they draw on top, so the node the
      * user believes they clicked is the one that answers.
      */
-    func hit[self: Composition&](pointerX: std::Double, pointerY: std::Double): std::Int {
+    func hit[self: Composition&](pointerX: Double, pointerY: Double): Int {
         var found = 0
         var index = 0
         while index < storageLength<Action>(store<Action>(self)) {
@@ -374,7 +374,7 @@ impl Composition {
     }
 
     /** Moves a scroll container by [delta], clamped to its content. */
-    func scrollBy[self: Composition!](node: Entity, delta: std::Double, viewport: std::Double) {
+    func scrollBy[self: Composition!](node: Entity, delta: Double, viewport: Double) {
         fin current = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
         var moved = current.offset + delta
         fin limit = current.contentExtent - viewport

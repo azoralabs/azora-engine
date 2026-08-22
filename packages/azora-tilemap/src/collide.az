@@ -51,7 +51,7 @@ variant enum TileRayHit {
      * `engine.physics.d2` uses, so a hit can be fed straight into [slide] or
      * [bounce].
      */
-    Hit(pos: TilePos, index: std::Int, normal: Vec2, t: std::Double, point: Vec2)
+    Hit(pos: TilePos, index: Int, normal: Vec2, t: Double, point: Vec2)
     /** The ray reached its limit without meeting a blocking tile. */
     Miss
 }
@@ -62,12 +62,12 @@ pack TileMove {
     var position: Vec2
     /** The velocity left after sliding along whatever was hit. */
     var velocity: Vec2
-    var hitX: std::Bool
-    var hitY: std::Bool
+    var hitX: Bool
+    var hitY: Bool
     /** True when the downward move ended on solid ground. */
-    var grounded: std::Bool
+    var grounded: Bool
     /** True when the upward move ended against a ceiling. */
-    var ceiling: std::Bool
+    var ceiling: Bool
 }
 
 // ── Trait queries ───────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ pack TileMove {
  * Pass [tileAnyLayer] for the union over every layer, which is what a
  * "can I walk here" question usually means.
  */
-func traitsAt(map: Tilemap, layer: std::Int, pos: TilePos): std::Int {
+func traitsAt(map: Tilemap, layer: Int, pos: TilePos): Int {
     return if layer == tileAnyLayer {
         tilemapTraitsAt(map, pos)
     } else {
@@ -87,12 +87,12 @@ func traitsAt(map: Tilemap, layer: std::Int, pos: TilePos): std::Int {
 }
 
 /** True when the tile at [pos] carries any bit of [mask]. */
-func tileBlocks(map: Tilemap, layer: std::Int, pos: TilePos, mask: std::Int): std::Bool {
+func tileBlocks(map: Tilemap, layer: Int, pos: TilePos, mask: Int): Bool {
     return flagsAny(traitsAt(map, layer, pos), mask)
 }
 
 /** True when the tile at [pos] is solid. */
-func tileIsSolid(map: Tilemap, layer: std::Int, pos: TilePos): std::Bool {
+func tileIsSolid(map: Tilemap, layer: Int, pos: TilePos): Bool {
     return tileBlocks(map, layer, pos, traitSolid)
 }
 
@@ -102,7 +102,7 @@ func tileIsSolid(map: Tilemap, layer: std::Int, pos: TilePos): std::Bool {
  * Across the whole stack the topmost blocking tile wins: reporting the ground
  * under a wall would be true and useless.
  */
-func blockingIndexAt(map: Tilemap, layer: std::Int, pos: TilePos, mask: std::Int): std::Int {
+func blockingIndexAt(map: Tilemap, layer: Int, pos: TilePos, mask: Int): Int {
     if layer != tileAnyLayer {
         return tilemapIndexAt(map, layer, pos)
     }
@@ -135,7 +135,7 @@ func tileBox(map: Tilemap, pos: TilePos): Aabb2D {
  * lattice cell, so it stays correct on the isometric and hexagonal lattices,
  * where the two are not the same rectangle.
  */
-func boxOverlaps(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int): std::Bool {
+func boxOverlaps(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Bool {
     fin cells = tilesUnder(map, area)
     if cells.isEmpty() {
         return false
@@ -152,7 +152,7 @@ func boxOverlaps(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int): s
 }
 
 /** How many tiles of [area] carry a bit of [mask]. */
-func countBlocking(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int): std::Int {
+func countBlocking(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Int {
     fin cells = tilesUnder(map, area)
     if cells.isEmpty() {
         return 0
@@ -170,7 +170,7 @@ func countBlocking(map: Tilemap, layer: std::Int, area: Aabb2D, mask: std::Int):
 }
 
 /** True when a box resting at [body] has blocking ground within [reach] below it. */
-func isGrounded(map: Tilemap, layer: std::Int, body: Aabb2D, mask: std::Int, reach: std::Double): std::Bool {
+func isGrounded(map: Tilemap, layer: Int, body: Aabb2D, mask: Int, reach: Double): Bool {
     fin probe = Aabb2D(body.minX, body.maxY, body.maxX, body.maxY + reach)
     return boxOverlaps(map, layer, probe, mask) || boxOverlaps(map, layer, probe, traitOneWay)
 }
@@ -190,11 +190,11 @@ func isGrounded(map: Tilemap, layer: std::Int, body: Aabb2D, mask: std::Int, rea
  */
 func sweepBoxAgainstMap(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     body: Aabb2D
     motion: Vec2
-    mask: std::Int
-    oneWay: std::Bool
+    mask: Int
+    oneWay: Bool
 ): Sweep2D {
     fin cells = tilesUnder(map, body.sweptBy(motion))
     if cells.isEmpty() {
@@ -237,11 +237,11 @@ func sweepBoxAgainstMap(
  */
 func moveBox(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     body: Aabb2D
     motion: Vec2
-    mask: std::Int
-    oneWay: std::Bool
+    mask: Int
+    oneWay: Bool
 ): TileMove {
     fin size = Vec2(body.width(), body.height())
     var at = Vec2(body.minX, body.minY)
@@ -287,12 +287,12 @@ func moveBox(
  */
 func moveAndSlide(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     body: Aabb2D
     velocity: Vec2
-    dt: std::Double
-    mask: std::Int
-    oneWay: std::Bool
+    dt: Double
+    mask: Int
+    oneWay: Bool
 ): TileMove {
     var moved = moveBox(map, layer, body, velocity.scale(dt), mask, oneWay)
     var result = velocity
@@ -319,11 +319,11 @@ func moveAndSlide(
  */
 func rayCast(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     origin: Vec2
     direction: Vec2
-    maxT: std::Double
-    mask: std::Int
+    maxT: Double
+    mask: Int
 ): TileRayHit {
     return when map.geometry.kind {
         TilemapKind.Square() -> raySquare(map, layer, origin, direction, maxT, mask)
@@ -340,11 +340,11 @@ func rayCast(
  */
 func raySquare(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     origin: Vec2
     direction: Vec2
-    maxT: std::Double
-    mask: std::Int
+    maxT: Double
+    mask: Int
 ): TileRayHit {
     fin geo = map.geometry
     fin gx = geo.grid.x
@@ -369,12 +369,12 @@ func raySquare(
     var tDeltaX = maxT + 1.0
     if du > 0.0 {
         stepX = 1
-        tMaxX = ((cellX + 1) as std::Double - u) / du
+        tMaxX = ((cellX + 1) as Double - u) / du
         tDeltaX = 1.0 / du
     }
     if du < 0.0 {
         stepX = -1
-        tMaxX = ((cellX as std::Double) - u) / du
+        tMaxX = ((cellX as Double) - u) / du
         tDeltaX = -1.0 / du
     }
 
@@ -383,12 +383,12 @@ func raySquare(
     var tDeltaY = maxT + 1.0
     if dv > 0.0 {
         stepY = 1
-        tMaxY = ((cellY + 1) as std::Double - v) / dv
+        tMaxY = ((cellY + 1) as Double - v) / dv
         tDeltaY = 1.0 / dv
     }
     if dv < 0.0 {
         stepY = -1
-        tMaxY = ((cellY as std::Double) - v) / dv
+        tMaxY = ((cellY as Double) - v) / dv
         tDeltaY = -1.0 / dv
     }
 
@@ -413,12 +413,12 @@ func raySquare(
             t = tMaxX
             cellX = cellX + stepX
             tMaxX = tMaxX + tDeltaX
-            normal = Vec2(0.0 - (stepX as std::Double), 0.0)
+            normal = Vec2(0.0 - (stepX as Double), 0.0)
         } else {
             t = tMaxY
             cellY = cellY + stepY
             tMaxY = tMaxY + tDeltaY
-            normal = Vec2(0.0, 0.0 - (stepY as std::Double))
+            normal = Vec2(0.0, 0.0 - (stepY as Double))
         }
         if t > maxT {
             return TileRayHit.Miss
@@ -446,7 +446,7 @@ func raySquare(
 }
 
 /** True when a ray at [pos] stepping by ([stepX], [stepY]) can never re-enter the map. */
-func rayLeftForGood(size: TilemapSize, pos: TilePos, stepX: std::Int, stepY: std::Int): std::Bool {
+func rayLeftForGood(size: TilemapSize, pos: TilePos, stepX: Int, stepY: Int): Bool {
     return (pos.x < 0 && stepX <= 0) ||
         (pos.x >= size.x && stepX >= 0) ||
         (pos.y < 0 && stepY <= 0) ||
@@ -461,11 +461,11 @@ func rayLeftForGood(size: TilemapSize, pos: TilePos, stepX: std::Int, stepY: std
  */
 func rayMarch(
     map: Tilemap
-    layer: std::Int
+    layer: Int
     origin: Vec2
     direction: Vec2
-    maxT: std::Double
-    mask: std::Int
+    maxT: Double
+    mask: Int
 ): TileRayHit {
     fin step = geometryStep(map.geometry)
     fin shortest = realMax(realMin(step.x, step.y), 0.0001)
@@ -492,7 +492,7 @@ func rayMarch(
 }
 
 /** True when nothing carrying a bit of [mask] stands between [from] and [to]. */
-func lineOfSight(map: Tilemap, layer: std::Int, from: Vec2, to: Vec2, mask: std::Int): std::Bool {
+func lineOfSight(map: Tilemap, layer: Int, from: Vec2, to: Vec2, mask: Int): Bool {
     return when rayCast(map, layer, from, to - from, 1.0, mask) {
         TileRayHit.Miss() -> true
         else -> false
@@ -500,7 +500,7 @@ func lineOfSight(map: Tilemap, layer: std::Int, from: Vec2, to: Vec2, mask: std:
 }
 
 /** True when [result] met a tile. */
-func rayHitOk(result: TileRayHit): std::Bool {
+func rayHitOk(result: TileRayHit): Bool {
     return when result {
         TileRayHit.Hit(pos, index, normal, t, point) -> true
         else -> false
@@ -516,7 +516,7 @@ func rayHitPos(result: TileRayHit): TilePos {
 }
 
 /** The `t` [result] hit at, or `-1` when it met nothing. */
-func rayHitT(result: TileRayHit): std::Double {
+func rayHitT(result: TileRayHit): Double {
     return when result {
         TileRayHit.Hit(pos, index, normal, t, point) -> t
         else -> -1.0

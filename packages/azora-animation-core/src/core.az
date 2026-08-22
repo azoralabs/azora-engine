@@ -103,7 +103,7 @@ error AnimationFault {
  * and then eases out of it is one track with two different modes.
  */
 pack Keyframe<T> {
-    var time: std::Double
+    var time: Double
     var value: T
     var interpolation: Interpolation
 }
@@ -120,17 +120,17 @@ pack Keyframe<T> {
  * `Real` into it, so `Track<Real>` miscompiles rather than merely being slow.
  */
 pack Track<T> {
-    var name: std::String
-    var keys: std::Array<Keyframe<T>>
-    var count: std::Int
+    var name: String
+    var keys: Array<Keyframe<T>>
+    var count: Int
 }
 
 /** A named moment in a clip that gameplay can react to. */
 pack AnimationEvent {
-    var time: std::Double
-    var name: std::String
+    var time: Double
+    var name: String
     /** A game-defined payload — a sound id, a damage value, a spawn index. */
-    var payload: std::Int
+    var payload: Int
 }
 
 /**
@@ -141,17 +141,17 @@ pack AnimationEvent {
  * walk cycle cost one clip and many clocks.
  */
 pack AnimationClip {
-    var name: std::String
-    var duration: std::Double
+    var name: String
+    var duration: Double
     var loopMode: LoopMode
-    var events: std::Array<AnimationEvent>
-    var eventCount: std::Int
+    var events: Array<AnimationEvent>
+    var eventCount: Int
 }
 
 /** How strongly one animation contributes to a blend. */
 @Component
 pack BlendWeight {
-    var value: std::Double
+    var value: Double
 }
 
 /**
@@ -164,12 +164,12 @@ pack BlendWeight {
 pack AnimationPlayer {
     var clip: AnimationClip
     /** Seconds elapsed, before looping is applied. */
-    var elapsed: std::Double
-    var speed: std::Double
+    var elapsed: Double
+    var speed: Double
     var state: PlaybackState
     var weight: BlendWeight
     /** Where the previous advance left the clock, for event windows. */
-    var previous: std::Double
+    var previous: Double
 }
 
 /**
@@ -180,17 +180,17 @@ pack AnimationPlayer {
  * at once and they cannot drift apart.
  */
 pack Timeline {
-    var name: std::String
-    var players: std::Array<AnimationPlayer>
-    var count: std::Int
+    var name: String
+    var players: Array<AnimationPlayer>
+    var count: Int
     /** Multiplies every player's own speed. */
-    var timeScale: std::Double
+    var timeScale: Double
     var state: PlaybackState
 }
 
 /** Whether an event fired in the window a player just crossed. */
 variant enum EventFire {
-    Fired(name: std::String, payload: std::Int, at: std::Double)
+    Fired(name: String, payload: Int, at: Double)
     Silent
 }
 
@@ -203,7 +203,7 @@ variant enum EventFire {
  * what lets one linear blend serve every value type: the dimensional packages
  * only have to know how to mix two values, never how to ease between them.
  */
-func easeFactor(t: std::Double, mode: Interpolation): std::Double {
+func easeFactor(t: Double, mode: Interpolation): Double {
     fin clamped = animClamp01(t)
     return when mode {
         Interpolation.Step -> if clamped >= 1.0 { 1.0 } else { 0.0 }
@@ -216,7 +216,7 @@ func easeFactor(t: std::Double, mode: Interpolation): std::Double {
 }
 
 /** Two quadratics meeting at the halfway point: slow at both ends. */
-func easeInOut(t: std::Double): std::Double {
+func easeInOut(t: Double): Double {
     if t < 0.5 {
         return 2.0 * t * t
     }
@@ -225,16 +225,16 @@ func easeInOut(t: std::Double): std::Double {
 }
 
 /** Linear interpolation between two reals. */
-func lerpReal(a: std::Double, b: std::Double, t: std::Double): std::Double {
+func lerpReal(a: Double, b: Double, t: Double): Double {
     return a + (b - a) * t
 }
 
 /** Interpolation between two reals, eased by [mode]. */
-func interpolateReal(a: std::Double, b: std::Double, t: std::Double, mode: Interpolation): std::Double {
+func interpolateReal(a: Double, b: Double, t: Double, mode: Interpolation): Double {
     return lerpReal(a, b, easeFactor(t, mode))
 }
 
-func animClamp01(value: std::Double): std::Double {
+func animClamp01(value: Double): Double {
     return when true {
         value < 0.0 -> 0.0
         value > 1.0 -> 1.0
@@ -242,15 +242,15 @@ func animClamp01(value: std::Double): std::Double {
     }
 }
 
-func animMax(a: std::Double, b: std::Double): std::Double {
+func animMax(a: Double, b: Double): Double {
     return if a > b { a } else { b }
 }
 
-func animMin(a: std::Double, b: std::Double): std::Double {
+func animMin(a: Double, b: Double): Double {
     return if a < b { a } else { b }
 }
 
-func animAbs(value: std::Double): std::Double {
+func animAbs(value: Double): Double {
     return if value < 0.0 { 0.0 - value } else { value }
 }
 
@@ -260,11 +260,11 @@ func animAbs(value: std::Double): std::Double {
  * Playing a clip backwards drives the clock negative, and a truncating
  * remainder would fold that onto the wrong end of the loop.
  */
-func animWrap(value: std::Double, period: std::Double): std::Double {
+func animWrap(value: Double, period: Double): Double {
     if period <= animEpsilon {
         return 0.0
     }
-    var wrapped = value - (((value / period) as std::Int) as std::Double) * period
+    var wrapped = value - (((value / period) as Int) as Double) * period
     if wrapped < 0.0 {
         wrapped = wrapped + period
     }
@@ -274,12 +274,12 @@ func animWrap(value: std::Double, period: std::Double): std::Double {
 // ── Tracks ──────────────────────────────────────────────────────────────
 
 /** An empty track with room for [capacity] keyframes. */
-func trackNew<T>(name: std::String, capacity: std::Int): Track<T> {
-    var keys: std::Array<Keyframe<T>> = std::Array::fill<Keyframe<T>>(animCapacity(capacity))
+func trackNew<T>(name: String, capacity: Int): Track<T> {
+    var keys: Array<Keyframe<T>> = Array::fill<Keyframe<T>>(animCapacity(capacity))
     return Track<T>(name, keys, 0)
 }
 
-func animCapacity(capacity: std::Int): std::Int {
+func animCapacity(capacity: Int): Int {
     return if capacity > 0 { capacity } else { 0 }
 }
 
@@ -290,10 +290,10 @@ func animCapacity(capacity: std::Int): std::Int {
  * a base pose, an override pass, a hand-tweaked key — plays correctly without
  * the caller having to sort anything.
  */
-func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): std::Int {
+func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): Int {
     if track.count >= track.keys.size {
         fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
-        var grown: std::Array<Keyframe<T>> = std::Array::fill<Keyframe<T>>(room)
+        var grown: Array<Keyframe<T>> = Array::fill<Keyframe<T>>(room)
         var i = 0
         while i < track.count {
             grown[i] = track.keys[i]
@@ -324,12 +324,12 @@ func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): std::Int {
 }
 
 /** Adds a keyframe at [time] holding [value]. */
-func trackKey<T>(track: Track<T>!, time: std::Double, value: T, mode: Interpolation): std::Int {
+func trackKey<T>(track: Track<T>!, time: Double, value: T, mode: Interpolation): Int {
     return trackInsert<T>(track, Keyframe<T>(time, value, mode))
 }
 
 /** The keyframe at [index], or the first one when the index is out of range. */
-func trackAt<T>(track: Track<T>&, index: std::Int): Keyframe<T> {
+func trackAt<T>(track: Track<T>&, index: Int): Keyframe<T> {
     fin safe = when true {
         track.count <= 0 -> 0
         index < 0 -> 0
@@ -340,14 +340,14 @@ func trackAt<T>(track: Track<T>&, index: std::Int): Keyframe<T> {
 }
 
 /** The time of the track's last keyframe. */
-func trackDuration<T>(track: Track<T>&): std::Double {
+func trackDuration<T>(track: Track<T>&): Double {
     if track.count <= 0 {
         return 0.0
     }
     return track.keys[track.count - 1].time
 }
 
-func trackIsEmpty<T>(track: Track<T>&): std::Bool {
+func trackIsEmpty<T>(track: Track<T>&): Bool {
     return track.count <= 0
 }
 
@@ -359,15 +359,15 @@ func trackIsEmpty<T>(track: Track<T>&): std::Bool {
  * using the factor computed here, which already has the easing folded in.
  */
 pack TrackSpan {
-    var fromIndex: std::Int
-    var toIndex: std::Int
+    var fromIndex: Int
+    var toIndex: Int
     /** Eased position between the two keys, `0 .. 1`. */
-    var factor: std::Double
-    var valid: std::Bool
+    var factor: Double
+    var valid: Bool
 }
 
 /** The span [time] falls in, on a track sorted by [trackInsert]. */
-func trackSpanAt<T>(track: Track<T>&, time: std::Double): TrackSpan {
+func trackSpanAt<T>(track: Track<T>&, time: Double): TrackSpan {
     if track.count <= 0 {
         return TrackSpan(0, 0, 0.0, false)
     }
@@ -407,29 +407,29 @@ func trackSpanAt<T>(track: Track<T>&, time: std::Double): TrackSpan {
 
 /** One real value at one time. */
 pack RealKeyframe {
-    var time: std::Double
-    var value: std::Double
+    var time: Double
+    var value: Double
     var interpolation: Interpolation
 }
 
 /** A named, time-ordered run of real keyframes. */
 pack RealTrack {
-    var name: std::String
-    var keys: std::Array<RealKeyframe>
-    var count: std::Int
+    var name: String
+    var keys: Array<RealKeyframe>
+    var count: Int
 }
 
 /** An empty scalar track with room for [capacity] keyframes. */
-func realTrackNew(name: std::String, capacity: std::Int): RealTrack {
-    var keys: std::Array<RealKeyframe> = std::Array::fill<RealKeyframe>(animCapacity(capacity))
+func realTrackNew(name: String, capacity: Int): RealTrack {
+    var keys: Array<RealKeyframe> = Array::fill<RealKeyframe>(animCapacity(capacity))
     return RealTrack(name, keys, 0)
 }
 
 /** Inserts a key at its place in time, keeping the track sorted. */
-func realTrackKey(track: RealTrack!, time: std::Double, value: std::Double, mode: Interpolation): std::Int {
+func realTrackKey(track: RealTrack!, time: Double, value: Double, mode: Interpolation): Int {
     if track.count >= track.keys.size {
         fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
-        var grown: std::Array<RealKeyframe> = std::Array::fill<RealKeyframe>(room)
+        var grown: Array<RealKeyframe> = Array::fill<RealKeyframe>(room)
         var i = 0
         while i < track.count {
             grown[i] = track.keys[i]
@@ -459,7 +459,7 @@ func realTrackKey(track: RealTrack!, time: std::Double, value: std::Double, mode
 }
 
 /** The key at [index], or the nearest end key. */
-func realTrackAt(track: RealTrack&, index: std::Int): RealKeyframe {
+func realTrackAt(track: RealTrack&, index: Int): RealKeyframe {
     fin safe = when true {
         track.count <= 0 -> 0
         index < 0 -> 0
@@ -470,7 +470,7 @@ func realTrackAt(track: RealTrack&, index: std::Int): RealKeyframe {
 }
 
 /** The time of the track's last keyframe. */
-func realTrackDuration(track: RealTrack&): std::Double {
+func realTrackDuration(track: RealTrack&): Double {
     if track.count <= 0 {
         return 0.0
     }
@@ -478,7 +478,7 @@ func realTrackDuration(track: RealTrack&): std::Double {
 }
 
 /** The span [time] falls in, on a sorted scalar track. */
-func realTrackSpanAt(track: RealTrack&, time: std::Double): TrackSpan {
+func realTrackSpanAt(track: RealTrack&, time: Double): TrackSpan {
     if track.count <= 0 {
         return TrackSpan(0, 0, 0.0, false)
     }
@@ -509,7 +509,7 @@ func realTrackSpanAt(track: RealTrack&, time: std::Double): TrackSpan {
 }
 
 /** Samples a scalar track at [time]. */
-func sampleReal(track: RealTrack&, time: std::Double): std::Double {
+func sampleReal(track: RealTrack&, time: Double): Double {
     fin span = realTrackSpanAt(track, time)
     if !span.valid {
         return 0.0
@@ -524,16 +524,16 @@ func sampleReal(track: RealTrack&, time: std::Double): std::Double {
 // ── Clips ───────────────────────────────────────────────────────────────
 
 /** A clip of [duration] seconds. */
-func animationClip(name: std::String, duration: std::Double, loopMode: LoopMode): AnimationClip {
-    var events: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(0)
+func animationClip(name: String, duration: Double, loopMode: LoopMode): AnimationClip {
+    var events: Array<AnimationEvent> = Array::fill<AnimationEvent>(0)
     return AnimationClip(name, animMax(duration, 0.0), loopMode, events, 0)
 }
 
 /** Adds an event at [time], keeping the event list sorted. */
-func clipEvent(clip: AnimationClip!, time: std::Double, name: std::String, payload: std::Int): std::Int {
+func clipEvent(clip: AnimationClip!, time: Double, name: String, payload: Int): Int {
     if clip.eventCount >= clip.events.size {
         fin room = if clip.events.size * 2 > 4 { clip.events.size * 2 } else { 4 }
-        var grown: std::Array<AnimationEvent> = std::Array::fill<AnimationEvent>(room)
+        var grown: Array<AnimationEvent> = Array::fill<AnimationEvent>(room)
         var i = 0
         while i < clip.eventCount {
             grown[i] = clip.events[i]
@@ -569,7 +569,7 @@ func clipEvent(clip: AnimationClip!, time: std::Double, name: std::String, paylo
  * whether a clip repeats: it asks what the pose is *now* and gets an answer in
  * `0 .. duration`.
  */
-func clipLocalTime(clip: AnimationClip&, elapsed: std::Double): std::Double {
+func clipLocalTime(clip: AnimationClip&, elapsed: Double): Double {
     if clip.duration <= animEpsilon {
         return 0.0
     }
@@ -587,13 +587,13 @@ func clipLocalTime(clip: AnimationClip&, elapsed: std::Double): std::Double {
  * read in reverse — which is what makes the motion reverse rather than snap
  * back to the start.
  */
-func pingPongTime(elapsed: std::Double, duration: std::Double): std::Double {
+func pingPongTime(elapsed: Double, duration: Double): Double {
     fin phase = animWrap(elapsed, duration * 2.0)
     return if phase <= duration { phase } else { duration * 2.0 - phase }
 }
 
 /** [elapsed] held inside `0 .. duration`, for the non-looping modes. */
-func animHold(elapsed: std::Double, duration: std::Double): std::Double {
+func animHold(elapsed: Double, duration: Double): Double {
     return when true {
         elapsed < 0.0 -> 0.0
         elapsed > duration -> duration
@@ -602,7 +602,7 @@ func animHold(elapsed: std::Double, duration: std::Double): std::Double {
 }
 
 /** Which way a ping-pong clip is travelling at [elapsed]. */
-func clipDirection(clip: AnimationClip&, elapsed: std::Double): PlaybackDirection {
+func clipDirection(clip: AnimationClip&, elapsed: Double): PlaybackDirection {
     if clip.duration <= animEpsilon {
         return PlaybackDirection.Forward
     }
@@ -617,7 +617,7 @@ func clipDirection(clip: AnimationClip&, elapsed: std::Double): PlaybackDirectio
 }
 
 /** True when a clip started at zero has run past its end. */
-func clipHasEnded(clip: AnimationClip&, elapsed: std::Double): std::Bool {
+func clipHasEnded(clip: AnimationClip&, elapsed: Double): Bool {
     return when clip.loopMode {
         LoopMode.Once -> elapsed >= clip.duration
         else -> false
@@ -625,7 +625,7 @@ func clipHasEnded(clip: AnimationClip&, elapsed: std::Double): std::Bool {
 }
 
 /** The clip's progress as a `0 .. 1` fraction. */
-func clipProgress(clip: AnimationClip&, elapsed: std::Double): std::Double {
+func clipProgress(clip: AnimationClip&, elapsed: Double): Double {
     if clip.duration <= animEpsilon {
         return 1.0
     }
@@ -644,7 +644,7 @@ func playingPlayer(clip: AnimationClip): AnimationPlayer {
     return AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
 }
 
-func blendWeight(value: std::Double): BlendWeight {
+func blendWeight(value: Double): BlendWeight {
     return BlendWeight(animClamp01(value))
 }
 
@@ -677,18 +677,18 @@ impl AnimationPlayer {
     }
 
     /** Moves the clock to [time] without playing, for scrubbing a timeline. */
-    func seek(time: std::Double) {
+    func seek(time: Double) {
         self.previous = self.elapsed
         self.elapsed = animMax(time, 0.0)
     }
 
     /** The time within the clip the player is currently at. */
-    func localTime(): std::Double {
+    func localTime(): Double {
         return clipLocalTime(self.clip, self.elapsed)
     }
 
     /** The player's progress through its clip, `0 .. 1`. */
-    func progress(): std::Double {
+    func progress(): Double {
         return clipProgress(self.clip, self.elapsed)
     }
 
@@ -697,7 +697,7 @@ impl AnimationPlayer {
     }
 
     /** True while the player is contributing to a blend. */
-    func isActive(): std::Bool {
+    func isActive(): Bool {
         return self.state == PlaybackState.Playing && self.weight.value > 0.0
     }
 
@@ -708,7 +708,7 @@ impl AnimationPlayer {
      * accumulating it, so resuming continues from where it left off instead of
      * jumping forward by however long it was paused.
      */
-    func advance(dt: std::Double): PlaybackState {
+    func advance(dt: Double): PlaybackState {
         if self.state != PlaybackState.Playing {
             return self.state
         }
@@ -762,7 +762,7 @@ func playerEvent(player: AnimationPlayer&): EventFire {
 }
 
 /** True when [fire] reported an event. */
-func eventFired(fire: EventFire): std::Bool {
+func eventFired(fire: EventFire): Bool {
     return when fire {
         EventFire.Fired(name, payload, at) -> true
         else -> false
@@ -770,7 +770,7 @@ func eventFired(fire: EventFire): std::Bool {
 }
 
 /** The name of a fired event, or the empty string. */
-func eventName(fire: EventFire): std::String {
+func eventName(fire: EventFire): String {
     return when fire {
         EventFire.Fired(name, payload, at) -> name
         else -> ""
@@ -780,17 +780,17 @@ func eventName(fire: EventFire): std::String {
 // ── Timelines ───────────────────────────────────────────────────────────
 
 /** An empty timeline with room for [capacity] players. */
-func timelineNew(name: std::String, capacity: std::Int): Timeline {
-    var players: std::Array<AnimationPlayer> = std::Array::fill<AnimationPlayer>(animCapacity(capacity))
+func timelineNew(name: String, capacity: Int): Timeline {
+    var players: Array<AnimationPlayer> = Array::fill<AnimationPlayer>(animCapacity(capacity))
     return Timeline(name, players, 0, 1.0, PlaybackState.Stopped)
 }
 
 impl Timeline {
     /** Appends [player] and returns its index. */
-    func add(player: AnimationPlayer): std::Int {
+    func add(player: AnimationPlayer): Int {
         if self.count >= self.players.size {
             fin room = if self.players.size * 2 > 4 { self.players.size * 2 } else { 4 }
-            var grown: std::Array<AnimationPlayer> = std::Array::fill<AnimationPlayer>(room)
+            var grown: Array<AnimationPlayer> = Array::fill<AnimationPlayer>(room)
             var i = 0
             while i < self.count {
                 grown[i] = self.players[i]
@@ -804,7 +804,7 @@ impl Timeline {
     }
 
     /** The player at [index], or the first one. */
-    func at(index: std::Int): AnimationPlayer {
+    func at(index: Int): AnimationPlayer {
         fin safe = when true {
             self.count <= 0 -> 0
             index < 0 -> 0
@@ -850,7 +850,7 @@ impl Timeline {
      * which is what lets a cutscene wait for its longest clip without the
      * caller tracking them individually.
      */
-    func advance(dt: std::Double): PlaybackState {
+    func advance(dt: Double): PlaybackState {
         if self.state != PlaybackState.Playing {
             return self.state
         }
@@ -867,7 +867,7 @@ impl Timeline {
     }
 
     /** The longest clip on the timeline. */
-    func duration(): std::Double {
+    func duration(): Double {
         var longest = 0.0
         for i in 0..(self.count - 1) {
             longest = animMax(longest, self.players[i].clip.duration)
@@ -885,7 +885,7 @@ impl Timeline {
  * it, which shows up as a pose that sags toward the origin — so normalising is
  * done once here rather than being remembered at every blend site.
  */
-func normalizeWeights(weights: std::Array<std::Double>, count: std::Int) {
+func normalizeWeights(weights: Array<Double>, count: Int) {
     var total = 0.0
     for i in 0..(count - 1) {
         total = total + animMax(weights[i], 0.0)
@@ -899,7 +899,7 @@ func normalizeWeights(weights: std::Array<std::Double>, count: std::Int) {
 }
 
 /** The contribution of [player] to a blend, `0` when it is not active. */
-func playerContribution(player: AnimationPlayer&): std::Double {
+func playerContribution(player: AnimationPlayer&): Double {
     return if player.isActive() { player.weight.value } else { 0.0 }
 }
 
@@ -1021,7 +1021,7 @@ test "a timeline drives its players as one" {
 }
 
 test "weights normalise to one" {
-    var weights: std::Array<std::Double> = std::Array::fill<std::Double>(3)
+    var weights: Array<Double> = Array::fill<Double>(3)
     weights[0] = 1.0
     weights[1] = 2.0
     weights[2] = 1.0
@@ -1030,7 +1030,7 @@ test "weights normalise to one" {
         "weights must be scaled to sum to one"
     }
 
-    var zeroed: std::Array<std::Double> = std::Array::fill<std::Double>(2)
+    var zeroed: Array<Double> = Array::fill<Double>(2)
     zeroed[0] = 0.0
     zeroed[1] = 0.0
     normalizeWeights(zeroed, 2)

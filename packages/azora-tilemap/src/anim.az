@@ -42,11 +42,11 @@ enum TileAnimationMode {
  */
 pack TileAnimation {
     /** The first tile index of the run. */
-    var first: std::Int
+    var first: Int
     /** The last tile index of the run, inclusive. */
-    var last: std::Int
+    var last: Int
     /** Frames per second. */
-    var fps: std::Double
+    var fps: Double
     var mode: TileAnimationMode
 }
 
@@ -58,24 +58,24 @@ pack TileAnimation {
  * once per drawn tile, so it has to be an array lookup and not a search.
  */
 pack TileAnimationSet {
-    var animations: std::Array<TileAnimation>
-    var count: std::Int
-    var byTile: std::Array<std::Int>
+    var animations: Array<TileAnimation>
+    var count: Int
+    var byTile: Array<Int>
 }
 
-func tileAnimation(first: std::Int, last: std::Int, fps: std::Double, mode: TileAnimationMode): TileAnimation {
+func tileAnimation(first: Int, last: Int, fps: Double, mode: TileAnimationMode): TileAnimation {
     return TileAnimation(first, last, fps, mode)
 }
 
 /** An animation set covering tile indices `0 .. tileCount - 1`. */
-func tileAnimationSetNew(tileCount: std::Int): TileAnimationSet {
-    var animations: std::Array<TileAnimation> = std::Array::fill<TileAnimation>(0)
+func tileAnimationSetNew(tileCount: Int): TileAnimationSet {
+    var animations: Array<TileAnimation> = Array::fill<TileAnimation>(0)
     return TileAnimationSet(animations, 0, intGridFill(intMax(tileCount, 0), 1, -1))
 }
 
 impl TileAnimation {
     /** The number of frames in the run. */
-    func frameCount(): std::Int {
+    func frameCount(): Int {
         return intMax(self.last - self.first + 1, 1)
     }
 
@@ -85,7 +85,7 @@ impl TileAnimation {
      * A non-positive rate holds the first frame, which is how an animation is
      * paused without removing it from the set.
      */
-    func frameAt(seconds: std::Double): std::Int {
+    func frameAt(seconds: Double): Int {
         fin frames = self.frameCount()
         if frames <= 1 || self.fps <= 0.0 || seconds <= 0.0 {
             return self.first
@@ -122,10 +122,10 @@ impl TileAnimationSet {
      * picture of frame 2. Bind the rest explicitly with [bindTile] when a map is
      * meant to animate from whichever frame it was drawn with.
      */
-    func add(animation: TileAnimation): std::Int {
+    func add(animation: TileAnimation): Int {
         if self.count >= self.animations.size {
             fin room = intMax(self.animations.size * 2, 4)
-            var grown: std::Array<TileAnimation> = std::Array::fill<TileAnimation>(room)
+            var grown: Array<TileAnimation> = Array::fill<TileAnimation>(room)
             var i = 0
             while i < self.count {
                 grown[i] = self.animations[i]
@@ -141,7 +141,7 @@ impl TileAnimationSet {
     }
 
     /** Binds the tile index [index] to the animation [id]. */
-    func bindTile(index: std::Int, id: std::Int) {
+    func bindTile(index: Int, id: Int) {
         if index < 0 || index >= self.byTile.size {
             return
         }
@@ -149,7 +149,7 @@ impl TileAnimationSet {
     }
 
     /** Binds every frame of [id]'s run, so any authored frame animates. */
-    func bindRange(id: std::Int): std::Int {
+    func bindRange(id: Int): Int {
         if id < 0 || id >= self.count {
             return 0
         }
@@ -165,7 +165,7 @@ impl TileAnimationSet {
     }
 
     /** The animation id bound to [index], or `-1`. */
-    func idOf(index: std::Int): std::Int {
+    func idOf(index: Int): Int {
         if index < 0 || index >= self.byTile.size {
             return -1
         }
@@ -173,12 +173,12 @@ impl TileAnimationSet {
     }
 
     /** True when [index] animates. */
-    func animates(index: std::Int): std::Bool {
+    func animates(index: Int): Bool {
         return self.idOf(index) >= 0
     }
 
     /** The animation with id [id]; a still frame when the id is unknown. */
-    func at(id: std::Int): TileAnimation {
+    func at(id: Int): TileAnimation {
         if id < 0 || id >= self.count {
             return TileAnimation(0, 0, 0.0, TileAnimationMode.Once)
         }
@@ -186,7 +186,7 @@ impl TileAnimationSet {
     }
 
     /** The tile index to draw for [index] at [seconds]. */
-    func resolve(index: std::Int, seconds: std::Double): std::Int {
+    func resolve(index: Int, seconds: Double): Int {
         fin id = self.idOf(index)
         if id < 0 {
             return index
@@ -201,7 +201,7 @@ impl TileAnimationSet {
      * [tilePhase] to derive a stable one from a cell's position, so the same
      * cell always animates the same way across saves and reloads.
      */
-    func resolvePhased(index: std::Int, seconds: std::Double, phase: std::Double): std::Int {
+    func resolvePhased(index: Int, seconds: Double, phase: Double): Int {
         fin id = self.idOf(index)
         if id < 0 {
             return index
@@ -210,7 +210,7 @@ impl TileAnimationSet {
     }
 
     /** Resolves [index] with a phase derived from the cell [pos]. */
-    func resolveAt(index: std::Int, seconds: std::Double, pos: TilePos): std::Int {
+    func resolveAt(index: Int, seconds: Double, pos: TilePos): Int {
         fin id = self.idOf(index)
         if id < 0 {
             return index
@@ -227,12 +227,12 @@ impl TileAnimationSet {
  * cells land far apart in the cycle rather than a frame apart, which is what
  * makes a field of animated tiles look scattered instead of rippling.
  */
-func tilePhase(pos: TilePos, frames: std::Int, fps: std::Double): std::Double {
+func tilePhase(pos: TilePos, frames: Int, fps: Double): Double {
     if frames <= 1 || fps <= 0.0 {
         return 0.0
     }
     fin mixed = tileFloorMod(pos.x * 73856093 ^ pos.y * 19349663, intMax(frames, 1))
-    return (mixed as std::Double) / fps
+    return (mixed as Double) / fps
 }
 
 test "each mode walks its run the way its name promises" {
