@@ -683,11 +683,11 @@ directly:
 pack ProductScreen derives Compose
 
 impl ProductScreen {
-    react ctor[self: Self!, anchor: Anchor&](
-        id: std::String
+    react ctor (anchor: Anchor&).(
+        id: String
         navEntryContext: NavEntryContext<AppRoute>&
         modifier: Modifier& = .()
-        key: std::String = ""
+        key: String = ""
     ): Entity {
         retain var scroll = 0.0
         preserve var selectedTab = 0

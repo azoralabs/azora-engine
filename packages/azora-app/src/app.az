@@ -25,7 +25,7 @@ import engine.platform
 
 /** A per-frame callback for games that keep logic outside the ECS schedule. */
 spec GameSystem {
-    func run[self: Self&](app: App!)
+    func &.run(app: App!)
 }
 
 /**
@@ -65,21 +65,19 @@ func engine(title: String, width: Int, height: Int): Engine {
 }
 
 impl Engine {
-    func setClearColor[self: Self!](r: Double, g: Double, b: Double): Engine! {
-        self.clearR = r
-        self.clearG = g
-        self.clearB = b
+    func !.setClearColor(r: Double, g: Double, b: Double): Engine! {
+        self.{clearR, clearG, clearB} = {r, g, b}
         return self
     }
 
     /** Registers a callback to run once, before the first frame. */
-    func addStartupSystem[self: Self!](system: GameSystem): Engine! {
+    func !.addStartupSystem(system: GameSystem): Engine! {
         self.startup.add(system)
         return self
     }
 
     /** Registers a callback to run every frame. */
-    func addUpdateSystem[self: Self!](system: GameSystem): Engine! {
+    func !.addUpdateSystem(system: GameSystem): Engine! {
         self.update.add(system)
         return self
     }
@@ -91,7 +89,7 @@ impl Engine {
      * stays deterministic regardless of frame rate; every other phase runs
      * exactly once per rendered frame.
      */
-    func run[self: Self!]() {
+    func !.run() {
         var app = appInit(self.title, self.width, self.height)
         if !app.ok {
             return
