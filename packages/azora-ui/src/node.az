@@ -392,6 +392,13 @@ enum ModifierKind {
     Padding
     Background
     Weight
+    Rounded
+    Border
+    Hover
+    TextColor
+    FontSize
+    TextAlign
+    Font
 }
 
 /**
@@ -501,6 +508,47 @@ impl Modifier {
     func &.weight(value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Weight, value, 0.0, 0.0, 0.0))
     }
+
+    /** Round the background's corners by [radius] points. */
+    func &.rounded(radius: Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Rounded, radius, 0.0, 0.0, 0.0))
+    }
+
+    /** Draw an inner border [width] points wide, following any rounding. */
+    func &.border(width: Double, r: Double, g: Double, b: Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Border, width, r, g, b))
+    }
+
+    /** Fill with this colour instead of the background while the pointer is over the node. */
+    func &.hover(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Hover, r, g, b, alpha))
+    }
+
+    /** The colour of the node's own text. */
+    func &.textColor(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
+        return self.then(ModifierEntry(ModifierKind.TextColor, r, g, b, alpha))
+    }
+
+    /** The point size of the node's own text. */
+    func &.fontSize(size: Double): Modifier {
+        return self.then(ModifierEntry(ModifierKind.FontSize, size, 0.0, 0.0, 0.0))
+    }
+
+    /** Draw the node's text in the interface font's semibold weight. */
+    func &.semibold(): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Font, 1.0, 0.0, 0.0, 0.0))
+    }
+
+    /** Draw the node's text in a fixed-pitch font. */
+    func &.monospace(): Modifier {
+        return self.then(ModifierEntry(ModifierKind.Font, 2.0, 0.0, 0.0, 0.0))
+    }
+
+    /** Where the node's text sits across its width; padding insets the edges. */
+    func &.textAlign(alignment: Alignment): Modifier {
+        fin value: Double = if alignment == Alignment.Start { 0.0 } else if alignment == Alignment.Center { 1.0 } else { 2.0 }
+        return self.then(ModifierEntry(ModifierKind.TextAlign, value, 0.0, 0.0, 0.0))
+    }
 }
 
 
@@ -568,6 +616,21 @@ impl Modifier {
     func weight(value: Double): Modifier {
         return .().weight(value)
     }
+
+    /** Round the background's corners. */
+    func rounded(radius: Double): Modifier {
+        return .().rounded(radius)
+    }
+
+    /** The colour of the node's own text. */
+    func textColor(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
+        return .().textColor(r, g, b, alpha)
+    }
+
+    /** The point size of the node's own text. */
+    func fontSize(size: Double): Modifier {
+        return .().fontSize(size)
+    }
 }
 
 /**
@@ -593,4 +656,47 @@ pack Padding derives Clone {
     var top: Double = 0.0
     var end: Double = 0.0
     var bottom: Double = 0.0
+}
+
+/** Corner rounding for a node's background and border. */
+@Component
+pack Corner derives Clone {
+    var radius: Double = 0.0
+}
+
+/** An inner border drawn over the background. */
+@Component
+pack Stroke derives Clone {
+    var width: Double = 0.0
+    var r: Double = 0.0
+    var g: Double = 0.0
+    var b: Double = 0.0
+    var alpha: Double = 1.0
+}
+
+/** The fill a node takes while the pointer is over it. */
+@Component
+pack HoverPaint derives Clone {
+    var r: Double = 0.0
+    var g: Double = 0.0
+    var b: Double = 0.0
+    var alpha: Double = 1.0
+}
+
+/**
+ * How a node's own text is drawn.
+ *
+ * [align] is 0 for start, 1 for centre and 2 for end, measured inside the
+ * node's padding; [size] 0 means the default point size.
+ */
+@Component
+pack TextStyle derives Clone {
+    var r: Double = 0.94
+    var g: Double = 0.95
+    var b: Double = 0.97
+    var alpha: Double = 1.0
+    var size: Double = 0.0
+    var align: Int = 1
+    /** 0 regular, 1 semibold, 2 fixed-pitch. */
+    var font: Int = 0
 }

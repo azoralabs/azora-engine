@@ -40,6 +40,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifdef __APPLE__
@@ -193,6 +194,9 @@ void az_poke32(int64_t p, int64_t off, int32_t v)  { *(int32_t*)((char*)p + off)
 void az_poke8(int64_t p, int64_t off, int32_t v)   { *(uint8_t*)((char*)p + off) = (uint8_t)v; }
 void az_poke_f32(int64_t p, int64_t off, double v) { *(float*)((char*)p + off) = (float)v; }
 void az_poke_f64(int64_t p, int64_t off, double v) { *(double*)((char*)p + off) = v; }
+/* A NUL-terminated byte run inside a raw block, read as an Azora String. The
+ * String aliases the block: it is valid until the block is rewritten. */
+const char* az_cstring(int64_t p, int64_t off) { return (const char*)p + off; }
 
 /* ── Process-wide close request ────────────────────────────────────────── */
 /*
@@ -210,6 +214,104 @@ static _Atomic int az_close_requested = 0;
 
 void    az_request_exit(void)   { __c11_atomic_store(&az_close_requested, 1, __ATOMIC_RELAXED); }
 int64_t az_exit_requested(void) { return __c11_atomic_load(&az_close_requested, __ATOMIC_RELAXED); }
+
+/* ── Text cache ────────────────────────────────────────────────────────── */
+/*
+ * Rasterising a string is the most expensive thing a frame does: a CoreText
+ * line, a bitmap and a GPU texture. Interface text rarely changes between
+ * frames, so each (font, pixel size, text) is rasterised once and its texture
+ * kept until it goes unused for a while. The table holds opaque handles only;
+ * creating and releasing textures stays in Azora with the rest of the
+ * platform layer. Like the close request, this is process state the language
+ * deliberately cannot hold in a global, which is why it lives here.
+ */
+#define AZ_TEXT_BUCKETS 4096
+typedef struct AzTextEntry {
+    struct AzTextEntry* next;
+    char* key;
+    int64_t texture;
+    double width, ascent, descent;
+    int64_t frame;
+} AzTextEntry;
+static AzTextEntry* az_text_buckets[AZ_TEXT_BUCKETS];
+static AzTextEntry* az_text_hit;
+static int64_t az_text_frame;
+static char* az_text_scratch;
+static size_t az_text_scratch_size;
+
+static const char* az_text_key(const char* font, double size, const char* text, uint64_t* hash) {
+    size_t need = strlen(font) + strlen(text) + 40;
+    if (need > az_text_scratch_size) {
+        char* grown = realloc(az_text_scratch, need);
+        if (!grown) return NULL;
+        az_text_scratch = grown;
+        az_text_scratch_size = need;
+    }
+    snprintf(az_text_scratch, az_text_scratch_size, "%s\x1f%.3f\x1f%s", font, size, text);
+    uint64_t h = 1469598103934665603ull;
+    for (const unsigned char* c = (const unsigned char*)az_text_scratch; *c; c++) { h ^= *c; h *= 1099511628211ull; }
+    *hash = h;
+    return az_text_scratch;
+}
+
+/* 1 when the entry exists (and is now the current hit), else 0. */
+int64_t az_text_cache_find(const char* font, double size, const char* text) {
+    uint64_t hash;
+    const char* key = az_text_key(font, size, text, &hash);
+    if (!key) return 0;
+    for (AzTextEntry* e = az_text_buckets[hash % AZ_TEXT_BUCKETS]; e; e = e->next) {
+        if (strcmp(e->key, key) == 0) { e->frame = az_text_frame; az_text_hit = e; return 1; }
+    }
+    return 0;
+}
+int64_t az_text_cache_texture(void) { return az_text_hit ? az_text_hit->texture : 0; }
+double  az_text_cache_width(void)   { return az_text_hit ? az_text_hit->width : 0.0; }
+double  az_text_cache_ascent(void)  { return az_text_hit ? az_text_hit->ascent : 0.0; }
+double  az_text_cache_descent(void) { return az_text_hit ? az_text_hit->descent : 0.0; }
+
+/* Records metrics, and a texture when one exists (0 for a measurement only).
+ * An existing entry keeps its texture unless a new one is given. */
+void az_text_cache_store(const char* font, double size, const char* text,
+                         int64_t texture, double width, double ascent, double descent) {
+    if (az_text_cache_find(font, size, text)) {
+        if (texture) az_text_hit->texture = texture;
+        az_text_hit->width = width; az_text_hit->ascent = ascent; az_text_hit->descent = descent;
+        return;
+    }
+    uint64_t hash;
+    const char* key = az_text_key(font, size, text, &hash);
+    AzTextEntry* e = key ? calloc(1, sizeof(AzTextEntry)) : NULL;
+    if (!e) return;
+    e->key = strdup(key);
+    if (!e->key) { free(e); return; }
+    e->texture = texture; e->width = width; e->ascent = ascent; e->descent = descent;
+    e->frame = az_text_frame;
+    e->next = az_text_buckets[hash % AZ_TEXT_BUCKETS];
+    az_text_buckets[hash % AZ_TEXT_BUCKETS] = e;
+    az_text_hit = e;
+}
+
+/* Starts a frame: entries touched from here on count as used by it. */
+void az_text_cache_advance(void) { az_text_frame++; }
+
+/* Removes one entry unused for more than [age] frames and answers its texture
+ * (0 when it had none) for the caller to release; -1 when none is that old. */
+int64_t az_text_cache_evict(int64_t age) {
+    for (int b = 0; b < AZ_TEXT_BUCKETS; b++) {
+        for (AzTextEntry** link = &az_text_buckets[b]; *link; link = &(*link)->next) {
+            AzTextEntry* e = *link;
+            if (az_text_frame - e->frame > age) {
+                int64_t texture = e->texture;
+                *link = e->next;
+                if (az_text_hit == e) az_text_hit = NULL;
+                free(e->key);
+                free(e);
+                return texture;
+            }
+        }
+    }
+    return -1;
+}
 
 /* ── Exported symbols / constants ──────────────────────────────────────── */
 

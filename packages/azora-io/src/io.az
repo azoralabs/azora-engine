@@ -47,6 +47,18 @@ bridge .C {
     func @foreignName("az_poke8")(p: Long, off: Long, v: Int)
     func @foreignName("az_poke_f32")(p: Long, off: Long, v: Double)
     func @foreignName("az_poke_f64")(p: Long, off: Long, v: Double)
+    func @foreignName("az_cstring")(p: Long, off: Long): String
+
+    // Rasterised text cache (az_ffi.c): handles and metrics keyed by font,
+    // pixel size and text. Textures are created and released by the caller.
+    func @foreignName("az_text_cache_find")(font: String, size: Double, text: String): Long
+    func @foreignName("az_text_cache_texture")(): Long
+    func @foreignName("az_text_cache_width")(): Double
+    func @foreignName("az_text_cache_ascent")(): Double
+    func @foreignName("az_text_cache_descent")(): Double
+    func @foreignName("az_text_cache_store")(font: String, size: Double, text: String, texture: Long, width: Double, ascent: Double, descent: Double)
+    func @foreignName("az_text_cache_advance")()
+    func @foreignName("az_text_cache_evict")(age: Long): Long
 
     // Process-wide close request (az_ffi.c). The flag lives in the runtime
     // because Azora has no mutable global to put it in: a top-level `var` is

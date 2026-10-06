@@ -60,6 +60,26 @@ complete source with only the entry point bounded to three frames. It requires
 successful host initialization, three rendered frames and completed shutdown.
 There are no unavailable-target skips.
 
+## 2026-10-06 update
+
+- `qualify-native.sh headless` and `qualify-native.sh game` pass with the native
+  compiler: the unchanged shipping game template builds and runs its bounded
+  frames. The generic `T: Clone` erased-pointer blocker is repaired in the
+  compiler (Clone witness), as are by-value aliasing and exclusive borrows; see
+  `azora-lang/ROADMAPs/FOUNDATION_REPAIR_2026_10_04.md`.
+- `foundation` still fails one check: a `World` leaving scope does not destroy
+  the components in its registered storages.
+- UI: Row/Column `fill` children now share leftover space (they were counted as
+  weighted but given zero extent). New modifiers `rounded`, `border`, `hover`,
+  `textColor`, `fontSize`, `textAlign`, `semibold`, `monospace`; nodes without
+  a `Paint` no longer paint opaque black. `recordTree`/`replayPaint` record a
+  tree once per layout and replay it per frame.
+- GPU/text: an SDF shape mode draws antialiased rounded rectangles and borders;
+  text uses the system interface font (or Menlo) and a runtime text cache keeps
+  rasterised strings as textures, retiring ones unused for 120 frames.
+- Input: key repeats, Command/Control/Option tracking, Home/End/Delete/Page keys,
+  per-frame UTF-8 text input (`App.textInput`) and the system clipboard.
+
 ## Current blockers
 
 - Owned storage registration currently reaches a native compiler inline

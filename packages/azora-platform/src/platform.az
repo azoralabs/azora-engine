@@ -59,7 +59,8 @@ pack AzWindow {
 pack AzInput {
     // Raw state block: key down [0..2047], key pressed [2048..4095],
     // mouse down [4096..4098], mouse clicked [4100..4102],
-    // wheel x [4104..4111], wheel y [4112..4119] (doubles, per frame).
+    // wheel x [4104..4111], wheel y [4112..4119] (doubles, per frame),
+    // typed text length [4120..4127] and UTF-8 bytes [4128..4639], per frame.
     var state: Long
 }
 
@@ -134,7 +135,7 @@ func appInit(title: String, width: Int, height: Int): App {
         true,
         take win,
         take gpu,
-        AzInput(azAlloc(Long(4128))),
+        AzInput(azAlloc(Long(4640))),
         AzTime(now, now, 1.0 / 60.0),
         0.10, 0.10, 0.12,
         pool,
@@ -206,6 +207,9 @@ impl App {
     /// Finishes the frame and presents it.
     func !.present() {
         gpuEndFrame(self)
+        // About two seconds at 60 Hz: long enough that text which blinks or
+        // alternates stays cached, short enough that churn cannot accumulate.
+        self.releaseStaleText(Long(120))
     }
 
     /// Requests exit: the next frame() returns false.
@@ -224,6 +228,8 @@ impl App {
             send0(self.gpu.cmd, sel("commit"))
             self.gpu.hasEncoder = false
         }
+        // Every cached text texture belongs to this device.
+        self.releaseStaleText(Long(-1))
         gpuShutdown(self.gpu)
         send0(self.win.handle, sel("close"))
         send0(self.win.handle, sel("release"))
@@ -365,6 +371,8 @@ impl App {
         // accumulated below, so a frame with no scrolling reports exactly zero.
         azPokeF64(self.inp.state, Long(4104), 0.0)
         azPokeF64(self.inp.state, Long(4112), 0.0)
+        azPoke64(self.inp.state, Long(4120), Long(0))
+        azPoke8(self.inp.state, Long(4128), 0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
@@ -379,9 +387,21 @@ impl App {
             fin evType = send0(ev, sel("type"))
 
             if evType == Long(10) {
-                // keyArrowDown — swallowed (avoids the system beep for unhandled keys)
+                // keyDown — swallowed (avoids the system beep for unhandled keys).
+                // A held key repeats as another press, which is what an editor's
+                // Backspace and arrows need; keyDown stays one continuous hold.
+                fin key = self.mapKey(ev)
                 if send0(ev, sel("isARepeat")) == Long(0) {
-                    self.setKey(self.mapKey(ev), 1)
+                    self.setKey(key, 1)
+                } else if key >= 0 && key < 2048 {
+                    azPoke8(self.inp.state, Long(2048) + key as Long, 1)
+                }
+                // Text is what the key types, with its modifiers applied, so
+                // Shift and Option layouts and non-ASCII input arrive intact.
+                // Command chords are shortcuts, never text.
+                fin flags = send0(ev, sel("modifierFlags"))
+                if (flags & Long(1048576)) == Long(0) && (flags & Long(262144)) == Long(0) {
+                    self.appendText(send0(ev, sel("characters")))
                 }
                 continue
             }
@@ -391,13 +411,13 @@ impl App {
                 continue
             }
             if evType == Long(12) {
-                // flagsChanged: track shift (NSEventModifierFlagShift = 1 << 17)
+                // flagsChanged: Shift 1 << 17, Control 1 << 18, Option 1 << 19,
+                // Command 1 << 20 (NSEventModifierFlag*).
                 fin flags = send0(ev, sel("modifierFlags"))
-                var shiftDown = 0
-                if (flags & Long(131072)) != Long(0) {
-                    shiftDown = 1
-                }
-                self.setKey(keyShift, shiftDown)
+                self.setKey(keyShift, if (flags & Long(131072)) != Long(0) { 1 } else { 0 })
+                self.setKey(keyControl, if (flags & Long(262144)) != Long(0) { 1 } else { 0 })
+                self.setKey(keyAlt, if (flags & Long(524288)) != Long(0) { 1 } else { 0 })
+                self.setKey(keyMeta, if (flags & Long(1048576)) != Long(0) { 1 } else { 0 })
             }
             if evType == Long(22) {
                 // Trackpads report precise deltas through the same event, so
@@ -423,6 +443,77 @@ impl App {
 
             send1(nsapp, sel("sendEvent:"), ev)
         }
+    }
+
+    /**
+     * The text typed this frame, as UTF-8; empty when nothing was typed.
+     *
+     * Each key's characters arrive with its modifiers applied, so Shift,
+     * Option and dead-key compositions are already resolved. Control keys
+     * (Return, Backspace, arrows, Tab) are excluded: read those with
+     * [keyPressed]. Valid until the next [frame].
+     */
+    func &.textInput(): String {
+        return azCstring(self.inp.state, Long(4128))
+    }
+
+    func &.appendText(characters: Long) {
+        if characters == Long(0) {
+            return
+        }
+        fin bytes = send0(characters, sel("UTF8String"))
+        if bytes == Long(0) {
+            return
+        }
+        var length = azPeek64(self.inp.state, Long(4120))
+        var index = Long(0)
+        loop {
+            fin byte = azPeek8(bytes, index)
+            if byte == 0 {
+                break
+            }
+            // Control characters and the private-use range AppKit gives arrow
+            // and function keys (U+F700..U+F8FF, lead byte 0xEF) are not text.
+            if byte < 32 || byte == 127 {
+                return
+            }
+            if byte == 239 && azPeek8(bytes, index + Long(1)) >= 156 && azPeek8(bytes, index + Long(1)) <= 163 {
+                return
+            }
+            index = index + Long(1)
+        }
+        if length + index >= Long(511) {
+            return
+        }
+        var copied = Long(0)
+        while copied < index {
+            azPoke8(self.inp.state, Long(4128) + length + copied, azPeek8(bytes, copied))
+            copied = copied + Long(1)
+        }
+        length = length + index
+        azPoke8(self.inp.state, Long(4128) + length, 0)
+        azPoke64(self.inp.state, Long(4120), length)
+    }
+
+    /** The system clipboard's text, or empty when it holds none. Valid for this frame. */
+    func &.clipboardText(): String {
+        fin board = send0(cls("NSPasteboard"), sel("generalPasteboard"))
+        fin text = send1(board, sel("stringForType:"), globalObject("NSPasteboardTypeString"))
+        if text == Long(0) {
+            return ""
+        }
+        fin bytes = send0(text, sel("UTF8String"))
+        if bytes == Long(0) {
+            return ""
+        }
+        return azCstring(bytes, Long(0))
+    }
+
+    /** Replaces the system clipboard's contents with [text]. */
+    func &.setClipboardText(text: String) {
+        fin board = send0(cls("NSPasteboard"), sel("generalPasteboard"))
+        fin cleared = send0(board, sel("clearContents"))
+        fin written = send2(board, sel("setString:forType:"), nsString(text), globalObject("NSPasteboardTypeString"))
     }
 
     /// Horizontal wheel/trackpad motion this frame; 0 when nothing scrolled.
@@ -472,6 +563,11 @@ impl App {
         if code == Long(124) { return keyArrowRight }
         if code == Long(126) { return keyArrowUp }
         if code == Long(125) { return keyArrowDown }
+        if code == Long(117) { return keyDelete }
+        if code == Long(115) { return keyHome }
+        if code == Long(119) { return keyEnd }
+        if code == Long(116) { return keyPageUp }
+        if code == Long(121) { return keyPageDown }
 
         fin chars = send0(ev, sel("charactersIgnoringModifiers"))
         if chars == Long(0) {

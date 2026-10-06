@@ -54,28 +54,62 @@ func paintTree(
     clipTop: Double
     clipBottom: Double
 ) {
-    fin rect = storageGetOrDefault<Rect>(store(pass), node, .())
+    fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), node, .())
     fin visible = rect.y + rect.height >= clipTop && rect.y <= clipBottom
 
     if visible {
-        fin ink = storageGetOrDefault<Paint>(store(pass), node, .())
-        if ink.alpha > 0.0 && rect.width > 0.0 && rect.height > 0.0 {
-            app.uiRect(rect.x, rect.y, rect.width, rect.height, ink.r, ink.g, ink.b, ink.alpha)
+        fin ink = storageGetOrDefault<Paint>(store<Paint>(pass), node, .())
+        fin corner = storageGetOrDefault<Corner>(store<Corner>(pass), node, .())
+        var fillR = ink.r
+        var fillG = ink.g
+        var fillB = ink.b
+        // A node with no Paint of its own - a caption, a layout row - fills
+        // nothing; the default paint is opaque black and would cover its parent.
+        var fillAlpha = if storageHas<Paint>(store<Paint>(pass), node) { ink.alpha } else { 0.0 }
+        if storageHas<HoverPaint>(store<HoverPaint>(pass), node) {
+            fin pointerX = app.mouseX()
+            fin pointerY = app.mouseY()
+            if pointerX >= rect.x && pointerX < rect.x + rect.width && pointerY >= rect.y && pointerY < rect.y + rect.height &&
+                pointerY >= clipTop && pointerY <= clipBottom {
+                fin hover = storageGetOrDefault<HoverPaint>(store<HoverPaint>(pass), node, .())
+                fillR = hover.r
+                fillG = hover.g
+                fillB = hover.b
+                fillAlpha = hover.alpha
+            }
         }
-        fin label = storageGetOrDefault<Text>(store(pass), node, .())
+        if fillAlpha > 0.0 && rect.width > 0.0 && rect.height > 0.0 {
+            if corner.radius > 0.0 {
+                app.uiRoundRect(rect.x, rect.y, rect.width, rect.height, corner.radius, fillR, fillG, fillB, fillAlpha)
+            } else {
+                app.uiRect(rect.x, rect.y, rect.width, rect.height, fillR, fillG, fillB, fillAlpha)
+            }
+        }
+        if storageHas<Stroke>(store<Stroke>(pass), node) {
+            fin stroke = storageGetOrDefault<Stroke>(store<Stroke>(pass), node, .())
+            app.uiRoundRectStroke(rect.x, rect.y, rect.width, rect.height, corner.radius, stroke.width, stroke.r, stroke.g, stroke.b, stroke.alpha)
+        }
+        fin label = storageGetOrDefault<Text>(store<Text>(pass), node, .())
         if stringLength(label.value) > 0 {
-            fin size = if ink.size > 0.0 { ink.size } else { 14.0 }
+            fin style = storageGetOrDefault<TextStyle>(store<TextStyle>(pass), node, .())
+            fin size = if style.size > 0.0 { style.size } else if ink.size > 0.0 { ink.size } else { 14.0 }
             // Text is drawn inside its own node's rectangle. It is not nudged
             // off the edge any more: a caption inside a button is a child that
             // the button's centring layout has already placed, so shifting it
-            // here would move it off the centre it was just given.
-            fin width = app.uiTextWidth(label.value, size)
-            app.uiTextColored(
+            // here would move it off the centre it was just given. Alignment
+            // is within the node's padding, which is the inset it asked for.
+            fin font = if style.font == 1 { uiFontSemibold } else if style.font == 2 { uiFontMonospace } else { uiFontRegular }
+            fin width = app.uiTextWidthFont(label.value, size, font)
+            fin inset = storageGetOrDefault<Padding>(store<Padding>(pass), node, .())
+            fin x = if style.align == 0 { rect.x + inset.start } else if style.align == 2 { rect.x + rect.width - inset.end - width } else { rect.x + (rect.width - width) * 0.5 }
+            fin height = app.uiTextHeight(size)
+            app.uiTextFont(
                 label.value,
-                rect.x + (rect.width - width) * 0.5,
-                rect.y + (rect.height - size) * 0.5,
+                x,
+                rect.y + (rect.height - height) * 0.5,
                 size,
-                0.94, 0.95, 0.97
+                style.r, style.g, style.b,
+                font
             )
         }
     }
@@ -85,7 +119,7 @@ func paintTree(
     // drawn over whatever sits above the container - the toolbar, a neighbour,
     // anything. The rectangle is restored afterwards rather than saved and
     // put back, because containers here do not nest.
-    fin scrolls = storageHas<Scroll>(store(pass), node)
+    fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node)
     var childTop = clipTop
     var childBottom = clipBottom
     if scrolls {
@@ -115,5 +149,164 @@ func paintTree(
 
     if scrolls {
         app.clearScissor()
+    }
+}
+
+// ── Recorded painting ───────────────────────────────────────────────────
+//
+// Walking the tree reads half a dozen components per node, each a search of
+// its storage, and a frame repaints everything. A retained tree only changes
+// when it is recomposed or re-arranged, so the walk is recorded once into a
+// flat list of draw operations and the list is replayed every frame. Hover is
+// the one thing that changes without a layout: it is decided at replay, from
+// the pointer, against the rectangle the operation recorded.
+
+/** One recorded draw: 0 fill, 1 border, 2 text, 3 clip to a rectangle, 4 clip off. */
+pack PaintOp derives (Copy, Clone) {
+    var kind: Int = 0
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var width: Double = 0.0
+    var height: Double = 0.0
+    var r: Double = 0.0
+    var g: Double = 0.0
+    var b: Double = 0.0
+    var alpha: Double = 1.0
+    var radius: Double = 0.0
+    /** A border's width, or a text run's point size. */
+    var size: Double = 0.0
+    var hovers: Bool = false
+    var hoverR: Double = 0.0
+    var hoverG: Double = 0.0
+    var hoverB: Double = 0.0
+    var hoverAlpha: Double = 0.0
+    var clipTop: Double = 0.0
+    var clipBottom: Double = 0.0
+    var text: String = ""
+    /** 0 regular, 1 semibold, 2 fixed-pitch. */
+    var font: Int = 0
+}
+
+/** A recorded tree, ready to replay until the tree changes. */
+pack PaintList {
+    var ops: Array<PaintOp> = Array<PaintOp>()
+}
+
+impl PaintList {
+    func !.clear() {
+        self.ops = Array<PaintOp>()
+    }
+}
+
+func paintFontName(font: Int): String {
+    if font == 1 { return uiFontSemibold }
+    if font == 2 { return uiFontMonospace }
+    return uiFontRegular
+}
+
+/** Records what [paintTree] would draw for [node]'s subtree into [list]. */
+func recordTree(
+    app: App!
+    pass: Composition!
+    node: Entity
+    clipTop: Double
+    clipBottom: Double
+    list: PaintList!
+) {
+    fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), node, .())
+    fin visible = rect.y + rect.height >= clipTop && rect.y <= clipBottom
+    if visible {
+        fin ink = storageGetOrDefault<Paint>(store<Paint>(pass), node, .())
+        fin corner = storageGetOrDefault<Corner>(store<Corner>(pass), node, .())
+        fin painted = storageHas<Paint>(store<Paint>(pass), node)
+        fin hovers = storageHas<HoverPaint>(store<HoverPaint>(pass), node)
+        if (painted || hovers) && rect.width > 0.0 && rect.height > 0.0 {
+            fin hover = storageGetOrDefault<HoverPaint>(store<HoverPaint>(pass), node, .())
+            list.ops.add(PaintOp(0, rect.x, rect.y, rect.width, rect.height,
+                ink.r, ink.g, ink.b, if painted { ink.alpha } else { 0.0 }, corner.radius, 0.0,
+                hovers, hover.r, hover.g, hover.b, hover.alpha, clipTop, clipBottom, "", 0))
+        }
+        if storageHas<Stroke>(store<Stroke>(pass), node) {
+            fin stroke = storageGetOrDefault<Stroke>(store<Stroke>(pass), node, .())
+            list.ops.add(PaintOp(1, rect.x, rect.y, rect.width, rect.height,
+                stroke.r, stroke.g, stroke.b, stroke.alpha, corner.radius, stroke.width,
+                false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
+        }
+        fin label = storageGetOrDefault<Text>(store<Text>(pass), node, .())
+        if stringLength(label.value) > 0 {
+            fin style = storageGetOrDefault<TextStyle>(store<TextStyle>(pass), node, .())
+            fin size = if style.size > 0.0 { style.size } else if ink.size > 0.0 { ink.size } else { 14.0 }
+            fin width = app.uiTextWidthFont(label.value, size, paintFontName(style.font))
+            fin inset = storageGetOrDefault<Padding>(store<Padding>(pass), node, .())
+            fin x = if style.align == 0 { rect.x + inset.start } else if style.align == 2 { rect.x + rect.width - inset.end - width } else { rect.x + (rect.width - width) * 0.5 }
+            fin height = app.uiTextHeight(size)
+            list.ops.add(PaintOp(2, x, rect.y + (rect.height - height) * 0.5, width, height,
+                style.r, style.g, style.b, style.alpha, 0.0, size,
+                false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, label.value, style.font))
+        }
+    }
+    fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node)
+    var childTop = clipTop
+    var childBottom = clipBottom
+    if scrolls {
+        list.ops.add(PaintOp(3, rect.x, rect.y, rect.width, rect.height,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
+        if rect.y > childTop { childTop = rect.y }
+        if rect.y + rect.height < childBottom { childBottom = rect.y + rect.height }
+    }
+    fin count = pass.childCount(node)
+    var index = 0
+    while index < count {
+        fin child = pass.childAt(node, index)
+        if child.isValid {
+            recordTree(app, pass, child, childTop, childBottom, list)
+        }
+        index = index + 1
+    }
+    if scrolls {
+        list.ops.add(PaintOp(4, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
+    }
+}
+
+/** Draws a recorded tree. */
+func replayPaint(app: App!, list: PaintList&) {
+    fin pointerX = app.mouseX()
+    fin pointerY = app.mouseY()
+    var index = 0
+    while index < list.ops.size {
+        fin kind = list.ops[index].kind
+        fin x = list.ops[index].x
+        fin y = list.ops[index].y
+        fin width = list.ops[index].width
+        fin height = list.ops[index].height
+        if kind == 0 {
+            var r = list.ops[index].r
+            var g = list.ops[index].g
+            var b = list.ops[index].b
+            var alpha = list.ops[index].alpha
+            if list.ops[index].hovers && pointerX >= x && pointerX < x + width && pointerY >= y && pointerY < y + height &&
+                pointerY >= list.ops[index].clipTop && pointerY <= list.ops[index].clipBottom {
+                r = list.ops[index].hoverR
+                g = list.ops[index].hoverG
+                b = list.ops[index].hoverB
+                alpha = list.ops[index].hoverAlpha
+            }
+            if alpha > 0.0 {
+                if list.ops[index].radius > 0.0 { app.uiRoundRect(x, y, width, height, list.ops[index].radius, r, g, b, alpha) }
+                else { app.uiRect(x, y, width, height, r, g, b, alpha) }
+            }
+        } else if kind == 1 {
+            app.uiRoundRectStroke(x, y, width, height, list.ops[index].radius, list.ops[index].size,
+                list.ops[index].r, list.ops[index].g, list.ops[index].b, list.ops[index].alpha)
+        } else if kind == 2 {
+            app.uiTextFont(list.ops[index].text, x, y, list.ops[index].size,
+                list.ops[index].r, list.ops[index].g, list.ops[index].b, paintFontName(list.ops[index].font))
+        } else if kind == 3 {
+            app.setScissor(x, y, width, height)
+        } else if kind == 4 {
+            app.clearScissor()
+        }
+        index = index + 1
     }
 }

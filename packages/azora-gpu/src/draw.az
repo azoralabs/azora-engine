@@ -464,7 +464,43 @@ impl App {
         self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
     }
 
+    /**
+     * Filled rectangle with rounded corners, antialiased by the shader.
+     *
+     * [radius] is in points and is clamped to half the shorter side, so a
+     * large radius on a short control draws a pill.
+     */
+    func !.uiRoundRect(x: Double, y: Double, w: Double, h: Double, radius: Double, r: Double, g: Double, b: Double, a: Double) {
+        self.drawShape2d(x, y, w, h, radius, 0.0, r, g, b, a)
+    }
+
+    /** The inner border of a rounded rectangle, [width] points wide. */
+    func !.uiRoundRectStroke(x: Double, y: Double, w: Double, h: Double, radius: Double, width: Double, r: Double, g: Double, b: Double, a: Double) {
+        if width <= 0.0 {
+            return
+        }
+        self.drawShape2d(x, y, w, h, radius, width, r, g, b, a)
+    }
+
+    func !.drawShape2d(x: Double, y: Double, w: Double, h: Double, radius: Double, stroke: Double, r: Double, g: Double, b: Double, a: Double) {
+        if w <= 0.0 || h <= 0.0 {
+            return
+        }
+        fin s = self.gpu.scale
+        self.drawQuad2dShaped(x, y, w, h, 0.0, 0.0, w * s, h * s, r, g, b, a, Long(0), 3.0, w * s, h * s, radius * s, stroke * s)
+    }
+
     func !.drawQuad2dMode(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long, texMode: Double) {
+        self.drawQuad2dShaped(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, texMode, 0.0, 0.0, 0.0, 0.0)
+    }
+
+    func !.drawQuad2dShaped(
+        x: Double, y: Double, w: Double, h: Double
+        u0: Double, v0: Double, u1: Double, v1: Double
+        r: Double, g: Double, b: Double, a: Double
+        tex: Long, texMode: Double
+        shapeW: Double, shapeH: Double, radius: Double, stroke: Double
+    ) {
         var gpu: AzGpu! = self.gpu
         if !gpu.hasEncoder {
             return
@@ -490,16 +526,21 @@ impl App {
         pokeVert2d(p, Long(128), x1, y1, u1, v1, r, g, b, a)
         pokeVert2d(p, Long(160), x0, y1, u0, v1, r, g, b, a)
 
-        // U2 uniforms: viewport (2 floats) + useTex + pad.
+        // U2 uniforms: viewport (2 floats) + useTex + pad, then the shape
+        // mode's size, corner radius and stroke width in pixels.
         azPokeF32(p, Long(192), gpu.depthW as Double)
         azPokeF32(p, Long(196), gpu.depthH as Double)
         azPokeF32(p, Long(200), texMode)
         azPokeF32(p, Long(204), 0.0)
+        azPokeF32(p, Long(208), shapeW)
+        azPokeF32(p, Long(212), shapeH)
+        azPokeF32(p, Long(216), radius)
+        azPokeF32(p, Long(220), stroke)
 
         send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, Long(192), Long(0))
         fin up = p + Long(192)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, Long(16), Long(1))
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, Long(16), Long(1))
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, Long(32), Long(1))
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, Long(32), Long(1))
         send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, Long(0))
         if tex != Long(0) {
             send2(gpu.enc, sel("setFragmentTexture:atIndex:"), tex, Long(0))
@@ -509,12 +550,32 @@ impl App {
 
     // ── Text (CoreText rasterization → textured quad) ───────────────────
 
-    /// Text at (x, y) with an explicit color.
+    /// Text at (x, y) with an explicit color, in the system interface font.
     func !.uiTextColored(text: String, x: Double, y: Double, size: Double, r: Double, g: Double, b: Double) {
+        self.uiTextFont(text, x, y, size, r, g, b, uiFontRegular)
+    }
+
+    /// Text at (x, y) with an explicit color, in the named font (see [uiFontRegular]).
+    ///
+    /// The first draw of a string rasterises it into a texture the text cache
+    /// keeps; later frames draw that texture. [releaseStaleText] retires
+    /// strings nothing has drawn for a while.
+    func !.uiTextFont(text: String, x: Double, y: Double, size: Double, r: Double, g: Double, b: Double, font: String) {
         if !self.gpu.hasEncoder {
             return
         }
-        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        fin s = self.gpu.scale
+        if azTextCacheFind(font, size * s, text) != Long(0) {
+            fin cached = azTextCacheTexture()
+            if cached != Long(0) {
+                self.drawQuad2d(x, y, azTextCacheWidth(), azTextCacheAscent() + azTextCacheDescent(), 0.0, 0.0, 1.0, 1.0, r, g, b, 1.0, cached)
+                return
+            }
+            if azTextCacheWidth() < 0.5 {
+                return
+            }
+        }
+        fin line = ctLineCreate(text, size, self.gpu.scratch, font)
         if line == Long(0) {
             return
         }
@@ -523,11 +584,11 @@ impl App {
         fin descent = azPeekF64(self.gpu.scratch, Long(3856))
         fin heightPts = ascent + descent
         if widthPts < 0.5 || heightPts < 0.5 {
+            azTextCacheStore(font, size * s, text, Long(0), widthPts, ascent, descent)
             CFRelease(line)
             return
         }
 
-        fin s = self.gpu.scale
         fin pw = (widthPts * s) as Long + Long(1)
         fin ph = (heightPts * s) as Long + Long(1)
 
@@ -541,11 +602,11 @@ impl App {
 
             fin data = CGBitmapContextGetData(ctx)
             fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), Long(70), pw, ph, Long(0))
-            var tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), td)
+            fin tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), td)
             if tex != Long(0) {
                 fin unused0 = azSendRegion(tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), Long(0), Long(0), Long(0), pw, ph, Long(1), Long(0), data, pw * Long(4))
-                // The encoder retains the texture; autorelease frees it after present.
-                tex = send0(tex, sel("autorelease"))
+                // The cache owns the texture from here; eviction releases it.
+                azTextCacheStore(font, size * s, text, tex, widthPts, ascent, descent)
                 // Bitmap rows are top-first, matching top-left-origin UVs.
                 self.drawQuad2d(x, y, widthPts, heightPts, 0.0, 0.0, 1.0, 1.0, r, g, b, 1.0, tex)
             }
@@ -555,26 +616,61 @@ impl App {
         CFRelease(line)
     }
 
+    /**
+     * Retires cached text nothing has drawn or measured for [age] frames.
+     *
+     * Call once per frame after presenting: a texture the encoder still holds
+     * stays alive, because Metal retains what a command buffer uses.
+     */
+    func &.releaseStaleText(age: Long) {
+        loop {
+            fin texture = azTextCacheEvict(age)
+            if texture == Long(-1) {
+                break
+            }
+            if texture != Long(0) {
+                fin unused = send0(texture, sel("release"))
+            }
+        }
+        azTextCacheAdvance()
+    }
+
     /// Measured width in points of `text` at font `size`.
     func &.uiTextWidth(text: String, size: Double): Double {
-        fin line = ctLineCreate(text, size, self.gpu.scratch)
+        return self.uiTextWidthFont(text, size, uiFontRegular)
+    }
+
+    /// Measured width in points of `text` at `size` in the named font.
+    func &.uiTextWidthFont(text: String, size: Double, font: String): Double {
+        fin key = size * self.gpu.scale
+        if azTextCacheFind(font, key, text) != Long(0) {
+            return azTextCacheWidth()
+        }
+        fin line = ctLineCreate(text, size, self.gpu.scratch, font)
         if line == Long(0) {
             return 0.0
         }
         fin w = azPeekF64(self.gpu.scratch, Long(3840))
+        azTextCacheStore(font, key, text, Long(0), w, azPeekF64(self.gpu.scratch, Long(3848)), azPeekF64(self.gpu.scratch, Long(3856)))
         CFRelease(line)
         return w
     }
 
     /// Measured line height in points of font `size`.
     func &.uiTextHeight(size: Double): Double {
+        fin key = size * self.gpu.scale
+        if azTextCacheFind(uiFontRegular, key, "Ag") != Long(0) {
+            return azTextCacheAscent() + azTextCacheDescent()
+        }
         fin line = ctLineCreate("Ag", size, self.gpu.scratch)
         if line == Long(0) {
             return size
         }
-        fin h = azPeekF64(self.gpu.scratch, Long(3848)) + azPeekF64(self.gpu.scratch, Long(3856))
+        fin ascent = azPeekF64(self.gpu.scratch, Long(3848))
+        fin descent = azPeekF64(self.gpu.scratch, Long(3856))
+        azTextCacheStore(uiFontRegular, key, "Ag", Long(0), azPeekF64(self.gpu.scratch, Long(3840)), ascent, descent)
         CFRelease(line)
-        return h
+        return ascent + descent
     }
 }
 
@@ -590,23 +686,32 @@ func pokeVert2d(p: Long, off: Long, x: Double, y: Double, u: Double, v: Double, 
     azPokeF32(p, off + Long(28), a)
 }
 
-/// Builds a CTLine for [text] at [size] (system font, white). Writes width /
+/** The system interface font (San Francisco on macOS). */
+fin uiFontRegular = ".AppleSystemUIFont"
+
+/** The system interface font's semibold weight, for headings and emphasis. */
+fin uiFontSemibold = ".AppleSystemUIFontDemi"
+
+/** A fixed-pitch font for source text, where columns must line up. */
+fin uiFontMonospace = "Menlo"
+
+/// Builds a CTLine for [text] at [size] in [font] (white). Writes width /
 /// ascent / descent as doubles at scratch offsets 3840/3848/3856.
 /// Caller releases the returned line with CFRelease.
-func ctLineCreate(text: String, size: Double, scratch: Long): Long {
+func ctLineCreate(text: String, size: Double, scratch: Long, font: String = uiFontRegular): Long {
     fin utf8 = 134217984 // kCFStringEncodingUTF8
     fin cfText = CFStringCreateWithCString(Long(0), text, utf8)
     if cfText == Long(0) {
         return Long(0)
     }
-    fin fontName = CFStringCreateWithCString(Long(0), "Helvetica", utf8)
-    fin font = CTFontCreateWithName(fontName, size, Long(0))
+    fin fontName = CFStringCreateWithCString(Long(0), font, utf8)
+    fin ctFont = CTFontCreateWithName(fontName, size, Long(0))
     fin white = CGColorCreateGenericRGB(1.0, 1.0, 1.0, 1.0)
 
     // Attributes: { kCTFontAttributeName: font, kCTForegroundColorAttributeName: white }
     azPoke64(scratch, Long(3872), globalObject("kCTFontAttributeName"))
     azPoke64(scratch, Long(3880), globalObject("kCTForegroundColorAttributeName"))
-    azPoke64(scratch, Long(3888), font)
+    azPoke64(scratch, Long(3888), ctFont)
     azPoke64(scratch, Long(3896), white)
     fin attrs = CFDictionaryCreate(
         Long(0), scratch + Long(3872), scratch + Long(3888), Long(2),
@@ -623,7 +728,7 @@ func ctLineCreate(text: String, size: Double, scratch: Long): Long {
     CFRelease(attrText)
     CFRelease(attrs)
     CGColorRelease(white)
-    CFRelease(font)
+    CFRelease(ctFont)
     CFRelease(fontName)
     CFRelease(cfText)
     return line

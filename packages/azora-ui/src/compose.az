@@ -487,6 +487,14 @@ impl Composition {
         var hasPadding = false
         var background = Paint()
         var hasBackground = false
+        var corner = Corner()
+        var hasCorner = false
+        var stroke = Stroke()
+        var hasStroke = false
+        var hover = HoverPaint()
+        var hasHover = false
+        var style = TextStyle()
+        var hasStyle = false
 
         var index = 0
         while index < chain.entries.size {
@@ -505,6 +513,37 @@ impl Composition {
                     background = Paint(entry.a, entry.b, entry.c, entry.d, 0.0)
                     hasBackground = true
                 }
+                ModifierKind.Rounded -> {
+                    corner.radius = entry.a
+                    hasCorner = true
+                }
+                ModifierKind.Border -> {
+                    stroke = Stroke(entry.a, entry.b, entry.c, entry.d, 1.0)
+                    hasStroke = true
+                }
+                ModifierKind.Hover -> {
+                    hover = HoverPaint(entry.a, entry.b, entry.c, entry.d)
+                    hasHover = true
+                }
+                ModifierKind.TextColor -> {
+                    style.r = entry.a
+                    style.g = entry.b
+                    style.b = entry.c
+                    style.alpha = entry.d
+                    hasStyle = true
+                }
+                ModifierKind.FontSize -> {
+                    style.size = entry.a
+                    hasStyle = true
+                }
+                ModifierKind.TextAlign -> {
+                    style.align = entry.a as Int
+                    hasStyle = true
+                }
+                ModifierKind.Font -> {
+                    style.font = entry.a as Int
+                    hasStyle = true
+                }
             }
             index = index + 1
         }
@@ -518,6 +557,28 @@ impl Composition {
         }
         if hasBackground {
             storageInsert<Paint>(store(self), node, background)
+        }
+        // Like padding, each style is rebuilt from the chain on every pass, so
+        // a node that stops asking for one loses it.
+        if hasCorner {
+            storageInsert<Corner>(store(self), node, corner)
+        } else {
+            storageRemove<Corner>(store(self), node)
+        }
+        if hasStroke {
+            storageInsert<Stroke>(store(self), node, stroke)
+        } else {
+            storageRemove<Stroke>(store(self), node)
+        }
+        if hasHover {
+            storageInsert<HoverPaint>(store(self), node, hover)
+        } else {
+            storageRemove<HoverPaint>(store(self), node)
+        }
+        if hasStyle {
+            storageInsert<TextStyle>(store(self), node, style)
+        } else {
+            storageRemove<TextStyle>(store(self), node)
         }
     }
 
@@ -561,7 +622,7 @@ impl Composition {
         spacing: Double
     ): Entity {
         fin node = self.column(parent, key, modifier, verticalArrangement, horizontalAlignment, spacing)
-        fin existing = storageGetOrDefault<Scroll>(store(self), node, .())
+        fin existing = storageGetOrDefault<Scroll>(store<Scroll>(self), node, .())
         storageInsert<Scroll>(store(self), node, existing)
         return node
     }
