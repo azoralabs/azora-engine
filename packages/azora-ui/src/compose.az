@@ -162,7 +162,7 @@ impl Composition {
      * whatever is still unclaimed at the end. A pass therefore describes the whole
      * tree, and absence is meaningful.
      */
-    func (self: Composition!).begin() {
+    func Composition!.begin() {
         assert !self.disposed panic "cannot compose a disposed owner"
         var index = 0
         while index < storageLength<Owned>(self.owned()) {
@@ -186,7 +186,7 @@ impl Composition {
      * The root has no entity to hang a [Cursor] on, so its count lives on the
      * self. Every other parent carries its own, reset when it is claimed.
      */
-    func (self: Composition!).nextChildIndex(parent: Entity): Int {
+    func Composition!.nextChildIndex(parent: Entity): Int {
         if !parent.isValid {
             fin position = self.rootCursor
             self.rootCursor = position + 1
@@ -204,7 +204,7 @@ impl Composition {
      * loudly - the key stops matching and the node is rebuilt - rather than
      * silently reusing a column's entity for a button.
      */
-    func (self: Composition!).positionalKey(parent: Entity, role: String): String {
+    func Composition!.positionalKey(parent: Entity, role: String): String {
         return "${role}#${self.peekChildIndex(parent)}"
     }
 
@@ -215,7 +215,7 @@ impl Composition {
      * counter - so reading it here must not. Peeking keeps the key and the sibling
      * order the node ends up with in step, which is what [childAt] relies on.
      */
-    func (self: Composition!).peekChildIndex(parent: Entity): Int {
+    func Composition!.peekChildIndex(parent: Entity): Int {
         if !parent.isValid {
             return self.rootCursor
         }
@@ -228,7 +228,7 @@ impl Composition {
      * The same key yields the same entity on every self, which is what makes a
      * recomposition an update rather than a rebuild.
      */
-    func (self: Composition!).claim(parent: Entity, key: String): Entity {
+    func Composition!.claim(parent: Entity, key: String): Entity {
         self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
@@ -258,7 +258,7 @@ impl Composition {
     }
 
     /** The child of [parent] keyed [key], or an invalid entity. */
-    func (self: Composition!).findChild(parent: Entity, key: String): Entity {
+    func Composition!.findChild(parent: Entity, key: String): Entity {
         var index = 0
         while index < storageLength<Key>(self.keys()) {
             fin entity = storageEntityAt<Key>(self.keys(), index)
@@ -285,7 +285,7 @@ impl Composition {
      * children unclaimed in the same self, so both go. Ordering matters once
      * disposal runs user code, which it does not yet (§10.3).
      */
-    func (self: Composition!).commit(): Int {
+    func Composition!.commit(): Int {
         if !self.composed {
             return 0
         }
@@ -341,7 +341,7 @@ impl Composition {
     }
 
     /** How many nodes this composition currently holds. */
-    func (self: Composition!).nodeCount(): Int {
+    func Composition!.nodeCount(): Int {
         var live = 0
         var index = 0
         while index < storageLength<Owned>(self.owned()) {
