@@ -93,20 +93,21 @@ func appInit(title: String, width: Int, height: Int): App {
 
     // NSApplication as a regular, activatable app.
     fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
-    send1(nsapp, sel("setActivationPolicy:"), 0L)
+    send1(nsapp, sel("setActivationPolicy:"), Long(0))
 
     // Window: titled | closable | miniaturizable | resizable, buffered.
     fin winAlloc = send0(cls("NSWindow"), sel("alloc"))
     fin window = azSendQuadI3(
         winAlloc, sel("initWithContentRect:styleMask:backing:defer:"),
         0.0, 0.0, width as Double, height as Double,
-        15L, 2L, 0L
+        Long(15), Long(2), Long(0)
     )
-    if window == 0L {
+    if window == Long(0) {
+        objcAutoreleasePoolPop(pool)
         return appFailed()
     }
     send1(window, sel("setTitle:"), nsString(title))
-    send1(window, sel("setReleasedWhenClosed:"), 0L)
+    send1(window, sel("setReleasedWhenClosed:"), Long(0))
     send0(window, sel("center"))
 
     fin scale = azSendD0(window, sel("backingScaleFactor"))
@@ -115,30 +116,32 @@ func appInit(title: String, width: Int, height: Int): App {
     // GPU device + CAMetalLayer backing the content view.
     fin gpu = gpuInit(scale)
     if !gpu.ok {
+        send0(window, sel("release"))
+        objcAutoreleasePoolPop(pool)
         return appFailed()
     }
-    send1(contentV, sel("setWantsLayer:"), 1L)
+    send1(contentV, sel("setWantsLayer:"), Long(1))
     send1(contentV, sel("setLayer:"), gpu.layer)
 
     fin win = AzWindow(window, contentV, gpu.layer, scale)
 
-    send1(window, sel("makeKeyAndOrderFront:"), 0L)
-    send1(nsapp, sel("activateIgnoringOtherApps:"), 1L)
+    send1(window, sel("makeKeyAndOrderFront:"), Long(0))
+    send1(nsapp, sel("activateIgnoringOtherApps:"), Long(1))
     send0(nsapp, sel("finishLaunching"))
 
     fin now = CACurrentMediaTime()
     var app = App(
         true,
-        win,
-        gpu,
-        AzInput(azAlloc(4128L)),
+        take win,
+        take gpu,
+        AzInput(azAlloc(Long(4128))),
         AzTime(now, now, 1.0 / 60.0),
         0.10, 0.10, 0.12,
         pool,
         false,
         false
     )
-    return app
+    return take app
 }
 
 /// A dead App value returned when initialization fails.
@@ -146,12 +149,12 @@ func appFailed(): App {
     fin gpu = gpuFailed()
     return App(
         false,
-        AzWindow(0L, 0L, 0L, 1.0),
-        gpu,
-        AzInput(0L),
+        AzWindow(Long(0), Long(0), Long(0), 1.0),
+        take gpu,
+        AzInput(Long(0)),
         AzTime(0.0, 0.0, 0.0),
         0.0, 0.0, 0.0,
-        0L,
+        Long(0),
         true,
         false
     )
@@ -161,7 +164,7 @@ impl App {
 
     /// Starts a frame: pumps events, updates timing/input and begins the
     /// render pass. Returns false once the window closed or quit() was called.
-    func frame(): Bool {
+    func !.frame(): Bool {
         if !self.ok {
             return false
         }
@@ -180,7 +183,7 @@ impl App {
         }
         // The window server may map the window a few frames late; only treat
         // "not visible" as closed once it has been visible.
-        if send0(self.win.handle, sel("isVisible")) != 0L {
+        if send0(self.win.handle, sel("isVisible")) != Long(0) {
             self.everVisible = true
         } else {
             if self.everVisible {
@@ -201,17 +204,17 @@ impl App {
     }
 
     /// Finishes the frame and presents it.
-    func present() {
+    func !.present() {
         gpuEndFrame(self)
     }
 
     /// Requests exit: the next frame() returns false.
-    func quit() {
+    func !.quit() {
         self.closing = true
     }
 
     /// Closes the window and releases resources.
-    func shutdown() {
+    func !.shutdown() {
         if !self.ok {
             return
         }
@@ -221,42 +224,49 @@ impl App {
             send0(self.gpu.cmd, sel("commit"))
             self.gpu.hasEncoder = false
         }
+        gpuShutdown(self.gpu)
         send0(self.win.handle, sel("close"))
-        objcAutoreleasePoolPop(self.pool)
+        send0(self.win.handle, sel("release"))
+        self.win.handle = Long(0)
+        self.win.content = Long(0)
+        self.win.layer = Long(0)
         azFree(self.inp.state)
+        self.inp.state = Long(0)
+        objcAutoreleasePoolPop(self.pool)
+        self.pool = Long(0)
         self.ok = false
     }
 
     // ── Timing / window ─────────────────────────────────────────────────
 
     /// Seconds since appInit.
-    func timeNow(): Double {
+    func &.timeNow(): Double {
         return CACurrentMediaTime() - self.clk.start
     }
 
     /// Seconds between the two most recent frames.
-    func deltaTime(): Double {
+    func &.deltaTime(): Double {
         return self.clk.delta
     }
 
     /// Window content width in points.
-    func width(): Int {
-        return self.boundsSize(2L) as Int
+    func &.width(): Int {
+        return self.boundsSize(Long(2)) as Int
     }
 
     /// Window content height in points.
-    func height(): Int {
-        return self.boundsSize(3L) as Int
+    func &.height(): Int {
+        return self.boundsSize(Long(3)) as Int
     }
 
     /// Content bounds component (2 = width, 3 = height) in points.
-    func boundsSize(index: Long): Double {
+    func &.boundsSize(index: Long): Double {
         azSendOutQuad(self.win.content, sel("bounds"), self.gpu.scratch)
-        return azPeekF64(self.gpu.scratch, index * 8L)
+        return azPeekF64(self.gpu.scratch, index * Long(8))
     }
 
     /// Background clear color for subsequent frames (components 0..1).
-    func setClearColor(r: Double, g: Double, b: Double) {
+    func !.setClearColor(r: Double, g: Double, b: Double) {
         self.clearR = r
         self.clearG = g
         self.clearB = b
@@ -265,7 +275,7 @@ impl App {
     // ── Input ───────────────────────────────────────────────────────────
 
     /// True while the key is held down (uppercase ASCII or KEY_* constants).
-    func keyDown(key: Int): Bool {
+    func &.keyDown(key: Int): Bool {
         if key < 0 || key >= 2048 {
             return false
         }
@@ -273,54 +283,54 @@ impl App {
     }
 
     /// True only on the frame the key went down.
-    func keyPressed(key: Int): Bool {
+    func &.keyPressed(key: Int): Bool {
         if key < 0 || key >= 2048 {
             return false
         }
-        return azPeek8(self.inp.state, 2048L + key as Long) != 0
+        return azPeek8(self.inp.state, Long(2048) + key as Long) != 0
     }
 
     /// Mouse position in window points, origin top-left.
-    func mouseX(): Double {
+    func &.mouseX(): Double {
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
-        return azPeekF64(self.gpu.scratch, 0L)
+        return azPeekF64(self.gpu.scratch, Long(0))
     }
 
-    func mouseY(): Double {
+    func &.mouseY(): Double {
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
-        fin y = azPeekF64(self.gpu.scratch, 8L)
-        return self.boundsSize(3L) - y
+        fin y = azPeekF64(self.gpu.scratch, Long(8))
+        return self.boundsSize(Long(3)) - y
     }
 
     /// True while the mouse button is held (0 = left, 1 = right).
-    func mouseDown(button: Int): Bool {
+    func &.mouseDown(button: Int): Bool {
         if button < 0 || button > 2 {
             return false
         }
-        return azPeek8(self.inp.state, 4096L + button as Long) != 0
+        return azPeek8(self.inp.state, Long(4096) + button as Long) != 0
     }
 
     /// True only on the frame the button went down.
-    func mouseClicked(button: Int): Bool {
+    func &.mouseClicked(button: Int): Bool {
         if button < 0 || button > 2 {
             return false
         }
-        return azPeek8(self.inp.state, 4100L + button as Long) != 0
+        return azPeek8(self.inp.state, Long(4100) + button as Long) != 0
     }
 
     /// True when a standard extended game controller exists at [index].
     func controllerConnected(index: Int): Bool {
-        return gamepadAt(index) != 0L
+        return gamepadAt(index) != Long(0)
     }
 
     /// Analog value in the range 0..1 for a standard gamepad button.
     func controllerButtonValue(index: Int, button: Int): Double {
         fin gamepad = gamepadAt(index)
-        if gamepad == 0L {
+        if gamepad == Long(0) {
             return 0.0
         }
         fin input = gamepadButton(gamepad, button)
-        if input == 0L {
+        if input == Long(0) {
             return 0.0
         }
         return azSendFloat0(input, sel("value"))
@@ -329,11 +339,11 @@ impl App {
     /// Standard gamepad axis value in the range -1..1.
     func controllerAxis(index: Int, axis: Int): Double {
         fin gamepad = gamepadAt(index)
-        if gamepad == 0L {
+        if gamepad == Long(0) {
             return 0.0
         }
         fin input = gamepadAxis(gamepad, axis)
-        if input == 0L {
+        if input == Long(0) {
             return 0.0
         }
         return azSendFloat0(input, sel("value"))
@@ -341,73 +351,73 @@ impl App {
 
     // ── Event pump (internal) ───────────────────────────────────────────
 
-    func pumpEvents() {
+    func &.pumpEvents() {
         // Clear per-frame edges (pressed keys / clicked buttons).
         var i = 0
         while i < 2048 {
-            azPoke8(self.inp.state, 2048L + i as Long, 0)
+            azPoke8(self.inp.state, Long(2048) + i as Long, 0)
             i = i + 1
         }
-        azPoke8(self.inp.state, 4100L, 0)
-        azPoke8(self.inp.state, 4101L, 0)
-        azPoke8(self.inp.state, 4102L, 0)
+        azPoke8(self.inp.state, Long(4100), 0)
+        azPoke8(self.inp.state, Long(4101), 0)
+        azPoke8(self.inp.state, Long(4102), 0)
         // Wheel motion is a per-frame delta, not a state: it is cleared here and
         // accumulated below, so a frame with no scrolling reports exactly zero.
-        azPokeF64(self.inp.state, 4104L, 0.0)
-        azPokeF64(self.inp.state, 4112L, 0.0)
+        azPokeF64(self.inp.state, Long(4104), 0.0)
+        azPokeF64(self.inp.state, Long(4112), 0.0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
         fin mode = globalObject("NSDefaultRunLoopMode")
-        fin maskAny = 0L - 1L
+        fin maskAny = Long(0) - Long(1)
 
         loop {
-            fin ev = send4(nsapp, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), maskAny, distantPast, mode, 1L)
-            if ev == 0L {
+            fin ev = send4(nsapp, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), maskAny, distantPast, mode, Long(1))
+            if ev == Long(0) {
                 break
             }
             fin evType = send0(ev, sel("type"))
 
-            if evType == 10L {
+            if evType == Long(10) {
                 // keyArrowDown — swallowed (avoids the system beep for unhandled keys)
-                if send0(ev, sel("isARepeat")) == 0L {
+                if send0(ev, sel("isARepeat")) == Long(0) {
                     self.setKey(self.mapKey(ev), 1)
                 }
                 continue
             }
-            if evType == 11L {
+            if evType == Long(11) {
                 // keyArrowUp — swallowed
                 self.setKey(self.mapKey(ev), 0)
                 continue
             }
-            if evType == 12L {
+            if evType == Long(12) {
                 // flagsChanged: track shift (NSEventModifierFlagShift = 1 << 17)
                 fin flags = send0(ev, sel("modifierFlags"))
                 var shiftDown = 0
-                if (flags & 131072L) != 0L {
+                if (flags & Long(131072)) != Long(0) {
                     shiftDown = 1
                 }
                 self.setKey(keyShift, shiftDown)
             }
-            if evType == 22L {
+            if evType == Long(22) {
                 // Trackpads report precise deltas through the same event, so
                 // two-finger scrolling needs no separate path. Deltas within a
                 // frame accumulate: one frame can carry several events.
                 fin dx = azSendD0(ev, sel("scrollingDeltaX"))
                 fin dy = azSendD0(ev, sel("scrollingDeltaY"))
-                azPokeF64(self.inp.state, 4104L, azPeekF64(self.inp.state, 4104L) + dx)
-                azPokeF64(self.inp.state, 4112L, azPeekF64(self.inp.state, 4112L) + dy)
+                azPokeF64(self.inp.state, Long(4104), azPeekF64(self.inp.state, Long(4104)) + dx)
+                azPokeF64(self.inp.state, Long(4112), azPeekF64(self.inp.state, Long(4112)) + dy)
             }
-            if evType == 1L {
+            if evType == Long(1) {
                 self.setMouse(0, 1)
             }
-            if evType == 2L {
+            if evType == Long(2) {
                 self.setMouse(0, 0)
             }
-            if evType == 3L {
+            if evType == Long(3) {
                 self.setMouse(1, 1)
             }
-            if evType == 4L {
+            if evType == Long(4) {
                 self.setMouse(1, 0)
             }
 
@@ -416,22 +426,22 @@ impl App {
     }
 
     /// Horizontal wheel/trackpad motion this frame; 0 when nothing scrolled.
-    func scrollX(): Double {
-        return azPeekF64(self.inp.state, 4104L)
+    func &.scrollX(): Double {
+        return azPeekF64(self.inp.state, Long(4104))
     }
 
     /// Vertical wheel/trackpad motion this frame. Positive scrolls content down.
-    func scrollY(): Double {
-        return azPeekF64(self.inp.state, 4112L)
+    func &.scrollY(): Double {
+        return azPeekF64(self.inp.state, Long(4112))
     }
 
-    func setKey(key: Int, down: Int) {
+    func &.setKey(key: Int, down: Int) {
         if key < 0 || key >= 2048 {
             return
         }
         if down != 0 {
             if azPeek8(self.inp.state, key as Long) == 0 {
-                azPoke8(self.inp.state, 2048L + key as Long, 1)
+                azPoke8(self.inp.state, Long(2048) + key as Long, 1)
             }
             azPoke8(self.inp.state, key as Long, 1)
         } else {
@@ -439,41 +449,42 @@ impl App {
         }
     }
 
-    func setMouse(button: Int, down: Int) {
+    func &.setMouse(button: Int, down: Int) {
         if down != 0 {
-            if azPeek8(self.inp.state, 4096L + button as Long) == 0 {
-                azPoke8(self.inp.state, 4100L + button as Long, 1)
+            if azPeek8(self.inp.state, Long(4096) + button as Long) == 0 {
+                azPoke8(self.inp.state, Long(4100) + button as Long, 1)
             }
-            azPoke8(self.inp.state, 4096L + button as Long, 1)
+            azPoke8(self.inp.state, Long(4096) + button as Long, 1)
         } else {
-            azPoke8(self.inp.state, 4096L + button as Long, 0)
+            azPoke8(self.inp.state, Long(4096) + button as Long, 0)
         }
     }
 
     /// Maps an NSEvent to the engine key code (uppercase ASCII / KEY_*).
-    func mapKey(ev: Long): Int {
+    func &.mapKey(ev: Long): Int {
         fin code = send0(ev, sel("keyCode"))
-        if code == 53L { return keyEscape }
-        if code == 36L { return keyEnter }
-        if code == 48L { return keyTab }
-        if code == 49L { return keySpace }
-        if code == 123L { return keyArrowLeft }
-        if code == 124L { return keyArrowRight }
-        if code == 126L { return keyArrowUp }
-        if code == 125L { return keyArrowDown }
+        if code == Long(53) { return keyEscape }
+        if code == Long(36) { return keyEnter }
+        if code == Long(48) { return keyTab }
+        if code == Long(49) { return keySpace }
+        if code == Long(51) { return keyBackspace }
+        if code == Long(123) { return keyArrowLeft }
+        if code == Long(124) { return keyArrowRight }
+        if code == Long(126) { return keyArrowUp }
+        if code == Long(125) { return keyArrowDown }
 
         fin chars = send0(ev, sel("charactersIgnoringModifiers"))
-        if chars == 0L {
+        if chars == Long(0) {
             return -1
         }
-        if send0(chars, sel("length")) == 0L {
+        if send0(chars, sel("length")) == Long(0) {
             return -1
         }
         fin cstr = send0(chars, sel("UTF8String"))
-        if cstr == 0L {
+        if cstr == Long(0) {
             return -1
         }
-        var c = azPeek8(cstr, 0L)
+        var c = azPeek8(cstr, Long(0))
         if c >= 97 && c <= 122 {
             c = c - 32
         }
@@ -488,15 +499,15 @@ impl App {
 // the exact float-return objc_msgSend signature required by the native ABI.
 func gamepadAt(index: Int): Long {
     if index < 0 {
-        return 0L
+        return Long(0)
     }
     fin controllers = send0(cls("GCController"), sel("controllers"))
-    if controllers == 0L || index >= send0(controllers, sel("count")) as Int {
-        return 0L
+    if controllers == Long(0) || index >= send0(controllers, sel("count")) as Int {
+        return Long(0)
     }
     fin controller = send1(controllers, sel("objectAtIndex:"), index as Long)
-    if controller == 0L {
-        return 0L
+    if controller == Long(0) {
+        return Long(0)
     }
     return send0(controller, sel("extendedGamepad"))
 }
@@ -517,16 +528,16 @@ func gamepadButton(gamepad: Long, button: Int): Long {
     if button == gamepadHome { return send0(gamepad, sel("buttonHome")) }
 
     fin dpad = send0(gamepad, sel("dpad"))
-    if dpad == 0L { return 0L }
+    if dpad == Long(0) { return Long(0) }
     if button == gamepadDpadUp { return send0(dpad, sel("up")) }
     if button == gamepadDpadDown { return send0(dpad, sel("down")) }
     if button == gamepadDpadLeft { return send0(dpad, sel("left")) }
     if button == gamepadDpadRight { return send0(dpad, sel("right")) }
-    return 0L
+    return Long(0)
 }
 
 func gamepadAxis(gamepad: Long, axis: Int): Long {
-    var stick = 0L
+    var stick = Long(0)
     if axis == gamepadLeftX || axis == gamepadLeftY {
         stick = send0(gamepad, sel("leftThumbstick"))
     } else {
@@ -534,7 +545,7 @@ func gamepadAxis(gamepad: Long, axis: Int): Long {
             stick = send0(gamepad, sel("rightThumbstick"))
         }
     }
-    if stick == 0L { return 0L }
+    if stick == Long(0) { return Long(0) }
     if axis == gamepadLeftX || axis == gamepadRightX {
         return send0(stick, sel("xAxis"))
     }
@@ -543,33 +554,36 @@ func gamepadAxis(gamepad: Long, axis: Int): Long {
 
 // ── Frame ───────────────────────────────────────────────────────────────
 
-func gpuBeginFrame(app: App) {
-    var gpu = app.gpu
+func gpuBeginFrame(app: App!) {
+    var gpu: AzGpu! = app.gpu
 
     // Match the drawable to the current view size.
     azSendOutQuad(app.win.content, sel("bounds"), gpu.scratch)
-    fin wPts = azPeekF64(gpu.scratch, 16L)
-    fin hPts = azPeekF64(gpu.scratch, 24L)
+    fin wPts = azPeekF64(gpu.scratch, Long(16))
+    fin hPts = azPeekF64(gpu.scratch, Long(24))
     fin pw = (wPts * gpu.scale) as Long
     fin ph = (hPts * gpu.scale) as Long
-    if pw < 1L || ph < 1L {
+    if pw < Long(1) || ph < Long(1) {
         gpu.hasEncoder = false
         return
     }
     fin unused0 = azSendPair(gpu.layer, sel("setDrawableSize:"), pw as Double, ph as Double)
 
     // (Re)create the depth texture on resize.
-    if gpu.depthTex == 0L || gpu.depthW != pw || gpu.depthH != ph {
-        fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 252L, pw, ph, 0L)
-        send1(td, sel("setUsage:"), 4L)
-        send1(td, sel("setStorageMode:"), 2L)
+    if gpu.depthTex == Long(0) || gpu.depthW != pw || gpu.depthH != ph {
+        fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), Long(252), pw, ph, Long(0))
+        send1(td, sel("setUsage:"), Long(4))
+        send1(td, sel("setStorageMode:"), Long(2))
+        if gpu.depthTex != Long(0) {
+            send0(gpu.depthTex, sel("release"))
+        }
         gpu.depthTex = send1(gpu.device, sel("newTextureWithDescriptor:"), td)
         gpu.depthW = pw
         gpu.depthH = ph
     }
 
     gpu.drawable = send0(gpu.layer, sel("nextDrawable"))
-    if gpu.drawable == 0L {
+    if gpu.drawable == Long(0) {
         gpu.hasEncoder = false
         return
     }
@@ -577,16 +591,16 @@ func gpuBeginFrame(app: App) {
     gpu.cmd = send0(gpu.queue, sel("commandBuffer"))
     fin rp = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
 
-    fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
+    fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
     send1(ca, sel("setTexture:"), send0(gpu.drawable, sel("texture")))
-    send1(ca, sel("setLoadAction:"), 2L)
-    send1(ca, sel("setStoreAction:"), 1L)
+    send1(ca, sel("setLoadAction:"), Long(2))
+    send1(ca, sel("setStoreAction:"), Long(1))
     fin unused1 = azSendQuad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
 
     fin da = send0(rp, sel("depthAttachment"))
     send1(da, sel("setTexture:"), gpu.depthTex)
-    send1(da, sel("setLoadAction:"), 2L)
-    send1(da, sel("setStoreAction:"), 0L)
+    send1(da, sel("setLoadAction:"), Long(2))
+    send1(da, sel("setStoreAction:"), Long(0))
     fin unused2 = azSendF1(da, sel("setClearDepth:"), 1.0)
 
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
@@ -594,16 +608,16 @@ func gpuBeginFrame(app: App) {
     gpu.mode = -1
 }
 
-func gpuEndFrame(app: App) {
-    var gpu = app.gpu
+func gpuEndFrame(app: App!) {
+    var gpu: AzGpu! = app.gpu
     if !gpu.hasEncoder {
         return
     }
     send0(gpu.enc, sel("endEncoding"))
     send1(gpu.cmd, sel("presentDrawable:"), gpu.drawable)
     send0(gpu.cmd, sel("commit"))
-    gpu.enc = 0L
-    gpu.cmd = 0L
-    gpu.drawable = 0L
+    gpu.enc = Long(0)
+    gpu.cmd = Long(0)
+    gpu.drawable = Long(0)
     gpu.hasEncoder = false
 }

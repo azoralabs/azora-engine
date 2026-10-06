@@ -364,37 +364,35 @@ test "layer masks require agreement in both directions" {
     fin walls = collisionLayers(2, 1)
     fin ghosts = collisionLayers(4, 4)
 
-    assert layersInteract(bullets, walls) { "a bullet and a wall must interact" }
-    assert !layersInteract(bullets, ghosts) { "layers that ignore each other must not interact" }
-    assert layersInteract(allLayers(), ghosts) { "the universal mask must interact with everything" }
+    assert layersInteract(bullets, walls) panic "a bullet and a wall must interact"
+    assert !layersInteract(bullets, ghosts) panic "layers that ignore each other must not interact"
+    assert layersInteract(allLayers(), ghosts) panic "the universal mask must interact with everything"
 }
 
 test "inverse mass encodes the body kind" {
-    assert inverseMassFor(RigidBodyKind.Dynamic, 4.0) > 0.24 { "a dynamic body must be movable" }
-    assert inverseMassFor(RigidBodyKind.Static, 4.0) == 0.0 { "a static body must be immovable" }
-    assert inverseMassFor(RigidBodyKind.Kinematic, 4.0) == 0.0 { "a kinematic body must be immovable" }
-    assert inverseMassFor(RigidBodyKind.Dynamic, 0.0) == 0.0 { "a massless dynamic body must not divide by zero" }
-    assert kindIsSimulated(RigidBodyKind.Dynamic) && kindIsImmovable(RigidBodyKind.Static) {
-        "the kind predicates must agree with the inverse mass"
-    }
+    assert inverseMassFor(RigidBodyKind.Dynamic, 4.0) > 0.24 panic "a dynamic body must be movable"
+    assert inverseMassFor(RigidBodyKind.Static, 4.0) == 0.0 panic "a static body must be immovable"
+    assert inverseMassFor(RigidBodyKind.Kinematic, 4.0) == 0.0 panic "a kinematic body must be immovable"
+    assert inverseMassFor(RigidBodyKind.Dynamic, 0.0) == 0.0 panic "a massless dynamic body must not divide by zero"
+    assert kindIsSimulated(RigidBodyKind.Dynamic) && kindIsImmovable(RigidBodyKind.Static) panic "the kind predicates must agree with the inverse mass"
 }
 
 test "force modes scale the way their names promise" {
     fin dt = 0.5
     fin inverseMass = 0.25
-    assert forceScale(ForceMode.Force, inverseMass, dt) == 0.125 { "a force is scaled by mass and time" }
-    assert forceScale(ForceMode.Acceleration, inverseMass, dt) == 0.5 { "an acceleration ignores mass" }
-    assert forceScale(ForceMode.Impulse, inverseMass, dt) == 0.25 { "an impulse ignores time" }
-    assert forceScale(ForceMode.VelocityChange, inverseMass, dt) == 1.0 { "a velocity change is applied whole" }
+    assert forceScale(ForceMode.Force, inverseMass, dt) == 0.125 panic "a force is scaled by mass and time"
+    assert forceScale(ForceMode.Acceleration, inverseMass, dt) == 0.5 panic "an acceleration ignores mass"
+    assert forceScale(ForceMode.Impulse, inverseMass, dt) == 0.25 panic "an impulse ignores time"
+    assert forceScale(ForceMode.VelocityChange, inverseMass, dt) == 1.0 panic "a velocity change is applied whole"
 }
 
 test "a body sleeps only after staying still" {
     var sleep = awakeBody()
-    assert updateSleep(sleep, 0.0, 0.1) { "a body must not sleep the instant it stops" }
+    assert updateSleep(sleep, 0.0, 0.1) panic "a body must not sleep the instant it stops"
     updateSleep(sleep, 0.0, 0.2)
-    assert !sleep.awake { "a body still for a quarter second must sleep" }
+    assert !sleep.awake panic "a body still for a quarter second must sleep"
 
     updateSleep(sleep, 10.0, 0.016)
-    assert sleep.awake { "movement must wake a sleeping body" }
-    assert sleep.stillFor == 0.0 { "waking must reset the stillness timer" }
+    assert sleep.awake panic "movement must wake a sleeping body"
+    assert sleep.stillFor == 0.0 panic "waking must reset the stillness timer"
 }

@@ -48,7 +48,7 @@ pack Image {
 /** The empty image returned by every failure path. */
 @Experimental(since: "0.1")
 func imageEmpty(): Image {
-    return Image(0, 0, 0L, 0L, 0L, 0)
+    return Image(0, 0, Long(0), Long(0), Long(0), 0)
 }
 
 /**
@@ -109,11 +109,11 @@ func decodeBmp(blob: Blob): Image {
 
     fin pixelCount = width * height
     fin pixels = azAlloc((pixelCount * rgbaStride) as Long)
-    if pixels == 0L {
+    if pixels == Long(0) {
         return imageEmpty()
     }
 
-    var image = Image(width, height, pixels, 0L, 0L, 0)
+    var image = Image(width, height, pixels, Long(0), Long(0), 0)
 
     if bitCount == 8 {
         fin paletteOffset = 14 + headerSize
@@ -125,7 +125,7 @@ func decodeBmp(blob: Blob): Image {
         image.palette = readBmpPalette(blob, paletteOffset, paletteCount)
         image.paletteCount = paletteCount
         image.indices = azAlloc(pixelCount as Long)
-        if image.palette == 0L || image.indices == 0L {
+        if image.palette == Long(0) || image.indices == Long(0) {
             image.release()
             return imageEmpty()
         }
@@ -151,17 +151,17 @@ func decodeBmp(blob: Blob): Image {
  */
 func readBmpPalette(blob: Blob, offset: Int, count: Int): Long {
     fin palette = azAlloc((count * rgbaStride) as Long)
-    if palette == 0L {
-        return 0L
+    if palette == Long(0) {
+        return Long(0)
     }
     var i = 0
     while i < count {
         fin src = offset + i * 4
         fin dst = (i * rgbaStride) as Long
         azPoke8(palette, dst, blob.u8(src + 2))
-        azPoke8(palette, dst + 1L, blob.u8(src + 1))
-        azPoke8(palette, dst + 2L, blob.u8(src))
-        azPoke8(palette, dst + 3L, 255)
+        azPoke8(palette, dst + Long(1), blob.u8(src + 1))
+        azPoke8(palette, dst + Long(2), blob.u8(src))
+        azPoke8(palette, dst + Long(3), 255)
         i = i + 1
     }
     return palette
@@ -196,12 +196,12 @@ func readTrueColorRows(blob: Blob, image: Image, dataOffset: Int, bitCount: Int,
             fin src = rowStart + x * bytesPerPixel
             fin dst = ((y * image.width + x) * rgbaStride) as Long
             azPoke8(image.pixels, dst, blob.u8(src + 2))
-            azPoke8(image.pixels, dst + 1L, blob.u8(src + 1))
-            azPoke8(image.pixels, dst + 2L, blob.u8(src))
+            azPoke8(image.pixels, dst + Long(1), blob.u8(src + 1))
+            azPoke8(image.pixels, dst + Long(2), blob.u8(src))
             if bytesPerPixel == 4 {
-                azPoke8(image.pixels, dst + 3L, blob.u8(src + 3))
+                azPoke8(image.pixels, dst + Long(3), blob.u8(src + 3))
             } else {
-                azPoke8(image.pixels, dst + 3L, 255)
+                azPoke8(image.pixels, dst + Long(3), 255)
             }
             x = x + 1
         }
@@ -217,13 +217,13 @@ func paddedStride(unpadded: Int): Int {
 impl Image {
 
     /** Whether the image decoded successfully. */
-    func ok(): Bool {
-        return self.pixels != 0L && self.width > 0 && self.height > 0
+    func &.ok(): Bool {
+        return self.pixels != Long(0) && self.width > 0 && self.height > 0
     }
 
     /** Whether the image kept a palette that [applyPalette] can re-expand. */
-    func isPalettized(): Bool {
-        return self.indices != 0L && self.palette != 0L && self.paletteCount > 0
+    func &.isPalettized(): Bool {
+        return self.indices != Long(0) && self.palette != Long(0) && self.paletteCount > 0
     }
 
     /**
@@ -233,7 +233,7 @@ impl Image {
      * work here rather than in the decoder is what makes palette cycling a
      * per-frame operation instead of a re-decode.
      */
-    func applyPalette() {
+    func &.applyPalette() {
         if !self.isPalettized() {
             return
         }
@@ -247,9 +247,9 @@ impl Image {
             fin src = (index * rgbaStride) as Long
             fin dst = (i * rgbaStride) as Long
             azPoke8(self.pixels, dst, azPeek8(self.palette, src) & 0xFF)
-            azPoke8(self.pixels, dst + 1L, azPeek8(self.palette, src + 1L) & 0xFF)
-            azPoke8(self.pixels, dst + 2L, azPeek8(self.palette, src + 2L) & 0xFF)
-            azPoke8(self.pixels, dst + 3L, azPeek8(self.palette, src + 3L) & 0xFF)
+            azPoke8(self.pixels, dst + Long(1), azPeek8(self.palette, src + Long(1)) & 0xFF)
+            azPoke8(self.pixels, dst + Long(2), azPeek8(self.palette, src + Long(2)) & 0xFF)
+            azPoke8(self.pixels, dst + Long(3), azPeek8(self.palette, src + Long(3)) & 0xFF)
             i = i + 1
         }
     }
@@ -260,14 +260,14 @@ impl Image {
      * The change only reaches the pixels on the next [applyPalette], so a caller
      * can rewrite a whole cycle and expand once.
      */
-    func setPaletteEntry(index: Int, r: Int, g: Int, b: Int) {
-        if self.palette == 0L || index < 0 || index >= self.paletteCount {
+    func &.setPaletteEntry(index: Int, r: Int, g: Int, b: Int) {
+        if self.palette == Long(0) || index < 0 || index >= self.paletteCount {
             return
         }
         fin dst = (index * rgbaStride) as Long
         azPoke8(self.palette, dst, r)
-        azPoke8(self.palette, dst + 1L, g)
-        azPoke8(self.palette, dst + 2L, b)
+        azPoke8(self.palette, dst + Long(1), g)
+        azPoke8(self.palette, dst + Long(2), b)
     }
 
     /**
@@ -276,32 +276,32 @@ impl Image {
      * Palettized game art conventionally reserves one index as the colour key
      * rather than carrying an alpha channel.
      */
-    func setColorKey(index: Int) {
-        if self.palette == 0L || index < 0 || index >= self.paletteCount {
+    func &.setColorKey(index: Int) {
+        if self.palette == Long(0) || index < 0 || index >= self.paletteCount {
             return
         }
         azPoke8(self.palette, (index * rgbaStride + 3) as Long, 0)
     }
 
     /** The number of bytes in the RGBA pixel buffer. */
-    func byteCount(): Int {
+    func &.byteCount(): Int {
         return self.width * self.height * rgbaStride
     }
 
     /** Releases every buffer the image owns. */
-    func release[self: Self!]() {
-        if self.pixels != 0L {
+    func !.release() {
+        if self.pixels != Long(0) {
             azFree(self.pixels)
         }
-        if self.indices != 0L {
+        if self.indices != Long(0) {
             azFree(self.indices)
         }
-        if self.palette != 0L {
+        if self.palette != Long(0) {
             azFree(self.palette)
         }
-        self.pixels = 0L
-        self.indices = 0L
-        self.palette = 0L
+        self.pixels = Long(0)
+        self.indices = Long(0)
+        self.palette = Long(0)
         self.width = 0
         self.height = 0
         self.paletteCount = 0

@@ -562,28 +562,20 @@ test "a square lattice round-trips every tile it owns" {
         while x < 8 {
             fin pos = TilePos(x, y)
             fin back = worldToTile(geo, tileCenter(geo, pos))
-            assert back.same(pos) { "a tile centre must convert back to that tile" }
+            assert back.same(pos) panic "a tile centre must convert back to that tile"
             y = y
             x = x + 1
         }
         y = y + 1
     }
-    assert tilePickOnMap(pickTile(geo, tileCenter(geo, TilePos(0, 0)))) {
-        "the first tile must be picked as on the map"
-    }
-    assert !tilePickOnMap(pickTile(geo, WorldPos(-100.0, -100.0))) {
-        "a point far outside must not be reported as on the map"
-    }
+    assert tilePickOnMap(pickTile(geo, tileCenter(geo, TilePos(0, 0)))) panic "the first tile must be picked as on the map"
+    assert !tilePickOnMap(pickTile(geo, WorldPos(-100.0, -100.0))) panic "a point far outside must not be reported as on the map"
 }
 
 test "a top-left anchored map starts at its own origin" {
     fin geo = squareGeometry(4, 4, 16.0, 16.0)
-    assert realAbs(geo.bounds.minX) < 0.001 && realAbs(geo.bounds.minY) < 0.001 {
-        "TopLeft must put the bounding box corner on the tilemap position"
-    }
-    assert realAbs(geo.bounds.width() - 64.0) < 0.001 {
-        "four 16-unit tiles must span 64 units"
-    }
+    assert realAbs(geo.bounds.minX) < 0.001 && realAbs(geo.bounds.minY) < 0.001 panic "TopLeft must put the bounding box corner on the tilemap position"
+    assert realAbs(geo.bounds.width() - 64.0) < 0.001 panic "four 16-unit tiles must span 64 units"
 }
 
 test "every lattice round-trips its own tile centres" {
@@ -602,9 +594,7 @@ test "every lattice round-trips its own tile centres" {
             while x < 6 {
                 fin pos = TilePos(x, y)
                 fin back = worldToTile(maps[m], tileCenter(maps[m], pos))
-                assert back.same(pos) {
-                    "a tile centre must convert back to that tile on every lattice"
-                }
+                assert back.same(pos) panic "a tile centre must convert back to that tile on every lattice"
                 x = x + 1
             }
             y = y + 1
@@ -618,11 +608,9 @@ test "culling keeps the tiles a view covers and drops the rest" {
     fin view = worldRectAt(320.0, 320.0, 128.0, 128.0)
     fin rect = visibleTiles(geo, view)
 
-    assert rect.contains(TilePos(10, 10)) { "a tile in the middle of the view must survive culling" }
-    assert !rect.contains(TilePos(0, 0)) { "a tile far from the view must be culled" }
-    assert rect.area() < 64 * 64 { "culling must actually reduce the tile count" }
+    assert rect.contains(TilePos(10, 10)) panic "a tile in the middle of the view must survive culling"
+    assert !rect.contains(TilePos(0, 0)) panic "a tile far from the view must be culled"
+    assert rect.area() < 64 * 64 panic "culling must actually reduce the tile count"
 
-    assert visibleTiles(geo, worldRectAt(-5000.0, -5000.0, 10.0, 10.0)).isEmpty() {
-        "a view that misses the map entirely must cull everything"
-    }
+    assert visibleTiles(geo, worldRectAt(-5000.0, -5000.0, 10.0, 10.0)).isEmpty() panic "a view that misses the map entirely must cull everything"
 }

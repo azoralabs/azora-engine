@@ -47,7 +47,7 @@ func quat(x: Double, y: Double, z: Double, w: Double): Quat {
 
 /** The rotation of [radians] about [axis], which need not be normalised. */
 func quatAxisAngle(axis: Vec3, radians: Double): Quat {
-    fin unit = axis.normalized
+    fin unit = axis.normalized catch vec3Zero()
     fin half = radians * 0.5
     fin s = sin(half)
     return Quat(unit.x * s, unit.y * s, unit.z * s, cos(half))
@@ -70,28 +70,28 @@ func quatEuler(pitch: Double, yaw: Double, roll: Double): Quat {
 }
 
 impl Quat {
-    func dot(o: Quat): Double {
+    func &.dot(o: Quat): Double {
         return self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
     }
 
-    func length(): Double {
+    func &.length(): Double {
         return sqrt(self.dot(self))
     }
 
-    func scale(k: Double): Quat {
+    func &.scale(k: Double): Quat {
         return Quat(self.x * k, self.y * k, self.z * k, self.w * k)
     }
 
-    func plus(o: Quat): Quat {
+    func &.plus(o: Quat): Quat {
         return Quat(self.x + o.x, self.y + o.y, self.z + o.z, self.w + o.w)
     }
 
     /** The inverse rotation, for a unit quaternion. */
-    func conjugate(): Quat {
+    func &.conjugate(): Quat {
         return Quat(0.0 - self.x, 0.0 - self.y, 0.0 - self.z, self.w)
     }
 
-    prop normalized[self: Self&]: Quat {
+    prop  &.normalized: Quat {
         fin len = self.length()
         if len < 0.000001 {
             return quatIdentity()
@@ -100,7 +100,7 @@ impl Quat {
     }
 
     /** `self` then [o] — the composition, applied right to left as usual. */
-    func times(o: Quat): Quat {
+    func &.times(o: Quat): Quat {
         return Quat(
             self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
             self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
@@ -110,7 +110,7 @@ impl Quat {
     }
 
     /** [point] rotated by this quaternion. */
-    func rotate(point: Vec3): Vec3 {
+    func &.rotate(point: Vec3): Vec3 {
         fin u = Vec3(self.x, self.y, self.z)
         fin uv = u.cross(point)
         fin uuv = u.cross(uv)
@@ -118,7 +118,7 @@ impl Quat {
     }
 
     /** The equivalent rotation matrix. */
-    func matrix(): Mat4 {
+    func &.matrix(): Mat4 {
         fin xx = self.x * self.x
         fin yy = self.y * self.y
         fin zz = self.z * self.z

@@ -28,7 +28,18 @@
 
 module game
 
-import engine
+import engine.app
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.gpu.draw
+import engine.input
+import engine.io
+import engine.math
+import engine.platform
+import engine.render
+import engine.ui
+import std.traits
 
 // ── The scene ────────────────────────────────────────────────────────────
 //
@@ -43,8 +54,7 @@ pack Scene {
 }
 
 impl GameSystem for Scene {
-    func run(app: App!) {
-        self! ->
+    func !.run(app: App!) {
         if !self.ready {
             self.cube = app.meshCube(1.0)
             self.ground = app.meshGrid(10.0, 10)
@@ -68,6 +78,12 @@ impl GameSystem for Scene {
             app.quit()
         }
     }
+
+    func !.shutdown(app: App!) {
+        app.releaseMesh(self.cube)
+        app.releaseMesh(self.ground)
+        self.ready = false
+    }
 }
 
 // ── The game plugin ──────────────────────────────────────────────────────
@@ -75,6 +91,6 @@ impl GameSystem for Scene {
 func main() {
     var e = engine("__AZORA_PROJECT_NAME__", 1280, 720)
     e.setClearColor(0.06, 0.07, 0.09)
-    e.addUpdateSystem(Scene(cameraDefault(), Mesh(0L, 0), Mesh(0L, 0), false) as GameSystem)
+    e.addUpdateSystem(Scene(cameraDefault(), Mesh(Long(0), 0), Mesh(Long(0), 0), false) as GameSystem)
     e.run()
 }

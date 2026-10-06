@@ -290,27 +290,23 @@ func clearTileEntities(world: World!, entities: TileEntities!): Int {
 }
 
 test "a tile entity writes its own cell and can be found again" {
-    var world = World::init()
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var world = World()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
     fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(2, 3), 5, Entity::invalid)
-    assert entity.isValid { "spawning inside the map must succeed" }
-    assert tileEntityAt(entities, TilePos(2, 3)).id == entity.id { "the cell must resolve to its entity" }
-    assert layerIndexAt(map.layers[0], TilePos(2, 3)) == 5 {
-        "spawning must write the tile immediately, not on the next sync"
-    }
+    assert entity.isValid panic "spawning inside the map must succeed"
+    assert tileEntityAt(entities, TilePos(2, 3)).id == entity.id panic "the cell must resolve to its entity"
+    assert layerIndexAt(map.layers[0], TilePos(2, 3)) == 5 panic "spawning must write the tile immediately, not on the next sync"
 
-    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, Entity::invalid).isValid {
-        "spawning outside the map must be refused"
-    }
+    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, Entity::invalid).isValid panic "spawning outside the map must be refused"
 }
 
 test "syncing carries appearance from components into the layer" {
-    var world = World::init()
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var world = World()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
@@ -320,33 +316,33 @@ test "syncing carries appearance from components into the layer" {
     setTileMirror(entities, entity, tileFlip(true, false, false))
     setTileTint(entities, entity, tileColor(1.0, 0.0, 0.0, 1.0))
 
-    assert syncTilesToLayers(world, entities, map) == 1 { "the one live tile entity must be written" }
-    assert layerIndexAt(map.layers[0], TilePos(1, 1)) == 9 { "the new index must reach the layer" }
-    assert layerFlipAt(map.layers[0], TilePos(1, 1)).x { "the mirror must reach the layer" }
-    assert layerTintAt(map.layers[0], TilePos(1, 1)) != tileTintNone { "the tint must reach the layer" }
+    assert syncTilesToLayers(world, entities, map) == 1 panic "the one live tile entity must be written"
+    assert layerIndexAt(map.layers[0], TilePos(1, 1)) == 9 panic "the new index must reach the layer"
+    assert layerFlipAt(map.layers[0], TilePos(1, 1)).x panic "the mirror must reach the layer"
+    assert layerTintAt(map.layers[0], TilePos(1, 1)) != tileTintNone panic "the tint must reach the layer"
 
     setTileVisible(entities, entity, false)
     syncTilesToLayers(world, entities, map)
-    assert !layerIsDrawable(map.layers[0], TilePos(1, 1)) { "hiding must stop the cell being drawn" }
-    assert layerHasTile(map.layers[0], TilePos(1, 1)) { "hiding must not clear the cell" }
+    assert !layerIsDrawable(map.layers[0], TilePos(1, 1)) panic "hiding must stop the cell being drawn"
+    assert layerHasTile(map.layers[0], TilePos(1, 1)) panic "hiding must not clear the cell"
 }
 
 test "despawning clears the cell and sweeping unbinds dead handles" {
-    var world = World::init()
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var world = World()
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
     spawnTileOrNone(world, entities, map, 0, TilePos(4, 4), 7, Entity::invalid)
-    assert despawnTile(world, entities, map, TilePos(4, 4)) { "despawning a bound cell must succeed" }
-    assert layerIndexAt(map.layers[0], TilePos(4, 4)) == tileEmpty { "despawning must clear the cell" }
-    assert !tileEntityAt(entities, TilePos(4, 4)).isValid { "the cell must no longer be bound" }
-    assert !despawnTile(world, entities, map, TilePos(4, 4)) { "despawning an empty cell must report nothing done" }
+    assert despawnTile(world, entities, map, TilePos(4, 4)) panic "despawning a bound cell must succeed"
+    assert layerIndexAt(map.layers[0], TilePos(4, 4)) == tileEmpty panic "despawning must clear the cell"
+    assert !tileEntityAt(entities, TilePos(4, 4)).isValid panic "the cell must no longer be bound"
+    assert !despawnTile(world, entities, map, TilePos(4, 4)) panic "despawning an empty cell must report nothing done"
 
     // A tile entity killed behind the tilemap's back must still be swept up.
     fin orphan = spawnTileOrNone(world, entities, map, 0, TilePos(5, 5), 2, Entity::invalid)
     world.despawn(orphan)
-    assert sweepTileEntities(world, entities) == 1 { "the dead handle must be swept" }
-    assert !tileEntityAt(entities, TilePos(5, 5)).isValid { "the swept cell must be unbound" }
+    assert sweepTileEntities(world, entities) == 1 panic "the dead handle must be swept"
+    assert !tileEntityAt(entities, TilePos(5, 5)).isValid panic "the swept cell must be unbound"
 }

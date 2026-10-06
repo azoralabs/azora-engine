@@ -38,7 +38,7 @@ impl EcsObserver {
      *
      * Returns true exactly once for each distinct world revision.
      */
-    func observeWorld[self: Self!](world: World&): Bool {
+    func !.observeWorld(world: World&): Bool {
         if self._worldRevision == world.revision {
             return false
         }
@@ -48,7 +48,7 @@ impl EcsObserver {
     }
 
     /** Observes insertions, removals, and writes in one component storage. */
-    func observeStorage<T>[self: Self!](storage: Storage<T>&): Bool {
+    func <T> !.observeStorage(storage: Storage<T>&): Bool {
         if self._storageRevision == storage.revision {
             return false
         }
@@ -58,7 +58,7 @@ impl EcsObserver {
     }
 
     /** Observes any independent revisioned state such as navigation. */
-    func observeRevision[self: Self!](revision: Long): Bool {
+    func !.observeRevision(revision: Long): Bool {
         if self._navigationRevision == revision {
             return false
         }
@@ -80,15 +80,15 @@ pack ReactiveResource<T> {
     var publishedRevision: Long
 }
 
-func reactiveResource<T>(value: T): ReactiveResource<T> {
+func<T> reactiveResource(value: T): ReactiveResource<T> {
     return ReactiveResource<T>(signalInit<T>(value), (0 - 1) as Long)
 }
 
 impl ReactiveResource<T> {
-    prop value[self: Self&]: T = signalGet<T>(self.signal)
-    prop version[self: Self&]: Long = signalVersion<T>(self.signal)
+    prop  &.value: T = signalGet<T>(self.signal)
+    prop  &.version: Long = signalVersion<T>(self.signal)
 
-    func set[self: Self!](value: T) {
+    func !.set(value: T) {
         signalSet<T>(self.signal, value)
     }
 
@@ -97,7 +97,7 @@ impl ReactiveResource<T> {
      *
      * Hosts call this before rebuilding their UI tree or command list.
      */
-    func consumeChange[self: Self!](): Bool {
+    func !.consumeChange(): Bool {
         fin current = signalVersion<T>(self.signal)
         if self.publishedRevision == current {
             return false
@@ -108,21 +108,21 @@ impl ReactiveResource<T> {
 }
 
 test "ecs observer consumes each world revision once" {
-    var world = World::init()
+    var world = World()
     var observer = ecsObserver()
-    assert observer.observeWorld(world) { "first world observation must invalidate" }
-    assert !observer.observeWorld(world) { "unchanged world invalidated twice" }
+    assert observer.observeWorld(world) panic "first world observation must invalidate"
+    assert !observer.observeWorld(world) panic "unchanged world invalidated twice"
     world.spawn()
-    assert observer.observeWorld(world) { "spawn must invalidate world observers" }
+    assert observer.observeWorld(world) panic "spawn must invalidate world observers"
 }
 
 test "reactive resource publishes each write once" {
     var resource = reactiveResource<Int>(4)
-    assert resource.consumeChange() { "initial reactive value must publish" }
-    assert !resource.consumeChange() { "unchanged reactive value published twice" }
+    assert resource.consumeChange() panic "initial reactive value must publish"
+    assert !resource.consumeChange() panic "unchanged reactive value published twice"
     resource.set(9)
-    assert resource.value == 9 { "reactive resource lost its value" }
-    assert resource.consumeChange() { "reactive write did not publish" }
+    assert resource.value == 9 panic "reactive resource lost its value"
+    assert resource.consumeChange() panic "reactive write did not publish"
 }
 
 test .All "engine reactive ui"

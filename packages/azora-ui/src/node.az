@@ -32,6 +32,8 @@
 module engine.ui.node
 
 import std.container.array
+import std.traits
+import std.format
 import engine.core
 import engine.ecs
 
@@ -43,13 +45,13 @@ import engine.ecs
  * quietly repurposing it (§9.4).
  */
 @Component
-pack Key {
+pack Key derives Clone {
     fin value: String = ""
 }
 
 /** The parent this node hangs from. One parent per node, no cycles (§10.3). */
 @Component
-pack Child {
+pack Child derives Clone {
     fin parent: Entity
 }
 
@@ -61,7 +63,7 @@ pack Child {
  * rather than the order they happen to be stored (§10.3).
  */
 @Component
-pack SiblingOrder {
+pack SiblingOrder derives Clone {
     var index: Int = 0
 }
 
@@ -79,7 +81,7 @@ pack SiblingOrder {
  * node's key whenever any earlier subtree grew.
  */
 @Component
-pack Cursor {
+pack Cursor derives Clone {
     var next: Int = 0
 }
 
@@ -90,22 +92,22 @@ pack Text derives (Copy, Clone, Equal, Hash, Display, Compose) {
 }
 
 impl Text {
-    react ctor[self: Self!, anchor: Anchor&](
+    func &.display(formatter: Formatter!) { formatter.write(self.value) }
+    react ctor (anchor: Anchor!).(
         value: String
         modifier: Modifier& = .()
         key: String = ""
     ): Entity {
         self.value = value
 
-        with anchor.pass {
-            return compose(anchor.parent, @applyKey, modifier)
-        }
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "text") } else { key }
+        return self.compose(anchor.pass, anchor.parent, id, modifier)
     }
 }
 
 /** Marks a node as activatable, and whether it currently is. */
 @Component
-pack Clickable {
+pack Clickable derives Clone {
     var enabled: Bool = true
 }
 
@@ -130,13 +132,14 @@ pack Button derives (Copy, Clone, Equal, Hash, Display) {
  * arranging it. That is the whole reason this is an `impl` and not a `derive`.
  */
 impl Compose for Button {
-    func compose[self: Self&, composition: Composition!](
+    func &.compose(
+        composition: Composition!
         parent: Entity
         key: String
         modifier: Modifier&
     ): Entity {
         fin node = composition.claim(parent, key)
-        storageInsert<Button>(store(composition), node, self)
+        storageInsert<Button>(store(composition), node, self.clone())
         storageInsert<Clickable>(store(composition), node, .(true))
         storageInsert<Action>(store(composition), node, .(self.action))
         storageInsert<Layout>(store(composition), node, .(layoutRow, .Center, .Center, 0.0))
@@ -146,33 +149,118 @@ impl Compose for Button {
 }
 
 impl Button {
-    react ctor<R>[self: Self!, anchor: Anchor&](
+    func &.display(formatter: Formatter!) { formatter.write("Button(${self.action})") }
+    react ctor (anchor: Anchor!).(
         modifier: Modifier& = .()
         action: Int = 0
         key: String = ""
-        children: react [Anchor&]() -> R
+        children: inline react Anchor!.() -> Unit
     ): Entity {
         self.action = action
 
-        with anchor.pass {
-            fin node = compose(anchor.parent, @applyKey, modifier)
-            with anchor.inside(node) {
-                children()
-            }
-            return node
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "button") } else { key }
+        fin node = self.compose(anchor.pass, anchor.parent, id, modifier)
+        using anchor.inside(node) {
+            children()
         }
+        return node
+    }
+}
+
+/** A declarative column constructor. In an Anchor scope it returns its retained entity. */
+pack Column derives Clone {
+    var spacing: Double = 0.0
+}
+impl Column {
+    react ctor (anchor: Anchor!).(
+        modifier: Modifier& = .()
+        verticalArrangement: Arrangement = .Start
+        horizontalAlignment: Alignment = .Start
+        spacing: Double = 0.0
+        key: String = ""
+        children: inline react Anchor!.() -> Unit
+    ): Entity {
+        self.spacing = spacing
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "column") } else { key }
+        fin node = anchor.pass.column(anchor.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
+        using anchor.inside(node) {
+            children()
+        }
+        return node
+    }
+}
+
+/** A declarative row constructor. */
+pack Row derives Clone {
+    var spacing: Double = 0.0
+}
+impl Row {
+    react ctor (anchor: Anchor!).(
+        modifier: Modifier& = .()
+        horizontalArrangement: Arrangement = .Start
+        verticalAlignment: Alignment = .Start
+        spacing: Double = 0.0
+        key: String = ""
+        children: inline react Anchor!.() -> Unit
+    ): Entity {
+        self.spacing = spacing
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "row") } else { key }
+        fin node = anchor.pass.row(anchor.parent, id, modifier, horizontalArrangement, verticalAlignment, spacing)
+        using anchor.inside(node) {
+            children()
+        }
+        return node
+    }
+}
+
+/** A retained column whose children scroll within its arranged rectangle. */
+pack ScrollColumn derives Clone {
+    var spacing: Double = 0.0
+}
+impl ScrollColumn {
+    react ctor (anchor: Anchor!).(
+        modifier: Modifier& = .()
+        verticalArrangement: Arrangement = .Start
+        horizontalAlignment: Alignment = .Start
+        spacing: Double = 0.0
+        key: String = ""
+        children: inline react Anchor!.() -> Unit
+    ): Entity {
+        self.spacing = spacing
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "scroll") } else { key }
+        fin node = anchor.pass.scrollColumn(anchor.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
+        using anchor.inside(node) {
+            children()
+        }
+        return node
+    }
+}
+
+/** A declarative rectangle with an ECS query group. */
+pack Shape derives Clone {
+    var group: Int = 0
+}
+impl Shape {
+    react ctor (anchor: Anchor!).(
+        modifier: Modifier& = .()
+        group: Int = 0
+        key: String = ""
+    ): Entity {
+        self.group = group
+        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "shape") } else { key }
+        return anchor.pass.shape(anchor.parent, id, modifier, group)
     }
 }
 
 /** What the node was asked to do when activated; 0 means nothing. */
 @Component
-pack Action {
+pack Action derives Clone {
     var code: Int = 0
 }
 
 /** The rectangle a node occupies, once arranged. */
 @Component
-pack Rect {
+pack Rect derives Clone {
     var x: Double = 0.0
     var y: Double = 0.0
     var width: Double = 0.0
@@ -181,7 +269,7 @@ pack Rect {
 
 /** How a node paints: colour and coverage. */
 @Component
-pack Paint {
+pack Paint derives Clone {
     var r: Double = 0.0
     var g: Double = 0.0
     var b: Double = 0.0
@@ -199,7 +287,7 @@ pack Paint {
  * another's nodes.
  */
 @Component
-pack Owned {
+pack Owned derives Clone {
     fin owner: String = ""
     var claimed: Bool = false
 }
@@ -212,7 +300,7 @@ pack Owned {
  * changing what it is.
  */
 @Component
-pack Layout {
+pack Layout derives Clone {
     /** 0 stacks children downward, 1 lays them across. */
     var direction: Int = 0
     /** How leftover space along the container's own axis is distributed. */
@@ -236,7 +324,7 @@ fin layoutRow = 1
  * lives here and the children never learn they are scrolled.
  */
 @Component
-pack Scroll {
+pack Scroll derives Clone {
     var offset: Double = 0.0
     /** Total height the children needed, so scrolling can be bounded. */
     var contentExtent: Double = 0.0
@@ -249,7 +337,7 @@ pack Scroll {
  * data, answerable without the composition that produced it.
  */
 @Component
-pack Tag {
+pack Tag derives Clone {
     fin name: String = ""
 }
 
@@ -262,7 +350,7 @@ pack Tag {
  * field nobody fills.
  */
 @Component
-pack TagI {
+pack TagI derives Clone {
     fin index: Int = 0
 }
 
@@ -313,7 +401,7 @@ enum ModifierKind {
  * `Padding` reads all four as insets, `Background` reads them as a colour, and
  * nothing else needs to know which is which.
  */
-pack ModifierEntry {
+pack ModifierEntry derives (Copy, Clone) {
     fin kind: ModifierKind
     fin a: Double = 0.0
     fin b: Double = 0.0
@@ -332,50 +420,50 @@ pack ModifierEntry {
  * A chain never draws. It records what was asked for; the layout and paint
  * systems decide what that means.
  */
-pack Modifier {
-    fin entries: Array<ModifierEntry> = Array::fill<ModifierEntry>(0)
+pack Modifier derives Clone {
+    fin entries: Array<ModifierEntry> = Array<ModifierEntry>()
 }
 
 impl Modifier {
     /** This chain with [entry] appended. */
-    func then[self: Self&](entry: ModifierEntry): Modifier {
-        var grown: Array<ModifierEntry> = Array::fill<ModifierEntry>(self.entries.size + 1)
+    func &.then(entry: ModifierEntry): Modifier {
+        var grown: Array<ModifierEntry> = Array<ModifierEntry>()
         var index = 0
         while index < self.entries.size {
-            grown[index] = self.entries[index]
+            grown.add(self.entries[index].clone())
             index = index + 1
         }
-        grown[self.entries.size] = entry
-        return Modifier(grown)
+        grown.add(take entry)
+        return Modifier(take grown)
     }
 
     /** Take all the width the parent offers. */
-    func fillMaxWidth[self: Self&](): Modifier {
+    func &.fillMaxWidth(): Modifier {
         return self.then(ModifierEntry(ModifierKind.FillMaxWidth, 0.0, 0.0, 0.0, 0.0))
     }
 
     /** Take all the height the parent offers. */
-    func fillMaxHeight[self: Self&](): Modifier {
+    func &.fillMaxHeight(): Modifier {
         return self.then(ModifierEntry(ModifierKind.FillMaxHeight, 0.0, 0.0, 0.0, 0.0))
     }
 
     /** Take all of both. */
-    func fillMaxSize[self: Self&](): Modifier {
+    func &.fillMaxSize(): Modifier {
         return self.fillMaxWidth().fillMaxHeight()
     }
 
     /** A fixed width. */
-    func width[self: Self&](value: Double): Modifier {
+    func &.width(value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Width, value, 0.0, 0.0, 0.0))
     }
 
     /** A fixed height. */
-    func height[self: Self&](value: Double): Modifier {
+    func &.height(value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Height, value, 0.0, 0.0, 0.0))
     }
 
     /** A fixed size on both axes. */
-    func size[self: Self&](width: Double, height: Double): Modifier {
+    func &.size(width: Double, height: Double): Modifier {
         return self.width(width).height(height)
     }
 
@@ -385,7 +473,7 @@ impl Modifier {
      * `padding(all:)` sets every edge; the named edges override it, so
      * `padding(all: 8.0, top: 16.0)` reads the way it looks.
      */
-    func padding[self: Self&](
+    func &.padding(
         all: Double = 0.0
         start: Double = 0 - 1.0
         top: Double = 0 - 1.0
@@ -400,7 +488,7 @@ impl Modifier {
     }
 
     /** Fill the node's rectangle with a colour. */
-    func background[self: Self&](
+    func &.background(
         r: Double
         g: Double
         b: Double
@@ -410,7 +498,7 @@ impl Modifier {
     }
 
     /** Share of the leftover space along the parent's axis. */
-    func weight[self: Self&](value: Double): Modifier {
+    func &.weight(value: Double): Modifier {
         return self.then(ModifierEntry(ModifierKind.Weight, value, 0.0, 0.0, 0.0))
     }
 }
@@ -424,7 +512,7 @@ impl Modifier {
  * static and the instance method of the same name coexist - `Modifier::padding`
  * starts a chain, `.padding` continues one.
  */
-impl Modifier:: {
+impl Modifier {
     /** Take all the width the parent offers. */
     func fillMaxWidth(): Modifier {
         return Modifier().fillMaxWidth()
@@ -488,7 +576,7 @@ impl Modifier:: {
  * Absent means "whatever the parent gives me".
  */
 @Component
-pack Size {
+pack Size derives Clone {
     var fillWidth: Bool = false
     var fillHeight: Bool = false
     /** Fixed extent, or 0 when none was asked for. */
@@ -500,7 +588,7 @@ pack Size {
 
 /** Inset between a node's rectangle and its children's. */
 @Component
-pack Padding {
+pack Padding derives Clone {
     var start: Double = 0.0
     var top: Double = 0.0
     var end: Double = 0.0

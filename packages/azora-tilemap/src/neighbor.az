@@ -61,7 +61,7 @@ func neighborsNew(capacity: Int): Neighbors {
 }
 
 impl Neighbors {
-    func add(pos: TilePos) {
+    func !.add(pos: TilePos) {
         if self.count >= self.xs.size {
             fin room = intMax(self.xs.size * 2, 8)
             self.xs = intGridResize(self.xs, self.count, room, 0)
@@ -73,7 +73,7 @@ impl Neighbors {
     }
 
     /** The neighbour at [index], or the origin when out of range. */
-    func at(index: Int): TilePos {
+    func &.at(index: Int): TilePos {
         if index < 0 || index >= self.count {
             return TilePos(0, 0)
         }
@@ -81,7 +81,7 @@ impl Neighbors {
     }
 
     /** True when [pos] is among the neighbours. */
-    func contains(pos: TilePos): Bool {
+    func &.contains(pos: TilePos): Bool {
         var i = 0
         while i < self.count {
             if self.xs[i] == pos.x && self.ys[i] == pos.y {
@@ -92,7 +92,7 @@ impl Neighbors {
         return false
     }
 
-    func clear() {
+    func !.clear() {
         self.count = 0
     }
 }
@@ -321,64 +321,42 @@ test "square neighbours step the way the compass says" {
     fin geo = squareGeometry(8, 8, 16.0, 16.0)
     fin center = TilePos(3, 3)
 
-    assert squareNeighbor(center, SquareDirection.North).same(TilePos(3, 2)) {
-        "north must decrease y in the engine's y-down space"
-    }
-    assert squareNeighbor(center, SquareDirection.SouthEast).same(TilePos(4, 4)) {
-        "a corner direction must step on both axes"
-    }
-    assert squareOpposite(SquareDirection.NorthWest) == SquareDirection.SouthEast {
-        "opposite directions must cancel"
-    }
+    assert squareNeighbor(center, SquareDirection.North).same(TilePos(3, 2)) panic "north must decrease y in the engine's y-down space"
+    assert squareNeighbor(center, SquareDirection.SouthEast).same(TilePos(4, 4)) panic "a corner direction must step on both axes"
+    assert squareOpposite(SquareDirection.NorthWest) == SquareDirection.SouthEast panic "opposite directions must cancel"
 
-    assert neighborsOf(geo, center, false).count == 4 { "an edge-only square cell has four neighbours" }
-    assert neighborsOf(geo, center, true).count == 8 { "a square cell has eight neighbours in all" }
-    assert !neighborsOf(geo, center, false).contains(TilePos(4, 4)) {
-        "excluding diagonals must exclude the corners"
-    }
+    assert neighborsOf(geo, center, false).count == 4 panic "an edge-only square cell has four neighbours"
+    assert neighborsOf(geo, center, true).count == 8 panic "a square cell has eight neighbours in all"
+    assert !neighborsOf(geo, center, false).contains(TilePos(4, 4)) panic "excluding diagonals must exclude the corners"
 }
 
 test "neighbours are clipped to the map at its edges" {
     fin geo = squareGeometry(8, 8, 16.0, 16.0)
-    assert neighborsWithin(geo, TilePos(0, 0), true).count == 3 {
-        "a corner cell has three neighbours on the map"
-    }
-    assert neighborsWithin(geo, TilePos(0, 3), false).count == 3 {
-        "an edge cell has three edge neighbours on the map"
-    }
-    assert neighborsWithin(geo, TilePos(3, 3), true).count == 8 {
-        "an interior cell keeps all eight"
-    }
+    assert neighborsWithin(geo, TilePos(0, 0), true).count == 3 panic "a corner cell has three neighbours on the map"
+    assert neighborsWithin(geo, TilePos(0, 3), false).count == 3 panic "an edge cell has three edge neighbours on the map"
+    assert neighborsWithin(geo, TilePos(3, 3), true).count == 8 panic "an interior cell keeps all eight"
 }
 
-test "a hex lattice answers with six neighbours and hex distance" {
+test "a hex lattice answers using six neighbours and hex distance" {
     fin geo = hexGeometry(HexCoordSystem.RowOdd, 8, 8, 32.0, 36.0)
     fin center = TilePos(3, 3)
     fin around = neighborsOf(geo, center, true)
 
-    assert around.count == 6 { "a hexagon has six neighbours whatever the diagonal flag says" }
+    assert around.count == 6 panic "a hexagon has six neighbours whatever the diagonal flag says"
     var i = 0
     while i < around.count {
-        assert tileDistance(geo, center, around.at(i), true) == 1 {
-            "every hex neighbour must be one step away"
-        }
+        assert tileDistance(geo, center, around.at(i), true) == 1 panic "every hex neighbour must be one step away"
         i = i + 1
     }
-    assert tilesAdjacent(geo, center, around.at(0), true) { "a neighbour must read as adjacent" }
-    assert !tilesAdjacent(geo, center, center, true) { "a cell is not its own neighbour" }
+    assert tilesAdjacent(geo, center, around.at(0), true) panic "a neighbour must read as adjacent"
+    assert !tilesAdjacent(geo, center, center, true) panic "a cell is not its own neighbour"
 }
 
 test "ranges cover the shape the metric implies" {
     fin square = squareGeometry(16, 16, 16.0, 16.0)
-    assert tilesWithin(square, TilePos(8, 8), 1, true).count == 9 {
-        "a radius-1 box holds the centre and eight neighbours"
-    }
-    assert tilesWithin(square, TilePos(8, 8), 1, false).count == 5 {
-        "a radius-1 diamond holds the centre and four edge neighbours"
-    }
+    assert tilesWithin(square, TilePos(8, 8), 1, true).count == 9 panic "a radius-1 box holds the centre and eight neighbours"
+    assert tilesWithin(square, TilePos(8, 8), 1, false).count == 5 panic "a radius-1 diamond holds the centre and four edge neighbours"
 
     fin hexes = hexGeometry(HexCoordSystem.RowOdd, 16, 16, 32.0, 36.0)
-    assert tilesWithin(hexes, TilePos(8, 8), 2, true).count == 19 {
-        "a radius-2 hex range holds nineteen cells"
-    }
+    assert tilesWithin(hexes, TilePos(8, 8), 2, true).count == 19 panic "a radius-2 hex range holds nineteen cells"
 }

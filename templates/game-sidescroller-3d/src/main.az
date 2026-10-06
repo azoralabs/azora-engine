@@ -83,11 +83,11 @@ pack GameSession {
     var bestScore: Int
 }
 
-fin moveSpeed = 7.8
-fin moveResponse = 15.0
-fin airResponse = 6.5
-fin jumpSpeed = 10.8
-fin GRAVITY = 27.0
+fin moveSpeed: Double = 7.8
+fin moveResponse: Double = 15.0
+fin airResponse: Double = 6.5
+fin jumpSpeed: Double = 10.8
+fin GRAVITY: Double = 27.0
 
 func playerHalf(): Vec3 {
     return Vec3(0.42, 0.72, 0.38)
@@ -114,20 +114,20 @@ func approach(current: Double, target: Double, amount: Double): Double {
 }
 
 func addPlatform(
-    world: World
+    world: World,
     platforms: Storage<Platform>
-    x: Double
-    y: Double
-    width: Double
-    depth: Double
-    r: Double
-    g: Double
-    b: Double
+    x: Double,
+    y: Double,
+    width: Double,
+    depth: Double,
+    r: Double,
+    g: Double,
+    b: Double,
 ) {
     spawnWith<Platform>(world, platforms, Platform(
-        Vec3(x, y, 0.0)
-        Vec3(width * 0.5, 0.35, depth * 0.5)
-        colorRgb(r, g, b)
+        Vec3(x, y, 0.0),
+        Vec3(width * 0.5, 0.35, depth * 0.5),
+        colorRgb(r, g, b),
     ))
 }
 
@@ -136,19 +136,19 @@ func addCoin(world: World, coins: Storage<Coin>, x: Double, y: Double, phase: Do
 }
 
 func addWalker(
-    world: World
+    world: World,
     walkers: Storage<Walker>
-    x: Double
-    y: Double
-    minX: Double
-    maxX: Double
-    speed: Double
+    x: Double,
+    y: Double,
+    minX: Double,
+    maxX: Double,
+    speed: Double,
 ) {
     spawnWith<Walker>(world, walkers, Walker(Vec3(x, y, 0.0), speed, minX, maxX))
 }
 
 func buildLevel(
-    world: World
+    world: World,
     platforms: Storage<Platform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
@@ -190,13 +190,13 @@ func buildLevel(
 }
 
 func resetSession(
-    playerEntity: Entity
+    playerEntity: Entity,
     players: Storage<Player>
     transforms: Storage<Transform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
     score: ReactiveResource<Int>
-    session: GameSession
+    session: GameSession,
 ) {
     fin player: Player = storageGet<Player>(players, playerEntity)
     player.velocity = vec3Zero()
@@ -239,7 +239,7 @@ func resetSession(
 }
 
 func readMoveInput(app: App): Double {
-    var movement = 0.0
+    var movement: Double = 0.0
     if app.keyDown(keyA) || app.keyDown(keyArrowLeft) {
         movement = movement - 1.0
     }
@@ -312,8 +312,8 @@ func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>
 }
 
 func collectCoins(
-    position: Vec3
-    player: Player
+    position: Vec3,
+    player: Player,
     coins: Storage<Coin>
     score: ReactiveResource<Int>
 ) {
@@ -324,10 +324,10 @@ func collectCoins(
             fin coin: Coin = storageValueAt<Coin>(coins, i)
             if !coin.collected {
                 fin hit = engine::physics::aabbOverlaps(
-                    position
-                    playerHalf()
-                    coin.center
-                    Vec3(0.34, 0.34, 0.34)
+                    position,
+                    playerHalf(),
+                    coin.center,
+                    Vec3(0.34, 0.34, 0.34),
                 )
                 if hit {
                     coin.collected = true
@@ -347,10 +347,10 @@ func hitWalker(position: Vec3, walkers: Storage<Walker>): Bool {
         if entity.isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, i)
             if engine::physics::aabbOverlaps(
-                position
-                playerHalf()
-                walker.center
-                Vec3(0.48, 0.48, 0.48)
+                position,
+                playerHalf(),
+                walker.center,
+                Vec3(0.48, 0.48, 0.48),
             ) {
                 return true
             }
@@ -361,16 +361,16 @@ func hitWalker(position: Vec3, walkers: Storage<Walker>): Bool {
 }
 
 func updatePlayer(
-    app: App
-    world: World
+    app: App,
+    world: World,
     players: Storage<Player>
     transforms: Storage<Transform>
     platforms: Storage<Platform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
     score: ReactiveResource<Int>
-    audio: AudioScene
-    dt: Double
+    audio: AudioScene,
+    dt: Double,
 ): Bool {
     var query = queryFromStorage<Player>(world, players, false)
     queryWith<Transform>(query, transforms)
@@ -440,8 +440,8 @@ func updatePlayer(
 
 func drawBox(app: App, cube: Mesh, center: Vec3, size: Vec3, color: Color) {
     fin model = mat4Mul(
-        mat4Translation(center.x, center.y, center.z)
-        mat4Scale(size.x, size.y, size.z)
+        mat4Translation(center.x, center.y, center.z),
+        mat4Scale(size.x, size.y, size.z),
     )
     app.drawMesh(cube, model, color.r, color.g, color.b)
 }
@@ -451,7 +451,7 @@ func drawBackdrop(app: App, cube: Mesh, cameraX: Double, elapsed: Double) {
     var i = -5
     while i < 18 {
         fin x = (i as Double) * 7.0 + cameraX * 0.22
-        fin h = 3.0 + (((i + 7) % 5) as Double) * 1.2
+        fin h: Double = 3.0 + (((i + 7) % 5) as Double) * 1.2
         drawBox(app, cube, Vec3(x, h * 0.5 - 1.5, -12.0), Vec3(5.5, h, 2.4), colorRgb(0.18, 0.28, 0.42))
         i = i + 1
     }
@@ -460,7 +460,7 @@ func drawBackdrop(app: App, cube: Mesh, cameraX: Double, elapsed: Double) {
     while cloud < 12 {
         fin drift = elapsed * (0.18 + (((cloud + 4) % 3) as Double) * 0.05)
         fin x = (cloud as Double) * 11.0 + drift + cameraX * 0.45
-        fin y = 6.0 + (((cloud + 8) % 4) as Double) * 0.75
+        fin y: Double = 6.0 + (((cloud + 8) % 4) as Double) * 0.75
         drawBox(app, cube, Vec3(x, y, -7.0), Vec3(2.8, 0.45, 1.0), colorRgb(0.84, 0.90, 0.98))
         drawBox(app, cube, Vec3(x + 0.9, y + 0.3, -7.0), Vec3(1.4, 0.55, 1.0), colorRgb(0.90, 0.94, 1.0))
         cloud = cloud + 1
@@ -468,16 +468,16 @@ func drawBackdrop(app: App, cube: Mesh, cameraX: Double, elapsed: Double) {
 }
 
 func renderWorld(
-    app: App
-    cube: Mesh
-    cylinder: Mesh
-    playerEntity: Entity
+    app: App,
+    cube: Mesh,
+    cylinder: Mesh,
+    playerEntity: Entity,
     players: Storage<Player>
     transforms: Storage<Transform>
     platforms: Storage<Platform>
     coins: Storage<Coin>
     walkers: Storage<Walker>
-    session: GameSession
+    session: GameSession,
 ) {
     drawBackdrop(app, cube, session.cameraX, session.elapsed)
 
@@ -486,18 +486,18 @@ func renderWorld(
         if storageEntityAt<Platform>(platforms, p).isValid {
             fin platform: Platform = storageValueAt<Platform>(platforms, p)
             drawBox(
-                app
-                cube
-                platform.center
-                Vec3(platform.halfSize.x * 2.0, platform.halfSize.y * 2.0, platform.halfSize.z * 2.0)
-                platform.color
+                app,
+                cube,
+                platform.center,
+                Vec3(platform.halfSize.x * 2.0, platform.halfSize.y * 2.0, platform.halfSize.z * 2.0),
+                platform.color,
             )
             drawBox(
-                app
-                cube
-                Vec3(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z)
-                Vec3(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0)
-                colorRgb(0.43, 0.76, 0.36)
+                app,
+                cube,
+                Vec3(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z),
+                Vec3(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0),
+                colorRgb(0.43, 0.76, 0.36),
             )
         }
         p = p + 1
@@ -566,7 +566,7 @@ func drawMenuScene(app: App, cube: Mesh, elapsed: Double) {
 func drawMenu(app: App, bestScore: Int): Int {
     fin width = app.width() as Double
     fin height = app.height() as Double
-    fin panelWidth = 420.0
+    fin panelWidth: Double = 420.0
     fin panelX = (width - panelWidth) * 0.5
     fin panelY = height * 0.19
 
@@ -637,7 +637,7 @@ async func main() {
     fin cube = app.meshCube(1.0)
     fin cylinder = app.meshCylinder(1.0, 1.0, 18)
 
-    var world = World::init()
+    var world = World()
     var transforms = storageInit<Transform>(transformEcsDefault())
     var players = storageInit<Player>(Player(vec3Zero(), false, 0.0, 0.0, 3, 0, 0.0, 1.0))
     var platforms = storageInit<Platform>(Platform(vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.3, 0.6, 0.4)))
@@ -661,7 +661,7 @@ async func main() {
     camera.fovDeg = 55.0
 
     while app.frame() {
-        realm alloc {
+        scope "frame" {
             var dt = app.deltaTime()
             if dt > 0.05 {
                 dt = 0.05
@@ -689,16 +689,16 @@ async func main() {
             if current == GameRoute.Playing {
                 updateWalkers(walkers, dt)
                 fin alive = updatePlayer(
-                    app
-                    world
-                    players
-                    transforms
-                    platforms
-                    coins
-                    walkers
-                    score
-                    audio
-                    dt
+                    app,
+                    world,
+                    players,
+                    transforms,
+                    platforms,
+                    coins,
+                    walkers,
+                    score,
+                    audio,
+                    dt,
                 )
                 fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
                 fin player: Player = storageGet<Player>(players, playerEntity)

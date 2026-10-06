@@ -59,7 +59,7 @@ variant enum LayerPick {
 
 /** An empty map on [geometry], drawing from [tiles]. */
 func tilemapNew(name: String, geometry: TilemapGeometry, tiles: TileSet): Tilemap {
-    var layers: Array<TileLayer> = Array::fill<TileLayer>(0)
+    var layers: Array<TileLayer> = Array<TileLayer>()
     return Tilemap(name, geometry, layers, 0, tiles, true, 1.0, tileColorWhite())
 }
 
@@ -79,12 +79,12 @@ func tilemapSquare(
 
 impl Tilemap {
     /** The map's extent in tiles. */
-    func size(): TilemapSize {
+    func &.size(): TilemapSize {
         return self.geometry.size
     }
 
     /** The layer at [index], or an empty one-cell layer when the index is unknown. */
-    func layerAt(index: Int): TileLayer {
+    func &.layerAt(index: Int): TileLayer {
         if index < 0 || index >= self.count {
             return tileLayerNew("", TilemapSize(0, 0))
         }
@@ -92,7 +92,7 @@ impl Tilemap {
     }
 
     /** True when [index] names a layer of this map. */
-    func hasLayer(index: Int): Bool {
+    func &.hasLayer(index: Int): Bool {
         return index >= 0 && index < self.count
     }
 }
@@ -356,40 +356,32 @@ func tilemapRelease(app: App, map: Tilemap!) {
     tileSetRelease(app, map.tiles)
 }
 
-test "layers must agree with the map about their size" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+test "layers must agree using the map about their size" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
 
-    assert tilemapAddLayer(map, tileLayerNew("ground", TilemapSize(8, 8))) == 0 {
-        "a matching layer must be accepted as the first layer"
-    }
-    assert tilemapAddLayer(map, tileLayerNew("wrong", TilemapSize(4, 4))) == -1 {
-        "a layer of the wrong size must be refused, not resized"
-    }
-    assert map.count == 1 { "the refused layer must not have been added" }
+    assert tilemapAddLayer(map, tileLayerNew("ground", TilemapSize(8, 8))) == 0 panic "a matching layer must be accepted as the first layer"
+    assert tilemapAddLayer(map, tileLayerNew("wrong", TilemapSize(4, 4))) == -1 panic "a layer of the wrong size must be refused, not resized"
+    assert map.count == 1 panic "the refused layer must not have been added"
 }
 
 test "the topmost tile wins a stacked lookup" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "ground")
     tilemapNewLayer(map, "walls")
 
     tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
-    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 0 { "only the ground holds a tile so far" }
+    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 0 panic "only the ground holds a tile so far"
 
     tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
-    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 1 { "the wall layer must win once it has a tile" }
-    assert tileLookupIndex(tilemapTopTileAt(map, TilePos(2, 2))) == 9 {
-        "the topmost tile must be the one reported"
-    }
-    assert tileLookupOffMap(tilemapTopTileAt(map, TilePos(99, 99))) {
-        "a lookup outside the map must say so"
-    }
+    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 1 panic "the wall layer must win once it has a tile"
+    assert tileLookupIndex(tilemapTopTileAt(map, TilePos(2, 2))) == 9 panic "the topmost tile must be the one reported"
+    assert tileLookupOffMap(tilemapTopTileAt(map, TilePos(99, 99))) panic "a lookup outside the map must say so"
 }
 
 test "traits gather across the whole stack" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(3, traitWater)
     tiles.addTraits(9, traitSolid)
 
@@ -399,16 +391,14 @@ test "traits gather across the whole stack" {
     tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
     tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
 
-    assert tilemapHasTrait(map, TilePos(2, 2), traitWater) { "the ground's trait must be visible" }
-    assert tilemapHasTrait(map, TilePos(2, 2), traitSolid) { "the wall's trait must be visible" }
-    assert tilemapLayerTraitsAt(map, 0, TilePos(2, 2)) == traitWater {
-        "a single-layer query must not pick up the layer above"
-    }
-    assert !tilemapHasTrait(map, TilePos(5, 5), traitSolid) { "an empty cell carries no traits" }
+    assert tilemapHasTrait(map, TilePos(2, 2), traitWater) panic "the ground's trait must be visible"
+    assert tilemapHasTrait(map, TilePos(2, 2), traitSolid) panic "the wall's trait must be visible"
+    assert tilemapLayerTraitsAt(map, 0, TilePos(2, 2)) == traitWater panic "a single-layer query must not pick up the layer above"
+    assert !tilemapHasTrait(map, TilePos(5, 5), traitSolid) panic "an empty cell carries no traits"
 }
 
-test "resizing a map carries every layer with it" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+test "resizing a map carries every layer using it" {
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "ground")
     tilemapNewLayer(map, "walls")
@@ -420,15 +410,15 @@ test "resizing a map carries every layer with it" {
     } catch {
         resized = false
     }
-    assert resized { "a positive resize must succeed" }
-    assert map.geometry.size.x == 16 && map.geometry.size.y == 4 { "the geometry must adopt the size" }
-    assert map.layers[1].size.x == 16 { "every layer must be resized, not just the first" }
-    assert tilemapIndexAt(map, 0, TilePos(1, 1)) == 4 { "surviving content must keep its place" }
+    assert resized panic "a positive resize must succeed"
+    assert map.geometry.size.x == 16 && map.geometry.size.y == 4 panic "the geometry must adopt the size"
+    assert map.layers[1].size.x == 16 panic "every layer must be resized, not just the first"
+    assert tilemapIndexAt(map, 0, TilePos(1, 1)) == 4 panic "surviving content must keep its place"
     var refused = false
     try {
         tilemapResize(map, TilemapSize(0, 4))
     } catch {
         refused = true
     }
-    assert refused { "an empty size must be refused" }
+    assert refused panic "an empty size must be refused"
 }

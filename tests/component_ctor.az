@@ -40,29 +40,29 @@ pack Marker {
 }
 
 react func main() {
-    var world = World::init()
-    var pass = Composition::of(take world, "test")
+    var world = World()
+    var pass = Composition::of(world, "test")
 
     fin plain = Text("just a value")
-    std::println("plain=${plain.value}")
+    println("plain=${plain.value}")
 
     pass.begin()
     var root = Anchor(pass, pass.root)
-    with root {
+    using root {
         fin caption = Text("Play")
         fin action = Button(action: 7) {
             Text("Stop")
         }
-        std::println("caption=${caption.id} button=${action.id}")
-        std::println("clickable=${storageHas<Clickable>(store<Clickable>(pass), action)}")
-        std::println("code=${storageGet<Action>(store<Action>(pass), action).code}")
-        std::println("stored=${storageHas<Button>(store<Button>(pass), action)}")
-        std::println("captioned=${storageGet<Text>(store<Text>(pass), caption).value}")
+        println("caption=${caption.id} button=${action.id}")
+        println("clickable=${storageHas<Clickable>(store<Clickable>(pass), action)}")
+        println("code=${storageGet<Action>(store<Action>(pass), action).code}")
+        println("stored=${storageHas<Button>(store<Button>(pass), action)}")
+        println("captioned=${storageGet<Text>(store<Text>(pass), caption).value}")
     }
     // Nothing registered a storage for [Marker]; declaring it was enough.
     storageInsert<Marker>(store<Marker>(pass), pass.root, .("here"))
-    std::println("marker=${storageGet<Marker>(store<Marker>(pass), pass.root).note}")
+    println("marker=${storageGet<Marker>(store<Marker>(pass), pass.root).note}")
 
     fin swept = pass.commit()
-    std::println("swept=${swept} nodes=${pass.nodeCount()}")
+    println("swept=${swept} nodes=${pass.nodeCount()}")
 }

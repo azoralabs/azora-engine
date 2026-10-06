@@ -28,6 +28,8 @@
  */
 module engine.animation.core
 
+import std.traits
+
 import std.container.array
 import engine.core
 
@@ -274,7 +276,7 @@ func animWrap(value: Double, period: Double): Double {
 // ── Tracks ──────────────────────────────────────────────────────────────
 
 /** An empty track with room for [capacity] keyframes. */
-func trackNew<T>(name: String, capacity: Int): Track<T> {
+func<T> trackNew(name: String, capacity: Int): Track<T> {
     var keys: Array<Keyframe<T>> = Array::fill<Keyframe<T>>(animCapacity(capacity))
     return Track<T>(name, keys, 0)
 }
@@ -290,7 +292,7 @@ func animCapacity(capacity: Int): Int {
  * a base pose, an override pass, a hand-tweaked key — plays correctly without
  * the caller having to sort anything.
  */
-func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): Int {
+func<T> trackInsert(track: Track<T>!, key: Keyframe<T>): Int {
     if track.count >= track.keys.size {
         fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
         var grown: Array<Keyframe<T>> = Array::fill<Keyframe<T>>(room)
@@ -324,12 +326,12 @@ func trackInsert<T>(track: Track<T>!, key: Keyframe<T>): Int {
 }
 
 /** Adds a keyframe at [time] holding [value]. */
-func trackKey<T>(track: Track<T>!, time: Double, value: T, mode: Interpolation): Int {
+func<T> trackKey(track: Track<T>!, time: Double, value: T, mode: Interpolation): Int {
     return trackInsert<T>(track, Keyframe<T>(time, value, mode))
 }
 
 /** The keyframe at [index], or the first one when the index is out of range. */
-func trackAt<T>(track: Track<T>&, index: Int): Keyframe<T> {
+func<T> trackAt(track: Track<T>&, index: Int): Keyframe<T> {
     fin safe = when true {
         track.count <= 0 -> 0
         index < 0 -> 0
@@ -340,14 +342,14 @@ func trackAt<T>(track: Track<T>&, index: Int): Keyframe<T> {
 }
 
 /** The time of the track's last keyframe. */
-func trackDuration<T>(track: Track<T>&): Double {
+func<T> trackDuration(track: Track<T>&): Double {
     if track.count <= 0 {
         return 0.0
     }
     return track.keys[track.count - 1].time
 }
 
-func trackIsEmpty<T>(track: Track<T>&): Bool {
+func<T> trackIsEmpty(track: Track<T>&): Bool {
     return track.count <= 0
 }
 
@@ -367,7 +369,7 @@ pack TrackSpan {
 }
 
 /** The span [time] falls in, on a track sorted by [trackInsert]. */
-func trackSpanAt<T>(track: Track<T>&, time: Double): TrackSpan {
+func<T> trackSpanAt(track: Track<T>&, time: Double): TrackSpan {
     if track.count <= 0 {
         return TrackSpan(0, 0, 0.0, false)
     }
@@ -525,7 +527,7 @@ func sampleReal(track: RealTrack&, time: Double): Double {
 
 /** A clip of [duration] seconds. */
 func animationClip(name: String, duration: Double, loopMode: LoopMode): AnimationClip {
-    var events: Array<AnimationEvent> = Array::fill<AnimationEvent>(0)
+    var events: Array<AnimationEvent> = Array<AnimationEvent>()
     return AnimationClip(name, animMax(duration, 0.0), loopMode, events, 0)
 }
 
@@ -650,54 +652,54 @@ func blendWeight(value: Double): BlendWeight {
 
 impl AnimationPlayer {
     /** Starts, or restarts, playback from the beginning. */
-    func play() {
+    func !.play() {
         self.elapsed = 0.0
         self.previous = 0.0
         self.state = PlaybackState.Playing
     }
 
     /** Resumes without rewinding. */
-    func resume() {
+    func !.resume() {
         if self.state != PlaybackState.Playing {
             self.state = PlaybackState.Playing
         }
     }
 
-    func pause() {
+    func !.pause() {
         if self.state == PlaybackState.Playing {
             self.state = PlaybackState.Paused
         }
     }
 
     /** Stops and rewinds. */
-    func stop() {
+    func !.stop() {
         self.elapsed = 0.0
         self.previous = 0.0
         self.state = PlaybackState.Stopped
     }
 
     /** Moves the clock to [time] without playing, for scrubbing a timeline. */
-    func seek(time: Double) {
+    func !.seek(time: Double) {
         self.previous = self.elapsed
         self.elapsed = animMax(time, 0.0)
     }
 
     /** The time within the clip the player is currently at. */
-    func localTime(): Double {
+    func &.localTime(): Double {
         return clipLocalTime(self.clip, self.elapsed)
     }
 
     /** The player's progress through its clip, `0 .. 1`. */
-    func progress(): Double {
+    func !.progress(): Double {
         return clipProgress(self.clip, self.elapsed)
     }
 
-    func direction(): PlaybackDirection {
+    func &.direction(): PlaybackDirection {
         return clipDirection(self.clip, self.elapsed)
     }
 
     /** True while the player is contributing to a blend. */
-    func isActive(): Bool {
+    func &.isActive(): Bool {
         return self.state == PlaybackState.Playing && self.weight.value > 0.0
     }
 
@@ -708,7 +710,7 @@ impl AnimationPlayer {
      * accumulating it, so resuming continues from where it left off instead of
      * jumping forward by however long it was paused.
      */
-    func advance(dt: Double): PlaybackState {
+    func !.advance(dt: Double): PlaybackState {
         if self.state != PlaybackState.Playing {
             return self.state
         }
@@ -787,7 +789,7 @@ func timelineNew(name: String, capacity: Int): Timeline {
 
 impl Timeline {
     /** Appends [player] and returns its index. */
-    func add(player: AnimationPlayer): Int {
+    func !.add(player: AnimationPlayer): Int {
         if self.count >= self.players.size {
             fin room = if self.players.size * 2 > 4 { self.players.size * 2 } else { 4 }
             var grown: Array<AnimationPlayer> = Array::fill<AnimationPlayer>(room)
@@ -804,7 +806,7 @@ impl Timeline {
     }
 
     /** The player at [index], or the first one. */
-    func at(index: Int): AnimationPlayer {
+    func &.at(index: Int): AnimationPlayer {
         fin safe = when true {
             self.count <= 0 -> 0
             index < 0 -> 0
@@ -815,28 +817,28 @@ impl Timeline {
     }
 
     /** Starts every player from the beginning. */
-    func play() {
+    func !.play() {
         for i in 0..(self.count - 1) {
             self.players[i].play()
         }
         self.state = PlaybackState.Playing
     }
 
-    func pause() {
+    func !.pause() {
         for i in 0..(self.count - 1) {
             self.players[i].pause()
         }
         self.state = PlaybackState.Paused
     }
 
-    func resume() {
+    func !.resume() {
         for i in 0..(self.count - 1) {
             self.players[i].resume()
         }
         self.state = PlaybackState.Playing
     }
 
-    func stop() {
+    func !.stop() {
         for i in 0..(self.count - 1) {
             self.players[i].stop()
         }
@@ -850,7 +852,7 @@ impl Timeline {
      * which is what lets a cutscene wait for its longest clip without the
      * caller tracking them individually.
      */
-    func advance(dt: Double): PlaybackState {
+    func !.advance(dt: Double): PlaybackState {
         if self.state != PlaybackState.Playing {
             return self.state
         }
@@ -867,7 +869,7 @@ impl Timeline {
     }
 
     /** The longest clip on the timeline. */
-    func duration(): Double {
+    func &.duration(): Double {
         var longest = 0.0
         for i in 0..(self.count - 1) {
             longest = animMax(longest, self.players[i].clip.duration)
@@ -905,14 +907,14 @@ func playerContribution(player: AnimationPlayer&): Double {
 
 test "easing keeps its endpoints and bends in between" {
     for mode in 0..0 {
-        assert easeFactor(0.0, Interpolation.Linear) == 0.0 { "every curve must start at zero" }
+        assert easeFactor(0.0, Interpolation.Linear) == 0.0 panic "every curve must start at zero"
     }
-    assert easeFactor(1.0, Interpolation.EaseInOut) == 1.0 { "every curve must end at one" }
-    assert easeFactor(0.5, Interpolation.Linear) == 0.5 { "linear must not bend" }
-    assert easeFactor(0.5, Interpolation.EaseIn) < 0.5 { "ease-in must lag at the midpoint" }
-    assert easeFactor(0.5, Interpolation.EaseOut) > 0.5 { "ease-out must lead at the midpoint" }
-    assert easeFactor(0.4, Interpolation.Step) == 0.0 { "a step must hold until it arrives" }
-    assert easeFactor(2.0, Interpolation.Linear) == 1.0 { "an over-run position must clamp" }
+    assert easeFactor(1.0, Interpolation.EaseInOut) == 1.0 panic "every curve must end at one"
+    assert easeFactor(0.5, Interpolation.Linear) == 0.5 panic "linear must not bend"
+    assert easeFactor(0.5, Interpolation.EaseIn) < 0.5 panic "ease-in must lag at the midpoint"
+    assert easeFactor(0.5, Interpolation.EaseOut) > 0.5 panic "ease-out must lead at the midpoint"
+    assert easeFactor(0.4, Interpolation.Step) == 0.0 panic "a step must hold until it arrives"
+    assert easeFactor(2.0, Interpolation.Linear) == 1.0 panic "an over-run position must clamp"
 }
 
 test "a track stays sorted however it is built" {
@@ -921,63 +923,61 @@ test "a track stays sorted however it is built" {
     realTrackKey(track, 0.0, 0.0, Interpolation.Linear)
     realTrackKey(track, 1.0, 10.0, Interpolation.Linear)
 
-    assert track.count == 3 { "every key must be kept" }
-    assert realTrackAt(track, 0).time == 0.0 { "the earliest key must sort first" }
-    assert realTrackAt(track, 2).time == 2.0 { "the latest key must sort last" }
-    assert realTrackDuration(track) == 2.0 { "a track is as long as its last key" }
+    assert track.count == 3 panic "every key must be kept"
+    assert realTrackAt(track, 0).time == 0.0 panic "the earliest key must sort first"
+    assert realTrackAt(track, 2).time == 2.0 panic "the latest key must sort last"
+    assert realTrackDuration(track) == 2.0 panic "a track is as long as its last key"
 
-    assert sampleReal(track, 0.5) == 5.0 { "sampling must interpolate between keys" }
-    assert sampleReal(track, 1.5) == 15.0 { "sampling must find the right span" }
-    assert sampleReal(track, -1.0) == 0.0 { "sampling before the start must hold the first key" }
-    assert sampleReal(track, 99.0) == 20.0 { "sampling past the end must hold the last key" }
+    assert sampleReal(track, 0.5) == 5.0 panic "sampling must interpolate between keys"
+    assert sampleReal(track, 1.5) == 15.0 panic "sampling must find the right span"
+    assert sampleReal(track, -1.0) == 0.0 panic "sampling before the start must hold the first key"
+    assert sampleReal(track, 99.0) == 20.0 panic "sampling past the end must hold the last key"
 }
 
 test "loop modes resolve the clock the way their names promise" {
     fin once = animationClip("once", 2.0, LoopMode.Once)
-    assert clipLocalTime(once, 3.0) == 2.0 { "a one-shot clip must hold its end" }
-    assert clipHasEnded(once, 2.5) { "a one-shot clip must report finishing" }
+    assert clipLocalTime(once, 3.0) == 2.0 panic "a one-shot clip must hold its end"
+    assert clipHasEnded(once, 2.5) panic "a one-shot clip must report finishing"
 
     fin repeat = animationClip("repeat", 2.0, LoopMode.Repeat)
-    assert animAbs(clipLocalTime(repeat, 5.0) - 1.0) < 0.001 { "a repeating clip must wrap" }
-    assert !clipHasEnded(repeat, 99.0) { "a repeating clip never finishes" }
+    assert animAbs(clipLocalTime(repeat, 5.0) - 1.0) < 0.001 panic "a repeating clip must wrap"
+    assert !clipHasEnded(repeat, 99.0) panic "a repeating clip never finishes"
 
     fin pingPong = animationClip("pingpong", 2.0, LoopMode.PingPong)
-    assert animAbs(clipLocalTime(pingPong, 1.0) - 1.0) < 0.001 { "a ping-pong must climb on the way out" }
-    assert animAbs(clipLocalTime(pingPong, 3.0) - 1.0) < 0.001 { "a ping-pong must descend on the way back" }
-    assert clipDirection(pingPong, 3.0) == PlaybackDirection.Backward {
-        "the direction must reverse on the return leg"
-    }
+    assert animAbs(clipLocalTime(pingPong, 1.0) - 1.0) < 0.001 panic "a ping-pong must climb on the way out"
+    assert animAbs(clipLocalTime(pingPong, 3.0) - 1.0) < 0.001 panic "a ping-pong must descend on the way back"
+    assert clipDirection(pingPong, 3.0) == PlaybackDirection.Backward panic "the direction must reverse on the return leg"
 }
 
 test "a player only advances while it is playing" {
     var player = animationPlayer(animationClip("walk", 2.0, LoopMode.Repeat))
     player.advance(1.0)
-    assert player.elapsed == 0.0 { "a stopped player must ignore time" }
+    assert player.elapsed == 0.0 panic "a stopped player must ignore time"
 
     player.play()
     player.advance(0.5)
-    assert animAbs(player.elapsed - 0.5) < 0.001 { "a playing player must advance" }
+    assert animAbs(player.elapsed - 0.5) < 0.001 panic "a playing player must advance"
 
     player.pause()
     player.advance(10.0)
-    assert animAbs(player.elapsed - 0.5) < 0.001 { "a paused player must not accumulate the pause" }
+    assert animAbs(player.elapsed - 0.5) < 0.001 panic "a paused player must not accumulate the pause"
 
     player.resume()
     player.advance(0.5)
-    assert animAbs(player.elapsed - 1.0) < 0.001 { "resuming must continue from where it stopped" }
-    assert animAbs(player.progress() - 0.5) < 0.001 { "progress must follow the clock" }
+    assert animAbs(player.elapsed - 1.0) < 0.001 panic "resuming must continue from where it stopped"
+    assert animAbs(player.progress() - 0.5) < 0.001 panic "progress must follow the clock"
 
     player.speed = 2.0
     player.advance(0.5)
-    assert animAbs(player.elapsed - 2.0) < 0.001 { "speed must scale the delta" }
+    assert animAbs(player.elapsed - 2.0) < 0.001 panic "speed must scale the delta"
 }
 
 test "a one-shot player reports finishing exactly once it is over" {
     var player = playingPlayer(animationClip("attack", 1.0, LoopMode.Once))
-    assert player.advance(0.5) == PlaybackState.Playing { "a clip half over is still playing" }
-    assert player.advance(1.0) == PlaybackState.Finished { "a clip run past its end must finish" }
-    assert player.elapsed == 1.0 { "a finished clip must rest exactly on its end" }
-    assert player.advance(5.0) == PlaybackState.Finished { "a finished clip must stay finished" }
+    assert player.advance(0.5) == PlaybackState.Playing panic "a clip half over is still playing"
+    assert player.advance(1.0) == PlaybackState.Finished panic "a clip run past its end must finish"
+    assert player.elapsed == 1.0 panic "a finished clip must rest exactly on its end"
+    assert player.advance(5.0) == PlaybackState.Finished panic "a finished clip must stay finished"
 }
 
 test "events fire once, in the window the clock crossed" {
@@ -985,19 +985,19 @@ test "events fire once, in the window the clock crossed" {
     clipEvent(clip, 0.5, "hit", 7)
 
     var player = playingPlayer(take clip)
-    assert !eventFired(playerEvent(player)) { "no event has been crossed yet" }
+    assert !eventFired(playerEvent(player)) panic "no event has been crossed yet"
 
     player.advance(0.6)
     fin fired = playerEvent(player)
-    assert eventFired(fired) { "crossing the event's time must fire it" }
-    assert eventName(fired) == "hit" { "the event must report its own name" }
+    assert eventFired(fired) panic "crossing the event's time must fire it"
+    assert eventName(fired) == "hit" panic "the event must report its own name"
 
     player.advance(0.2)
-    assert !eventFired(playerEvent(player)) { "an event already passed must not fire again" }
+    assert !eventFired(playerEvent(player)) panic "an event already passed must not fire again"
 
     // A frame long enough to wrap the clip must still catch the event.
     player.advance(1.0)
-    assert eventFired(playerEvent(player)) { "a long frame must not skip an event" }
+    assert eventFired(playerEvent(player)) panic "a long frame must not skip an event"
 }
 
 test "a timeline drives its players as one" {
@@ -1006,18 +1006,14 @@ test "a timeline drives its players as one" {
     timeline.add(playingPlayer(animationClip("fade", 3.0, LoopMode.Once)))
     timeline.play()
 
-    assert animAbs(timeline.duration() - 3.0) < 0.001 { "a timeline is as long as its longest clip" }
-    assert timeline.advance(1.5) == PlaybackState.Playing {
-        "a timeline is still playing while any clip is"
-    }
-    assert timeline.advance(2.0) == PlaybackState.Finished {
-        "a timeline finishes only once every clip has"
-    }
+    assert animAbs(timeline.duration() - 3.0) < 0.001 panic "a timeline is as long as its longest clip"
+    assert timeline.advance(1.5) == PlaybackState.Playing panic "a timeline is still playing while any clip is"
+    assert timeline.advance(2.0) == PlaybackState.Finished panic "a timeline finishes only once every clip has"
 
     timeline.timeScale = 0.5
     timeline.play()
     timeline.advance(1.0)
-    assert animAbs(timeline.at(0).elapsed - 0.5) < 0.001 { "the time scale must reach every player" }
+    assert animAbs(timeline.at(0).elapsed - 0.5) < 0.001 panic "the time scale must reach every player"
 }
 
 test "weights normalise to one" {
@@ -1026,13 +1022,11 @@ test "weights normalise to one" {
     weights[1] = 2.0
     weights[2] = 1.0
     normalizeWeights(weights, 3)
-    assert animAbs(weights[0] - 0.25) < 0.001 && animAbs(weights[1] - 0.5) < 0.001 {
-        "weights must be scaled to sum to one"
-    }
+    assert animAbs(weights[0] - 0.25) < 0.001 && animAbs(weights[1] - 0.5) < 0.001 panic "weights must be scaled to sum to one"
 
     var zeroed: Array<Double> = Array::fill<Double>(2)
     zeroed[0] = 0.0
     zeroed[1] = 0.0
     normalizeWeights(zeroed, 2)
-    assert zeroed[0] == 0.0 { "an all-zero blend must be left alone rather than dividing by zero" }
+    assert zeroed[0] == 0.0 panic "an all-zero blend must be left alone rather than dividing by zero"
 }

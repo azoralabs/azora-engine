@@ -90,97 +90,154 @@ pack Mesh {
 // ── Setup ───────────────────────────────────────────────────────────────
 
 func gpuFailed(): AzGpu {
-    return AzGpu(false, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, false, -1, 0L, 0L, 1.0, 0.5, 0.8, 0.3, 0.35)
+    return AzGpu(false, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), false, -1, Long(0), Long(0), 1.0, 0.5, 0.8, 0.3, 0.35)
 }
 
 func gpuInit(scale: Double): AzGpu {
     fin device = MTLCreateSystemDefaultDevice()
-    if device == 0L {
+    if device == Long(0) {
         println("azora-engine: no Metal device")
         return gpuFailed()
     }
     fin queue = send0(device, sel("newCommandQueue"))
+    if queue == Long(0) {
+        send0(device, sel("release"))
+        println("azora-engine: command queue creation failed")
+        return gpuFailed()
+    }
 
     // CAMetalLayer (attached to the window's content view by the platform layer).
     fin layer = send0(cls("CAMetalLayer"), sel("layer"))
     send1(layer, sel("setDevice:"), device)
-    send1(layer, sel("setPixelFormat:"), 80L)
+    send1(layer, sel("setPixelFormat:"), Long(80))
     fin unused0 = azSendF1(layer, sel("setContentsScale:"), scale)
 
     // Shader library from MSL source.
-    fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), 0L, 0L)
-    if lib == 0L {
+    fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), Long(0), Long(0))
+    if lib == Long(0) {
         println("azora-engine: shader compilation failed")
+        send0(queue, sel("release"))
+        send0(device, sel("release"))
         return gpuFailed()
     }
 
+    defer { send0(lib, sel("release")) }
+
     // 3D pipeline: BGRA8 color + Depth32 depth.
     fin d3 = newObject("MTLRenderPipelineDescriptor")
-    send1(d3, sel("setVertexFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("v3_main")))
-    send1(d3, sel("setFragmentFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("f3_main")))
-    fin ca3 = send1(send0(d3, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
-    send1(ca3, sel("setPixelFormat:"), 80L)
-    send1(d3, sel("setDepthAttachmentPixelFormat:"), 252L)
-    fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, 0L)
-    if pipe3d == 0L {
+    defer { send0(d3, sel("release")) }
+    fin v3 = send1(lib, sel("newFunctionWithName:"), nsString("v3_main"))
+    fin f3 = send1(lib, sel("newFunctionWithName:"), nsString("f3_main"))
+    defer { send0(v3, sel("release")) }
+    defer { send0(f3, sel("release")) }
+    send1(d3, sel("setVertexFunction:"), v3)
+    send1(d3, sel("setFragmentFunction:"), f3)
+    fin ca3 = send1(send0(d3, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
+    send1(ca3, sel("setPixelFormat:"), Long(80))
+    send1(d3, sel("setDepthAttachmentPixelFormat:"), Long(252))
+    fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, Long(0))
+    if pipe3d == Long(0) {
         println("azora-engine: 3D pipeline failed")
+        send0(queue, sel("release"))
+        send0(device, sel("release"))
         return gpuFailed()
     }
 
     // 2D pipeline: alpha blending for UI rects and text quads.
     fin d2 = newObject("MTLRenderPipelineDescriptor")
-    send1(d2, sel("setVertexFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("v2_main")))
-    send1(d2, sel("setFragmentFunction:"), send1(lib, sel("newFunctionWithName:"), nsString("f2_main")))
-    fin ca2 = send1(send0(d2, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0L)
-    send1(ca2, sel("setPixelFormat:"), 80L)
-    send1(ca2, sel("setBlendingEnabled:"), 1L)
-    send1(ca2, sel("setSourceRGBBlendFactor:"), 4L)
-    send1(ca2, sel("setDestinationRGBBlendFactor:"), 5L)
-    send1(ca2, sel("setSourceAlphaBlendFactor:"), 4L)
-    send1(ca2, sel("setDestinationAlphaBlendFactor:"), 5L)
-    send1(d2, sel("setDepthAttachmentPixelFormat:"), 252L)
-    fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, 0L)
-    if pipe2d == 0L {
+    defer { send0(d2, sel("release")) }
+    fin v2 = send1(lib, sel("newFunctionWithName:"), nsString("v2_main"))
+    fin f2 = send1(lib, sel("newFunctionWithName:"), nsString("f2_main"))
+    defer { send0(v2, sel("release")) }
+    defer { send0(f2, sel("release")) }
+    send1(d2, sel("setVertexFunction:"), v2)
+    send1(d2, sel("setFragmentFunction:"), f2)
+    fin ca2 = send1(send0(d2, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
+    send1(ca2, sel("setPixelFormat:"), Long(80))
+    send1(ca2, sel("setBlendingEnabled:"), Long(1))
+    send1(ca2, sel("setSourceRGBBlendFactor:"), Long(4))
+    send1(ca2, sel("setDestinationRGBBlendFactor:"), Long(5))
+    send1(ca2, sel("setSourceAlphaBlendFactor:"), Long(4))
+    send1(ca2, sel("setDestinationAlphaBlendFactor:"), Long(5))
+    send1(d2, sel("setDepthAttachmentPixelFormat:"), Long(252))
+    fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, Long(0))
+    if pipe2d == Long(0) {
         println("azora-engine: 2D pipeline failed")
+        send0(pipe3d, sel("release"))
+        send0(queue, sel("release"))
+        send0(device, sel("release"))
         return gpuFailed()
     }
 
     // Depth-stencil states: compare Less + write for 3D, Always for UI.
     fin dsOn = newObject("MTLDepthStencilDescriptor")
-    send1(dsOn, sel("setDepthCompareFunction:"), 1L)
-    send1(dsOn, sel("setDepthWriteEnabled:"), 1L)
+    defer { send0(dsOn, sel("release")) }
+    send1(dsOn, sel("setDepthCompareFunction:"), Long(1))
+    send1(dsOn, sel("setDepthWriteEnabled:"), Long(1))
     fin depthOn = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOn)
 
     fin dsOff = newObject("MTLDepthStencilDescriptor")
-    send1(dsOff, sel("setDepthCompareFunction:"), 7L)
-    send1(dsOff, sel("setDepthWriteEnabled:"), 0L)
+    defer { send0(dsOff, sel("release")) }
+    send1(dsOff, sel("setDepthCompareFunction:"), Long(7))
+    send1(dsOff, sel("setDepthWriteEnabled:"), Long(0))
     fin depthOff = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOff)
 
     // Linear sampler for text textures.
     fin sd = newObject("MTLSamplerDescriptor")
-    send1(sd, sel("setMinFilter:"), 1L)
-    send1(sd, sel("setMagFilter:"), 1L)
+    defer { send0(sd, sel("release")) }
+    send1(sd, sel("setMinFilter:"), Long(1))
+    send1(sd, sel("setMagFilter:"), Long(1))
     fin sampler = send1(device, sel("newSamplerStateWithDescriptor:"), sd)
 
     var gpu = AzGpu(
         true, device, queue, layer,
         pipe3d, pipe2d, depthOn, depthOff, sampler,
-        0L, 0L, 0L,
-        0L, 0L, 0L, false, -1,
-        azAlloc(64L),
-        azAlloc(4096L),
+        Long(0), Long(0), Long(0),
+        Long(0), Long(0), Long(0), false, -1,
+        azAlloc(Long(64)),
+        azAlloc(Long(4096)),
         scale,
         0.5, 0.8, 0.3, 0.35
     )
     // Identity view-projection until a camera is applied.
     pokeIdentity(gpu.viewProj)
-    return gpu
+    return take gpu
+}
+
+/** Releases retained Metal objects and native upload memory. Repeated shutdown is harmless. */
+func gpuShutdown(gpu: AzGpu!) {
+    if gpu.depthTex != Long(0) { send0(gpu.depthTex, sel("release")) }
+    if gpu.sampler != Long(0) { send0(gpu.sampler, sel("release")) }
+    if gpu.depthOff != Long(0) { send0(gpu.depthOff, sel("release")) }
+    if gpu.depthOn != Long(0) { send0(gpu.depthOn, sel("release")) }
+    if gpu.pipe2d != Long(0) { send0(gpu.pipe2d, sel("release")) }
+    if gpu.pipe3d != Long(0) { send0(gpu.pipe3d, sel("release")) }
+    if gpu.queue != Long(0) { send0(gpu.queue, sel("release")) }
+    if gpu.device != Long(0) { send0(gpu.device, sel("release")) }
+    if gpu.viewProj != Long(0) { azFree(gpu.viewProj) }
+    if gpu.scratch != Long(0) { azFree(gpu.scratch) }
+    gpu.depthTex = Long(0)
+    gpu.sampler = Long(0)
+    gpu.depthOff = Long(0)
+    gpu.depthOn = Long(0)
+    gpu.pipe2d = Long(0)
+    gpu.pipe3d = Long(0)
+    gpu.queue = Long(0)
+    gpu.device = Long(0)
+    gpu.layer = Long(0)
+    gpu.viewProj = Long(0)
+    gpu.scratch = Long(0)
+    gpu.drawable = Long(0)
+    gpu.cmd = Long(0)
+    gpu.enc = Long(0)
+    gpu.hasEncoder = false
+    gpu.ok = false
 }
 
 func pokeIdentity(buf: Long) {
     var i = 0
     while i < 16 {
-        var v = 0.0
+        var v: Double = 0.0
         if i == 0 || i == 5 || i == 10 || i == 15 {
             v = 1.0
         }
@@ -190,21 +247,21 @@ func pokeIdentity(buf: Long) {
 }
 
 /// Writes a row-major Mat4 into [buf] as column-major float16 (GPU layout).
-func pokeMat4(buf: Long, offset: Long, m: Mat4) {
+func pokeMat4(buf: Long, offset: Long, m: Mat4&) {
     azPokeF32(buf, offset, m.m00)
-    azPokeF32(buf, offset + 4L, m.m10)
-    azPokeF32(buf, offset + 8L, m.m20)
-    azPokeF32(buf, offset + 12L, m.m30)
-    azPokeF32(buf, offset + 16L, m.m01)
-    azPokeF32(buf, offset + 20L, m.m11)
-    azPokeF32(buf, offset + 24L, m.m21)
-    azPokeF32(buf, offset + 28L, m.m31)
-    azPokeF32(buf, offset + 32L, m.m02)
-    azPokeF32(buf, offset + 36L, m.m12)
-    azPokeF32(buf, offset + 40L, m.m22)
-    azPokeF32(buf, offset + 44L, m.m32)
-    azPokeF32(buf, offset + 48L, m.m03)
-    azPokeF32(buf, offset + 52L, m.m13)
-    azPokeF32(buf, offset + 56L, m.m23)
-    azPokeF32(buf, offset + 60L, m.m33)
+    azPokeF32(buf, offset + Long(4), m.m10)
+    azPokeF32(buf, offset + Long(8), m.m20)
+    azPokeF32(buf, offset + Long(12), m.m30)
+    azPokeF32(buf, offset + Long(16), m.m01)
+    azPokeF32(buf, offset + Long(20), m.m11)
+    azPokeF32(buf, offset + Long(24), m.m21)
+    azPokeF32(buf, offset + Long(28), m.m31)
+    azPokeF32(buf, offset + Long(32), m.m02)
+    azPokeF32(buf, offset + Long(36), m.m12)
+    azPokeF32(buf, offset + Long(40), m.m22)
+    azPokeF32(buf, offset + Long(44), m.m32)
+    azPokeF32(buf, offset + Long(48), m.m03)
+    azPokeF32(buf, offset + Long(52), m.m13)
+    azPokeF32(buf, offset + Long(56), m.m23)
+    azPokeF32(buf, offset + Long(60), m.m33)
 }

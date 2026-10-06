@@ -26,7 +26,11 @@ OUT_DIR="${1:-$SCRIPT_DIR/build}"
 mkdir -p "$OUT_DIR"
 
 OS="$(uname -s)"
-CC="${CC:-clang}"
+if [ -x /usr/bin/clang ]; then
+    CC="${AZORA_CLANG:-${CC:-/usr/bin/clang}}"
+else
+    CC="${AZORA_CLANG:-${CC:-clang}}"
+fi
 
 case "$OS" in
     Darwin)

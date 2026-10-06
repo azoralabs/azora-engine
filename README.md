@@ -143,7 +143,20 @@ The bundle embeds the Azora compiler CLI (built from the sibling `azora-lang`
 repository, override with `--azora-lang <path>`), the FFI shim, the engine
 packages + `workspace.azon`, the `azpm` resolver and all project templates.
 
-## Using with Azora Studio
+## Native Studio target
+
+Studio and Launcher must be written in Azora and compiled through LLVM, with no
+JAR/JVM dependency in the installed applications or their bundled compiler and
+language services. The current Kotlin/Compose Studio and the JVM compiler bundle
+below are development prototypes/bootstrap tools. Their successful builds do not
+qualify the native product. See the sibling Studio's
+[NATIVE_ARCHITECTURE.md](../azora-studio/NATIVE_ARCHITECTURE.md).
+
+`tools/build.sh` accepts `AZORA_COMPILER_BIN` to select a native compiler without
+requiring Java. The current Kotlin compiler can also use that override during
+development; selecting it does not make the toolchain native.
+
+## Legacy Studio prototype integration
 
 Install the bundle from **Project Browser → Libraries** (or copy it to
 `~/.azora/libraries/<id>/<version>`). The library contributes the **App** and
@@ -151,7 +164,7 @@ Install the bundle from **Project Browser → Libraries** (or copy it to
 starting points (Tetris, Temple Run, Shape Examples, Empty). Created projects
 build & run through the Studio's Run/Play button (`run.sh` → `tools/build.sh`).
 
-## Requirements
+## Current bootstrap requirements
 
 - macOS with the Xcode Command Line Tools (`clang`)
 - A JDK 17+ (runs the bundled Azora compiler)

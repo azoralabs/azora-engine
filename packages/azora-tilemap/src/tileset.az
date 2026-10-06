@@ -55,17 +55,17 @@ func tileSetFromAtlas(name: String, atlas: TileAtlas): TileSet {
 
 impl TileSet {
     /** The number of tiles the set can address. */
-    func count(): Int {
+    func &.count(): Int {
         return textureTileCount(self.texture)
     }
 
     /** True when [index] names a tile of this set. */
-    func owns(index: Int): Bool {
+    func &.owns(index: Int): Bool {
         return index >= 0 && index < self.count()
     }
 
     /** The trait bits of [index], or `0` for an unknown tile. */
-    func traitsOf(index: Int): Int {
+    func &.traitsOf(index: Int): Int {
         if index < 0 || index >= self.traits.size {
             return 0
         }
@@ -73,7 +73,7 @@ impl TileSet {
     }
 
     /** Replaces the trait bits of [index]. */
-    func setTraits(index: Int, traits: Int): Unit ?! TilemapFault {
+    func !.setTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         if index < 0 || index >= self.traits.size {
             return .UnknownTile
         }
@@ -81,12 +81,12 @@ impl TileSet {
     }
 
     /** Adds [traits] to the bits of [index]. */
-    func addTraits(index: Int, traits: Int): Unit ?! TilemapFault {
+    func !.addTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         try self.setTraits(index, self.traitsOf(index) | traits)
     }
 
     /** Removes [traits] from the bits of [index]. */
-    func removeTraits(index: Int, traits: Int): Unit ?! TilemapFault {
+    func !.removeTraits(index: Int, traits: Int): Unit ?! TilemapFault {
         try self.setTraits(index, flagsClear(self.traitsOf(index), traits))
     }
 
@@ -96,7 +96,7 @@ impl TileSet {
      * Tilesets are laid out in runs — a strip of ground, a strip of water — so
      * marking a run is the operation a game actually performs after loading.
      */
-    func addTraitsRange(first: Int, last: Int, traits: Int): Int {
+    func !.addTraitsRange(first: Int, last: Int, traits: Int): Int {
         var marked = 0
         var index = intMax(first, 0)
         while index <= last && index < self.traits.size {
@@ -108,41 +108,41 @@ impl TileSet {
     }
 
     /** True when [index] carries every bit of [mask]. */
-    func hasAll(index: Int, mask: Int): Bool {
+    func &.hasAll(index: Int, mask: Int): Bool {
         return flagsAll(self.traitsOf(index), mask)
     }
 
     /** True when [index] carries any bit of [mask]. */
-    func hasAny(index: Int, mask: Int): Bool {
+    func &.hasAny(index: Int, mask: Int): Bool {
         return flagsAny(self.traitsOf(index), mask)
     }
 
-    func isSolid(index: Int): Bool {
+    func &.isSolid(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitSolid)
     }
 
-    func isOneWay(index: Int): Bool {
+    func &.isOneWay(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitOneWay)
     }
 
-    func isLadder(index: Int): Bool {
+    func &.isLadder(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitLadder)
     }
 
-    func isWater(index: Int): Bool {
+    func &.isWater(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitWater)
     }
 
-    func isHazard(index: Int): Bool {
+    func &.isHazard(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitHazard)
     }
 
-    func isDestructible(index: Int): Bool {
+    func &.isDestructible(index: Int): Bool {
         return flagsAny(self.traitsOf(index), traitDestructible)
     }
 
     /** The slope direction of [index]: `1` rising right, `-1` rising left, `0` flat. */
-    func slope(index: Int): Int {
+    func &.slope(index: Int): Int {
         fin traits = self.traitsOf(index)
         if flagsAny(traits, traitSlopeRight) {
             return 1
@@ -159,24 +159,24 @@ impl TileSet {
      * The [traitAnimated] bit lets a renderer or an editor tell at a glance
      * that a tile is not the still picture it appears to be.
      */
-    func animate(animation: TileAnimation): Int {
+    func !.animate(animation: TileAnimation): Int {
         fin id = self.animations.add(animation)
         self.addTraitsRange(animation.first, animation.last, traitAnimated)
         return id
     }
 
     /** The tile actually drawn for [index] at [seconds] in cell [pos]. */
-    func resolve(index: Int, seconds: Double, pos: TilePos): Int {
+    func !.resolve(index: Int, seconds: Double, pos: TilePos): Int {
         return self.animations.resolveAt(index, seconds, pos)
     }
 
     /** The sheet and local id backing [index]. */
-    func find(index: Int): AtlasPick {
+    func &.find(index: Int): AtlasPick {
         return textureFind(self.texture, index)
     }
 
     /** True when the set has usable artwork. */
-    func ok(): Bool {
+    func &.ok(): Bool {
         return textureOk(self.texture)
     }
 }
@@ -187,18 +187,18 @@ func tileSetRelease(app: App, set: TileSet) {
 }
 
 test "traits are recorded per tile id and read back per tile id" {
-    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
-    assert set.count() == 16 { "a 64x64 sheet of 16px tiles holds sixteen tiles" }
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
+    assert set.count() == 16 panic "a 64x64 sheet of 16px tiles holds sixteen tiles"
 
     set.addTraitsRange(0, 3, traitSolid)
     set.addTraits(4, traitWater | traitHazard) catch { }
 
-    assert set.isSolid(0) && set.isSolid(3) { "the whole run must be marked" }
-    assert !set.isSolid(4) { "a tile outside the run must stay inert" }
-    assert set.isWater(4) && set.isHazard(4) { "combined traits must both survive" }
-    assert set.hasAll(4, traitWater | traitHazard) { "hasAll must require every bit" }
-    assert !set.hasAll(4, traitWater | traitSolid) { "hasAll must fail on a missing bit" }
-    assert set.traitsOf(999) == 0 { "an unknown tile must read as inert, not out of bounds" }
+    assert set.isSolid(0) && set.isSolid(3) panic "the whole run must be marked"
+    assert !set.isSolid(4) panic "a tile outside the run must stay inert"
+    assert set.isWater(4) && set.isHazard(4) panic "combined traits must both survive"
+    assert set.hasAll(4, traitWater | traitHazard) panic "hasAll must require every bit"
+    assert !set.hasAll(4, traitWater | traitSolid) panic "hasAll must fail on a missing bit"
+    assert set.traitsOf(999) == 0 panic "an unknown tile must read as inert, not out of bounds"
 
     var refused = false
     try {
@@ -206,25 +206,21 @@ test "traits are recorded per tile id and read back per tile id" {
     } catch {
         refused = true
     }
-    assert refused { "writing an unknown tile must be refused" }
+    assert refused panic "writing an unknown tile must be refused"
 }
 
 test "a slope reports the direction it rises in" {
-    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     set.addTraits(1, traitSolid | traitSlopeRight) catch { }
     set.addTraits(2, traitSolid | traitSlopeLeft) catch { }
-    assert set.slope(1) == 1 && set.slope(2) == -1 && set.slope(3) == 0 {
-        "slope must distinguish both directions from flat ground"
-    }
+    assert set.slope(1) == 1 && set.slope(2) == -1 && set.slope(3) == 0 panic "slope must distinguish both directions from flat ground"
 }
 
 test "animating a tileset marks the run and resolves through the clock" {
-    var set = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var set = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     set.animate(tileAnimation(8, 11, 4.0, TileAnimationMode.Repeat))
 
-    assert set.hasAny(8, traitAnimated) && set.hasAny(11, traitAnimated) {
-        "every frame of the run must be marked as animated"
-    }
-    assert set.resolve(8, 0.0, TilePos(0, 0)) >= 8 { "an animated tile must resolve within its run" }
-    assert set.resolve(5, 3.0, TilePos(0, 0)) == 5 { "a still tile must resolve to itself" }
+    assert set.hasAny(8, traitAnimated) && set.hasAny(11, traitAnimated) panic "every frame of the run must be marked as animated"
+    assert set.resolve(8, 0.0, TilePos(0, 0)) >= 8 panic "an animated tile must resolve within its run"
+    assert set.resolve(5, 3.0, TilePos(0, 0)) == 5 panic "a still tile must resolve to itself"
 }

@@ -1,0 +1,45 @@
+module ownedEcs
+import std.io
+import std.traits
+import engine.ecs
+
+pack Audit { var destroyed: Int = 0 }
+pack OwnedComponent {
+    var id: Int
+    var audit: Audit!
+}
+impl OwnedComponent {
+    dtor .() { self.audit.destroyed += 1 }
+}
+
+func main() {
+    var audit = Audit()
+    var world = World()
+    fin entity = world.spawn()
+    var store = Storage<OwnedComponent>(Array<Entity>(), Array<OwnedComponent>(), Array<Bool>(), Array<Bool>(), Long(0))
+    storageInsert<OwnedComponent>(store, entity, OwnedComponent(1, audit))
+    assert audit.destroyed == 0 panic "insert must transfer component into storage"
+    storageInsert<OwnedComponent>(store, entity, OwnedComponent(2, audit))
+    assert audit.destroyed == 1 panic "replace must destroy previous component once"
+    assert storageGet<OwnedComponent>(store, entity).id == 2 panic "borrowed component read must preserve owner"
+    assert storageRemove<OwnedComponent>(store, entity) panic "remove must find the live component"
+    assert audit.destroyed == 2 panic "remove must destroy owned component once"
+    assert !storageRemove<OwnedComponent>(store, entity) panic "second remove must be harmless"
+    assert audit.destroyed == 2 panic "second remove must not destroy another component"
+    storageInsert<OwnedComponent>(store, entity, OwnedComponent(3, audit))
+    registerStorage<OwnedComponent>(world, take store)
+    world.despawn(entity)
+    assert audit.destroyed == 3 panic "despawn must destroy registered components once"
+    assert storageCount<OwnedComponent>(storageOf<OwnedComponent>(world)) == 0 panic "despawn must remove the component row"
+    fin next = world.spawn()
+    storageInsert<OwnedComponent>(ensureStorage<OwnedComponent>(world), next, OwnedComponent(4, audit))
+    world.despawn(next)
+    assert audit.destroyed == 4 panic "reused entity slot must preserve component destruction"
+    if true {
+        var scopedWorld = World()
+        fin scopedEntity = scopedWorld.spawn()
+        storageInsert<OwnedComponent>(ensureStorage<OwnedComponent>(scopedWorld), scopedEntity, OwnedComponent(5, audit))
+    }
+    assert audit.destroyed == 5 panic "world scope cleanup must destroy registered owned components"
+    println("owned ecs passed")
+}

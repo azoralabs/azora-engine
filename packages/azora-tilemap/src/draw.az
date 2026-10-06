@@ -30,6 +30,8 @@
  */
 module engine.tilemap.draw
 
+import std.traits
+
 import std.container.array
 import engine.math.vec
 import engine.platform
@@ -68,12 +70,12 @@ func cameraForApp(app: App, center: Vec2, zoom: Double): TileCamera {
 
 impl TileCamera {
     /** The centre of the viewport, in screen points. */
-    func screenCenter(): Vec2 {
+    func &.screenCenter(): Vec2 {
         return Vec2(self.viewWidth * 0.5, self.viewHeight * 0.5)
     }
 
     /** The world rectangle this camera shows, for a layer at [parallax]. */
-    func viewAt(parallax: Vec2, offset: Vec2): WorldRect {
+    func &.viewAt(parallax: Vec2, offset: Vec2): WorldRect {
         fin eye = Vec2(self.center.x * parallax.x, self.center.y * parallax.y)
         fin halfW = self.viewWidth * 0.5 / self.zoom
         fin halfH = self.viewHeight * 0.5 / self.zoom
@@ -86,12 +88,12 @@ impl TileCamera {
     }
 
     /** The world rectangle this camera shows for a world-locked layer. */
-    func view(): WorldRect {
+    func &.view(): WorldRect {
         return self.viewAt(Vec2(1.0, 1.0), vec2Zero())
     }
 
     /** Where the world point [point] lands on screen. */
-    func worldToScreen(point: Vec2): Vec2 {
+    func &.worldToScreen(point: Vec2): Vec2 {
         fin middle = self.screenCenter()
         return Vec2(
             (point.x - self.center.x) * self.zoom + middle.x,
@@ -100,7 +102,7 @@ impl TileCamera {
     }
 
     /** The world point under the screen point [point]. */
-    func screenToWorld(point: Vec2): Vec2 {
+    func &.screenToWorld(point: Vec2): Vec2 {
         fin middle = self.screenCenter()
         return Vec2(
             (point.x - middle.x) / self.zoom + self.center.x,
@@ -109,7 +111,7 @@ impl TileCamera {
     }
 
     /** The camera moved so [point] is at the centre of the viewport. */
-    func lookingAt(point: Vec2): TileCamera {
+    func &.lookingAt(point: Vec2): TileCamera {
         return TileCamera(point, self.zoom, self.viewWidth, self.viewHeight)
     }
 
@@ -120,7 +122,7 @@ impl TileCamera {
      * corner, which is what stops a small level sticking to the top-left of a
      * large window.
      */
-    func clampedTo(bounds: WorldRect): TileCamera {
+    func &.clampedTo(bounds: WorldRect): TileCamera {
         fin halfW = self.viewWidth * 0.5 / self.zoom
         fin halfH = self.viewHeight * 0.5 / self.zoom
         fin x = if bounds.width() <= halfW * 2.0 {
@@ -326,7 +328,7 @@ func blitTile(
     tint: TileColor
     opacity: Double
 ): Bool {
-    if atlas.texture == 0L || atlas.texWidth <= 0 || atlas.texHeight <= 0 {
+    if atlas.texture == Long(0) || atlas.texWidth <= 0 || atlas.texHeight <= 0 {
         return false
     }
     fin source = atlas.rectOf(local)
@@ -421,41 +423,33 @@ func drawTileHighlight(app: App, map: Tilemap, pos: TilePos, camera: TileCamera,
 test "the camera round-trips between world and screen" {
     fin camera = tileCamera(Vec2(100.0, 50.0), 2.0, 800.0, 600.0)
     fin screen = camera.worldToScreen(Vec2(100.0, 50.0))
-    assert realAbs(screen.x - 400.0) < 0.001 && realAbs(screen.y - 300.0) < 0.001 {
-        "the camera centre must land at the middle of the viewport"
-    }
+    assert realAbs(screen.x - 400.0) < 0.001 && realAbs(screen.y - 300.0) < 0.001 panic "the camera centre must land at the middle of the viewport"
 
     fin back = camera.screenToWorld(camera.worldToScreen(Vec2(37.0, -12.0)))
-    assert realAbs(back.x - 37.0) < 0.001 && realAbs(back.y + 12.0) < 0.001 {
-        "world to screen and back must be the identity"
-    }
+    assert realAbs(back.x - 37.0) < 0.001 && realAbs(back.y + 12.0) < 0.001 panic "world to screen and back must be the identity"
 
     fin zoomed = camera.worldToScreen(Vec2(110.0, 50.0))
-    assert realAbs(zoomed.x - 420.0) < 0.001 { "ten world units at 2x zoom must be twenty points" }
+    assert realAbs(zoomed.x - 420.0) < 0.001 panic "ten world units at 2x zoom must be twenty points"
 }
 
 test "the camera's view narrows as it zooms in" {
     fin camera = tileCamera(Vec2(0.0, 0.0), 2.0, 800.0, 600.0)
     fin view = camera.view()
-    assert realAbs(view.width() - 400.0) < 0.001 { "an 800-point viewport at 2x shows 400 world units" }
-    assert realAbs(view.height() - 300.0) < 0.001 { "a 600-point viewport at 2x shows 300 world units" }
+    assert realAbs(view.width() - 400.0) < 0.001 panic "an 800-point viewport at 2x shows 400 world units"
+    assert realAbs(view.height() - 300.0) < 0.001 panic "a 600-point viewport at 2x shows 300 world units"
 
     // A half-speed layer moves half as far, so it sees a different window.
     fin far = camera.lookingAt(Vec2(1000.0, 0.0)).viewAt(Vec2(0.5, 1.0), vec2Zero())
-    assert realAbs(far.center().x - 500.0) < 0.001 {
-        "a parallax of 0.5 must move the layer at half the camera's rate"
-    }
+    assert realAbs(far.center().x - 500.0) < 0.001 panic "a parallax of 0.5 must move the layer at half the camera's rate"
 }
 
 test "a camera clamped to a map stays inside it, or centres on a small one" {
     fin camera = tileCamera(Vec2(0.0, 0.0), 1.0, 200.0, 200.0)
     fin big = worldRect(0.0, 0.0, 1000.0, 1000.0)
     fin held = camera.clampedTo(big)
-    assert realAbs(held.center.x - 100.0) < 0.001 { "the camera must not show past the left edge" }
+    assert realAbs(held.center.x - 100.0) < 0.001 panic "the camera must not show past the left edge"
 
     fin small = worldRect(0.0, 0.0, 50.0, 50.0)
     fin centred = camera.lookingAt(Vec2(900.0, 900.0)).clampedTo(small)
-    assert realAbs(centred.center.x - 25.0) < 0.001 {
-        "a world smaller than the viewport must be centred, not pinned to a corner"
-    }
+    assert realAbs(centred.center.x - 25.0) < 0.001 panic "a world smaller than the viewport must be centred, not pinned to a corner"
 }

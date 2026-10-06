@@ -22,49 +22,50 @@
 
 module engine.ecs
 
-import std.container.*
+import std.container::*
+import std.traits
 import engine.core
 
 
-pack Entity {
+pack Entity derives (Copy, Clone, Equal, Hash) {
     var id: Int
     var generation: Int
 }
 
 impl Entity {
-    prop isValid[self: Self&]: Bool = self.id >= 0
+    prop  &.isValid: Bool = self.id >= 0
     fin invalid: Entity = .(-1, 0)
 }
 
 pack World {
-    var generations: Array<Int> = @arr[1]
-    var alive: Array<Bool> = @arr[false]
-    var names: Array<String> = @arr[""]
-    var parents: Array<Int> = @arr[-1]
-    var childCounts: Array<Int> = @arr[0]
-    var prefabs: Array<Bool> = @arr[false]
-    var resourceMarks: Array<Bool> = @arr[false]
-    var freeIds: Array<Int> = @arr[-1]
+    var generations: Array<Int> = [1]
+    var alive: Array<Bool> = [false]
+    var names: Array<String> = [""]
+    var parents: Array<Int> = [-1]
+    var childCounts: Array<Int> = [0]
+    var prefabs: Array<Bool> = [false]
+    var resourceMarks: Array<Bool> = [false]
+    var freeIds: Array<Int> = [-1]
     var entityCount: Int = 0
     var aliveCount: Int = 0
     var tick: Int = 0
-    var storageNames: MutableList<String> = @vec![]
-    var storages: MutableList<Any> = @vec![]
-    var resourceNames: MutableList<String> = @vec![]
-    var resources: MutableList<Any> = @vec![]
+    var storageNames: Array<String> = []
+    var storages: Array<Any> = []
+    var resourceNames: Array<String> = []
+    var resources: Array<Any> = []
     var totalTime: Double = 0.0
-    var fixedTimestep: Double = 1.0 / 60.0
+    var fixedTimestep: Double = Double(1.0) / Double(60.0)
     var fixedAccumulator: Double = 0.0
-    var revision: Long = 0L
+    var revision: Long = Long(0)
 }
 
 
 impl World {
-    func spawn[self: Self&](): Entity {
+    func !.spawn(): Entity {
         if self.freeIds.size > 1 {
             fin last = self.freeIds.size - 1
             fin id = self.freeIds[last]
-            self.freeIds.remove(id)
+            self.freeIds.remove(last)
 
             fin gen = self.generations[id] + 1
             self.generations[id] = gen
@@ -103,17 +104,18 @@ impl World {
         return Entity(id, 0)
     }
 
-    func spawnNamed[self: Self&](name: String): Entity {
+    func !.spawnNamed(name: String): Entity {
         fin entity = self.spawn()
         self.names[entity.id] = name
         return entity
     }
 
-    func despawn[self: Self&](entity: Entity) {
+    func !.despawn(entity: Entity) {
         if !self.isAlive(entity) {
             return
         }
 
+        removeFromEveryStorage(self, entity)
         self.alive[entity.id] = false
         self.names[entity.id] = ""
         self.aliveCount = self.aliveCount - 1
@@ -130,36 +132,36 @@ impl World {
         self.revision = self.revision + 1
     }
 
-    func isAlive[self: Self&](entity: Entity): Bool {
+    func &.isAlive(entity: Entity): Bool {
         if entity.id < 0 || entity.id >= self.entityCount {
             return false
         }
         return self.alive[entity.id] && self.generations[entity.id] == entity.generation
     }
 
-    prop count[self: Self&]: Int = self.aliveCount
+    prop  &.count: Int = self.aliveCount
 
-    func entityAt[self: Self&](id: Int): Entity {
+    func &.entityAt(id: Int): Entity {
         if id < 0 || id >= self.entityCount {
             return Entity::invalid
         }
         return Entity(id, self.generations[id])
     }
 
-    func setName[self: Self&](entity: Entity, name: String) {
+    func !.setName(entity: Entity, name: String) {
         if self.isAlive(entity) {
             self.names[entity.id] = name
         }
     }
 
-    func getName[self: Self&](entity: Entity): String {
+    func &.getName(entity: Entity): String {
         if !self.isAlive(entity) {
             return ""
         }
         return self.names[entity.id]
     }
 
-    func lookup[self: Self&](name: String): Entity {
+    func &.lookup(name: String): Entity {
         var i = 0
         while i < self.entityCount {
             if self.alive[i] && self.names[i] == name {
@@ -170,7 +172,7 @@ impl World {
         return Entity::invalid
     }
 
-    func setParent[self: Self&](child: Entity, parent: Entity) {
+    func !.setParent(child: Entity, parent: Entity) {
         if !self.isAlive(child) || !self.isAlive(parent) {
             return
         }
@@ -182,7 +184,7 @@ impl World {
         self.childCounts[parent.id] = self.childCounts[parent.id] + 1
     }
 
-    func removeParent[self: Self&](entity: Entity) {
+    func !.removeParent(entity: Entity) {
         if !self.isAlive(entity) {
             return
         }
@@ -193,7 +195,7 @@ impl World {
         self.parents[entity.id] = -1
     }
 
-    func getParent[self: Self&](entity: Entity): Entity {
+    func &.getParent(entity: Entity): Entity {
         if !self.isAlive(entity) {
             return Entity::invalid
         }
@@ -204,56 +206,56 @@ impl World {
         return Entity(parentId, self.generations[parentId])
     }
 
-    func getChildCount[self: Self&](entity: Entity): Int {
+    func &.getChildCount(entity: Entity): Int {
         if !self.isAlive(entity) {
             return 0
         }
         return self.childCounts[entity.id]
     }
 
-    func markPrefab[self: Self&](entity: Entity) {
+    func !.markPrefab(entity: Entity) {
         if self.isAlive(entity) {
             self.prefabs[entity.id] = true
         }
     }
 
-    func isPrefab[self: Self&](entity: Entity): Bool {
+    func &.isPrefab(entity: Entity): Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.prefabs[entity.id]
     }
 
-    func spawnResource[self: Self&](name: String): Entity {
+    func !.spawnResource(name: String): Entity {
         fin entity = self.spawnNamed(name)
         self.resourceMarks[entity.id] = true
         return entity
     }
 
-    func markResource[self: Self&](entity: Entity) {
+    func !.markResource(entity: Entity) {
         if self.isAlive(entity) {
             self.resourceMarks[entity.id] = true
         }
     }
 
-    func isResource[self: Self&](entity: Entity): Bool {
+    func &.isResource(entity: Entity): Bool {
         if !self.isAlive(entity) {
             return false
         }
         return self.resourceMarks[entity.id]
     }
 
-    func progress[self: Self&](deltaTime: Double) {
+    func !.progress(deltaTime: Double) {
         self.tick = self.tick + 1
         self.totalTime = self.totalTime + deltaTime
         self.fixedAccumulator = self.fixedAccumulator + deltaTime
     }
 
-    func setFixedTimestep[self: Self&](timestep: Double) {
+    func !.setFixedTimestep(timestep: Double) {
         self.fixedTimestep = timestep
     }
 
-    func consumeFixedStep[self: Self&](): Bool {
+    func !.consumeFixedStep(): Bool {
         if self.fixedAccumulator >= self.fixedTimestep {
             self.fixedAccumulator = self.fixedAccumulator - self.fixedTimestep
             return true
@@ -262,7 +264,7 @@ impl World {
     }
 
     @ProvidesAccess
-    prop stamp[self: Self&]: Int {
+    prop  &.stamp: Int {
         return self.revision as Int
     }
 }
@@ -275,15 +277,15 @@ pack Storage<T> {
     var revision: Long
 }
 
-func storageInit<T>(defaultValue: T): Storage<T> {
-    var entities = @arr[Entity::invalid]
-    var values = @arr[defaultValue]
-    var added = @arr[false]
-    var changed = @arr[false]
-    return Storage<T>(entities, values, added, changed, 0)
+func<T> storageInit(defaultValue: T): Storage<T> {
+    var entities = [Entity::invalid.clone()]
+    var values = [defaultValue]
+    var added = [false]
+    var changed = [false]
+    return Storage<T>(take entities, take values, take added, take changed, 0)
 }
 
-func storageIndexOf<T>(store: Storage<T>&, entity: Entity): Int {
+func<T> storageIndexOf(store: Storage<T>&, entity: Entity): Int {
     if !entity.isValid {
         return -1
     }
@@ -298,11 +300,11 @@ func storageIndexOf<T>(store: Storage<T>&, entity: Entity): Int {
     return -1
 }
 
-func storageHas<T>(store: Storage<T>&, entity: Entity): Bool {
+func<T> storageHas(store: Storage<T>&, entity: Entity): Bool {
     return storageIndexOf<T>(store, entity) >= 0
 }
 
-func storageInsert<T>(store: Storage<T>!, entity: Entity, value: T) {
+func<T> storageInsert(store: Storage<T>!, entity: Entity, value: T) {
     fin index = storageIndexOf<T>(store, entity)
     if index >= 0 {
         store.values[index] = value
@@ -310,34 +312,41 @@ func storageInsert<T>(store: Storage<T>!, entity: Entity, value: T) {
         store.revision = store.revision + 1
         return
     }
-    store.entities.add(entity)
+    store.entities.add(entity.clone())
     store.values.add(value)
     store.added.add(true)
     store.changed.add(false)
     store.revision = store.revision + 1
 }
 
-func storageGet<T>(store: Storage<T>&, entity: Entity): T {
+func<T> storageGet(store: Storage<T>&, entity: Entity): T& {
     fin index = storageIndexOf<T>(store, entity)
     return store.values[index]
 }
 
-func storageGetOrDefault<T>(store: Storage<T>&, entity: Entity, defaultValue: T): T {
+func<T: Clone> storageGetOrDefault(store: Storage<T>&, entity: Entity, defaultValue: T): T {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
-        return defaultValue
+        return take defaultValue
     }
-    return store.values[index]
+    return store.values[index].clone()
 }
 
-func storageRemove<T>(store: Storage<T>!, entity: Entity): Bool {
+/** An owned snapshot for callers that need a component beyond the storage borrow. */
+func<T: Clone> storageGetClone(store: Storage<T>&, entity: Entity): T {
+    return storageGet<T>(store, entity).clone()
+}
+
+func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
         return false
     }
-    store.entities[index] = Entity::invalid
-    store.added[index] = false
-    store.changed[index] = false
+    // remove(index) destroys an owned value; removeAt would transfer it.
+    store.values.remove(index)
+    store.entities.remove(index)
+    store.added.remove(index)
+    store.changed.remove(index)
     store.revision = store.revision + 1
     return true
 }
@@ -345,8 +354,8 @@ func storageRemove<T>(store: Storage<T>!, entity: Entity): Bool {
 /**
  * Drops [entity] from every storage the world holds, whatever they hold.
  *
- * Removal marks the entity's slot and clears its change flags; it never reads
- * the value, so what a storage holds does not come into it. That is what lets
+ * Removal destroys the owned component and removes its aligned entity/change
+ * slots without reading its erased value. That is what lets
  * something drop an entity without naming a single component type - and so lets
  * a composition be written without naming the components composed into it.
  *
@@ -357,7 +366,7 @@ func removeFromEveryStorage(world: World!, entity: Entity): Int {
     var dropped = 0
     var i = 0
     while i < world.storages.size {
-        var store = world.storages[i] as Storage<Any>
+        var store: Storage<Any>! = world.storages[i] as Storage<Any>!
         if storageRemove<Any>(store, entity) {
             dropped = dropped + 1
         }
@@ -366,17 +375,17 @@ func removeFromEveryStorage(world: World!, entity: Entity): Int {
     return dropped
 }
 
-func storageWasAdded<T>(store: Storage<T>&, entity: Entity): Bool {
+func<T> storageWasAdded(store: Storage<T>&, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.added[index]
 }
 
-func storageWasChanged<T>(store: Storage<T>&, entity: Entity): Bool {
+func<T> storageWasChanged(store: Storage<T>&, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
     return index >= 0 && store.changed[index]
 }
 
-func storageClearTracking<T>(store: Storage<T>!) {
+func<T> storageClearTracking(store: Storage<T>!) {
     var i = 0
     while i < store.added.size {
         store.added[i] = false
@@ -385,7 +394,7 @@ func storageClearTracking<T>(store: Storage<T>!) {
     }
 }
 
-func storageCount<T>(store: Storage<T>&): Int {
+func<T> storageCount(store: Storage<T>&): Int {
     var total = 0
     var i = 0
     while i < store.entities.size {
@@ -397,15 +406,15 @@ func storageCount<T>(store: Storage<T>&): Int {
     return total
 }
 
-func storageEntityAt<T>(store: Storage<T>&, index: Int): Entity {
-    return store.entities[index]
+func<T> storageEntityAt(store: Storage<T>&, index: Int): Entity {
+    return store.entities[index].clone()
 }
 
-func storageValueAt<T>(store: Storage<T>&, index: Int): T {
+func<T> storageValueAt(store: Storage<T>&, index: Int): T& {
     return store.values[index]
 }
 
-func storageLength<T>(store: Storage<T>&): Int {
+func<T> storageLength(store: Storage<T>&): Int {
     return store.entities.size
 }
 
@@ -428,19 +437,19 @@ func despawnEntity(world: World!, entity: Entity) {
     world.despawn(entity)
 }
 
-func spawnWith<T>(world: World!, store: Storage<T>!, value: T): Entity {
+func<T> spawnWith(world: World!, store: Storage<T>!, value: T): Entity {
     fin entity = world.spawn()
     storageInsert<T>(store, entity, value)
     return entity
 }
 
-func copyComponent<T>(store: Storage<T>!, source: Entity, target: Entity) {
+func<T: Clone> copyComponent(store: Storage<T>!, source: Entity, target: Entity) {
     if storageHas<T>(store, source) {
-        storageInsert<T>(store, target, storageGet<T>(store, source))
+        storageInsert<T>(store, target, storageGetClone<T>(store, source))
     }
 }
 
-func spawnResourceWith<T>(world: World!, store: Storage<T>!, name: String, value: T): Entity {
+func<T> spawnResourceWith(world: World!, store: Storage<T>!, name: String, value: T): Entity {
     fin entity = world.spawnResource(name)
     storageInsert<T>(store, entity, value)
     return entity
@@ -481,13 +490,13 @@ pack Single<...T> where (...T).size >= 1 {
 
 impl Single<...T> {
     /** The first (and, for a one-type query, only) component value. */
-    oper.* [self: Self&] {
+    oper.* &.() {
         return self.value0
     }
 }
 
 /**
- * Heterogeneous ECS query handle, written `QueryOf<A, B>`.
+ * Heterogeneous ECS query handle, written `QueryOf<A&, B!>`.
  *
  * Named apart from the `@Query` parameter decorator: a decorator registered
  * before a pack of the same name shadows it, and which one wins depends on
@@ -507,7 +516,7 @@ pack QueryOf<...T> {
      * and the storages they come from are the world's. A `World` field names the
      * world itself rather than a copy - an aggregate is a reference here.
      */
-    var world: World
+    var world: World&
 }
 
 /**
@@ -518,12 +527,12 @@ pack QueryOf<...T> {
  * `Iterator`, and a query is one.
  */
 impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
-    func reset[self: Self!]() {
+    func !.reset() {
         self.cursor.reset()
     }
 
     /** Advances the cursor, answering whether a row was found. */
-    prop hasNext[self: Self!]: Bool {
+    func !.hasNext(): Bool {
         return self.cursor.hasNext()
     }
 
@@ -533,13 +542,13 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
      * The entity comes first so a row is always at least a pair, and so the
      * component positions follow the order the query was written in.
      *
-     * The components are the stored values, not copies of them - an aggregate is
-     * a reference here - so a term written `!` may be assigned through and the
-     * storage sees it. That is what makes a fetch a *borrow* rather than a read,
-     * and what lets a system stop reaching for a storage mid-body.
+     * Fetch terms must explicitly use `&` for readonly access or `!` for mutable
+     * access. The tuple keeps those borrowed field types; its Entity is a
+     * separate scalar snapshot. A plain owning component type does not express
+     * a borrowed fetch contract.
      */
     @ProvidesAccess
-    prop next[self: Self!]: Tuple<Entity, ...T> {
+    func !.next(): Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
         // Spelled with its type arguments: the row's element types cannot be
         // read back off the fetches, whose types come from calls, and a variadic
@@ -558,10 +567,10 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
      * does not match it.
      */
     @ProvidesAccess
-    func forEach[self: Self!](body: inline (Tuple<Entity, ...T>) -> Unit) {
+    func !.forEach(body: inline (Tuple<Entity, ...T>) -> Unit) {
         self.reset()
-        while self.hasNext {
-            body(self.next)
+        while self.hasNext() {
+            body(self.next())
         }
     }
 
@@ -581,9 +590,9 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
      * storage, so `unpack` costs a walk and nothing more.
      */
     @ProvidesAccess
-    func unpack[self: Self!](body: inline (Entity, ...T) -> Unit) {
+    func !.unpack(body: inline (Entity, ...T) -> Unit) {
         self.reset()
-        while self.hasNext {
+        while self.hasNext() {
             fin row: Entity = self.cursor.next()
             body(
                 row
@@ -595,7 +604,7 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     }
 }
 
-impl QueryOf<...T>:: {
+impl QueryOf<...T> {
 
     /**
      * Builds the query from the world.
@@ -628,7 +637,7 @@ impl QueryOf<...T>:: {
         inline for Ty in ...T {
             queryWith<Ty>(cursor, storageOf<Ty>(world))
         }
-        return QueryOf(cursor, world)
+        return QueryOf(take cursor, world)
     }
 }
 
@@ -640,7 +649,7 @@ impl QueryOf<...T> {
      * System-parameter lowering projects this entity into the tuple of borrowed
      * components requested by the `QueryOf<…>` type arguments.
      */
-    func nextEntity[self: Self!](): Entity {
+    func !.nextEntity(): Entity {
         return self.cursor.next()
     }
 }
@@ -652,13 +661,13 @@ impl QueryOf<...T> {
  * use can tell. There is one resource per type, so inserting twice replaces.
  */
 @Experimental(since: "0.1")
-inline func insertResource<T>(world: World!, value: T): Bool {
+inline func<T> insertResource(world: World!, value: T): Bool {
     return insertResourceNamed<T>(world, T.typeName, take value)
 }
 
 /** Puts [value] under an explicit [name]. See [insertResource]. */
 @Experimental(since: "0.1")
-func insertResourceNamed<T>(world: World!, name: String, value: T): Bool {
+func<T> insertResourceNamed(world: World!, name: String, value: T): Bool {
     // Appended rather than replaced in place, and read back to front: the newest
     // entry for a name is the one that answers, so inserting is one operation
     // whether or not the resource was already there.
@@ -704,13 +713,13 @@ func resourceStamp(world: World&, name: String): Int {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func resource<T>(world: World&): T {
+inline func<T> resource(world: World&): T {
     return resourceNamed<T>(world, T.typeName)
 }
 
 /** The resource under an explicit [name]. See [resource]. */
 @Experimental(since: "0.1")
-func resourceNamed<T>(world: World&, name: String): T {
+func<T> resourceNamed(world: World&, name: String): T {
     var i = world.resourceNames.size - 1
     while i >= 0 {
         if world.resourceNames[i] == name {
@@ -729,13 +738,13 @@ func resourceNamed<T>(world: World&, name: String): T {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func resourceOr<T>(world: World&, fallback: T): T {
+inline func<T> resourceOr(world: World&, fallback: T): T {
     return resourceNamedOr<T>(world, T.typeName, take fallback)
 }
 
 /** The resource under an explicit [name], or [fallback]. See [resourceOr]. */
 @Experimental(since: "0.1")
-func resourceNamedOr<T>(world: World&, name: String, fallback: T): T {
+func<T> resourceNamedOr(world: World&, name: String, fallback: T): T {
     var i = world.resourceNames.size - 1
     while i >= 0 {
         if world.resourceNames[i] == name {
@@ -754,7 +763,8 @@ func resourceNamedOr<T>(world: World&, name: String, fallback: T): T {
  * run every frame. Answers whether it replaced one.
  */
 @Experimental(since: "0.1")
-inline func registerStorage<T>(world: World!, store: Storage<T>): Bool {
+@SignatureOnly
+inline func<T> registerStorage(world: World!, store: Storage<T>): Bool {
     return registerStorageNamed<T>(world, T.typeName, take store)
 }
 
@@ -766,24 +776,42 @@ inline func registerStorage<T>(world: World!, store: Storage<T>): Bool {
  * [registerStorage] is, so the type's own name is filled in there.
  */
 @Experimental(since: "0.1")
-func registerStorageNamed<T>(world: World!, name: String, store: Storage<T>): Bool {
+func<T> registerStorageNamed(world: World!, name: String, store: Storage<T>): Bool {
     var i = 0
     while i < world.storageNames.size {
         if world.storageNames[i] == name {
-            // Replacing in place is not something a list offers, so the old
-            // entry is dropped and the new one appended - a lookup finds the
-            // last match either way.
-            world.storageNames.removeAt(i)
-            world.storages.removeAt(i)
+            // remove destroys the old owner before the replacement is appended.
+            world.storageNames.remove(i)
+            world.storages.remove(i)
             world.storageNames.add(name)
-            world.storages.add(store)
+            world.storages.add(take store)
             return true
         }
         i = i + 1
     }
     world.storageNames.add(name)
-    world.storages.add(store)
+    world.storages.add(take store)
     return false
+}
+
+/** Mutable access to a registered component storage, creating it on first use. */
+@Experimental(since: "0.1")
+inline func<T> ensureStorage(world: World!): Storage<T>! {
+    return ensureStorageNamed<T>(world, T.typeName)
+}
+
+/** Mutable access under an explicit component name. The world owns the returned store. */
+func<T> ensureStorageNamed(world: World!, name: String): Storage<T>! {
+    var i = 0
+    while i < world.storageNames.size {
+        if world.storageNames[i] == name {
+            return world.storages[i] as Storage<T>!
+        }
+        i = i + 1
+    }
+    var created = Storage<T>(Array<Entity>(), Array<T>(), Array<Bool>(), Array<Bool>(), Long(0))
+    registerStorageNamed<T>(world, name, take created)
+    return world.storages[world.storages.size - 1] as Storage<T>!
 }
 
 /**
@@ -796,39 +824,26 @@ func registerStorageNamed<T>(world: World!, name: String, store: Storage<T>): Bo
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func storageOf<T>(world: World&): Storage<T> {
+inline func<T> storageOf(world: World&): Storage<T>& {
     return storageNamed<T>(world, T.typeName)
 }
 
 /** The world's storage registered under an explicit [name]. See [storageOf]. */
 @Experimental(since: "0.1")
-func storageNamed<T>(world: World&, name: String): Storage<T> {
+func<T> storageNamed(world: World&, name: String): Storage<T>& {
     var i = 0
     while i < world.storageNames.size {
         if world.storageNames[i] == name {
-            return world.storages[i] as Storage<T>
+            return world.storages[i] as Storage<T>&
         }
         i = i + 1
     }
-    // Nothing has stored a [T] yet, so the world gets a storage for it now.
-    // Creating it on the first ask is what registers a component: declaring one
-    // is all there is to do, and no list has to be kept in step with the types
-    // that exist.
-    //
-    // Built without `@arr[]`: this fallback is reached from a
-    // specialization created after macros are expanded, so a macro left here
-    // would still be one when the resolver arrived.
-    fin fresh = Storage<T>(
-        Array::fill<Entity>(0),
-        Array::fill<T>(0),
-        Array::fill<Bool>(0),
-        Array::fill<Bool>(0),
-        0L,
-    )
-    world.storageNames.add(name)
-    world.storages.add(fresh)
-    return fresh
+    // Empty readonly query storage has program lifetime and never contains a T.
+    // Mutable access uses ensureStorage, which registers a world-owned store.
+    return emptyStorage as Storage<T>&
 }
+
+fin emptyStorage: Storage<Any> = Storage<Any>(Array<Entity>(), Array<Any>(), Array<Bool>(), Array<Bool>(), Long(0))
 
 /**
  * A query narrowed to rows that also carry `T`.
@@ -883,7 +898,7 @@ macro @query {
     [...$Q] with [...$T] without [...$S] => QueryWithout<QueryWith<QueryOf<...$Q>, ...$T>, ...$S>
 }
 
-impl QueryWith<Q, ...T>:: {
+impl QueryWith<Q, ...T> {
 
     /**
      * Builds the narrowed query from the world.
@@ -914,7 +929,7 @@ impl QueryWith<Q, ...T>:: {
     }
 }
 
-impl QueryWithout<Q, ...T>:: {
+impl QueryWithout<Q, ...T> {
 
     /** The same, keeping only the rows that carry *none* of `...T`. */
     @Experimental(since: "0.1")
@@ -951,31 +966,31 @@ pack QueryOr<Q, ...T> {
 }
 
 impl Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
-    func reset[self: Self!]() {
+    func !.reset() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: Bool {
+    func !.hasNext(): Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    prop next[self: Self!]: Entity {
+    func !.next(): Entity {
         return self.cursor.next()
     }
 }
 
 impl Iterator for QueryOr<Q, ...T> assoc Item = Entity {
-    func reset[self: Self!]() {
+    func !.reset() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: Bool {
+    func !.hasNext(): Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    prop next[self: Self!]: Entity {
+    func !.next(): Entity {
         return self.cursor.next()
     }
 }
@@ -1003,7 +1018,7 @@ pack Removed<T>
 impl QueryWith<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
     @Experimental(since: "0.1")
-    func nextEntity[self: Self!](): Entity {
+    func !.nextEntity(): Entity {
         return self.cursor.next()
     }
 }
@@ -1011,72 +1026,72 @@ impl QueryWith<Q, ...T> {
 impl QueryWithout<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
     @Experimental(since: "0.1")
-    func nextEntity[self: Self!](): Entity {
+    func !.nextEntity(): Entity {
         return self.cursor.next()
     }
 }
 
 impl Iterator for QueryWith<Q, ...T> assoc Item = Entity {
-    func reset[self: Self!]() {
+    func !.reset() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: Bool {
+    func !.hasNext(): Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    prop next[self: Self!]: Entity {
+    func !.next(): Entity {
         return self.cursor.next()
     }
 }
 
 impl Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
-    func reset[self: Self!]() {
+    func !.reset() {
         self.cursor.reset()
     }
 
-    prop hasNext[self: Self!]: Bool {
+    func !.hasNext(): Bool {
         return self.cursor.hasNext()
     }
 
     /** The entity the cursor is on. */
-    prop next[self: Self!]: Entity {
+    func !.next(): Entity {
         return self.cursor.next()
     }
 }
 
 func queryEmpty(): QueryCursor {
-    return QueryCursor(@arr[Entity::invalid], 1, true, "")
+    return QueryCursor([Entity::invalid.clone()], 1, true, "")
 }
 
 func queryError(message: String): QueryCursor {
-    return QueryCursor(@arr[Entity::invalid], 1, false, message)
+    return QueryCursor([Entity::invalid.clone()], 1, false, message)
 }
 
 impl QueryCursor {
-    func add(entity: Entity) {
+    func !.add(entity: Entity) {
         if entity.isValid {
-            self.entities.add(entity)
+            self.entities.add(entity.clone())
         }
     }
 
-    func reset() {
+    func !.reset() {
         self.cursor = 1
     }
 
-    func markFailed(message: String) {
+    func !.markFailed(message: String) {
         self.ok = false
         self.error = message
     }
 
-    func invalidateAt(index: Int) {
+    func !.invalidateAt(index: Int) {
         if index > 0 && index < self.entities.size {
-            self.entities[index] = Entity::invalid
+            self.entities[index] = Entity::invalid.clone()
         }
     }
 
-    func hasNext(): Bool {
+    func !.hasNext(): Bool {
         var i = self.cursor
         while i < self.entities.size {
             if self.entities[i].isValid {
@@ -1087,18 +1102,18 @@ impl QueryCursor {
         return false
     }
 
-    func next(): Entity {
+    func !.next(): Entity {
         while self.cursor < self.entities.size {
             fin entity = self.entities[self.cursor]
             self.cursor = self.cursor + 1
             if entity.isValid {
-                return entity
+                return entity.clone()
             }
         }
-        return Entity::invalid
+        return Entity::invalid.clone()
     }
 
-    func count(): Int {
+    func &.count(): Int {
         var total = 0
         var i = 1
         while i < self.entities.size {
@@ -1110,24 +1125,24 @@ impl QueryCursor {
         return total
     }
 
-    func isEmpty(): Bool {
+    func &.isEmpty(): Bool {
         return self.count() <= 0
     }
 
-    func single(): QueryFetch {
-        var found = Entity::invalid
+    func &.single(): QueryFetch {
+        var found = Entity::invalid.clone()
         var total = 0
         var i = 1
         while i < self.entities.size {
             fin entity = self.entities[i]
             if entity.isValid {
-                found = entity
+                found = entity.clone()
                 total = total + 1
             }
             i = i + 1
         }
         if total == 1 {
-            return QueryFetch(true, found, "")
+            return QueryFetch(true, take found, "")
         }
         if total == 0 {
             return QueryFetch(false, Entity::invalid, "query expected one entity, found none")
@@ -1146,7 +1161,7 @@ func queryAll(world: World&, includeResources: Bool): QueryCursor {
         }
         i = i + 1
     }
-    return query
+    return take query
 }
 
 func queryBroad(world: World&): QueryCursor {
@@ -1190,7 +1205,7 @@ func queryRetainScene(query: QueryCursor!, world: World&) {
     }
 }
 
-func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: Bool): QueryCursor {
+func<T> queryFromStorage(world: World&, store: Storage<T>&, includeResources: Bool): QueryCursor {
     var query = queryEmpty()
     var i = 0
     while i < store.entities.size {
@@ -1200,10 +1215,10 @@ func queryFromStorage<T>(world: World&, store: Storage<T>&, includeResources: Bo
         }
         i = i + 1
     }
-    return query
+    return take query
 }
 
-func queryWith<T>(query: QueryCursor!, store: Storage<T>&) {
+func<T> queryWith(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
@@ -1214,7 +1229,7 @@ func queryWith<T>(query: QueryCursor!, store: Storage<T>&) {
     }
 }
 
-func queryWithout<T>(query: QueryCursor!, store: Storage<T>&) {
+func<T> queryWithout(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
@@ -1225,7 +1240,7 @@ func queryWithout<T>(query: QueryCursor!, store: Storage<T>&) {
     }
 }
 
-func queryAdded<T>(query: QueryCursor!, store: Storage<T>&) {
+func<T> queryAdded(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
@@ -1236,7 +1251,7 @@ func queryAdded<T>(query: QueryCursor!, store: Storage<T>&) {
     }
 }
 
-func queryChanged<T>(query: QueryCursor!, store: Storage<T>&) {
+func<T> queryChanged(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
@@ -1247,10 +1262,10 @@ func queryChanged<T>(query: QueryCursor!, store: Storage<T>&) {
     }
 }
 
-func queryResources<T>(world: World&, store: Storage<T>&): QueryCursor {
+func<T> queryResources(world: World&, store: Storage<T>&): QueryCursor {
     var query = queryFromStorage<T>(world, store, true)
     queryRetainResources(query, world)
-    return query
+    return take query
 }
 
 pack QueryAccess {
@@ -1269,7 +1284,7 @@ pack QueryAccess {
 }
 
 func queryAccessInit(system: String): QueryAccess {
-    return QueryAccess(system, @arr[""], @arr[""], @arr[""], @arr[""], @arr[""], @arr[""], false, false, false, true, "")
+    return QueryAccess(system, [""], [""], [""], [""], [""], [""], false, false, false, true, "")
 }
 
 func queryNameListHas(list: Array<String>, name: String): Bool {
@@ -1370,25 +1385,25 @@ pack ResourceCell<T> {
     var revision: Int
 }
 
-func resourceInit<T>(defaultValue: T): ResourceCell<T> {
+func<T> resourceInit(defaultValue: T): ResourceCell<T> {
     return ResourceCell<T>(false, defaultValue, 0)
 }
 
-func resourceExists<T>(resource: ResourceCell<T>&): Bool {
+func<T> resourceExists(resource: ResourceCell<T>&): Bool {
     return resource.hasValue
 }
 
-func resourceSet<T>(resource: ResourceCell<T>!, value: T) {
+func<T> resourceSet(resource: ResourceCell<T>!, value: T) {
     resource.value = value
     resource.hasValue = true
     resource.revision = resource.revision + 1
 }
 
-func resourceGet<T>(resource: ResourceCell<T>&): T {
+func<T> resourceGet(resource: ResourceCell<T>&): T {
     return resource.value
 }
 
-func resourceGetOrDefault<T>(resource: ResourceCell<T>&, defaultValue: T): T {
+func<T> resourceGetOrDefault(resource: ResourceCell<T>&, defaultValue: T): T {
     if resource.hasValue {
         return resource.value
     }
@@ -1400,32 +1415,32 @@ pack EventQueue<T> {
     var cursor: Int
 }
 
-func eventQueueInit<T>(defaultEvent: T): EventQueue<T> {
-    var events = @arr[defaultEvent]
-    return EventQueue<T>(events, 1)
+func<T> eventQueueInit(defaultEvent: T): EventQueue<T> {
+    var events = [defaultEvent]
+    return EventQueue<T>(take events, 1)
 }
 
-func eventSend<T>(queue: EventQueue<T>!, event: T) {
+func<T> eventSend(queue: EventQueue<T>!, event: T) {
     queue.events.add(event)
 }
 
-func eventLength<T>(queue: EventQueue<T>&): Int {
+func<T> eventLength(queue: EventQueue<T>&): Int {
     return queue.events.size - queue.cursor
 }
 
-func eventIsEmpty<T>(queue: EventQueue<T>&): Bool {
+func<T> eventIsEmpty(queue: EventQueue<T>&): Bool {
     return eventLength<T>(queue) <= 0
 }
 
-func eventPeek<T>(queue: EventQueue<T>&, index: Int): T {
+func<T> eventPeek(queue: EventQueue<T>&, index: Int): T {
     return queue.events[queue.cursor + index]
 }
 
-func eventHasNext<T>(queue: EventQueue<T>&): Bool {
+func<T> eventHasNext(queue: EventQueue<T>&): Bool {
     return queue.cursor < queue.events.size
 }
 
-func eventNext<T>(queue: EventQueue<T>!): T {
+func<T> eventNext(queue: EventQueue<T>!): T {
     fin event = queue.events[queue.cursor]
     queue.cursor = queue.cursor + 1
     return event
@@ -1437,20 +1452,21 @@ pack CommandBuffer {
 }
 
 func commandBufferInit(): CommandBuffer {
-    var despawns = @arr[Entity::invalid]
-    return CommandBuffer(despawns, 1)
+    return CommandBuffer(Array<Entity>(), 0)
 }
 
 impl CommandBuffer {
-    func despawn(entity: Entity) {
-        self.despawns.add(entity)
+    func !.despawn(entity: Entity) {
+        self.despawns.add(entity.clone())
     }
 
-    func apply(world: World) {
+    func !.apply(world: World!) {
         while self.cursor < self.despawns.size {
             world.despawn(self.despawns[self.cursor])
             self.cursor = self.cursor + 1
         }
+        self.despawns.clear()
+        self.cursor = 0
     }
 }
 
@@ -1581,7 +1597,7 @@ func systemPlanDeclare(
 
 impl SystemPlan {
     /** The index of the system called [name], or `-1`. */
-    func indexOf(name: String): Int {
+    func &.indexOf(name: String): Int {
         var i = 0
         while i < self.count {
             if self.systems[i].name == name {
@@ -1599,7 +1615,7 @@ impl SystemPlan {
      * runtime decision, so this is the one part of a system's schedule that is
      * not fixed at compile time.
      */
-    func setEnabled(name: String, enabled: Bool): Bool {
+    func !.setEnabled(name: String, enabled: Bool): Bool {
         fin found = self.indexOf(name)
         if found < 0 {
             return false
@@ -1616,7 +1632,7 @@ impl SystemPlan {
      * constrains every member of it, so two packages can order their sets
      * without knowing each other's system names.
      */
-    func constrains(earlier: Int, later: Int): Bool {
+    func &.constrains(earlier: Int, later: Int): Bool {
         fin a = self.systems[earlier]
         fin b = self.systems[later]
         if a.phase != b.phase {
@@ -1647,12 +1663,17 @@ impl SystemPlan {
      * "runs in the order you declared it" keeps the frame running; dropping the
      * systems instead would make a typo look like a physics bug.
      */
-    func resolve() {
+    func !.resolve() {
         self.cyclic = false
         self.cycleReport = ""
         self.resolvedCount = 0
 
-        var placed: Array<Bool> = Array::fill<Bool>(self.count)
+        var placed: Array<Bool> = []
+        var initIndex = 0
+        while initIndex < self.count {
+            placed.add(false)
+            initIndex = initIndex + 1
+        }
         var i = 0
         while i < self.count {
             placed[i] = false
@@ -1719,8 +1740,8 @@ impl SystemPlan {
     }
 
     /** The names of [phase]'s systems, in the order they will run. */
-    func orderOf(phase: SystemPhase): Array<String> {
-        var names = @arr[""]
+    func &.orderOf(phase: SystemPhase): Array<String> {
+        var names = [""]
         var i = 0
         while i < self.resolvedCount {
             fin system = self.systems[self.resolved[i]]
@@ -1756,9 +1777,9 @@ impl SystemPlan {
 @Experimental(since: "0.1")
 func systemPlan(): SystemPlan {
     var plan = SystemPlan(
-        Array::fill<ScheduledSystem>(0),
+        Array<ScheduledSystem>(),
         0,
-        Array::fill<Int>(0),
+        Array<Int>(),
         0,
         false,
         ""
@@ -1768,17 +1789,17 @@ func systemPlan(): SystemPlan {
         systemPlanDeclare(
             plan,
             reflect<S>.declName,
-            reflect<S>.decoMeta<System>.phase,
-            reflect<S>.decoMeta<System>.order,
-            reflect<S>.decoMeta<System>.runBefore,
-            reflect<S>.decoMeta<System>.runAfter,
-            reflect<S>.decoMeta<System>.inSet
+            reflect<S>.annotMeta<System>.phase,
+            reflect<S>.annotMeta<System>.order,
+            reflect<S>.annotMeta<System>.runBefore,
+            reflect<S>.annotMeta<System>.runAfter,
+            reflect<S>.annotMeta<System>.inSet
         )
         plan.resolved.add(0)
     }
 
     plan.resolve()
-    return plan
+    return take plan
 }
 
 /**
@@ -1810,7 +1831,7 @@ func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
 
 macro @applyKey => inline """
     if key == "" {
-        positionalKey(anchor.parent, ${Self.typename.lowercase})
+        anchor.pass.positionalKey(anchor.parent, Self.typeName)
     } else {
         key
     }
@@ -1836,7 +1857,7 @@ func runSystems(plan: SystemPlan&, world: World!) {
 
 /** An empty plan, for tests and for hosts that build a schedule by hand. */
 func systemPlanEmpty(): SystemPlan {
-    return SystemPlan(Array::fill<ScheduledSystem>(0), 0, Array::fill<Int>(0), 0, false, "")
+    return SystemPlan(Array<ScheduledSystem>(), 0, Array<Int>(), 0, false, "")
 }
 
 test "constraints order systems regardless of declaration order" {
@@ -1850,11 +1871,11 @@ test "constraints order systems regardless of declaration order" {
     plan.resolved.add(0)
     plan.resolve()
 
-    assert !plan.cyclic { "three chained constraints are satisfiable" }
+    assert !plan.cyclic panic "three chained constraints are satisfiable"
     fin order = plan.orderOf(.Update)
-    assert order[1] == "input" { "input must run first, not last as declared" }
-    assert order[2] == "physics" { "physics must follow input" }
-    assert order[3] == "render" { "render must follow physics" }
+    assert order[1] == "input" panic "input must run first, not last as declared"
+    assert order[2] == "physics" panic "physics must follow input"
+    assert order[3] == "render" panic "render must follow physics"
 }
 
 test "a phase runs whole, whatever the constraints say" {
@@ -1867,9 +1888,9 @@ test "a phase runs whole, whatever the constraints say" {
     plan.resolved.add(0)
     plan.resolve()
 
-    assert !plan.cyclic { "a cross-phase constraint is not a cycle" }
-    assert plan.systems[plan.resolved[0]].name == "draw" { "render precedes last" }
-    assert plan.systems[plan.resolved[1]].name == "cleanup" { "last comes after render" }
+    assert !plan.cyclic panic "a cross-phase constraint is not a cycle"
+    assert plan.systems[plan.resolved[0]].name == "draw" panic "render precedes last"
+    assert plan.systems[plan.resolved[1]].name == "cleanup" panic "last comes after render"
 }
 
 test "order breaks ties no constraint settles" {
@@ -1880,7 +1901,7 @@ test "order breaks ties no constraint settles" {
     plan.resolved.add(0)
     plan.resolve()
 
-    assert plan.systems[plan.resolved[0]].name == "early" { "the lower order wins" }
+    assert plan.systems[plan.resolved[0]].name == "early" panic "the lower order wins"
 }
 
 test "naming a set orders every system in it" {
@@ -1891,9 +1912,7 @@ test "naming a set orders every system in it" {
     plan.resolved.add(0)
     plan.resolve()
 
-    assert plan.systems[plan.resolved[0]].name == "movement" {
-        "following a set must mean following its members"
-    }
+    assert plan.systems[plan.resolved[0]].name == "movement" panic "following a set must mean following its members"
 }
 
 test "contradictory constraints degrade to declaration order" {
@@ -1904,26 +1923,22 @@ test "contradictory constraints degrade to declaration order" {
     plan.resolved.add(0)
     plan.resolve()
 
-    assert plan.cyclic { "a two-system cycle must be reported" }
-    assert plan.resolvedCount == 2 { "both systems must still run" }
-    assert plan.systems[plan.resolved[0]].name == "a" { "the fallback is declaration order" }
+    assert plan.cyclic panic "a two-system cycle must be reported"
+    assert plan.resolvedCount == 2 panic "both systems must still run"
+    assert plan.systems[plan.resolved[0]].name == "a" panic "the fallback is declaration order"
 }
 
 test "a name is matched against whole list entries, not substrings" {
-    assert systemNameListed("input, physics", "physics") { "a spaced entry must match" }
-    assert systemNameListed("input,physics", "input") { "the first entry must match" }
-    assert !systemNameListed("input_debug", "input") { "a prefix must not match" }
-    assert !systemNameListed("", "input") { "an empty list matches nothing" }
-    assert !systemNameListed("input", "") { "an empty name matches nothing" }
+    assert systemNameListed("input, physics", "physics") panic "a spaced entry must match"
+    assert systemNameListed("input,physics", "input") panic "the first entry must match"
+    assert !systemNameListed("input_debug", "input") panic "a prefix must not match"
+    assert !systemNameListed("", "input") panic "an empty list matches nothing"
+    assert !systemNameListed("input", "") panic "an empty name matches nothing"
 }
 
 test "phases order the frame regardless of constraints" {
-    assert systemPhaseRank(.Startup) < systemPhaseRank(.Update) {
-        "startup must precede update"
-    }
-    assert systemPhaseRank(.Update) < systemPhaseRank(.Render) {
-        "update must precede render"
-    }
+    assert systemPhaseRank(.Startup) < systemPhaseRank(.Update) panic "startup must precede update"
+    assert systemPhaseRank(.Update) < systemPhaseRank(.Render) panic "update must precede render"
 }
 
 test "query access permits disjoint systems" {
@@ -1935,9 +1950,7 @@ test "query access permits disjoint systems" {
     queryAccessWrite(enemies, "Transform")
     queryAccessWithout(enemies, "Player")
 
-    assert !queryAccessConflicts(movement, enemies) {
-        "with/without filters must prove disjoint writes"
-    }
+    assert !queryAccessConflicts(movement, enemies) panic "with/without filters must prove disjoint writes"
 }
 
 test "query access rejects shared writes" {
@@ -1947,7 +1960,5 @@ test "query access rejects shared writes" {
     var physics = queryAccessInit("physics")
     queryAccessRead(physics, "Transform")
 
-    assert queryAccessConflicts(movement, physics) {
-        "writer/reader overlap must serialize systems"
-    }
+    assert queryAccessConflicts(movement, physics) panic "writer/reader overlap must serialize systems"
 }

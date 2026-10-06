@@ -119,24 +119,24 @@ func hexCubeToAxial(cube: HexCube): HexAxial {
 // ── Arithmetic ──────────────────────────────────────────────────────────
 
 impl HexAxial {
-    func plus(other: HexAxial): HexAxial {
+    func &.plus(other: HexAxial): HexAxial {
         return HexAxial(self.q + other.q, self.r + other.r)
     }
 
-    func minus(other: HexAxial): HexAxial {
+    func &.minus(other: HexAxial): HexAxial {
         return HexAxial(self.q - other.q, self.r - other.r)
     }
 
-    func scale(k: Int): HexAxial {
+    func &.scale(k: Int): HexAxial {
         return HexAxial(self.q * k, self.r * k)
     }
 
-    func same(other: HexAxial): Bool {
+    func &.same(other: HexAxial): Bool {
         return self.q == other.q && self.r == other.r
     }
 
     /** The third, redundant cube axis of this coordinate. */
-    func s(): Int {
+    func &.s(): Int {
         return 0 - self.q - self.r
     }
 
@@ -146,37 +146,37 @@ impl HexAxial {
      * In cube space this is half the sum of the three axis differences, which
      * is why the formula reaches for `s` even though the value is axial.
      */
-    func distance(other: HexAxial): Int {
+    func &.distance(other: HexAxial): Int {
         fin dq = self.q - other.q
         fin dr = self.r - other.r
         return (intAbs(dq) + intAbs(dq + dr) + intAbs(dr)) / 2
     }
 
     /** The ring index this coordinate sits on, relative to the axial origin. */
-    func ringRadius(): Int {
+    func &.ringRadius(): Int {
         return self.distance(HexAxial(0, 0))
     }
 }
 
 impl HexCube {
-    func plus(other: HexCube): HexCube {
+    func &.plus(other: HexCube): HexCube {
         return HexCube(self.q + other.q, self.r + other.r, self.s + other.s)
     }
 
-    func minus(other: HexCube): HexCube {
+    func &.minus(other: HexCube): HexCube {
         return HexCube(self.q - other.q, self.r - other.r, self.s - other.s)
     }
 
-    func scale(k: Int): HexCube {
+    func &.scale(k: Int): HexCube {
         return HexCube(self.q * k, self.r * k, self.s * k)
     }
 
     /** True when the cube constraint `q + r + s == 0` still holds. */
-    func isValid(): Bool {
+    func &.isValid(): Bool {
         return self.q + self.r + self.s == 0
     }
 
-    func distance(other: HexCube): Int {
+    func &.distance(other: HexCube): Int {
         return (intAbs(self.q - other.q) + intAbs(self.r - other.r) + intAbs(self.s - other.s)) / 2
     }
 }
@@ -433,7 +433,7 @@ func hexPathNew(capacity: Int): HexPath {
 
 impl HexPath {
     /** Appends [axial], growing the path when it is full. */
-    func add(axial: HexAxial) {
+    func !.add(axial: HexAxial) {
         if self.count >= self.q.size {
             fin grown = intMax(self.q.size * 2, 8)
             self.q = intGridResize(self.q, self.count, grown, 0)
@@ -445,7 +445,7 @@ impl HexPath {
     }
 
     /** The coordinate at [index], or the origin when out of range. */
-    func at(index: Int): HexAxial {
+    func &.at(index: Int): HexAxial {
         if index < 0 || index >= self.count {
             return HexAxial(0, 0)
         }
@@ -453,11 +453,11 @@ impl HexPath {
     }
 
     /** The coordinate at [index] as a stored position under [system]. */
-    func posAt(index: Int, system: HexCoordSystem): TilePos {
+    func &.posAt(index: Int, system: HexCoordSystem): TilePos {
         return hexFromAxial(self.at(index), system)
     }
 
-    func clear() {
+    func !.clear() {
         self.count = 0
     }
 }
@@ -559,9 +559,7 @@ test "axial and offset coordinates round-trip in every system" {
             while x <= 4 {
                 fin pos = TilePos(x, y)
                 fin back = hexFromAxial(hexToAxial(pos, systems[s]), systems[s])
-                assert back.x == x && back.y == y {
-                    "offset to axial and back must be the identity, including on negative rows"
-                }
+                assert back.x == x && back.y == y panic "offset to axial and back must be the identity, including on negative rows"
                 x = x + 1
             }
             y = y + 1
@@ -574,27 +572,23 @@ test "hex distance counts steps and matches the neighbour table" {
     fin origin = HexAxial(0, 0)
     var i = 0
     while i < 6 {
-        assert origin.distance(hexNeighbor(origin, i)) == 1 {
-            "every one of the six neighbours must be exactly one step away"
-        }
-        assert origin.distance(hexDiagonal(origin, i)) == 2 {
-            "a diagonal neighbour shares only a vertex and is two steps away"
-        }
+        assert origin.distance(hexNeighbor(origin, i)) == 1 panic "every one of the six neighbours must be exactly one step away"
+        assert origin.distance(hexDiagonal(origin, i)) == 2 panic "a diagonal neighbour shares only a vertex and is two steps away"
         i = i + 1
     }
-    assert HexAxial(0, 0).distance(HexAxial(3, -1)) == 3 { "distance must follow the cube metric" }
+    assert HexAxial(0, 0).distance(HexAxial(3, -1)) == 3 panic "distance must follow the cube metric"
 }
 
 test "rings and spirals hold the counts the geometry demands" {
     fin center = HexAxial(2, -1)
-    assert hexRing(center, 1).count == 6 { "a radius-1 ring is six hexes" }
-    assert hexRing(center, 3).count == 18 { "a ring of radius n holds 6n hexes" }
-    assert hexSpiral(center, 2).count == 19 { "a radius-2 spiral holds 1 + 3n(n+1) hexes" }
+    assert hexRing(center, 1).count == 6 panic "a radius-1 ring is six hexes"
+    assert hexRing(center, 3).count == 18 panic "a ring of radius n holds 6n hexes"
+    assert hexSpiral(center, 2).count == 19 panic "a radius-2 spiral holds 1 + 3n(n+1) hexes"
 
     fin ring = hexRing(center, 2)
     var i = 0
     while i < ring.count {
-        assert center.distance(ring.at(i)) == 2 { "every hex on a ring is the same distance out" }
+        assert center.distance(ring.at(i)) == 2 panic "every hex on a ring is the same distance out"
         i = i + 1
     }
 }
@@ -603,16 +597,14 @@ test "a hex line is gapless and rotation is a sixfold symmetry" {
     fin a = HexAxial(-2, 3)
     fin b = HexAxial(4, -1)
     fin path = hexLine(a, b)
-    assert path.count == a.distance(b) + 1 { "a line holds one hex per step plus the start" }
+    assert path.count == a.distance(b) + 1 panic "a line holds one hex per step plus the start"
     var i = 1
     while i < path.count {
-        assert path.at(i - 1).distance(path.at(i)) == 1 { "a line must not skip a hex" }
+        assert path.at(i - 1).distance(path.at(i)) == 1 panic "a line must not skip a hex"
         i = i + 1
     }
 
     fin turned = hexRotate(b, a, 6)
-    assert turned.same(b) { "six sixth-turns must return the original coordinate" }
-    assert a.distance(hexRotate(b, a, 1)) == a.distance(b) {
-        "rotation about a centre must preserve distance to it"
-    }
+    assert turned.same(b) panic "six sixth-turns must return the original coordinate"
+    assert a.distance(hexRotate(b, a, 1)) == a.distance(b) panic "rotation about a centre must preserve distance to it"
 }

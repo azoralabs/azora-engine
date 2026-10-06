@@ -64,7 +64,7 @@ pack BitmapFont {
 /** The font returned when loading fails; drawing with it is a no-op. */
 @Experimental(since: "0.1")
 func fontEmpty(): BitmapFont {
-    return BitmapFont(imageEmpty(), 0L, 0, 0, 0, Array::fill<Int>(0), false)
+    return BitmapFont(imageEmpty(), Long(0), 0, 0, 0, Array<Int>(), false)
 }
 
 /**
@@ -244,14 +244,14 @@ func loadBitmapFont(app: App, directory: String, manifestFile: String): BitmapFo
     manifestBlob.release()
 
     return BitmapFont(
-        image, texture, cellWidth, cellHeight, imageY, offsets, texture != 0L
+        image, texture, cellWidth, cellHeight, imageY, offsets, texture != Long(0)
     )
 }
 
 impl BitmapFont {
 
     /** The width in pixels [text] occupies at scale 1. */
-    func measure(text: String): Int {
+    func &.measure(text: String): Int {
         return strLength(text) * self.cellWidth
     }
 
@@ -261,7 +261,7 @@ impl BitmapFont {
      * Characters with no glyph advance the cursor without drawing, so spaces
      * and unsupported punctuation keep the layout aligned.
      */
-    func draw(app: App, text: String, x: Double, y: Double, scale: Double) {
+    func &.draw(app: App, text: String, x: Double, y: Double, scale: Double) {
         if !self.ready {
             return
         }
@@ -292,16 +292,16 @@ impl BitmapFont {
     }
 
     /** Draws [text] horizontally centred on [centerX]. */
-    func drawCentered(app: App, text: String, centerX: Double, y: Double, scale: Double) {
+    func &.drawCentered(app: App, text: String, centerX: Double, y: Double, scale: Double) {
         fin width = (self.measure(text) as Double) * scale
         self.draw(app, text, centerX - width * 0.5, y, scale)
     }
 
     /** Releases the font's GPU texture and pixels. */
-    func release[self: Self!](app: App) {
+    func !.release(app: App) {
         app.releaseTexture(self.texture)
         self.image.release()
-        self.texture = 0L
+        self.texture = Long(0)
         self.ready = false
     }
 }

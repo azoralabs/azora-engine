@@ -1,0 +1,29 @@
+module borrowedQuery
+import std.io
+import std.container.tuple
+import engine.core
+import engine.ecs
+@Component pack Position { var x: Int }
+@Component pack Velocity { var x: Int }
+func main() {
+    var world = World()
+    fin entity = world.spawn()
+    storageInsert<Position>(ensureStorage<Position>(world), entity, Position(3))
+    storageInsert<Velocity>(ensureStorage<Velocity>(world), entity, Velocity(2))
+    if true {
+        var query = QueryOf<Position&, Velocity&>::provide(world)
+        assert query.hasNext() panic "shared query must find both components"
+        let row = query.next()
+        assert row.1.x == 3 && row.2.x == 2 panic "shared query must expose actual components"
+    }
+    assert storageGet<Position>(storageOf<Position>(world), entity).x == 3 panic "query row cleanup must preserve components"
+    if true {
+        var query = QueryOf<Position!, Velocity&>::provide(world)
+        let row = query.next()
+        row.1.x = row.1.x + row.2.x
+    }
+    assert storageGet<Position>(storageOf<Position>(world), entity).x == 5 panic "mutable query must write the stored component"
+    assert storageGet<Velocity>(storageOf<Velocity>(world), entity).x == 2 panic "mutable query must preserve its shared component"
+    assert world.isAlive(entity) panic "query cleanup must preserve its borrowed world"
+    println("borrowed query passed")
+}

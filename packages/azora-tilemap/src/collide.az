@@ -14,6 +14,8 @@
  *
  * The geometry is not reimplemented here. Shapes, contacts, swept box queries
  * and ray casts all come from `engine.physics.d2`, and this module supplies
+
+import std.traits
  * only what is specific to a tilemap: which cells a query has to look at, and
  * which of them block. A tilemap that solved its own box sweeps would be a
  * second collision system that disagrees with the first one at the edges —
@@ -532,7 +534,7 @@ func rayHitNormal(result: TileRayHit): Vec2 {
 }
 
 test "a fast box stops at the wall instead of tunnelling through it" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(1, traitSolid)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
     tilemapNewLayer(map, "walls")
@@ -543,16 +545,14 @@ test "a fast box stops at the wall instead of tunnelling through it" {
     fin body = aabbAt(24.0, 20.0, 8.0, 8.0)
     fin moved = moveBox(map, tileAnyLayer, body, Vec2(60.0, 6.0), traitSolid, false)
 
-    assert moved.hitX { "moving into the wall must register a horizontal hit" }
-    assert realAbs(moved.position.x - 56.0) < 0.01 {
-        "a move longer than a tile must still stop at the wall"
-    }
-    assert !moved.hitY { "a clear vertical move must not be blocked" }
-    assert realAbs(moved.position.y - 26.0) < 0.01 { "the box must still slide down past the wall" }
+    assert moved.hitX panic "moving into the wall must register a horizontal hit"
+    assert realAbs(moved.position.x - 56.0) < 0.01 panic "a move longer than a tile must still stop at the wall"
+    assert !moved.hitY panic "a clear vertical move must not be blocked"
+    assert realAbs(moved.position.y - 26.0) < 0.01 panic "the box must still slide down past the wall"
 }
 
 test "a one-way platform is passed from below and landed on from above" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(2, traitOneWay)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
     tilemapNewLayer(map, "walls")
@@ -560,16 +560,16 @@ test "a one-way platform is passed from below and landed on from above" {
 
     // Row 4 is drawn at y = 64 .. 80.
     fin landing = moveBox(map, tileAnyLayer, aabbAt(20.0, 40.0, 8.0, 8.0), Vec2(0.0, 20.0), traitSolid, true)
-    assert landing.grounded { "a fall onto a platform must land" }
-    assert realAbs(landing.position.y - 56.0) < 0.01 { "the box must rest on top of the platform" }
+    assert landing.grounded panic "a fall onto a platform must land"
+    assert realAbs(landing.position.y - 56.0) < 0.01 panic "the box must rest on top of the platform"
 
     fin rising = moveBox(map, tileAnyLayer, aabbAt(20.0, 80.0, 8.0, 8.0), Vec2(0.0, -20.0), traitSolid, true)
-    assert !rising.hitY { "a jump from below must pass through a one-way platform" }
-    assert realAbs(rising.position.y - 60.0) < 0.01 { "the rising box must keep its full movement" }
+    assert !rising.hitY panic "a jump from below must pass through a one-way platform"
+    assert realAbs(rising.position.y - 60.0) < 0.01 panic "the rising box must keep its full movement"
 }
 
 test "a square ray reports the tile, the normal and where it landed" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(1, traitSolid)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
     tilemapNewLayer(map, "walls")
@@ -577,27 +577,21 @@ test "a square ray reports the tile, the normal and where it landed" {
 
     when rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(1.0, 0.0), 200.0, traitSolid) {
         TileRayHit.Hit(pos, index, normal, t, point) -> {
-            assert pos.x == 5 { "the ray must stop in the wall column" }
-            assert normal.x < -0.99 { "the normal must face back along the ray" }
-            assert index == 1 { "the hit must report the tile it met, across every layer" }
-            assert realAbs(point.x - 80.0) < 0.01 { "the hit point must be on the wall's near face" }
+            assert pos.x == 5 panic "the ray must stop in the wall column"
+            assert normal.x < -0.99 panic "the normal must face back along the ray"
+            assert index == 1 panic "the hit must report the tile it met, across every layer"
+            assert realAbs(point.x - 80.0) < 0.01 panic "the hit point must be on the wall's near face"
         }
-        TileRayHit.Miss() -> { assert false { "a ray straight into a wall must hit" } }
+        TileRayHit.Miss() -> { assert false panic "a ray straight into a wall must hit" }
     }
 
-    assert !rayHitOk(rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(0.0, 1.0), 100.0, traitSolid)) {
-        "a ray down an empty column must miss"
-    }
-    assert !lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(120.0, 24.0), traitSolid) {
-        "the wall must break the line of sight"
-    }
-    assert lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(8.0, 100.0), traitSolid) {
-        "an unobstructed line must be clear"
-    }
+    assert !rayHitOk(rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(0.0, 1.0), 100.0, traitSolid)) panic "a ray down an empty column must miss"
+    assert !lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(120.0, 24.0), traitSolid) panic "the wall must break the line of sight"
+    assert lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(8.0, 100.0), traitSolid) panic "an unobstructed line must be clear"
 }
 
 test "overlap tests see only the traits they ask for" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(1, traitSolid)
     tiles.addTraits(2, traitWater)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
@@ -606,22 +600,20 @@ test "overlap tests see only the traits they ask for" {
     tilemapSet(map, 0, TilePos(3, 2), 2)
 
     fin overSolid = aabbAt(34.0, 34.0, 4.0, 4.0)
-    assert boxOverlaps(map, tileAnyLayer, overSolid, traitSolid) { "the solid tile must be found" }
-    assert !boxOverlaps(map, tileAnyLayer, overSolid, traitWater) { "the water tile is elsewhere" }
-    assert countBlocking(map, tileAnyLayer, aabbAt(34.0, 34.0, 24.0, 4.0), traitSolid | traitWater) == 2 {
-        "a box spanning both tiles must count both"
-    }
+    assert boxOverlaps(map, tileAnyLayer, overSolid, traitSolid) panic "the solid tile must be found"
+    assert !boxOverlaps(map, tileAnyLayer, overSolid, traitWater) panic "the water tile is elsewhere"
+    assert countBlocking(map, tileAnyLayer, aabbAt(34.0, 34.0, 24.0, 4.0), traitSolid | traitWater) == 2 panic "a box spanning both tiles must count both"
 }
 
 test "move and slide keeps the tangent velocity" {
-    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(1L, 64, 64, 16, 16))
+    var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     tiles.addTraits(1, traitSolid)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
     tilemapNewLayer(map, "walls")
     layerFillRect(map.layers[0], tileRect(4, 0, 4, 7), 1)
 
     fin moved = moveAndSlide(map, tileAnyLayer, aabbAt(24.0, 20.0, 8.0, 8.0), Vec2(600.0, 60.0), 0.1, traitSolid, false)
-    assert moved.hitX { "the wall must stop the horizontal motion" }
-    assert moved.velocity.x == 0.0 { "the blocked axis must lose its velocity" }
-    assert moved.velocity.y == 60.0 { "the free axis must keep its velocity" }
+    assert moved.hitX panic "the wall must stop the horizontal motion"
+    assert moved.velocity.x == 0.0 panic "the blocked axis must lose its velocity"
+    assert moved.velocity.y == 60.0 panic "the free axis must keep its velocity"
 }

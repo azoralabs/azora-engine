@@ -80,7 +80,7 @@ variant enum SystemInterval {
 
 /** Marks a pack or enum as ECS component data. */
 @Experimental(since: "0.1")
-annot Component for (.Pack, .Enum)
+annot @Component for (.Pack, .Enum)
 
 /**
  * Marks a function as an engine system, which is all it takes to schedule it.
@@ -104,7 +104,7 @@ annot Component for (.Pack, .Enum)
  */
 @Experimental(since: "0.1")
 @DeclaresAccess
-annot System for (.Func, .AsyncFunc) {
+annot @System for (.Func, .AsyncFunc) {
     fin phase: SystemPhase = .Update
     /**
      * How often the system runs within its phase.
@@ -133,7 +133,7 @@ annot System for (.Func, .AsyncFunc) {
  * queue nobody drains cannot grow without bound.
  */
 @Experimental(since: "0.1")
-annot Event for (.Pack, .Enum)
+annot @Event for (.Pack, .Enum)
 
 /**
  * Marks a pack as an ECS relationship between two entities.
@@ -143,15 +143,15 @@ annot Event for (.Pack, .Enum)
  * the other has to keep in step.
  */
 @Experimental(since: "0.1")
-annot Relation for .Pack
+annot @Relation for .Pack
 
 /** Marks a pack as application-wide ECS resource data. */
 @Experimental(since: "0.1")
-annot Resource for .Pack
+annot @Resource for .Pack
 
 /** Marks a function parameter whose component access is query-derived. */
 @Experimental(since: "0.1")
-annot Query for .Param
+annot @Query for .Param
 
 /**
  * Frame clock injected into systems through `time: res Time`.
@@ -170,7 +170,7 @@ pack Time {
 /** Creates a clock with a 60 Hz fixed timestep. */
 @Experimental(since: "0.1")
 func timeInit(): Time {
-    return Time(0.0, 0.0, 1.0 / 60.0, 0L)
+    return Time(0.0, 0.0, 1.0 / 60.0, Long(0))
 }
 
 impl Time {
@@ -180,7 +180,7 @@ impl Time {
      * Large deltas are clamped to 250 ms so a paused debugger or suspended tab
      * cannot destabilize physics when execution resumes.
      */
-    func advance[self: Self!](deltaSecs: Double) {
+    func !.advance(deltaSecs: Double) {
         var clamped = deltaSecs
         if clamped < 0.0 {
             clamped = 0.0
@@ -194,8 +194,8 @@ impl Time {
     }
 
     /** Replaces the deterministic fixed timestep. */
-    func setFixedDelta[self: Self!](seconds: Double) {
-        assert seconds > 0.0 { "fixed timestep must be positive" }
+    func !.setFixedDelta(seconds: Double) {
+        assert seconds > 0.0 panic "fixed timestep must be positive"
         self.fixedDeltaSecs = seconds
     }
 }
@@ -212,24 +212,24 @@ pack Signal<T> {
     var revision: Long
 }
 
-func signalInit<T>(value: T): Signal<T> {
-    return .(value, 0L)
+func<T> signalInit(value: T): Signal<T> {
+    return .(value, Long(0))
 }
 
-func signalGet<T>(signal: Signal<T>&): T {
+func<T> signalGet(signal: Signal<T>&): T {
     return signal.value
 }
 
-func signalSet<T>(signal: Signal<T>!, value: T) {
+func<T> signalSet(signal: Signal<T>!, value: T) {
     signal.value = value
     signal.revision = signal.revision + 1
 }
 
-func signalVersion<T>(signal: Signal<T>&): Long {
+func<T> signalVersion(signal: Signal<T>&): Long {
     return signal.revision
 }
 
-func signalChangedSince<T>(signal: Signal<T>&, version: Long): Bool {
+func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool {
     return signal.revision != version
 }
 
@@ -246,15 +246,15 @@ solo pack EngineRegistry {
 }
 
 impl EngineRegistry {
-    func markModuleLoaded[self: Self!]() {
+    func !.markModuleLoaded() {
         self.loadedModules = self.loadedModules + 1
     }
 
-    func nextFrame[self: Self!]() {
+    func !.nextFrame() {
         self.frameIndex = self.frameIndex + 1
     }
 
-    func markWorldChanged[self: Self!]() {
+    func !.markWorldChanged() {
         self.worldRevision = self.worldRevision + 1
     }
 }
@@ -265,7 +265,7 @@ solo pack EngineClock {
 }
 
 impl EngineClock {
-    func advance[self: Self!](deltaSecs: Double) {
+    func !.advance(deltaSecs: Double) {
         self.value.advance(deltaSecs)
     }
 }
@@ -294,7 +294,7 @@ graph AzEngine {
  * nothing clears it. It is not the process exiting — the frame loop still ends
  * the current frame, so teardown, saves and disposal all run normally.
  */
-realm azora::engine {
+scope azora::engine {
     /** Ask the running application to close. Idempotent. */
     @Experimental(since: "0.1")
     func exit() {
@@ -304,6 +304,6 @@ realm azora::engine {
     /** Whether `exit()` has been called. The frame loop's stop condition. */
     @Experimental(since: "0.1")
     func exitRequested(): Bool {
-        return azExitRequested() != 0L
+        return azExitRequested() != Long(0)
     }
 }

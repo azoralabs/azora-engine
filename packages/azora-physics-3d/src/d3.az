@@ -148,40 +148,40 @@ func aabbAround3d(center: Vec3, size: Vec3): Aabb3D {
 }
 
 impl Aabb3D {
-    func size(): Vec3 {
+    func &.size(): Vec3 {
         return self.max - self.min
     }
 
-    func center(): Vec3 {
+    func &.center(): Vec3 {
         return (self.min + self.max).scale(0.5)
     }
 
-    func halfExtents(): Vec3 {
+    func &.halfExtents(): Vec3 {
         return self.size().scale(0.5)
     }
 
-    func overlaps(other: Aabb3D): Bool {
+    func &.overlaps(other: Aabb3D): Bool {
         return self.min.x < other.max.x && other.min.x < self.max.x &&
             self.min.y < other.max.y && other.min.y < self.max.y &&
             self.min.z < other.max.z && other.min.z < self.max.z
     }
 
-    func contains(point: Vec3): Bool {
+    func &.contains(point: Vec3): Bool {
         return point.x >= self.min.x && point.x <= self.max.x &&
             point.y >= self.min.y && point.y <= self.max.y &&
             point.z >= self.min.z && point.z <= self.max.z
     }
 
-    func translate(delta: Vec3): Aabb3D {
+    func &.translate(delta: Vec3): Aabb3D {
         return Aabb3D(self.min + delta, self.max + delta)
     }
 
-    func expand(amount: Vec3): Aabb3D {
+    func &.expand(amount: Vec3): Aabb3D {
         return Aabb3D(self.min - amount, self.max + amount)
     }
 
     /** The box covering this one and where it would be after [motion]. */
-    func sweptBy(motion: Vec3): Aabb3D {
+    func &.sweptBy(motion: Vec3): Aabb3D {
         return Aabb3D(
             Vec3(
                 realMinOf(self.min.x, self.min.x + motion.x),
@@ -196,7 +196,7 @@ impl Aabb3D {
         )
     }
 
-    func union(other: Aabb3D): Aabb3D {
+    func &.union(other: Aabb3D): Aabb3D {
         return Aabb3D(
             Vec3(
                 realMinOf(self.min.x, other.min.x),
@@ -214,7 +214,7 @@ impl Aabb3D {
 
 impl Aabb3D {
     /** Moves the box by [delta]. */
-    oper+ [self: Self&](delta: Vec3): Aabb3D {
+    oper+ &.(delta: Vec3): Aabb3D {
         return self.translate(delta)
     }
 }
@@ -682,31 +682,25 @@ test "box contacts resolve along the shallowest axis" {
     // Overlapping by 2 in x and much more in y and z.
     when boxContact3d(Vec3(0.0, 0.0, 0.0), Vec3(5.0, 5.0, 5.0), Vec3(8.0, 1.0, 1.0), Vec3(5.0, 5.0, 5.0)) {
         Overlap3D.Touching(contact) -> {
-            assert contact.normal.x < 0.0 { "the shallowest axis must be the one resolved along" }
-            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
-                "the penetration must be the overlap on that axis"
-            }
+            assert contact.normal.x < 0.0 panic "the shallowest axis must be the one resolved along"
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "the penetration must be the overlap on that axis"
         }
-        Overlap3D.Separate() -> { assert false { "overlapping boxes must report a contact" } }
+        Overlap3D.Separate() -> { assert false panic "overlapping boxes must report a contact" }
     }
     assert !overlapTouching3d(
         boxContact3d(Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0), Vec3(50.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
-    ) { "boxes far apart must not report a contact" }
+    ) panic "boxes far apart must not report a contact"
 }
 
 test "sphere contacts measure from the surfaces" {
     when sphereContact3d(Vec3(0.0, 0.0, 0.0), 5.0, Vec3(8.0, 0.0, 0.0), 5.0) {
         Overlap3D.Touching(contact) -> {
-            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
-                "two 5-radius spheres 8 apart overlap by 2"
-            }
-            assert contact.normal.x < -0.99 { "the normal must separate A from B" }
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "two 5-radius spheres 8 apart overlap by 2"
+            assert contact.normal.x < -0.99 panic "the normal must separate A from B"
         }
-        Overlap3D.Separate() -> { assert false { "overlapping spheres must report a contact" } }
+        Overlap3D.Separate() -> { assert false panic "overlapping spheres must report a contact" }
     }
-    assert overlapTouching3d(sphereContact3d(vec3Zero(), 1.0, vec3Zero(), 1.0)) {
-        "coincident spheres must still produce a contact rather than dividing by zero"
-    }
+    assert overlapTouching3d(sphereContact3d(vec3Zero(), 1.0, vec3Zero(), 1.0)) panic "coincident spheres must still produce a contact rather than dividing by zero"
 }
 
 test "a sweep stops a fast box at the first thing it meets" {
@@ -715,50 +709,42 @@ test "a sweep stops a fast box at the first thing it meets" {
 
     when sweepBox3d(body, Vec3(1000.0, 0.0, 0.0), wall) {
         Sweep3D.Blocked(t, normal, point) -> {
-            assert t > 0.094 && t < 0.096 { "the box must stop where the wall is, not where it aimed" }
-            assert normal.x < -0.99 { "the normal must face back along the motion" }
+            assert t > 0.094 && t < 0.096 panic "the box must stop where the wall is, not where it aimed"
+            assert normal.x < -0.99 panic "the normal must face back along the motion"
         }
-        Sweep3D.Clear() -> { assert false { "a fast box must not tunnel through a wall" } }
+        Sweep3D.Clear() -> { assert false panic "a fast box must not tunnel through a wall" }
     }
-    assert !sweepBlocked3d(sweepBox3d(body, Vec3(0.0, 0.0, 1000.0), wall)) {
-        "a sweep that misses the wall must be clear"
-    }
+    assert !sweepBlocked3d(sweepBox3d(body, Vec3(0.0, 0.0, 1000.0), wall)) panic "a sweep that misses the wall must be clear"
 }
 
 test "rays hit boxes and spheres where the geometry says" {
     fin wall = aabbAround3d(Vec3(55.0, 0.0, 0.0), Vec3(10.0, 100.0, 100.0))
     when rayBox3d(Vec3(0.0, 0.0, 0.0), Vec3(100.0, 0.0, 0.0), wall) {
         RayHit3D.Hit(t, normal, point) -> {
-            assert t > 0.49 && t < 0.51 { "the ray must hit the near face at 50 units" }
-            assert normal.x < -0.99 { "the normal must face the ray" }
+            assert t > 0.49 && t < 0.51 panic "the ray must hit the near face at 50 units"
+            assert normal.x < -0.99 panic "the normal must face the ray"
         }
-        RayHit3D.Miss() -> { assert false { "a ray into a wall must hit" } }
+        RayHit3D.Miss() -> { assert false panic "a ray into a wall must hit" }
     }
 
     when raySphere3d(Vec3(0.0, 0.0, 0.0), Vec3(100.0, 0.0, 0.0), Vec3(50.0, 0.0, 0.0), 10.0) {
         RayHit3D.Hit(t, normal, point) -> {
-            assert t > 0.39 && t < 0.41 { "the ray must enter the sphere at 40 units" }
-            assert normal.x < -0.99 { "the surface normal must face the ray" }
+            assert t > 0.39 && t < 0.41 panic "the ray must enter the sphere at 40 units"
+            assert normal.x < -0.99 panic "the surface normal must face the ray"
         }
-        RayHit3D.Miss() -> { assert false { "a ray into a sphere must hit" } }
+        RayHit3D.Miss() -> { assert false panic "a ray into a sphere must hit" }
     }
-    assert !rayHit3d(raySphere3d(vec3Zero(), Vec3(100.0, 0.0, 0.0), Vec3(50.0, 90.0, 0.0), 10.0)) {
-        "a ray passing wide of a sphere must miss"
-    }
+    assert !rayHit3d(raySphere3d(vec3Zero(), Vec3(100.0, 0.0, 0.0), Vec3(50.0, 90.0, 0.0), 10.0)) panic "a ray passing wide of a sphere must miss"
 }
 
 test "inertia distinguishes the axes a shape resists turning about" {
     fin uniform = inertiaOf3d(sphereCollider3d(2.0), 3.0)
-    assert absReal(uniform.x - uniform.y) < 0.000001 && absReal(uniform.y - uniform.z) < 0.000001 {
-        "a sphere must resist rotation equally about every axis"
-    }
+    assert absReal(uniform.x - uniform.y) < 0.000001 && absReal(uniform.y - uniform.z) < 0.000001 panic "a sphere must resist rotation equally about every axis"
 
     fin tall = inertiaOf3d(boxCollider3d(Vec3(1.0, 10.0, 1.0)), 1.0)
-    assert tall.y < tall.x && tall.y < tall.z {
-        "a tall box must spin about its long axis more easily than it tips"
-    }
+    assert tall.y < tall.x && tall.y < tall.z panic "a tall box must spin about its long axis more easily than it tips"
 
     fin body = rigidBody3d(RigidBodyKind.Dynamic, boxCollider3d(Vec3(1.0, 1.0, 1.0)), 2.0, true)
-    assert body.inverseInertia.x == 0.0 { "a fixed-rotation body must not respond to torque" }
-    assert body.inverseMass > 0.49 { "a fixed-rotation body must still move" }
+    assert body.inverseInertia.x == 0.0 panic "a fixed-rotation body must not respond to torque"
+    assert body.inverseMass > 0.49 panic "a fixed-rotation body must still move"
 }

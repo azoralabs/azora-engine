@@ -34,7 +34,7 @@ import engine.ecs
 @Component pack Paint { var r: std::Double }
 
 func main() {
-    var world = World::init()
+    var world = World()
     var tags = storageOf<Marker>(world)
     var paints = storageOf<Paint>(world)
 
@@ -47,26 +47,26 @@ func main() {
 
     fin t = registerStorage<Marker>(world, tags)
     fin p = registerStorage<Paint>(world, paints)
-    std::println("replacedAnything=${t || p}")
+    println("replacedAnything=${t || p}")
 
     // `for row in q` - the row is a tuple, entity first.
     var byFor = QueryOf<Marker&, Paint!>::provide(world)
     for row in byFor {
-        std::println("for group=${row.1.group}")
+        println("for group=${row.1.group}")
     }
 
     // `for [ … ] in q` - the row taken apart in the header.
     var byNames = QueryOf<Marker&, Paint!>::provide(world)
     for [entity, tag, paint] in byNames {
         if entity.isValid {
-            std::println("destructured ${tag.group} ${paint.r}")
+            println("destructured ${tag.group} ${paint.r}")
         }
     }
 
     // `forEach` - the same row, handed over whole.
     var byEach = QueryOf<Marker&, Paint!>::provide(world)
     byEach.forEach { row ->
-        std::println("forEach group=${row.1.group}")
+        println("forEach group=${row.1.group}")
     }
 
     // `unpack` - the row spread across parameters, entity first. Writing
@@ -81,6 +81,6 @@ func main() {
     // Read back through a fresh query: the writes above landed in the storage.
     var after = QueryOf<Marker&, Paint!>::provide(world)
     after.unpack { entity, tag, paint ->
-        std::println("painted ${tag.group} -> ${paint.r}")
+        println("painted ${tag.group} -> ${paint.r}")
     }
 }

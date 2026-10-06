@@ -281,7 +281,7 @@ func textBlob(text: String): Blob {
         return blobEmpty()
     }
     fin data = azAlloc(length as Long)
-    if data == 0L {
+    if data == Long(0) {
         return blobEmpty()
     }
     var i = 0
@@ -305,32 +305,28 @@ func intToText(value: Int): String {
 
 test "global tile ids round-trip through their mirror bits" {
     fin plain = decodeGid(1)
-    assert plain.index == 0 && plain.flags == 0 { "a global id is one greater than its tile" }
-    assert decodeGid(0).index == tileEmpty { "id zero means an empty cell" }
+    assert plain.index == 0 && plain.flags == 0 panic "a global id is one greater than its tile"
+    assert decodeGid(0).index == tileEmpty panic "id zero means an empty cell"
 
     fin mirrored = decodeGid(3 | gidFlipX | gidFlipD)
-    assert mirrored.index == 2 { "the mirror bits must not leak into the index" }
-    assert flagsAny(mirrored.flags, cellFlipX) && flagsAny(mirrored.flags, cellFlipD) {
-        "both mirrors must survive decoding"
-    }
-    assert !flagsAny(mirrored.flags, cellFlipY) { "an unset mirror must stay unset" }
+    assert mirrored.index == 2 panic "the mirror bits must not leak into the index"
+    assert flagsAny(mirrored.flags, cellFlipX) && flagsAny(mirrored.flags, cellFlipD) panic "both mirrors must survive decoding"
+    assert !flagsAny(mirrored.flags, cellFlipY) panic "an unset mirror must stay unset"
 
-    assert encodeGid(2, cellFlipX | cellFlipD) == (3 | gidFlipX | gidFlipD) {
-        "encoding must be the exact inverse of decoding"
-    }
-    assert encodeGid(tileEmpty, 0) == 0 { "an empty cell must encode as zero" }
+    assert encodeGid(2, cellFlipX | cellFlipD) == (3 | gidFlipX | gidFlipD) panic "encoding must be the exact inverse of decoding"
+    assert encodeGid(tileEmpty, 0) == 0 panic "an empty cell must encode as zero"
 }
 
 test "a comma-separated layer loads whatever an editor wrote" {
     // Deliberately ragged: newlines, spaces and a trailing separator.
     fin source = textBlob("1,2,0,\n 4, 0 ,3,\n")
     fin layer = layerFromCsv("ground", source, TilemapSize(3, 2)) catch tileLayerNew("", TilemapSize(1, 1))
-    assert layerIndexAt(layer, TilePos(0, 0)) == 0 { "id 1 is tile 0" }
-    assert layerIndexAt(layer, TilePos(1, 0)) == 1 { "id 2 is tile 1" }
-    assert layerIndexAt(layer, TilePos(2, 0)) == tileEmpty { "id 0 is an empty cell" }
-    assert layerIndexAt(layer, TilePos(0, 1)) == 3 { "the second row must follow the first" }
-    assert layerIndexAt(layer, TilePos(2, 1)) == 2 { "the last cell must be read" }
-    assert layerCount(layer) == 4 { "the two empty cells must not be counted" }
+    assert layerIndexAt(layer, TilePos(0, 0)) == 0 panic "id 1 is tile 0"
+    assert layerIndexAt(layer, TilePos(1, 0)) == 1 panic "id 2 is tile 1"
+    assert layerIndexAt(layer, TilePos(2, 0)) == tileEmpty panic "id 0 is an empty cell"
+    assert layerIndexAt(layer, TilePos(0, 1)) == 3 panic "the second row must follow the first"
+    assert layerIndexAt(layer, TilePos(2, 1)) == 2 panic "the last cell must be read"
+    assert layerCount(layer) == 4 panic "the two empty cells must not be counted"
     source.release()
 }
 
@@ -342,7 +338,7 @@ test "a short or over-long source is refused rather than half-loaded" {
     } catch {
         truncated = true
     }
-    assert truncated { "a source with too few cells must fail" }
+    assert truncated panic "a source with too few cells must fail"
     short.release()
 
     fin long = textBlob("1,2,3,4,5")
@@ -352,7 +348,7 @@ test "a short or over-long source is refused rather than half-loaded" {
     } catch {
         overrun = true
     }
-    assert overrun { "a source with too many cells must fail rather than silently truncate" }
+    assert overrun panic "a source with too many cells must fail rather than silently truncate"
     long.release()
 }
 
@@ -365,9 +361,9 @@ test "a layer survives a round trip through comma-separated text" {
     fin text = layerToCsv(layer)
     fin blob = textBlob(text)
     fin copy = layerFromCsv("copy", blob, TilemapSize(3, 2)) catch tileLayerNew("", TilemapSize(1, 1))
-    assert layerIndexAt(copy, TilePos(0, 0)) == 4 { "the tile index must survive the round trip" }
-    assert layerFlipAt(copy, TilePos(0, 0)).x { "the mirror must survive the round trip" }
-    assert layerIndexAt(copy, TilePos(2, 1)) == 7 { "the last cell must survive" }
-    assert layerIndexAt(copy, TilePos(1, 1)) == tileEmpty { "empty cells must stay empty" }
+    assert layerIndexAt(copy, TilePos(0, 0)) == 4 panic "the tile index must survive the round trip"
+    assert layerFlipAt(copy, TilePos(0, 0)).x panic "the mirror must survive the round trip"
+    assert layerIndexAt(copy, TilePos(2, 1)) == 7 panic "the last cell must survive"
+    assert layerIndexAt(copy, TilePos(1, 1)) == tileEmpty panic "empty cells must stay empty"
     blob.release()
 }

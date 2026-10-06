@@ -113,9 +113,9 @@ pack TrackerModule {
 func moduleEmpty(): TrackerModule {
     return TrackerModule(
         "", 0, 0, 0, 6, 125, true,
-        Array::fill<Int>(0),
-        Array::fill<TrackerPattern>(0),
-        Array::fill<TrackerInstrument>(0),
+        Array<Int>(),
+        Array<TrackerPattern>(),
+        Array<TrackerInstrument>(),
         false
     )
 }
@@ -127,7 +127,7 @@ func noteEmpty(): TrackerNote {
 
 /** An unusable sample, used where a slot carries no waveform. */
 func sampleEmpty(): TrackerSample {
-    return TrackerSample(0, 0, 0, 64, 0, 0, 128, 0, 0L)
+    return TrackerSample(0, 0, 0, 64, 0, 0, 128, 0, Long(0))
 }
 
 /**
@@ -299,7 +299,7 @@ func readInstrument(blob: Blob, at: Int): TrackerInstrument {
     }
 
     if sampleCount <= 0 {
-        return TrackerInstrument(name, Array::fill<TrackerSample>(0), sampleForNote)
+        return TrackerInstrument(name, Array<TrackerSample>(), sampleForNote)
     }
 
     fin sampleHeaderSize = blob.i32(at + 29)
@@ -346,15 +346,15 @@ func readInstrument(blob: Blob, at: Int): TrackerInstrument {
  */
 func decodeSampleData(blob: Blob, at: Int, byteLength: Int, sixteenBit: Bool): Long {
     if byteLength <= 0 {
-        return 0L
+        return Long(0)
     }
     fin frames = if sixteenBit { byteLength / 2 } else { byteLength }
     if frames <= 0 {
-        return 0L
+        return Long(0)
     }
     fin buffer = azAlloc((frames * 2) as Long)
-    if buffer == 0L {
-        return 0L
+    if buffer == Long(0) {
+        return Long(0)
     }
 
     var running = 0
@@ -386,13 +386,13 @@ func wrap16(value: Int): Int {
 
 impl TrackerModule {
     /** The pattern played at [position] in the song order. */
-    func patternAt(position: Int): TrackerPattern {
+    func &.patternAt(position: Int): TrackerPattern {
         if position < 0 || position >= self.songLength {
-            return TrackerPattern(0, self.channels, Array::fill<TrackerNote>(0))
+            return TrackerPattern(0, self.channels, Array<TrackerNote>())
         }
         fin index = self.order[position]
         if index < 0 || index >= self.patterns.size {
-            return TrackerPattern(0, self.channels, Array::fill<TrackerNote>(0))
+            return TrackerPattern(0, self.channels, Array<TrackerNote>())
         }
         return self.patterns[index]
     }
@@ -547,14 +547,14 @@ pack RenderedAudio {
 @Experimental(since: "0.1")
 func renderModule(song: TrackerModule&): RenderedAudio {
     if !song.ok || song.channels <= 0 || song.songLength <= 0 {
-        return RenderedAudio(0L, 0)
+        return RenderedAudio(Long(0), 0)
     }
 
     fin ticksPerRow = if song.defaultTempo > 0 { song.defaultTempo } else { 6 }
     fin bpm = if song.defaultBpm > 0 { song.defaultBpm } else { 125 }
     fin framesPerTick = (renderRate * 5) / (bpm * 2)
     if framesPerTick <= 0 {
-        return RenderedAudio(0L, 0)
+        return RenderedAudio(Long(0), 0)
     }
 
     // Total length is bounded by the song order, so the buffer is sized once.
@@ -565,12 +565,12 @@ func renderModule(song: TrackerModule&): RenderedAudio {
         position = position + 1
     }
     if totalFrames <= 0 {
-        return RenderedAudio(0L, 0)
+        return RenderedAudio(Long(0), 0)
     }
 
     fin buffer = azAlloc((wavHeaderBytes + totalFrames * 2) as Long)
-    if buffer == 0L {
-        return RenderedAudio(0L, 0)
+    if buffer == Long(0) {
+        return RenderedAudio(Long(0), 0)
     }
     pokeWav(buffer, totalFrames, renderRate)
 
@@ -725,7 +725,7 @@ func advanceVoice(
         return 0.0
     }
     fin sample = instrument.samples[sampleIndex]
-    if sample.data == 0L || sample.size <= 0 {
+    if sample.data == Long(0) || sample.size <= 0 {
         voiceActive[channel] = 0
         return 0.0
     }
@@ -756,7 +756,7 @@ func advanceVoice(
 @Experimental(since: "0.1")
 func moduleToSound(song: TrackerModule&): Sound {
     fin rendered = renderModule(song)
-    if rendered.data == 0L || rendered.size <= 0 {
+    if rendered.data == Long(0) || rendered.size <= 0 {
         return soundEmpty()
     }
     fin sound = soundFromBytes(rendered.data, rendered.size)

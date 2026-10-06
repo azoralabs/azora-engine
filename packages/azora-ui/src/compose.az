@@ -45,8 +45,9 @@
  */
 module engine.ui.compose
 
+import std.traits
 import std.container.array
-import engine.[core, ecs, ui.node]
+import engine::{core, ecs, ui.node}
 
 /**
  * One composition pass over [world].
@@ -65,7 +66,7 @@ pack Composition {
      * world holds the tree. The composition holds only where it is in that
      * tree: nothing here is a copy of anything the world has.
      */
-    var world: World
+    var world: World!
     /** Names the composition, so one owner cannot dispose another's nodes. */
     fin owner: String = ""
     /** The entity claims hang from when no other parent is given. */
@@ -86,6 +87,12 @@ pack Composition {
      * nowhere to carry a [Cursor] of its own.
      */
     var rootCursor: Int = 0
+    /** Changes after a committed description; hosts can redraw only changed trees. */
+    var version: Long = Long(0)
+    /** Explicit invalidation is consumed by composeIfChanged. */
+    var dirty: Bool = true
+    var lastStamp: Long = Long(0)
+    var disposed: Bool = false
 }
 
 /**
@@ -98,47 +105,47 @@ pack Composition {
  */
 @Experimental(since: "0.1")
 @ProvidesAccess
-inline func store<T>(pass: Composition&): Storage<T> {
-    return storageOf<T>(pass.world)
+inline func<T> store(pass: Composition!): Storage<T>! {
+    return ensureStorage<T>(pass.world)
 }
 
 impl Composition {
     /** The world's storage for [Key]. */
     @ProvidesAccess
-    prop keys[self: Self&]: Storage<Key> {
+    func !.keys(): Storage<Key>! {
         return store<Key>(self)
     }
 
     /** The world's storage for [Child]. */
     @ProvidesAccess
-    prop children[self: Self&]: Storage<Child> {
+    func !.children(): Storage<Child>! {
         return store<Child>(self)
     }
 
     /** The world's storage for [SiblingOrder]. */
     @ProvidesAccess
-    prop order[self: Self&]: Storage<SiblingOrder> {
+    func !.order(): Storage<SiblingOrder>! {
         return store<SiblingOrder>(self)
     }
 
     /** The world's storage for [Owned]. */
     @ProvidesAccess
-    prop owned[self: Self&]: Storage<Owned> {
+    func !.owned(): Storage<Owned>! {
         return store<Owned>(self)
     }
 
     /** The world's storage for [Cursor]. */
     @ProvidesAccess
-    prop cursors[self: Self&]: Storage<Cursor> {
+    func !.cursors(): Storage<Cursor>! {
         return store<Cursor>(self)
     }
 
 
 }
 
-impl Composition:: {
+impl Composition {
     /** A composition over [world], owned by [owner]. */
-    func of(world: World, owner: String): Composition {
+    func of(world: World!, owner: String): Composition {
         // No storage is registered here. A world grows one the first time a
         // component of that type is asked for, so declaring a component is the
         // whole of what it takes to store one - including components declared by
@@ -155,14 +162,15 @@ impl Composition {
      * whatever is still unclaimed at the end. A pass therefore describes the whole
      * tree, and absence is meaningful.
      */
-    func begin[self: Composition!]() {
+    func (self: Composition!).begin() {
+        assert !self.disposed panic "cannot compose a disposed owner"
         var index = 0
-        while index < storageLength<Owned>(self.owned) {
-            fin entity = storageEntityAt<Owned>(self.owned, index)
+        while index < storageLength<Owned>(self.owned()) {
+            fin entity = storageEntityAt<Owned>(self.owned(), index)
             if entity.isValid {
-                fin mark = storageGetOrDefault<Owned>(self.owned, entity, .())
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .())
                 if mark.owner == self.owner {
-                    storageInsert<Owned>(self.owned, entity, .(mark.owner))
+                    storageInsert<Owned>(self.owned(), entity, .(mark.owner))
                 }
             }
             index = index + 1
@@ -178,14 +186,14 @@ impl Composition {
      * The root has no entity to hang a [Cursor] on, so its count lives on the
      * self. Every other parent carries its own, reset when it is claimed.
      */
-    func nextChildIndex[self: Composition!](parent: Entity): Int {
+    func (self: Composition!).nextChildIndex(parent: Entity): Int {
         if !parent.isValid {
             fin position = self.rootCursor
             self.rootCursor = position + 1
             return position
         }
-        fin current = storageGetOrDefault<Cursor>(self.cursors, parent, .())
-        storageInsert<Cursor>(self.cursors, parent, .(current.next + 1))
+        fin current = storageGetOrDefault<Cursor>(self.cursors(), parent, .())
+        storageInsert<Cursor>(self.cursors(), parent, .(current.next + 1))
         return current.next
     }
 
@@ -196,7 +204,7 @@ impl Composition {
      * loudly - the key stops matching and the node is rebuilt - rather than
      * silently reusing a column's entity for a button.
      */
-    func positionalKey[self: Composition!](parent: Entity, role: String): String {
+    func (self: Composition!).positionalKey(parent: Entity, role: String): String {
         return "${role}#${self.peekChildIndex(parent)}"
     }
 
@@ -207,11 +215,11 @@ impl Composition {
      * counter - so reading it here must not. Peeking keeps the key and the sibling
      * order the node ends up with in step, which is what [childAt] relies on.
      */
-    func peekChildIndex[self: Composition&](parent: Entity): Int {
+    func (self: Composition!).peekChildIndex(parent: Entity): Int {
         if !parent.isValid {
             return self.rootCursor
         }
-        return storageGetOrDefault<Cursor>(self.cursors, parent, .()).next
+        return storageGetOrDefault<Cursor>(self.cursors(), parent, .()).next
     }
 
     /**
@@ -220,44 +228,45 @@ impl Composition {
      * The same key yields the same entity on every self, which is what makes a
      * recomposition an update rather than a rebuild.
      */
-    func claim[self: Composition!](parent: Entity, key: String): Entity {
+    func (self: Composition!).claim(parent: Entity, key: String): Entity {
         self.composed = true
         fin existing = self.findChild(parent, key)
         if existing.isValid {
-            storageInsert<Owned>(self.owned, existing, .(self.owner, true))
+            storageInsert<Owned>(self.owned(), existing, .(self.owner, true))
             // Position *among siblings*, not a number shared by the whole self:
             // `parent.childAt(n)` asks for the nth child of that parent, so a
             // global counter left every parent after the first with no child at
             // index 0 - the tree arranged one node and silently dropped the rest.
-            storageInsert<SiblingOrder>(self.order, existing, .(self.nextChildIndex(parent)))
+            storageInsert<SiblingOrder>(self.order(), existing, .(self.nextChildIndex(parent)))
             // A claimed node is about to have its own children enumerated, so its
             // sibling counter starts over here rather than in `begin`: that way a
             // node claimed twice in one self is a visible key collision, not a
             // silently continuing count.
-            storageInsert<Cursor>(self.cursors, existing, .())
+            storageInsert<Cursor>(self.cursors(), existing, .())
             self.cursor = self.cursor + 1
             return existing
         }
 
         fin created = spawnEntity(self.world)
-        storageInsert<Key>(self.keys, created, .(key))
-        storageInsert<Child>(self.children, created, .(parent))
-        storageInsert<Owned>(self.owned, created, .(self.owner, true))
-        storageInsert<SiblingOrder>(self.order, created, .(self.nextChildIndex(parent)))
-        storageInsert<Cursor>(self.cursors, created, .())
+        storageInsert<Key>(self.keys(), created, .(key))
+        storageInsert<Child>(self.children(), created, .(parent))
+        storageInsert<Owned>(self.owned(), created, .(self.owner, true))
+        storageInsert<SiblingOrder>(self.order(), created, .(self.nextChildIndex(parent)))
+        storageInsert<Cursor>(self.cursors(), created, .())
         self.cursor = self.cursor + 1
         return created
     }
 
     /** The child of [parent] keyed [key], or an invalid entity. */
-    func findChild[self: Composition&](parent: Entity, key: String): Entity {
+    func (self: Composition!).findChild(parent: Entity, key: String): Entity {
         var index = 0
-        while index < storageLength<Key>(self.keys) {
-            fin entity = storageEntityAt<Key>(self.keys, index)
+        while index < storageLength<Key>(self.keys()) {
+            fin entity = storageEntityAt<Key>(self.keys(), index)
             if entity.isValid {
-                fin candidate = storageGetOrDefault<Key>(self.keys, entity, .())
-                if candidate.value == key {
-                    fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
+                fin candidate = storageGetOrDefault<Key>(self.keys(), entity, .())
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .())
+                if candidate.value == key && mark.owner == self.owner {
+                    fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
                     if link.parent.id == parent.id && link.parent.generation == parent.generation {
                         return entity
                     }
@@ -276,41 +285,70 @@ impl Composition {
      * children unclaimed in the same self, so both go. Ordering matters once
      * disposal runs user code, which it does not yet (§10.3).
      */
-    func commit[self: Composition!](): Int {
-        // Nothing described the tree this pass, so nothing about it is stale.
+    func (self: Composition!).commit(): Int {
         if !self.composed {
             return 0
         }
         var removed = 0
-        var index = 0
-        while index < storageLength<Owned>(self.owned) {
-            fin entity = storageEntityAt<Owned>(self.owned, index)
-            if entity.isValid {
-                fin mark = storageGetOrDefault<Owned>(self.owned, entity, .(claimed: true))
-                if mark.owner == self.owner && !mark.claimed {
-                    // Whatever the node carried goes with it. A composition does
-                    // not know what its nodes are made of - that is the point -
-                    // so the world drops the entity from every storage it holds.
-                    fin dropped = removeFromEveryStorage(self.world, entity)
-                    if dropped >= 0 {
-                        despawnEntity(self.world, entity)
-                        removed = removed + 1
-                    }
+        // Restart after each removal: storage removal compacts aligned arrays.
+        // Leaves go first, so component destructors observe child-before-parent disposal.
+        var progress = true
+        while progress {
+            progress = false
+            var index = 0
+            while index < storageLength<Owned>(self.owned()) {
+                fin entity = storageEntityAt<Owned>(self.owned(), index)
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .(claimed: true))
+                if entity.isValid && mark.owner == self.owner && !mark.claimed && !self.unclaimedChild(entity) {
+                    despawnEntity(self.world, entity)
+                    removed = removed + 1
+                    progress = true
+                    break
                 }
+                index = index + 1
+            }
+        }
+        self.version = self.version + Long(1)
+        self.dirty = false
+        return removed
+    }
+
+    func !.unclaimedChild(parent: Entity): Bool {
+        var index = 0
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
+            fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+            if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .(claimed: true))
+                if mark.owner == self.owner && !mark.claimed { return true }
             }
             index = index + 1
         }
+        return false
+    }
+
+    /** Requests another description pass even when its external revision is unchanged. */
+    func !.invalidate() { self.dirty = true }
+
+    /** Removes every node and component owned by this composition. */
+    func !.dispose(): Int {
+        if self.disposed { return 0 }
+        self.begin()
+        self.composed = true
+        fin removed = self.commit()
+        self.disposed = true
         return removed
     }
 
     /** How many nodes this composition currently holds. */
-    func nodeCount[self: Composition&](): Int {
+    func (self: Composition!).nodeCount(): Int {
         var live = 0
         var index = 0
-        while index < storageLength<Owned>(self.owned) {
-            fin entity = storageEntityAt<Owned>(self.owned, index)
+        while index < storageLength<Owned>(self.owned()) {
+            fin entity = storageEntityAt<Owned>(self.owned(), index)
             if entity.isValid {
-                live = live + 1
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .())
+                if mark.owner == self.owner { live = live + 1 }
             }
             index = index + 1
         }
@@ -342,14 +380,15 @@ impl Composition {
  * The composition is a receiver rather than a parameter, so a call reads it
  * from the block it sits in and no caller passes it by hand.
  */
-spec Compose {
-    func compose[self: Self&, composition: Composition!](
+spec Compose requires Clone {
+    func &.compose(
+        composition: Composition!
         parent: Entity
         key: String
         modifier: Modifier&
     ): Entity {
         fin node = composition.claim(parent, key)
-        storageInsert<Self>(store<Self>(composition), node, self)
+        storageInsert<Self>(store<Self>(composition), node, self.clone())
         composition.applyModifier(node, modifier)
         return node
     }
@@ -362,87 +401,19 @@ spec Compose {
  * is a new parent over the same pass, so nesting cannot lose writes and an anchor
  * cannot outlive its block into a different tree.
  */
-pack Anchor {
+pack Anchor derives Clone {
     var pass: Composition!
     var parent: Entity
 }
 
 impl Anchor {
     /** The anchor one level down, under [node]. */
-    func inside[self: Self&](node: Entity): Self {
+    func &.inside(node: Entity): Self {
         return .(self.pass, node)
     }
 
-    /**
-     * A container stacking its children downward.
-     *
-     * [key] defaults to the node's position in this block; pass one explicitly
-     * when the block's shape can change - a reordered list keeps its state only
-     * if its items keep their keys.
-     */
-    react func Column<R>[self: Self&](
-        modifier: Modifier& = .()
-        verticalArrangement: Arrangement = .Start
-        horizontalAlignment: Alignment = .Start
-        spacing: Double = 0.0
-        key: String = ""
-        children: react [Anchor&]() -> R
-    ): Entity {
-        fin id = if key == "" { self.pass.positionalKey(self.parent, "column") } else { key }
-        fin node = self.pass.column(self.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
-        with self.inside(node) {
-            children()
-        }
-        return node
-    }
-
-    /** A container laying its children across. */
-    react func Row<R>[self: Self&](
-        modifier: Modifier& = .()
-        horizontalArrangement: Arrangement = .Start
-        verticalAlignment: Alignment = .Start
-        spacing: Double = 0.0
-        key: String = ""
-        children: react [Anchor&]() -> R
-    ): Entity {
-        fin id = if key == "" { self.pass.positionalKey(self.parent, "row") } else { key }
-        fin node = self.pass.row(self.parent, id, modifier, horizontalArrangement, verticalAlignment, spacing)
-        with self.inside(node) {
-            children()
-        }
-        return node
-    }
-
-    /** A column whose children are offset by a scroll position. */
-    react func ScrollColumn<R>[self: Self&](
-        modifier: Modifier& = .()
-        verticalArrangement: Arrangement = .Start
-        horizontalAlignment: Alignment = .Start
-        spacing: Double = 0.0
-        key: String = ""
-        children: react [Anchor&]() -> R
-    ): Entity {
-        fin id = if key == "" { self.pass.positionalKey(self.parent, "scroll") } else { key }
-        fin node = self.pass.scrollColumn(self.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
-        with self.inside(node) {
-            children()
-        }
-        return node
-    }
-
-    /** An activatable node reporting [action] when pressed. */
-    /** A plain rectangle, tagged so a query can find it later. */
-    react func Shape[self: Self&](
-        modifier: Modifier& = .()
-        group: Int = 0
-        key: String = ""
-    ): Entity {
-        fin id = if key == "" { self.pass.positionalKey(self.parent, "shape") } else { key }
-        return self.pass.shape(self.parent, id, modifier, group)
-    }
-
     /** Places [node] explicitly, as the flat [place] does. */
-    func place[self: Self&](
+    func !.place(
         node: Entity
         x: Double
         y: Double
@@ -453,7 +424,7 @@ impl Anchor {
     }
 
     /** Sets how [node] paints. */
-    func paint[self: Self&](
+    func !.paint(
         node: Entity
         r: Double
         g: Double
@@ -473,12 +444,21 @@ impl Anchor {
  * tree every time and no node would keep anything. Returns the number of nodes
  * the pass removed by not mentioning them.
  */
-react func compose<R>(pass: Composition!, children: react [Anchor&]() -> R): Int {
+react func compose(pass: Composition!, children: inline react Anchor!.() -> Unit): Int {
     pass.begin()
-    with Anchor(pass, pass.root) {
+    pass.composed = true
+    using Anchor(pass, pass.root) {
         children()
     }
     return pass.commit()
+}
+
+/** Reconciles a declarative constructor tree only when its dependency revision changes. */
+react func composeIfChanged(pass: Composition!, stamp: Long, children: inline react Anchor!.() -> Unit): Bool {
+    if !pass.dirty && pass.lastStamp == stamp { return false }
+    pass.lastStamp = stamp
+    compose(pass, children)
+    return true
 }
 
 impl Composition {
@@ -501,7 +481,7 @@ impl Composition {
      * A chain is applied on every self, so a node that loses a modifier between
      * passes loses its effect too: the components are rebuilt, not accumulated.
      */
-    func applyModifier[self: Self!](node: Entity, chain: Modifier&) {
+    func !.applyModifier(node: Entity, chain: Modifier&) {
         var size = Size()
         var pad = Padding()
         var hasPadding = false
@@ -542,7 +522,7 @@ impl Composition {
     }
 
     /** A container that stacks its children downward. */
-    func column[self: Self!](
+    func !.column(
         parent: Entity
         key: String
         modifier: Modifier&
@@ -557,7 +537,7 @@ impl Composition {
     }
 
     /** A container that lays its children across. */
-    func row[self: Self!](
+    func !.row(
         parent: Entity
         key: String
         modifier: Modifier&
@@ -572,7 +552,7 @@ impl Composition {
     }
 
     /** A column whose children are offset by a scroll position. */
-    func scrollColumn[self: Self!](
+    func !.scrollColumn(
         parent: Entity
         key: String
         modifier: Modifier&
@@ -587,7 +567,7 @@ impl Composition {
     }
 
     /** A plain rectangle, tagged so a query can find it later. */
-    func shape[self: Self!](parent: Entity, key: String, modifier: Modifier&, group: Int): Entity {
+    func !.shape(parent: Entity, key: String, modifier: Modifier&, group: Int): Entity {
         fin node = self.claim(parent, key)
         storageInsert<TagI>(store(self), node, .(group))
         self.applyModifier(node, modifier)
@@ -605,7 +585,7 @@ impl Composition {
     }
 
     /** Places [node] - the arrangement a layout self would otherwise compute. */
-    func place[self: Self!](
+    func !.place(
         node: Entity
         x: Double
         y: Double
@@ -616,7 +596,7 @@ impl Composition {
     }
 
     /** Sets how [node] paints. */
-    func paint[self: Self!](
+    func !.paint(
         node: Entity
         r: Double
         g: Double

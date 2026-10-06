@@ -624,46 +624,46 @@ func tileColorFade(color: TileColor, opacity: Double): TileColor {
 
 impl TilePos {
     /** True when both coordinates match [other]. */
-    func same(other: TilePos): Bool {
+    func &.same(other: TilePos): Bool {
         return self.x == other.x && self.y == other.y
     }
 
     /** This position moved by [dx], [dy]. */
-    func offset(dx: Int, dy: Int): TilePos {
+    func &.offset(dx: Int, dy: Int): TilePos {
         return TilePos(self.x + dx, self.y + dy)
     }
 
     /** The Manhattan distance to [other]: the step count on a 4-way square grid. */
-    func manhattan(other: TilePos): Int {
+    func &.manhattan(other: TilePos): Int {
         return intAbs(self.x - other.x) + intAbs(self.y - other.y)
     }
 
     /** The Chebyshev distance to [other]: the step count on an 8-way square grid. */
-    func chebyshev(other: TilePos): Int {
+    func &.chebyshev(other: TilePos): Int {
         return intMax(intAbs(self.x - other.x), intAbs(self.y - other.y))
     }
 
     /** The row-major index of this position in a map [width] tiles across. */
-    func linearIndex(width: Int): Int {
+    func &.linearIndex(width: Int): Int {
         return self.y * width + self.x
     }
 }
 
 impl WorldPos {
-    func plus(other: WorldPos): WorldPos {
+    func &.plus(other: WorldPos): WorldPos {
         return WorldPos(self.x + other.x, self.y + other.y)
     }
 
-    func minus(other: WorldPos): WorldPos {
+    func &.minus(other: WorldPos): WorldPos {
         return WorldPos(self.x - other.x, self.y - other.y)
     }
 
-    func scale(k: Double): WorldPos {
+    func &.scale(k: Double): WorldPos {
         return WorldPos(self.x * k, self.y * k)
     }
 
     /** The squared distance to [other]; comparing squares avoids a square root. */
-    func distanceSquared(other: WorldPos): Double {
+    func &.distanceSquared(other: WorldPos): Double {
         fin dx = self.x - other.x
         fin dy = self.y - other.y
         return dx * dx + dy * dy
@@ -672,40 +672,40 @@ impl WorldPos {
 
 impl TilemapSize {
     /** The number of cells in a map of this size. */
-    func count(): Int {
+    func &.count(): Int {
         return self.x * self.y
     }
 
     /** True when [pos] addresses a cell inside a map of this size. */
-    func contains(pos: TilePos): Bool {
+    func &.contains(pos: TilePos): Bool {
         return pos.x >= 0 && pos.y >= 0 && pos.x < self.x && pos.y < self.y
     }
 
     /** True when both extents are positive. */
-    func isValid(): Bool {
+    func &.isValid(): Bool {
         return self.x > 0 && self.y > 0
     }
 
     /** The rectangle covering every cell of a map of this size. */
-    func rect(): TileRect {
+    func &.rect(): TileRect {
         return TileRect(0, 0, self.x - 1, self.y - 1)
     }
 }
 
 impl TileRect {
     /** True when the rectangle covers no cell at all. */
-    func isEmpty(): Bool {
+    func &.isEmpty(): Bool {
         return self.maxX < self.minX || self.maxY < self.minY
     }
 
-    func width(): Int {
+    func &.width(): Int {
         if self.isEmpty() {
             return 0
         }
         return self.maxX - self.minX + 1
     }
 
-    func height(): Int {
+    func &.height(): Int {
         if self.isEmpty() {
             return 0
         }
@@ -713,17 +713,17 @@ impl TileRect {
     }
 
     /** The number of cells the rectangle covers. */
-    func area(): Int {
+    func &.area(): Int {
         return self.width() * self.height()
     }
 
-    func contains(pos: TilePos): Bool {
+    func &.contains(pos: TilePos): Bool {
         return pos.x >= self.minX && pos.x <= self.maxX &&
             pos.y >= self.minY && pos.y <= self.maxY
     }
 
     /** The overlap with [other], possibly empty. */
-    func intersect(other: TileRect): TileRect {
+    func &.intersect(other: TileRect): TileRect {
         return TileRect(
             intMax(self.minX, other.minX),
             intMax(self.minY, other.minY),
@@ -733,7 +733,7 @@ impl TileRect {
     }
 
     /** The smallest rectangle covering both this one and [other]. */
-    func union(other: TileRect): TileRect {
+    func &.union(other: TileRect): TileRect {
         if self.isEmpty() {
             return other
         }
@@ -749,7 +749,7 @@ impl TileRect {
     }
 
     /** This rectangle grown by [amount] cells on every side. */
-    func expand(amount: Int): TileRect {
+    func &.expand(amount: Int): TileRect {
         if self.isEmpty() {
             return self
         }
@@ -762,46 +762,46 @@ impl TileRect {
     }
 
     /** This rectangle clipped to a map of [size]. */
-    func clampTo(size: TilemapSize): TileRect {
+    func &.clampTo(size: TilemapSize): TileRect {
         return self.intersect(TileRect(0, 0, size.x - 1, size.y - 1))
     }
 }
 
 impl WorldRect {
-    func width(): Double {
+    func &.width(): Double {
         return self.maxX - self.minX
     }
 
-    func height(): Double {
+    func &.height(): Double {
         return self.maxY - self.minY
     }
 
-    func center(): WorldPos {
+    func &.center(): WorldPos {
         return WorldPos((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
     }
 
-    func contains(point: WorldPos): Bool {
+    func &.contains(point: WorldPos): Bool {
         return point.x >= self.minX && point.x <= self.maxX &&
             point.y >= self.minY && point.y <= self.maxY
     }
 
     /** True when the two rectangles share any area. */
-    func overlaps(other: WorldRect): Bool {
+    func &.overlaps(other: WorldRect): Bool {
         return self.minX < other.maxX && other.minX < self.maxX &&
             self.minY < other.maxY && other.minY < self.maxY
     }
 
     /** This rectangle grown by [x] horizontally and [y] vertically. */
-    func expand(x: Double, y: Double): WorldRect {
+    func &.expand(x: Double, y: Double): WorldRect {
         return WorldRect(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
     }
 
     /** This rectangle moved by [dx], [dy]. */
-    func translate(dx: Double, dy: Double): WorldRect {
+    func &.translate(dx: Double, dy: Double): WorldRect {
         return WorldRect(self.minX + dx, self.minY + dy, self.maxX + dx, self.maxY + dy)
     }
 
-    func union(other: WorldRect): WorldRect {
+    func &.union(other: WorldRect): WorldRect {
         return WorldRect(
             realMin(self.minX, other.minX),
             realMin(self.minY, other.minY),
@@ -889,36 +889,30 @@ func intGridResize(source: Array<Int>, count: Int, capacity: Int, value: Int): A
 }
 
 test "floor division and modulo stay uniform across the origin" {
-    assert tileFloorDiv(-1, 16) == -1 { "a coordinate just left of the map must land in tile -1" }
-    assert tileFloorDiv(-16, 16) == -1 { "the last cell of tile -1 must not spill into tile 0" }
-    assert tileFloorDiv(15, 16) == 0 { "positive division must be unchanged" }
-    assert tileFloorMod(-1, 16) == 15 { "the remainder must stay non-negative" }
-    assert intIsOdd(-1) { "parity must be defined for negative rows, not just positive ones" }
+    assert tileFloorDiv(-1, 16) == -1 panic "a coordinate just left of the map must land in tile -1"
+    assert tileFloorDiv(-16, 16) == -1 panic "the last cell of tile -1 must not spill into tile 0"
+    assert tileFloorDiv(15, 16) == 0 panic "positive division must be unchanged"
+    assert tileFloorMod(-1, 16) == 15 panic "the remainder must stay non-negative"
+    assert intIsOdd(-1) panic "parity must be defined for negative rows, not just positive ones"
 }
 
 test "tile rectangles intersect and clamp" {
     fin rect = tileRect(2, 2, 8, 8).intersect(tileRect(5, 0, 20, 5))
-    assert rect.minX == 5 && rect.maxX == 8 && rect.minY == 2 && rect.maxY == 5 {
-        "intersection must keep the tighter bound on every side"
-    }
-    assert rect.area() == 16 { "a 4x4 overlap must report 16 cells" }
-    assert tileRect(0, 0, 4, 4).intersect(tileRect(9, 9, 12, 12)).isEmpty() {
-        "disjoint rectangles must produce an empty result, not a negative one"
-    }
+    assert rect.minX == 5 && rect.maxX == 8 && rect.minY == 2 && rect.maxY == 5 panic "intersection must keep the tighter bound on every side"
+    assert rect.area() == 16 panic "a 4x4 overlap must report 16 cells"
+    assert tileRect(0, 0, 4, 4).intersect(tileRect(9, 9, 12, 12)).isEmpty() panic "disjoint rectangles must produce an empty result, not a negative one"
 }
 
 test "colour packing survives a round trip" {
     fin color = tileColorUnpack(tileColorPack(tileColor(1.0, 0.5, 0.0, 0.25)))
-    assert color.r > 0.99 && color.b < 0.01 { "saturated channels must round-trip exactly" }
-    assert color.g > 0.49 && color.g < 0.51 { "a half-intensity channel must stay near 0.5" }
-    assert color.a > 0.24 && color.a < 0.26 { "alpha must survive the round trip" }
+    assert color.r > 0.99 && color.b < 0.01 panic "saturated channels must round-trip exactly"
+    assert color.g > 0.49 && color.g < 0.51 panic "a half-intensity channel must stay near 0.5"
+    assert color.a > 0.24 && color.a < 0.26 panic "alpha must survive the round trip"
 }
 
 test "a lookup distinguishes an empty cell from an absent one" {
-    assert !tileLookupPresent(TileLookup.Empty) { "an empty cell holds no tile" }
-    assert !tileLookupOffMap(TileLookup.Empty) { "an empty cell is still on the map" }
-    assert tileLookupOffMap(TileLookup.OutOfBounds) { "an off-map read must be distinguishable" }
-    assert tileLookupIndex(TileLookup.Tile(7, 0, tileTintNone)) == 7 {
-        "a present tile must report its index"
-    }
+    assert !tileLookupPresent(TileLookup.Empty) panic "an empty cell holds no tile"
+    assert !tileLookupOffMap(TileLookup.Empty) panic "an empty cell is still on the map"
+    assert tileLookupOffMap(TileLookup.OutOfBounds) panic "an off-map read must be distinguishable"
+    assert tileLookupIndex(TileLookup.Tile(7, 0, tileTintNone)) == 7 panic "a present tile must report its index"
 }

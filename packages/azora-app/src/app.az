@@ -25,7 +25,10 @@ import engine.platform
 
 /** A per-frame callback for games that keep logic outside the ECS schedule. */
 spec GameSystem {
-    func &.run(app: App!)
+    func !.run(app: App!)
+
+    /** Releases native resources created by this callback before the device closes. */
+    func !.shutdown(app: App!) {}
 }
 
 /**
@@ -56,11 +59,11 @@ func engine(title: String, width: Int, height: Int): Engine {
         0.06,
         0.07,
         0.09,
-        World::init(),
+        World(),
         timeInit(),
         systemPlan(),
-        Array::fill<GameSystem>(0),
-        Array::fill<GameSystem>(0)
+        Array<GameSystem>(),
+        Array<GameSystem>()
     )
 }
 
@@ -92,9 +95,14 @@ impl Engine {
      * exactly once per rendered frame.
      */
     func !.run() {
+        self.runFrames(0)
+    }
+
+    /** Runs a bounded frame loop for native integration and lifecycle probes. Zero runs until quit. */
+    func !.runFrames(frameLimit: Int): Bool {
         var app = appInit(self.title, self.width, self.height)
         if !app.ok {
-            return
+            return false
         }
         app.setClearColor(self.clearR, self.clearG, self.clearB)
 
@@ -103,7 +111,8 @@ impl Engine {
             system.run(app)
         }
 
-        while app.frame() {
+        var frames = 0
+        while (frameLimit <= 0 || frames < frameLimit) && app.frame() {
             self.time.advance(app.deltaTime())
             self.world.progress(self.time.deltaSecs)
 
@@ -121,7 +130,15 @@ impl Engine {
             runPhase(self.plan, SystemPhase.Render, self.world)
             app.present()
             runPhase(self.plan, SystemPhase.Last, self.world)
+            frames = frames + 1
+        }
+        for system in self.update {
+            system.shutdown(app)
+        }
+        for system in self.startup {
+            system.shutdown(app)
         }
         app.shutdown()
+        return frameLimit <= 0 || frames == frameLimit
     }
 }

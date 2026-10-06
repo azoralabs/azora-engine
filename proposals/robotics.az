@@ -29,7 +29,7 @@ import std.math
  * @since 0.1
  */
 
-realm engine {
+scope engine {
     /** Broad robot morphology used for capability negotiation. */
     @Experimental(since: "0.1")
     enum RobotKind {
@@ -287,10 +287,10 @@ realm engine {
     /** Returns a normalized quaternion and rejects a zero rotation. */
     @Experimental(since: "0.1")
     func normalizeQuaternion(value: Quaternion): Quaternion {
-        fin length = std::sqrt(
+        fin length = sqrt(
             value.w * value.w + value.x * value.x + value.y * value.y + value.z * value.z,
         )
-        assert length > 0.0 { "a rotation quaternion cannot have zero length" }
+        assert length > 0.0 panic "a rotation quaternion cannot have zero length"
         return Quaternion(
             value.w / length,
             value.x / length,
@@ -346,7 +346,7 @@ realm engine {
     @Experimental(since: "0.1")
     func validTrajectory(value: Trajectory&): Bool {
         if value.jointNames.size == 0 || value.points.size == 0 { return false }
-        var previousTime = 0.0
+        var previousTime: Double = 0.0
         for i in 0..<value.points.size {
             fin point = value.points[i]
             if point.timeSeconds < previousTime { return false }

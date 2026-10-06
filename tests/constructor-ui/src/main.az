@@ -1,0 +1,57 @@
+module constructorUi
+import std.io
+import std.traits
+import engine.core
+import engine.ecs
+import engine.ui.node
+import engine.ui.compose
+import engine.ui.systems
+
+react func describe(pass: Composition!, rows: Int, caption: String, stamp: Long): Bool {
+    return composeIfChanged(pass, stamp) {
+        Column(modifier: .().fillMaxSize(), key: "root") {
+            Row(modifier: .().height(48.0), key: "toolbar") {
+                Button(action: 7, key: "save") {
+                    Text(caption, key: "caption")
+                }
+            }
+            for row in 0..<rows {
+                Row(key: "row${row}") {
+                    Text("Item ${row}", key: "label")
+                }
+            }
+        }
+    }
+}
+
+react func main() {
+    var world = World()
+    var pass = Composition::of(world, "editor")
+    fin plain = Text("plain component")
+    assert plain.value == "plain component" panic "outside composition Text must construct a component"
+    assert describe(pass, 2, "Save", Long(1)) panic "first description must compose"
+    fin root = pass.findChild(Entity::invalid, "root")
+    fin toolbar = pass.findChild(root, "toolbar")
+    fin button = pass.findChild(toolbar, "save")
+    fin caption = pass.findChild(button, "caption")
+    fin disappearing = pass.findChild(root, "row1")
+    assert pass.nodeCount() == 8 panic "constructor tree must create its ECS nodes"
+    assert storageGet<Action>(store<Action>(pass), button).code == 7 panic "button constructor must attach action"
+    assert storageGet<Text>(store<Text>(pass), caption).value == "Save" panic "text constructor must attach component"
+    fin version = pass.version
+    assert !describe(pass, 2, "ignored until invalidated", Long(1)) panic "unchanged dependency must skip recomposition"
+    assert pass.version == version panic "skipping must preserve tree version"
+    assert describe(pass, 1, "Saved", Long(2)) panic "changed dependency must compose"
+    assert pass.findChild(Entity::invalid, "root").id == root.id panic "keyed root must retain identity"
+    assert pass.findChild(button, "caption").id == caption.id panic "keyed caption must retain identity"
+    assert storageGet<Text>(store<Text>(pass), caption).value == "Saved" panic "recomposition must replace component"
+    assert !world.isAlive(disappearing) panic "unclaimed subtree must despawn"
+    assert pass.nodeCount() == 6 panic "subtree removal must compact all storage rows"
+    pass.arrange(root, 0.0, 0.0, 800.0, 600.0)
+    assert storageGet<Rect>(store<Rect>(pass), root).width == 800.0 panic "retained layout must arrange ECS rectangles"
+    pass.invalidate()
+    assert describe(pass, 1, "Saved", Long(2)) panic "explicit invalidation must force recomposition"
+    assert pass.dispose() == 6 panic "owner disposal must remove its whole tree"
+    assert pass.nodeCount() == 0 panic "disposed owner must own no nodes"
+    println("constructor ui passed")
+}

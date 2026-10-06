@@ -94,7 +94,7 @@ variant enum AtlasPick {
 
 /** The sheet returned by every failure path; drawing from it is a no-op. */
 func tileAtlasEmpty(): TileAtlas {
-    return TileAtlas(0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    return TileAtlas(Long(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 }
 
 /**
@@ -169,7 +169,7 @@ func tileAtlasFromImage(
         return .EmptySize
     }
     fin texture = app.newTexture(picture.width, picture.height, picture.pixels)
-    if texture == 0L {
+    if texture == Long(0) {
         return .MissingTexture
     }
     return tileAtlasNew(
@@ -226,7 +226,7 @@ func tileAtlasLoad(app: App, path: String, tileWidth: Int, tileHeight: Int): Til
  * texture keeps that to one upload instead of an allocate-and-free per frame.
  */
 func tileAtlasRefresh(app: App, atlas: TileAtlas, picture: Image) {
-    if atlas.texture == 0L || !picture.ok() {
+    if atlas.texture == Long(0) || !picture.ok() {
         return
     }
     app.updateTexture(atlas.texture, picture.width, picture.height, picture.pixels)
@@ -234,9 +234,9 @@ func tileAtlasRefresh(app: App, atlas: TileAtlas, picture: Image) {
 
 /** Releases the sheet's GPU texture. */
 func tileAtlasRelease(app: App, atlas: TileAtlas) {
-    if atlas.texture != 0L {
+    if atlas.texture != Long(0) {
         app.releaseTexture(atlas.texture)
-        atlas.texture = 0L
+        atlas.texture = Long(0)
     }
 }
 
@@ -244,22 +244,22 @@ func tileAtlasRelease(app: App, atlas: TileAtlas) {
 
 impl TileAtlas {
     /** True when the sheet has a usable texture and at least one tile. */
-    func ok(): Bool {
-        return self.texture != 0L && self.columns > 0 && self.rows > 0
+    func &.ok(): Bool {
+        return self.texture != Long(0) && self.columns > 0 && self.rows > 0
     }
 
     /** The number of tiles on the sheet. */
-    func count(): Int {
+    func &.count(): Int {
         return self.columns * self.rows
     }
 
     /** The global index just past this sheet's last tile. */
-    func endIndex(): Int {
+    func &.endIndex(): Int {
         return self.firstIndex + self.count()
     }
 
     /** True when [index] is a global index this sheet owns. */
-    func owns(index: Int): Bool {
+    func &.owns(index: Int): Bool {
         return index >= self.firstIndex && index < self.endIndex()
     }
 
@@ -269,7 +269,7 @@ impl TileAtlas {
      * An out-of-range tile yields a zero rectangle rather than sampling
      * whatever pixels happen to follow the sheet.
      */
-    func rectOf(local: Int): AtlasRect {
+    func &.rectOf(local: Int): AtlasRect {
         if local < 0 || local >= self.count() || self.columns <= 0 {
             return AtlasRect(0, 0, 0, 0)
         }
@@ -284,7 +284,7 @@ impl TileAtlas {
     }
 
     /** The source rectangle of the global tile [index]. */
-    func rectOfGlobal(index: Int): AtlasRect {
+    func &.rectOfGlobal(index: Int): AtlasRect {
         return self.rectOf(index - self.firstIndex)
     }
 }
@@ -303,7 +303,7 @@ impl TileAtlasSet {
      * letting two sheets claim overlapping ranges is a whole class of "the
      * wrong tile is drawn" bugs that cannot happen if the set assigns them.
      */
-    func add(atlas: TileAtlas): Int {
+    func !.add(atlas: TileAtlas): Int {
         if self.count >= self.atlases.size {
             fin room = intMax(self.atlases.size * 2, 4)
             var grown: Array<TileAtlas> = Array::fill<TileAtlas>(room)
@@ -325,7 +325,7 @@ impl TileAtlasSet {
     }
 
     /** The sheet owning the global tile [index]. */
-    func find(index: Int): AtlasPick {
+    func &.find(index: Int): AtlasPick {
         var i = 0
         while i < self.count {
             fin atlas = self.atlases[i]
@@ -338,7 +338,7 @@ impl TileAtlasSet {
     }
 
     /** The total number of tiles across every sheet. */
-    func total(): Int {
+    func &.total(): Int {
         var sum = 0
         var i = 0
         while i < self.count {
@@ -349,7 +349,7 @@ impl TileAtlasSet {
     }
 
     /** The sheet at [index] in the set, or an empty sheet. */
-    func at(index: Int): TileAtlas {
+    func &.at(index: Int): TileAtlas {
         if index < 0 || index >= self.count {
             return tileAtlasEmpty()
         }
@@ -471,40 +471,40 @@ func tileAtlasLoadOrEmpty(app: App, path: String, tileWidth: Int, tileHeight: In
 
 test "a sheet's source rectangles account for margin and spacing" {
     // A 3x2 sheet of 16px tiles with a 1px gap and a 2px border.
-    fin atlas = tileAtlasNew(1L, 2 + 3 * 17 - 1 + 2, 2 + 2 * 17 - 1 + 2, 16, 16, 1, 1, 2, 2, 0)
-    assert atlas.columns == 3 && atlas.rows == 2 { "the tile grid must be derived from the sheet size" }
-    assert atlas.count() == 6 { "a 3x2 sheet holds six tiles" }
+    fin atlas = tileAtlasNew(Long(1), 2 + 3 * 17 - 1 + 2, 2 + 2 * 17 - 1 + 2, 16, 16, 1, 1, 2, 2, 0)
+    assert atlas.columns == 3 && atlas.rows == 2 panic "the tile grid must be derived from the sheet size"
+    assert atlas.count() == 6 panic "a 3x2 sheet holds six tiles"
 
     fin first = atlas.rectOf(0)
-    assert first.x == 2 && first.y == 2 { "the first tile must start after the margin" }
+    assert first.x == 2 && first.y == 2 panic "the first tile must start after the margin"
 
     fin second = atlas.rectOf(1)
-    assert second.x == 19 { "the next tile must clear the tile width and the gap" }
+    assert second.x == 19 panic "the next tile must clear the tile width and the gap"
 
     fin wrapped = atlas.rectOf(3)
-    assert wrapped.x == 2 && wrapped.y == 19 { "tile 3 must wrap to the second row" }
+    assert wrapped.x == 2 && wrapped.y == 19 panic "tile 3 must wrap to the second row"
 
     fin beyond = atlas.rectOf(6)
-    assert beyond.w == 0 { "an out-of-range tile must not sample past the sheet" }
+    assert beyond.w == 0 panic "an out-of-range tile must not sample past the sheet"
 }
 
 test "a set chains sheets into one continuous index space" {
     var sheets = tileAtlasSetNew(2)
-    sheets.add(tileAtlasSimple(1L, 64, 64, 32, 32))
-    sheets.add(tileAtlasSimple(2L, 64, 32, 32, 32))
+    sheets.add(tileAtlasSimple(Long(1), 64, 64, 32, 32))
+    sheets.add(tileAtlasSimple(Long(2), 64, 32, 32, 32))
 
-    assert sheets.total() == 6 { "four tiles plus two tiles is six" }
-    assert sheets.at(1).firstIndex == 4 { "the second sheet must start after the first" }
+    assert sheets.total() == 6 panic "four tiles plus two tiles is six"
+    assert sheets.at(1).firstIndex == 4 panic "the second sheet must start after the first"
 
     when sheets.find(5) {
         AtlasPick.Found(atlas, local) -> {
-            assert atlas.texture == 2L { "index 5 belongs to the second sheet" }
-            assert local == 1 { "index 5 is the second tile of that sheet" }
+            assert atlas.texture == Long(2) panic "index 5 belongs to the second sheet"
+            assert local == 1 panic "index 5 is the second tile of that sheet"
         }
-        AtlasPick.Missing() -> { assert false { "index 5 must be found" } }
+        AtlasPick.Missing() -> { assert false panic "index 5 must be found" }
     }
 
-    assert !atlasPickFound(sheets.find(6)) { "an index past the last tile must not resolve" }
+    assert !atlasPickFound(sheets.find(6)) panic "an index past the last tile must not resolve"
 }
 
 /** True when [pick] resolved to a sheet. */

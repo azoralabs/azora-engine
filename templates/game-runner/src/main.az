@@ -33,7 +33,7 @@ bridge .C {
     func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
-fin laneWidth = 2.2
+fin laneWidth: Double = 2.2
 fin obstacleCount = 10
 
 func laneX(lane: Int): Double {
@@ -51,8 +51,8 @@ func main() {
     fin ground = app.meshGrid(40.0, 40)
 
     // Obstacles: parallel arrays of lane + distance ahead (negative z).
-    var obsLane = @arr[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
-    var obsZ = @arr[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var obsLane = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+    var obsZ: Array<Double> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     var i = 0
     while i < obstacleCount {
         obsLane[i] = arc4randomUniform(3)
@@ -61,11 +61,11 @@ func main() {
     }
 
     var lane = 1
-    var playerX = 0.0
-    var playerY = 0.5
-    var velY = 0.0
-    var speed = 10.0
-    var distance = 0.0
+    var playerX: Double = 0.0
+    var playerY: Double = 0.5
+    var velY: Double = 0.0
+    var speed: Double = 10.0
+    var distance: Double = 0.0
     var alive = true
 
     var cam = cameraDefault()
@@ -156,7 +156,7 @@ func main() {
         }
         var m = 0
         while m < 8 {
-            fin mz = 0.0 - ((distance * 1.0 + (m as Double) * 10.0) - ((((distance + (m as Double) * 10.0) / 80.0) as Int) as Double) * 80.0)
+            fin mz: Double = 0.0 - ((distance * 1.0 + (m as Double) * 10.0) - ((((distance + (m as Double) * 10.0) / 80.0) as Int) as Double) * 80.0)
             fin marker = mat4Mul(mat4Translation(0.0, 0.02, mz), mat4Scale(0.2, 0.02, 2.0))
             app.drawMesh(cube, marker, 0.85, 0.85, 0.55)
             m = m + 1

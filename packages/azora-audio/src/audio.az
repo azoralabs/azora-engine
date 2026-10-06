@@ -27,7 +27,7 @@ pack AudioScene {
     var running: Bool
 }
 
-realm engine::audio {
+scope engine::audio {
     fin sampleRate = 22050
     fin SOUNDTRACK = 0
     fin engineLoop = 1
@@ -40,43 +40,43 @@ realm engine::audio {
     }
 
     func pokeWaveHeader(bytes: Long, dataSize: Int) {
-        azPoke8(bytes, 0L, 82)
-        azPoke8(bytes, 1L, 73)
-        azPoke8(bytes, 2L, 70)
-        azPoke8(bytes, 3L, 70)
-        azPoke32(bytes, 4L, dataSize + 36)
-        azPoke8(bytes, 8L, 87)
-        azPoke8(bytes, 9L, 65)
-        azPoke8(bytes, 10L, 86)
-        azPoke8(bytes, 11L, 69)
-        azPoke8(bytes, 12L, 102)
-        azPoke8(bytes, 13L, 109)
-        azPoke8(bytes, 14L, 116)
-        azPoke8(bytes, 15L, 32)
-        azPoke32(bytes, 16L, 16)
-        azPoke8(bytes, 20L, 1)
-        azPoke8(bytes, 21L, 0)
-        azPoke8(bytes, 22L, 1)
-        azPoke8(bytes, 23L, 0)
-        azPoke32(bytes, 24L, sampleRate)
-        azPoke32(bytes, 28L, sampleRate * 2)
-        azPoke8(bytes, 32L, 2)
-        azPoke8(bytes, 33L, 0)
-        azPoke8(bytes, 34L, 16)
-        azPoke8(bytes, 35L, 0)
-        azPoke8(bytes, 36L, 100)
-        azPoke8(bytes, 37L, 97)
-        azPoke8(bytes, 38L, 116)
-        azPoke8(bytes, 39L, 97)
-        azPoke32(bytes, 40L, dataSize)
+        azPoke8(bytes, Long(0), 82)
+        azPoke8(bytes, Long(1), 73)
+        azPoke8(bytes, Long(2), 70)
+        azPoke8(bytes, Long(3), 70)
+        azPoke32(bytes, Long(4), dataSize + 36)
+        azPoke8(bytes, Long(8), 87)
+        azPoke8(bytes, Long(9), 65)
+        azPoke8(bytes, Long(10), 86)
+        azPoke8(bytes, Long(11), 69)
+        azPoke8(bytes, Long(12), 102)
+        azPoke8(bytes, Long(13), 109)
+        azPoke8(bytes, Long(14), 116)
+        azPoke8(bytes, Long(15), 32)
+        azPoke32(bytes, Long(16), 16)
+        azPoke8(bytes, Long(20), 1)
+        azPoke8(bytes, Long(21), 0)
+        azPoke8(bytes, Long(22), 1)
+        azPoke8(bytes, Long(23), 0)
+        azPoke32(bytes, Long(24), sampleRate)
+        azPoke32(bytes, Long(28), sampleRate * 2)
+        azPoke8(bytes, Long(32), 2)
+        azPoke8(bytes, Long(33), 0)
+        azPoke8(bytes, Long(34), 16)
+        azPoke8(bytes, Long(35), 0)
+        azPoke8(bytes, Long(36), 100)
+        azPoke8(bytes, Long(37), 97)
+        azPoke8(bytes, Long(38), 116)
+        azPoke8(bytes, Long(39), 97)
+        azPoke32(bytes, Long(40), dataSize)
     }
 
     func pokeSample(bytes: Long, frame: Int, value: Double) {
         var sample = (clamp(value, -1.0, 1.0) * 28000.0) as Int
         if sample < 0 { sample = sample + 65536 }
-        fin offset = 44L + (frame * 2) as Long
+        fin offset = Long(44) + (frame * 2) as Long
         azPoke8(bytes, offset, sample % 256)
-        azPoke8(bytes, offset + 1L, (sample / 256) % 256)
+        azPoke8(bytes, offset + Long(1), (sample / 256) % 256)
     }
 
     func soundtrackSample(frame: Int): Double {
@@ -134,10 +134,10 @@ realm engine::audio {
         }
 
         fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as Long)
-        fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, 0L)
+        fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, Long(0))
         azFree(bytes)
-        if player != 0L {
-            send1(player, sel("setEnableRate:"), 1L)
+        if player != Long(0) {
+            send1(player, sel("setEnableRate:"), Long(1))
             send0(player, sel("prepareToPlay"))
         }
         return player
@@ -148,13 +148,13 @@ realm engine::audio {
     }
 
     func start(scene: AudioScene) {
-        if scene.soundtrack != 0L {
-            send1(scene.soundtrack, sel("setNumberOfLoops:"), 1000000L)
+        if scene.soundtrack != Long(0) {
+            send1(scene.soundtrack, sel("setNumberOfLoops:"), Long(1000000))
             fin volume = azSendFloat1(scene.soundtrack, sel("setVolume:"), 0.20)
             send0(scene.soundtrack, sel("play"))
         }
-        if scene.engineLoop != 0L {
-            send1(scene.engineLoop, sel("setNumberOfLoops:"), 1000000L)
+        if scene.engineLoop != Long(0) {
+            send1(scene.engineLoop, sel("setNumberOfLoops:"), Long(1000000))
             fin volume = azSendFloat1(scene.engineLoop, sel("setVolume:"), 0.0)
             fin rate = azSendFloat1(scene.engineLoop, sel("setRate:"), 0.72)
             send0(scene.engineLoop, sel("play"))
@@ -163,7 +163,7 @@ realm engine::audio {
     }
 
     func updateEngine(scene: AudioScene, speed: Double, throttle: Double, maxSpeed: Double) {
-        if !scene.running || scene.engineLoop == 0L { return }
+        if !scene.running || scene.engineLoop == Long(0) { return }
         fin speedRatio = clamp(speed / maxSpeed, 0.0, 1.0)
         fin load = clamp(throttle, 0.0, 1.0)
         fin volume = clamp(0.035 + speedRatio * 0.34 + load * 0.22, 0.0, 0.58)
@@ -173,16 +173,16 @@ realm engine::audio {
     }
 
     func playCrash(scene: AudioScene, strength: Double) {
-        if scene.crashEffect == 0L { return }
+        if scene.crashEffect == Long(0) { return }
         fin restart = azSendF1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
         fin volume = azSendFloat1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
         send0(scene.crashEffect, sel("play"))
     }
 
     func stop(scene: AudioScene) {
-        if scene.soundtrack != 0L { send0(scene.soundtrack, sel("stop")) }
-        if scene.engineLoop != 0L { send0(scene.engineLoop, sel("stop")) }
-        if scene.crashEffect != 0L { send0(scene.crashEffect, sel("stop")) }
+        if scene.soundtrack != Long(0) { send0(scene.soundtrack, sel("stop")) }
+        if scene.engineLoop != Long(0) { send0(scene.engineLoop, sel("stop")) }
+        if scene.crashEffect != Long(0) { send0(scene.crashEffect, sel("stop")) }
         scene.running = false
     }
 }
@@ -205,7 +205,7 @@ pack Sound {
 /** The sound returned when loading fails; every operation on it is a no-op. */
 @Experimental(since: "0.1")
 func soundEmpty(): Sound {
-    return Sound(0L, false)
+    return Sound(Long(0), false)
 }
 
 /**
@@ -216,18 +216,18 @@ func soundEmpty(): Sound {
  */
 @Experimental(since: "0.1")
 func soundFromBytes(bytes: Long, length: Int): Sound {
-    if bytes == 0L || length <= 0 {
+    if bytes == Long(0) || length <= 0 {
         return soundEmpty()
     }
     fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, length as Long)
-    if data == 0L {
+    if data == Long(0) {
         return soundEmpty()
     }
-    fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, 0L)
-    if player == 0L {
+    fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, Long(0))
+    if player == Long(0) {
         return soundEmpty()
     }
-    send1(player, sel("setEnableRate:"), 1L)
+    send1(player, sel("setEnableRate:"), Long(1))
     send0(player, sel("prepareToPlay"))
     return Sound(player, true)
 }
@@ -247,12 +247,12 @@ func loadSound(path: String): Sound {
 impl Sound {
 
     /** Plays from the start, once. */
-    func play() {
+    func !.play() {
         if !self.ready {
             return
         }
         fin rewind = azSendF1(self.player, sel("setCurrentTime:"), 0.0)
-        send1(self.player, sel("setNumberOfLoops:"), 0L)
+        send1(self.player, sel("setNumberOfLoops:"), Long(0))
         send0(self.player, sel("play"))
     }
 
@@ -262,16 +262,16 @@ impl Sound {
      * Background music is expressed as an effectively unbounded loop count
      * rather than by restarting on completion, so there is no gap at the seam.
      */
-    func playLooping() {
+    func &.playLooping() {
         if !self.ready {
             return
         }
-        send1(self.player, sel("setNumberOfLoops:"), -1L)
+        send1(self.player, sel("setNumberOfLoops:"), -Long(1))
         send0(self.player, sel("play"))
     }
 
     /** Stops playback and rewinds. */
-    func stop() {
+    func !.stop() {
         if !self.ready {
             return
         }
@@ -280,7 +280,7 @@ impl Sound {
     }
 
     /** Sets the volume, 0.0 silent to 1.0 full. */
-    func setVolume(volume: Double) {
+    func &.setVolume(volume: Double) {
         if !self.ready {
             return
         }
@@ -295,20 +295,20 @@ impl Sound {
     }
 
     /** Whether the sound is currently playing. */
-    func isPlaying(): Bool {
+    func &.isPlaying(): Bool {
         if !self.ready {
             return false
         }
-        return send0(self.player, sel("isPlaying")) != 0L
+        return send0(self.player, sel("isPlaying")) != Long(0)
     }
 
     /** Releases the underlying player. */
-    func release[self: Self!]() {
+    func !.release() {
         if self.ready {
             send0(self.player, sel("stop"))
             fin released = send0(self.player, sel("release"))
         }
-        self.player = 0L
+        self.player = Long(0)
         self.ready = false
     }
 }

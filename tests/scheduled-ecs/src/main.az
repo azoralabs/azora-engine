@@ -1,0 +1,34 @@
+module scheduledEcs
+import std.io
+import engine.core
+import engine.ecs
+
+@System(phase: SystemPhase.Update, runAfter: "input")
+func movement(world: World!) {
+    fin entity = world.entityAt(0)
+    world.setName(entity, world.getName(entity) + "2")
+    world.progress(0.02)
+}
+@System(phase: SystemPhase.Update)
+func input(world: World!) {
+    fin entity = world.entityAt(0)
+    world.setName(entity, world.getName(entity) + "1")
+}
+@System(phase: SystemPhase.Render, runAfter: "movement")
+func draw(world: World!) {
+    fin entity = world.entityAt(0)
+    world.setName(entity, world.getName(entity) + "3")
+}
+func main() {
+    var world = World()
+    world.spawnNamed("")
+    var plan = systemPlan()
+    assert !plan.cyclic panic "declared scheduling dependencies must resolve"
+    runPhase(plan, .Update, world)
+    assert world.getName(world.entityAt(0)) == "12" panic "runAfter must order native system execution"
+    runPhase(plan, .Render, world)
+    assert world.getName(world.entityAt(0)) == "123" panic "render phase must run after update"
+    assert world.consumeFixedStep() panic "world progress must accumulate fixed simulation steps"
+    assert !world.consumeFixedStep() panic "fixed simulation step must consume its accumulator"
+    println("scheduled ecs passed")
+}

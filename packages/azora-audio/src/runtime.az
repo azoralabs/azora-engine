@@ -76,7 +76,7 @@ pack AudioBufferLease {
 
 /** A value that names no block. */
 func audioBufferLeaseInvalid(): AudioBufferLease {
-    return AudioBufferLease(-1, 0L, 0, 0)
+    return AudioBufferLease(-1, Long(0), 0, 0)
 }
 
 /** Snapshot useful to the profiler without exposing pool internals. */
@@ -111,15 +111,15 @@ func audioBufferPoolEmpty(): AudioBufferPool {
         AudioFormat(48000, 2, AudioSampleFormat.Float32, true),
         0,
         0,
-        Array::fill<Double>(0),
-        Array::fill<AudioBufferState>(0),
-        Array::fill<Long>(0),
-        Array::fill<Int>(0),
-        Array::fill<MediaTime>(0),
+        Array<Double>(),
+        Array<AudioBufferState>(),
+        Array<Long>(),
+        Array<Int>(),
+        Array<MediaTime>(),
         0,
         0,
-        0L,
-        0L
+        Long(0),
+        Long(0)
     )
 }
 
@@ -146,7 +146,7 @@ func audioBufferPool(
     var index = 0
     while index < blocks {
         states[index] = AudioBufferState.Free
-        generations[index] = 1L
+        generations[index] = Long(1)
         frameCounts[index] = 0
         timestamps[index] = mediaTimeZero()
         index = index + 1
@@ -162,8 +162,8 @@ func audioBufferPool(
         timestamps,
         blocks,
         0,
-        0L,
-        0L
+        Long(0),
+        Long(0)
     )
 }
 
@@ -178,11 +178,11 @@ func audioCreateBufferPool(
 
 /** Releases pool storage after the device and decoder workers have stopped. */
 func audioDestroyBufferPool(pool: AudioBufferPool!) {
-    pool.samples = Array::fill<Double>(0)
-    pool.states = Array::fill<AudioBufferState>(0)
-    pool.generations = Array::fill<Long>(0)
-    pool.frameCounts = Array::fill<Int>(0)
-    pool.timestamps = Array::fill<MediaTime>(0)
+    pool.samples = Array<Double>()
+    pool.states = Array<AudioBufferState>()
+    pool.generations = Array<Long>()
+    pool.frameCounts = Array<Int>()
+    pool.timestamps = Array<MediaTime>()
     pool.blockFrames = 0
     pool.blocks = 0
     pool.available = 0
@@ -210,7 +210,7 @@ func audioClampSample(sample: Double): Double {
 
 impl AudioBufferPool {
     /** Claims one free block for a decoder or producer. */
-    func acquire[self: Self!](): AudioBufferLease ?! AudioError {
+    func !.acquire(): AudioBufferLease ?! AudioError {
         var slot = 0
         while slot < self.blocks {
             if self.states[slot] == AudioBufferState.Free {
@@ -218,7 +218,7 @@ impl AudioBufferPool {
                 self.frameCounts[slot] = 0
                 self.timestamps[slot] = mediaTimeZero()
                 self.available = self.available - 1
-                self.acquisitions = self.acquisitions + 1L
+                self.acquisitions = self.acquisitions + Long(1)
                 fin used = self.blocks - self.available
                 if used > self.highWaterMark { self.highWaterMark = used }
                 return AudioBufferLease(
@@ -230,12 +230,12 @@ impl AudioBufferPool {
             }
             slot = slot + 1
         }
-        self.exhausted = self.exhausted + 1L
+        self.exhausted = self.exhausted + Long(1)
         return .PoolExhausted
     }
 
     /** Writes one interleaved sample while a block is being produced. */
-    func write[self: Self!](
+    func !.write(
         lease: AudioBufferLease&
         frame: Int
         channel: Int
@@ -255,7 +255,7 @@ impl AudioBufferPool {
     }
 
     /** Reads a sample from any live block; effects may read while producing it. */
-    func read[self: Self&](
+    func &.read(
         lease: AudioBufferLease&
         frame: Int
         channel: Int
@@ -273,7 +273,7 @@ impl AudioBufferPool {
     }
 
     /** Publishes a complete or partial block to the consumer side. */
-    func commit[self: Self!](
+    func !.commit(
         lease: AudioBufferLease&
         frames: Int
         timestamp: MediaTime&
@@ -290,7 +290,7 @@ impl AudioBufferPool {
     }
 
     /** Marks a committed block as owned by the output side. */
-    func beginRead[self: Self!](lease: AudioBufferLease&) ?! AudioError {
+    func !.beginRead(lease: AudioBufferLease&) ?! AudioError {
         if !audioLeaseCurrent(self, lease) || self.states[lease.slot] != AudioBufferState.Ready {
             return .InvalidLease
         }
@@ -298,19 +298,19 @@ impl AudioBufferPool {
     }
 
     /** Returns a block to the pool and invalidates every old copy of its lease. */
-    func release[self: Self!](lease: AudioBufferLease&) ?! AudioError {
+    func !.release(lease: AudioBufferLease&) ?! AudioError {
         if !audioLeaseCurrent(self, lease) {
             return .InvalidLease
         }
         self.states[lease.slot] = AudioBufferState.Free
-        self.generations[lease.slot] = self.generations[lease.slot] + 1L
+        self.generations[lease.slot] = self.generations[lease.slot] + Long(1)
         self.frameCounts[lease.slot] = 0
         self.timestamps[lease.slot] = mediaTimeZero()
         self.available = self.available + 1
     }
 
     /** Current pool pressure for profiler counters and adaptive decoding. */
-    func stats[self: Self&](): AudioBufferPoolStats {
+    func &.stats(): AudioBufferPoolStats {
         return AudioBufferPoolStats(
             self.blocks,
             self.available,
@@ -387,7 +387,7 @@ func audioBusIndex(mixer: AudioMixer&, id: AudioBusId&): Int {
 
 impl AudioMixer {
     /** Adds a bus without reallocating the mixer graph. */
-    func createBus[self: Self!](name: String, parent: AudioBusId&): AudioBusId ?! AudioError {
+    func !.createBus(name: String, parent: AudioBusId&): AudioBusId ?! AudioError {
         if self.count >= self.buses.size {
             return .BusCapacity
         }
@@ -401,7 +401,7 @@ impl AudioMixer {
         return id
     }
 
-    func setGain[self: Self!](id: AudioBusId&, gain: Double) ?! AudioError {
+    func !.setGain(id: AudioBusId&, gain: Double) ?! AudioError {
         fin index = audioBusIndex(self, id)
         if index < 0 { return .InvalidBus }
         var level = gain
@@ -410,14 +410,14 @@ impl AudioMixer {
         self.buses[index].gain = level
     }
 
-    func setMuted[self: Self!](id: AudioBusId&, muted: Bool) ?! AudioError {
+    func !.setMuted(id: AudioBusId&, muted: Bool) ?! AudioError {
         fin index = audioBusIndex(self, id)
         if index < 0 { return .InvalidBus }
         self.buses[index].muted = muted
     }
 
     /** Reparents a bus while refusing cycles in the signal graph. */
-    func setParent[self: Self!](id: AudioBusId&, parent: AudioBusId&) ?! AudioError {
+    func !.setParent(id: AudioBusId&, parent: AudioBusId&) ?! AudioError {
         fin index = audioBusIndex(self, id)
         fin parentIndex = audioBusIndex(self, parent)
         if index < 0 || parentIndex < 0 || id.value == audioMasterBus().value {
@@ -438,7 +438,7 @@ impl AudioMixer {
     }
 
     /** Gain inherited through the bus graph, including mute state. */
-    func effectiveGain[self: Self&](id: AudioBusId&): Double ?! AudioError {
+    func &.effectiveGain(id: AudioBusId&): Double ?! AudioError {
         var current = AudioBusId(id.value)
         var gain = 1.0
         var depth = 0
@@ -461,14 +461,14 @@ impl AudioMixer {
  * caller-owned pool lease and therefore needs no hidden allocation.
  */
 spec AudioEffect {
-    func prepare[self: Self!](format: AudioFormat&, maxFrames: Int)
-    func process[self: Self!](
+    func !.prepare(format: AudioFormat&, maxFrames: Int)
+    func !.process(
         pool: AudioBufferPool!
         lease: AudioBufferLease&
         frames: Int
     ): Unit ?! AudioError
-    func reset[self: Self!]()
-    func latency[self: Self&](): Int
+    func !.reset()
+    func &.latency(): Int
 }
 
 /** Reference effect that applies a constant gain in place. */
@@ -477,11 +477,11 @@ pack GainEffect {
 }
 
 impl AudioEffect for GainEffect {
-    func prepare[self: Self!](format: AudioFormat&, maxFrames: Int) {
+    func !.prepare(format: AudioFormat&, maxFrames: Int) {
         self.gain = audioClampSample(self.gain)
     }
 
-    func process[self: Self!](
+    func !.process(
         pool: AudioBufferPool!
         lease: AudioBufferLease&
         frames: Int
@@ -501,9 +501,9 @@ impl AudioEffect for GainEffect {
         }
     }
 
-    func reset[self: Self!]() { }
+    func !.reset() { }
 
-    func latency[self: Self&](): Int {
+    func &.latency(): Int {
         return 0
     }
 }
@@ -518,14 +518,14 @@ test "the PCM pool exhausts without growing and rejects stale leases" {
     } catch {
         exhausted = true
     }
-    assert exhausted { "a real-time pool must not allocate a surprise third block" }
-    assert pool.stats().highWater == 2 { "pool pressure must be observable" }
+    assert exhausted panic "a real-time pool must not allocate a surprise third block"
+    assert pool.stats().highWater == 2 panic "pool pressure must be observable"
 
     pool.write(first, 0, 0, 0.75) catch { }
     pool.commit(first, 1, mediaTimeZero()) catch { }
     pool.beginRead(first) catch { }
     fin sample = pool.read(first, 0, 0) catch 0.0
-    assert sample > 0.74 && sample < 0.76 { "committed PCM must survive the handoff" }
+    assert sample > 0.74 && sample < 0.76 panic "committed PCM must survive the handoff"
     pool.release(first) catch { }
 
     var stale = false
@@ -534,7 +534,7 @@ test "the PCM pool exhausts without growing and rejects stale leases" {
     } catch {
         stale = true
     }
-    assert stale { "a released generation must never address its replacement" }
+    assert stale panic "a released generation must never address its replacement"
     pool.release(second) catch { }
 }
 
@@ -543,7 +543,7 @@ test "mixer buses resolve by id and inherit gain" {
     mixer.setGain(audioMasterBus(), 0.5) catch { }
     mixer.setGain(audioMediaBus(), 0.8) catch { }
     fin gain = mixer.effectiveGain(audioMediaBus()) catch 0.0
-    assert gain > 0.39 && gain < 0.41 { "media gain must include the master bus" }
+    assert gain > 0.39 && gain < 0.41 panic "media gain must include the master bus"
 
     var cycle = false
     try {
@@ -551,7 +551,7 @@ test "mixer buses resolve by id and inherit gain" {
     } catch {
         cycle = true
     }
-    assert cycle { "a bus must not route into itself" }
+    assert cycle panic "a bus must not route into itself"
 }
 
 test "effect packs process a caller-owned lease in place" {
@@ -562,6 +562,6 @@ test "effect packs process a caller-owned lease in place" {
     gainEffect.prepare(audioFormatStereo(48000), 2)
     gainEffect.process(pool, lease, 1) catch { }
     fin sample = pool.read(lease, 0, 0) catch 0.0
-    assert sample > 0.124 && sample < 0.126 { "the effect must update the pool block" }
+    assert sample > 0.124 && sample < 0.126 panic "the effect must update the pool block"
     pool.release(lease) catch { }
 }

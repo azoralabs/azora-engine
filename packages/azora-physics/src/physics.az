@@ -6,7 +6,7 @@
 
 module engine.physics
 
-import std.container.*
+import std.container::*
 import engine.math.vec
 
 /**
@@ -87,7 +87,7 @@ pack PhysicsWorld {
     var nextId: Int
 }
 
-realm engine::physics {
+scope engine::physics {
     fin allLayers = -1
 
     func layersAll(): CollisionLayers {
@@ -248,8 +248,8 @@ realm engine::physics {
         if steps < 1 { steps = 1 }
         if steps > 16 { steps = 16 }
         return PhysicsWorld(
-            @arr[body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
-            @arr[noContact()],
+            [body(RigidBodyKind.Static, vec3Zero(), box(vec3Zero()))],
+            [noContact()],
             gravity,
             steps,
             1
@@ -312,7 +312,7 @@ realm engine::physics {
     }
 
     func collide(world: PhysicsWorld) {
-        world.contacts = @arr[noContact()]
+        world.contacts = [noContact()]
         var i = 1
         while i < world.bodies.size {
             var j = i + 1
@@ -385,9 +385,9 @@ test "AABB contact chooses the shallowest separation axis" {
         Vec3(1.5, 0.0, 0.0),
         Vec3(1.0, 1.0, 1.0)
     )
-    assert contact.hit { "overlapping boxes must produce a contact" }
-    assert contact.normal.x == -1.0 { "normal must move body A away from body B" }
-    assert contact.penetration == 0.5 { "penetration must equal the shallow overlap" }
+    assert contact.hit panic "overlapping boxes must produce a contact"
+    assert contact.normal.x == -1.0 panic "normal must move body A away from body B"
+    assert contact.penetration == 0.5 panic "penetration must equal the shallow overlap"
 }
 
 test "AABB contact rejects separated boxes" {
@@ -397,39 +397,39 @@ test "AABB contact rejects separated boxes" {
         Vec3(3.0, 0.0, 0.0),
         Vec3(1.0, 1.0, 1.0)
     )
-    assert !contact.hit { "separated boxes must not collide" }
+    assert !contact.hit panic "separated boxes must not collide"
 }
 
 test "collision layers require mutual membership filters" {
     fin player = engine::physics::layers(1, 2)
     fin world = engine::physics::layers(2, 1)
     fin ignored = engine::physics::layers(4, 1)
-    assert engine::physics::layersInteract(player, world) { "mutually selected layers must interact" }
-    assert !engine::physics::layersInteract(player, ignored) { "one-sided filters must not interact" }
+    assert engine::physics::layersInteract(player, world) panic "mutually selected layers must interact"
+    assert !engine::physics::layersInteract(player, ignored) panic "one-sided filters must not interact"
 }
 
 test "sphere contact reports coincident centers safely" {
     fin contact = engine::physics::sphereContact(vec3Zero(), 1.0, vec3Zero(), 2.0)
-    assert contact.hit { "coincident spheres must collide" }
-    assert contact.penetration == 3.0 { "coincident penetration must include both radii" }
-    assert contact.normal.x == 1.0 { "coincident spheres need a deterministic fallback normal" }
+    assert contact.hit panic "coincident spheres must collide"
+    assert contact.penetration == 3.0 panic "coincident penetration must include both radii"
+    assert contact.normal.x == 1.0 panic "coincident spheres need a deterministic fallback normal"
 }
 
 test "sensor colliders report contacts without becoming solid" {
     fin sensor = engine::physics::asSensor(engine::physics::box(Vec3(1.0, 1.0, 1.0)))
     fin solid = engine::physics::box(Vec3(1.0, 1.0, 1.0))
     fin contact = engine::physics::colliderContact(vec3Zero(), sensor, Vec3(1.0, 0.0, 0.0), solid)
-    assert contact.hit { "overlapping sensor must report a contact" }
-    assert contact.sensor { "contact must retain sensor semantics" }
+    assert contact.hit panic "overlapping sensor must report a contact"
+    assert contact.sensor panic "contact must retain sensor semantics"
 }
 
 test "physics world assigns stable nonzero body identifiers" {
     fin world = engine::physics::world(vec3Zero(), 1)
     fin first = engine::physics::addBody(world, engine::physics::dynamicBody(vec3Zero(), engine::physics::sphere(1.0)))
     fin second = engine::physics::addBody(world, engine::physics::staticBody(Vec3(4.0, 0.0, 0.0), engine::physics::box(Vec3(1.0, 1.0, 1.0))))
-    assert first == 1 { "first body id must be one" }
-    assert second == 2 { "body ids must increase monotonically" }
-    assert engine::physics::bodyById(world, second).id == second { "body lookup must preserve identity" }
+    assert first == 1 panic "first body id must be one"
+    assert second == 2 panic "body ids must increase monotonically"
+    assert engine::physics::bodyById(world, second).id == second panic "body lookup must preserve identity"
 }
 
 test "dynamic body is separated from a static body" {
@@ -444,8 +444,8 @@ test "dynamic body is separated from a static body" {
     )
     engine::physics::step(world, 0.016)
     fin dynamic = engine::physics::bodyById(world, dynamicId)
-    assert dynamic.position.x <= -0.5 { "contact solver must remove box penetration" }
-    assert world.contacts.size == 2 { "world must retain its sentinel and one collision contact" }
+    assert dynamic.position.x <= -0.5 panic "contact solver must remove box penetration"
+    assert world.contacts.size == 2 panic "world must retain its sentinel and one collision contact"
 }
 
 test .All "physics"

@@ -26,6 +26,8 @@
  */
 module engine.animation.d2
 
+import std.traits
+
 import std.container.array
 import engine.core
 import engine.math.vec
@@ -171,7 +173,7 @@ variant enum SpriteFrame {
 
 /** The sheet returned by every failure path; drawing from it is a no-op. */
 func spriteSheetEmpty(): SpriteSheet {
-    return SpriteSheet(0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    return SpriteSheet(Long(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 }
 
 /**
@@ -233,12 +235,12 @@ func animIntClamp(value: Int, low: Int, high: Int): Int {
 
 impl SpriteSheet {
     /** True when the sheet has a usable texture and at least one frame. */
-    func ok(): Bool {
-        return self.texture != 0L && self.columns > 0 && self.rows > 0
+    func &.ok(): Bool {
+        return self.texture != Long(0) && self.columns > 0 && self.rows > 0
     }
 
     /** The number of frames on the sheet. */
-    func frameCount(): Int {
+    func &.frameCount(): Int {
         return self.columns * self.rows
     }
 
@@ -248,7 +250,7 @@ impl SpriteSheet {
      * An out-of-range frame yields a zero rectangle rather than sampling
      * whatever pixels follow the sheet.
      */
-    func rectOf(index: Int): SpriteRect {
+    func &.rectOf(index: Int): SpriteRect {
         if index < 0 || index >= self.frameCount() || self.columns <= 0 {
             return SpriteRect(0, 0, 0, 0)
         }
@@ -270,12 +272,12 @@ func frameAnimation(name: String, first: Int, last: Int, fps: Double, loopMode: 
 }
 
 impl FrameAnimation {
-    func frameCount(): Int {
+    func &.frameCount(): Int {
         return animIntMax(self.last - self.first + 1, 1)
     }
 
     /** How long one pass through the animation takes. */
-    func duration(): Double {
+    func &.duration(): Double {
         if self.fps <= 0.0 {
             return 0.0
         }
@@ -288,7 +290,7 @@ impl FrameAnimation {
      * The time is expected to be clip-local — already folded by the loop mode —
      * so this only has to turn a position into an index.
      */
-    func frameAt(localTime: Double): Int {
+    func &.frameAt(localTime: Double): Int {
         fin frames = self.frameCount()
         if frames <= 1 || self.fps <= 0.0 {
             return self.first
@@ -307,7 +309,7 @@ impl FrameAnimation {
  * array path.
  */
 func frameAnimationClip(animation: FrameAnimation): AnimationClip {
-    var events: Array<AnimationEvent> = Array::fill<AnimationEvent>(0)
+    var events: Array<AnimationEvent> = Array<AnimationEvent>()
     return AnimationClip(animation.name, animation.duration(), animation.loopMode, events, 0)
 }
 
@@ -323,7 +325,7 @@ func flipbookNew(name: String, capacity: Int, loopMode: LoopMode): Flipbook {
 
 impl Flipbook {
     /** Appends [frame], held for [hold] seconds. */
-    func add(frame: Int, hold: Double): Int {
+    func !.add(frame: Int, hold: Double): Int {
         if self.count >= self.frames.size {
             fin room = if self.frames.size * 2 > 4 { self.frames.size * 2 } else { 4 }
             var grownFrames: Array<Int> = Array::fill<Int>(room)
@@ -344,7 +346,7 @@ impl Flipbook {
     }
 
     /** The total length of one pass. */
-    func duration(): Double {
+    func &.duration(): Double {
         var total = 0.0
         for i in 0..(self.count - 1) {
             total = total + self.holds[i]
@@ -358,7 +360,7 @@ impl Flipbook {
      * Holds are walked rather than divided, because they differ per frame —
      * which is the whole point of a flipbook over a [FrameAnimation].
      */
-    func frameAt(localTime: Double): Int {
+    func &.frameAt(localTime: Double): Int {
         if self.count <= 0 {
             return -1
         }
@@ -375,7 +377,7 @@ impl Flipbook {
 
 /** The clip a flipbook's timing is expressed as. See [frameAnimationClip]. */
 func flipbookClip(book: Flipbook): AnimationClip {
-    var events: Array<AnimationEvent> = Array::fill<AnimationEvent>(0)
+    var events: Array<AnimationEvent> = Array<AnimationEvent>()
     return AnimationClip(book.name, book.duration(), book.loopMode, events, 0)
 }
 
@@ -389,7 +391,7 @@ func spriteAnimation(sheet: SpriteSheet, capacity: Int): SpriteAnimation {
 
 impl SpriteAnimation {
     /** Appends [animation] and returns its index. */
-    func add(animation: FrameAnimation): Int {
+    func !.add(animation: FrameAnimation): Int {
         if self.count >= self.animations.size {
             fin room = if self.animations.size * 2 > 4 { self.animations.size * 2 } else { 4 }
             var grown: Array<FrameAnimation> = Array::fill<FrameAnimation>(room)
@@ -406,7 +408,7 @@ impl SpriteAnimation {
     }
 
     /** The index of the animation called [name], or `-1`. */
-    func indexOf(name: String): Int {
+    func &.indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
             if self.animations[i].name == name {
                 return i
@@ -416,7 +418,7 @@ impl SpriteAnimation {
     }
 
     /** The animation at [index], or a still first frame. */
-    func at(index: Int): FrameAnimation {
+    func &.at(index: Int): FrameAnimation {
         if index < 0 || index >= self.count {
             return frameAnimation("", 0, 0, 0.0, LoopMode.Once)
         }
@@ -454,7 +456,7 @@ impl AnimatedSprite {
      * every frame from a state machine — which is how it is actually used —
      * does not restart the animation on every frame.
      */
-    func playAnimation(index: Int) {
+    func !.playAnimation(index: Int) {
         if index == self.current {
             return
         }
@@ -465,7 +467,7 @@ impl AnimatedSprite {
     }
 
     /** Switches to the animation called [name], if there is one. */
-    func playNamed(name: String) {
+    func !.playNamed(name: String) {
         fin index = self.animation.indexOf(name)
         if index >= 0 {
             self.playAnimation(index)
@@ -473,17 +475,17 @@ impl AnimatedSprite {
     }
 
     /** Advances the sprite's clock and reports its playback state. */
-    func advance(dt: Double): PlaybackState {
+    func !.advance(dt: Double): PlaybackState {
         return self.player.advance(dt)
     }
 
     /** The frame index the sprite is showing. */
-    func frame(): Int {
+    func !.frame(): Int {
         return self.animation.at(self.current).frameAt(self.player.localTime())
     }
 
     /** What to draw right now, mirrors included. */
-    func currentFrame(): SpriteFrame {
+    func !.currentFrame(): SpriteFrame {
         if !self.animation.sheet.ok() {
             return SpriteFrame.Blank
         }
@@ -495,7 +497,7 @@ impl AnimatedSprite {
     }
 
     /** True once a non-looping animation has run out. */
-    func isFinished(): Bool {
+    func &.isFinished(): Bool {
         return self.player.state == PlaybackState.Finished
     }
 }
@@ -656,23 +658,23 @@ func blendColor(a: TintColor, b: TintColor, t: Double): TintColor {
 
 test "a sheet's frame rectangles account for margin and spacing" {
     // A 3x2 sheet of 16px frames with a 1px gap and a 2px border.
-    fin sheet = spriteSheet(1L, 2 + 3 * 17 - 1 + 2, 2 + 2 * 17 - 1 + 2, 16, 16, 1, 1, 2, 2)
-    assert sheet.columns == 3 && sheet.rows == 2 { "the frame grid must come from the sheet size" }
-    assert sheet.frameCount() == 6 { "a 3x2 sheet holds six frames" }
-    assert sheet.rectOf(0).x == 2 && sheet.rectOf(0).y == 2 { "frame 0 starts after the margin" }
-    assert sheet.rectOf(1).x == 19 { "frame 1 must clear the frame width and the gap" }
-    assert sheet.rectOf(3).y == 19 { "frame 3 must wrap to the second row" }
-    assert sheet.rectOf(6).w == 0 { "an out-of-range frame must not sample past the sheet" }
+    fin sheet = spriteSheet(Long(1), 2 + 3 * 17 - 1 + 2, 2 + 2 * 17 - 1 + 2, 16, 16, 1, 1, 2, 2)
+    assert sheet.columns == 3 && sheet.rows == 2 panic "the frame grid must come from the sheet size"
+    assert sheet.frameCount() == 6 panic "a 3x2 sheet holds six frames"
+    assert sheet.rectOf(0).x == 2 && sheet.rectOf(0).y == 2 panic "frame 0 starts after the margin"
+    assert sheet.rectOf(1).x == 19 panic "frame 1 must clear the frame width and the gap"
+    assert sheet.rectOf(3).y == 19 panic "frame 3 must wrap to the second row"
+    assert sheet.rectOf(6).w == 0 panic "an out-of-range frame must not sample past the sheet"
 }
 
 test "a frame animation maps its clock onto its run" {
     fin walk = frameAnimation("walk", 4, 7, 8.0, LoopMode.Repeat)
-    assert walk.frameCount() == 4 { "4..7 inclusive is four frames" }
-    assert animAbs(walk.duration() - 0.5) < 0.001 { "four frames at 8fps is half a second" }
-    assert walk.frameAt(0.0) == 4 { "an animation starts on its first frame" }
-    assert walk.frameAt(0.2) == 5 { "an eighth of a second in is one frame on" }
-    assert walk.frameAt(0.49) == 7 { "the end of the run is the last frame" }
-    assert walk.frameAt(99.0) == 7 { "a local time past the run must clamp, not wrap" }
+    assert walk.frameCount() == 4 panic "4..7 inclusive is four frames"
+    assert animAbs(walk.duration() - 0.5) < 0.001 panic "four frames at 8fps is half a second"
+    assert walk.frameAt(0.0) == 4 panic "an animation starts on its first frame"
+    assert walk.frameAt(0.2) == 5 panic "an eighth of a second in is one frame on"
+    assert walk.frameAt(0.49) == 7 panic "the end of the run is the last frame"
+    assert walk.frameAt(99.0) == 7 panic "a local time past the run must clamp, not wrap"
 }
 
 test "a flipbook honours per-frame holds" {
@@ -681,42 +683,42 @@ test "a flipbook honours per-frame holds" {
     book.add(11, 0.05)
     book.add(12, 0.4)
 
-    assert animAbs(book.duration() - 0.85) < 0.001 { "the length is the sum of the holds" }
-    assert book.frameAt(0.0) == 10 { "the first frame shows first" }
-    assert book.frameAt(0.39) == 10 { "a long hold must last" }
-    assert book.frameAt(0.42) == 11 { "the single-tick frame must appear" }
-    assert book.frameAt(0.5) == 12 { "and be left again quickly" }
-    assert book.frameAt(99.0) == 12 { "past the end holds the last frame" }
+    assert animAbs(book.duration() - 0.85) < 0.001 panic "the length is the sum of the holds"
+    assert book.frameAt(0.0) == 10 panic "the first frame shows first"
+    assert book.frameAt(0.39) == 10 panic "a long hold must last"
+    assert book.frameAt(0.42) == 11 panic "the single-tick frame must appear"
+    assert book.frameAt(0.5) == 12 panic "and be left again quickly"
+    assert book.frameAt(99.0) == 12 panic "past the end holds the last frame"
 }
 
 test "an animated sprite switches without restarting itself" {
-    var set = spriteAnimation(spriteSheetSimple(1L, 64, 64, 16, 16), 2)
+    var set = spriteAnimation(spriteSheetSimple(Long(1), 64, 64, 16, 16), 2)
     fin idle = set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
     fin run = set.add(frameAnimation("run", 4, 7, 8.0, LoopMode.Repeat))
 
     var sprite = animatedSprite(set, idle)
-    assert sprite.frame() == 0 { "a new sprite shows its first frame" }
+    assert sprite.frame() == 0 panic "a new sprite shows its first frame"
     sprite.advance(0.3)
-    assert sprite.frame() == 1 { "the sprite must advance through its run" }
+    assert sprite.frame() == 1 panic "the sprite must advance through its run"
 
     sprite.playAnimation(run)
-    assert sprite.current == run { "switching must change the animation" }
-    assert sprite.frame() == 4 { "a switch must restart on the new animation's first frame" }
+    assert sprite.current == run panic "switching must change the animation"
+    assert sprite.frame() == 4 panic "a switch must restart on the new animation's first frame"
 
     sprite.advance(0.2)
     fin mid = sprite.frame()
     sprite.playAnimation(run)
-    assert sprite.frame() == mid { "switching to the animation already playing must be ignored" }
+    assert sprite.frame() == mid panic "switching to the animation already playing must be ignored"
 
-    assert spriteFrameVisible(sprite.currentFrame()) { "a sheet-backed sprite must have a frame" }
-    assert spriteFrameRect(sprite.currentFrame()).w == 16 { "the frame rectangle must be the frame size" }
+    assert spriteFrameVisible(sprite.currentFrame()) panic "a sheet-backed sprite must have a frame"
+    assert spriteFrameRect(sprite.currentFrame()).w == 16 panic "the frame rectangle must be the frame size"
 }
 
-test "a sprite with no usable sheet draws nothing rather than garbage" {
+test "a sprite using no usable sheet draws nothing rather than garbage" {
     var set = spriteAnimation(spriteSheetEmpty(), 1)
     set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
     fin sprite = animatedSprite(set, 0)
-    assert !spriteFrameVisible(sprite.currentFrame()) { "a sprite with no texture must report nothing to draw" }
+    assert !spriteFrameVisible(sprite.currentFrame()) panic "a sprite with no texture must report nothing to draw"
 }
 
 test "transform and colour curves sample componentwise" {
@@ -725,19 +727,15 @@ test "transform and colour curves sample componentwise" {
     transform2dKey(track, 1.0, Vec2(10.0, 20.0), Vec2(2.0, 2.0), 3.0, Interpolation.Linear)
 
     fin pose = sampleTransform2d(track, 0.5)
-    assert animAbs(pose.position.x - 5.0) < 0.001 && animAbs(pose.position.y - 10.0) < 0.001 {
-        "position must interpolate on both axes"
-    }
-    assert animAbs(pose.scale.x - 1.5) < 0.001 { "scale must interpolate" }
-    assert animAbs(pose.rotation - 1.5) < 0.001 { "rotation must interpolate" }
+    assert animAbs(pose.position.x - 5.0) < 0.001 && animAbs(pose.position.y - 10.0) < 0.001 panic "position must interpolate on both axes"
+    assert animAbs(pose.scale.x - 1.5) < 0.001 panic "scale must interpolate"
+    assert animAbs(pose.rotation - 1.5) < 0.001 panic "rotation must interpolate"
 
     var fade = colorTrack("fade", 2)
     colorKey(fade, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
     colorKey(fade, 1.0, tintColor(1.0, 0.0, 0.0, 0.0), Interpolation.Linear)
     fin half = sampleColor(fade, 0.5)
-    assert animAbs(half.g - 0.5) < 0.001 && animAbs(half.a - 0.5) < 0.001 {
-        "every channel must interpolate independently"
-    }
+    assert animAbs(half.g - 0.5) < 0.001 && animAbs(half.a - 0.5) < 0.001 panic "every channel must interpolate independently"
 }
 
 test "a layer folds its weight into its alpha" {
@@ -746,23 +744,19 @@ test "a layer folds its weight into its alpha" {
     colorKey(layer.color, 1.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
 
     layer.weight = blendWeight(0.25)
-    assert animAbs(layerColorAt(layer, 0.5).a - 0.25) < 0.001 {
-        "the layer weight must scale the sampled alpha"
-    }
+    assert animAbs(layerColorAt(layer, 0.5).a - 0.25) < 0.001 panic "the layer weight must scale the sampled alpha"
 
     layer.visible = false
-    assert layerColorAt(layer, 0.5).a == 0.0 { "a hidden layer must contribute nothing" }
+    assert layerColorAt(layer, 0.5).a == 0.0 panic "a hidden layer must contribute nothing"
 }
 
 test "poses and colours blend between two samples" {
     fin a = Transform2DPose(Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0)
     fin b = Transform2DPose(Vec2(10.0, 10.0), Vec2(3.0, 3.0), 2.0)
     fin mid = blendPose2d(a, b, 0.5)
-    assert animAbs(mid.position.x - 5.0) < 0.001 && animAbs(mid.scale.x - 2.0) < 0.001 {
-        "a half blend must sit halfway between the poses"
-    }
-    assert blendPose2d(a, b, 0.0).rotation == 0.0 { "a blend of zero is the first pose" }
+    assert animAbs(mid.position.x - 5.0) < 0.001 && animAbs(mid.scale.x - 2.0) < 0.001 panic "a half blend must sit halfway between the poses"
+    assert blendPose2d(a, b, 0.0).rotation == 0.0 panic "a blend of zero is the first pose"
 
     fin colour = blendColor(tintColor(0.0, 0.0, 0.0, 1.0), tintColor(1.0, 1.0, 1.0, 1.0), 0.5)
-    assert animAbs(colour.r - 0.5) < 0.001 { "colours must blend channelwise" }
+    assert animAbs(colour.r - 0.5) < 0.001 panic "colours must blend channelwise"
 }

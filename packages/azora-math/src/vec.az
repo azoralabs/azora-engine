@@ -44,148 +44,278 @@ pack Vec<T, N: Int> where T is Number && N in 2..4 {
 }
 
 impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
-    ctor [self: Self!](all: T) {
+    ctor .(all: T) {
         inline for f in reflect<Self>.fields {
             self.${f.name} = all
         }
     }
 
-    inline for op in @arr["+", "-", "*", "/", "%"] {
-        inline fin assignOp = "${op}="
-        inline fin zeroDivisorFails = (op == "/" || op == "%") && T is Integer
-
-        oper $op [self: Self&](rhs: Self&): Self
-        inline if zeroDivisorFails { inline "?! MathError" } {
-            inline if zeroDivisorFails {
-                inline for f in reflect<Self>.fields {
-                    if rhs.${f.name} == 0 { return .DivisionByZero }
-                }
-            }
-            return Self(
-                inline for f in reflect<Self>.fields {
-                    self.${f.name} $op rhs.${f.name}
-                }
-            )
-        }
-
-        oper $op [self: Self&](rhs: T&): Self
-        inline if zeroDivisorFails { inline "?! MathError" } {
-            inline if zeroDivisorFails {
-                if rhs == 0 { return .DivisionByZero }
-            }
-            return Self(
-                inline for f in reflect<Self>.fields {
-                    self.${f.name} $op rhs
-                }
-            )
-        }
-
-        oper $assignOp [self: Self!](rhs: Self&)
-        inline if zeroDivisorFails { inline "?! MathError" } {
-            inline if zeroDivisorFails {
-                inline for f in reflect<Self>.fields {
-                    if rhs.${f.name} == 0 { return .DivisionByZero }
-                }
-            }
+    oper+ &.(rhs: Self&): Self {
+        return Self(
             inline for f in reflect<Self>.fields {
-                self.${f.name} $assignOp rhs.${f.name}
+                self.${f.name} + rhs.${f.name}
             }
-        }
+        )
+    }
 
-        oper $assignOp [self: Self!](rhs: T&)
-        inline if zeroDivisorFails { inline "?! MathError" } {
-            inline if zeroDivisorFails {
-                if rhs == 0 { return .DivisionByZero }
-            }
-            inline for f in reflect<Self>.fields {
-                self.${f.name} $assignOp rhs
-            }
+    oper+= !.(rhs: Self&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} += rhs.${f.name}
         }
     }
 
-    inline for op in @arr["&", "|", "^"] {
+    oper+ &.(rhs: T&): Self {
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} + rhs
+            }
+        )
+    }
+
+    oper+= !.(rhs: T&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} += rhs
+        }
+    }
+
+    oper- &.(rhs: Self&): Self {
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} - rhs.${f.name}
+            }
+        )
+    }
+
+    oper-= !.(rhs: Self&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} -= rhs.${f.name}
+        }
+    }
+
+    oper- &.(rhs: T&): Self {
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} - rhs
+            }
+        )
+    }
+
+    oper-= !.(rhs: T&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} -= rhs
+        }
+    }
+
+    oper* &.(rhs: Self&): Self {
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} * rhs.${f.name}
+            }
+        )
+    }
+
+    oper*= !.(rhs: Self&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} *= rhs.${f.name}
+        }
+    }
+
+    oper* &.(rhs: T&): Self {
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} * rhs
+            }
+        )
+    }
+
+    oper*= !.(rhs: T&): Unit {
+        inline for f in reflect<Self>.fields {
+            self.${f.name} *= rhs
+        }
+    }
+
+    oper/ &.(rhs: Self&): Self
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            inline for f in reflect<Self>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} / rhs.${f.name}
+            }
+        )
+    }
+
+    oper/= !.(rhs: Self&): Unit
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            inline for f in reflect<Self>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        inline for f in reflect<Self>.fields {
+            self.${f.name} /= rhs.${f.name}
+        }
+    }
+
+    oper/ &.(rhs: T&): Self
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            if rhs == 0 { error MathError.DivisionByZero }
+        }
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} / rhs
+            }
+        )
+    }
+
+    oper/= !.(rhs: T&): Unit
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            if rhs == 0 { error MathError.DivisionByZero }
+        }
+        inline for f in reflect<Self>.fields {
+            self.${f.name} /= rhs
+        }
+    }
+
+    oper% &.(rhs: Self&): Self
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            inline for f in reflect<Self>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} % rhs.${f.name}
+            }
+        )
+    }
+
+    oper%= !.(rhs: Self&): Unit
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            inline for f in reflect<Self>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        inline for f in reflect<Self>.fields {
+            self.${f.name} %= rhs.${f.name}
+        }
+    }
+
+    oper% &.(rhs: T&): Self
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            if rhs == 0 { error MathError.DivisionByZero }
+        }
+        return Self(
+            inline for f in reflect<Self>.fields {
+                self.${f.name} % rhs
+            }
+        )
+    }
+
+    oper%= !.(rhs: T&): Unit
+    inline if T is Integer { inline "?! MathError" } {
+        inline if T is Integer {
+            if rhs == 0 { error MathError.DivisionByZero }
+        }
+        inline for f in reflect<Self>.fields {
+            self.${f.name} %= rhs
+        }
+    }
+
+    inline for op in ["&", "|", "^"] {
         inline fin assignOp = "${op}="
 
-        oper $op [self: Self&](rhs: Self&): Self where T is Integer = Self(
+        oper$op &.(rhs: Self&): Self where T is Integer = Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs.${f.name}
             }
         )
 
-        oper $op [self: Self&](rhs: T&): Self where T is Integer = Self(
+        oper$op &.(rhs: T&): Self where T is Integer = Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs
             }
         )
 
-        oper $assignOp [self: Self!](rhs: Self&) where T is Integer {
+        oper$assignOp !.(rhs: Self&) where T is Integer {
             inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs.${f.name}
             }
         }
 
-        oper $assignOp [self: Self!](rhs: T&) where T is Integer {
+        oper$assignOp !.(rhs: T&) where T is Integer {
             inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs
             }
         }
     }
 
-    oper+ [self: Self&]: Self = self
+    oper+ &.(): Self = self
 
-    oper- [self: Self&]: Self where T is SignedNumber = Self(
+    oper- &.(): Self where T is SignedNumber = Self(
         inline for f in reflect<Self>.fields {
             -self.${f.name}
         }
     )
 
-    oper~ [self: Self&]: Self where T is Integer = Self(
+    oper~ &.(): Self where T is Integer = Self(
         inline for f in reflect<Self>.fields {
             ~self.${f.name}
         }
     )
 
-    inline for op in @arr["<<", ">>"] {
+    inline for op in ["<<", ">>"] {
         inline fin assignOp = "${op}="
 
-        oper $op [self: Self&](rhs: Int&): Self where T is Integer = Self(
+        oper$op &.(rhs: Int&): Self where T is Integer = Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} $op rhs
             }
         )
 
-        oper $assignOp [self: Self!](rhs: Int&) where T is Integer {
+        oper$assignOp !.(rhs: Int&) where T is Integer {
             inline for f in reflect<Self>.fields {
                 self.${f.name} $assignOp rhs
             }
         }
     }
 
-    inline for ref in @arr["&", "!"] {
-        oper[] [self: Self$ref](index: Int): T$ref ?! IndexError {
-            inline for f in reflect<Self>.fields with i {
-                if index == i { return self.${f.name}$ref }
-            }
-            return .OutOfBounds(index, N)
+    oper[] &.(index: Int): T ?! IndexError {
+        inline for f in reflect<Self>.fields with i {
+            if index == i { return self.${f.name} }
         }
+        return .OutOfBounds(index, N)
     }
 
-    oper.. [self: Self&](rhs: Self&) by Self::one
-
-    oper>.. [self: Self&](rhs: Self&) by Self::one
-
-    oper as<U> [self: Vec<U, N>&] = Self(
-        inline for f in reflect<Vec<U, N>>.fields {
-            self.${f.name} as T
+    oper[]= !.(index: Int, value: T): Unit ?! IndexError {
+        inline for f in reflect<Self>.fields with i {
+            if index == i {
+                self.${f.name} = value
+                return
+            }
         }
-    )
+        return .OutOfBounds(index, N)
+    }
+
+    oper.. &.(rhs: Self&) by Self::one
+
+    oper>.. &.(rhs: Self&) by Self::one
+
 
     /**
      * Vector magnitude.
      */
-    prop length[self: Self&]: Double = sqrt(self.lengthSquared)
+    prop  &.length: Double = sqrt(self.lengthSquared)
 
-    prop lengthSquared[self: Self&]: Double {
+    prop  &.lengthSquared: Double {
         var result: Double = 0
         inline for f in reflect<Self>.fields {
             fin value = self.${f.name} as Double
@@ -200,7 +330,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
      * Accumulated in `Double` for the same reason [lengthSquared] is: the sum of
      * products overflows a narrow element type long before the result would.
      */
-    func dot[self: Self&](rhs: Self&): Double {
+    func &.dot(rhs: Self&): Double {
         var result: Double = 0
         inline for f in reflect<Self>.fields {
             result += (self.${f.name} as Double) * (rhs.${f.name} as Double)
@@ -208,15 +338,15 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         return result
     }
 
-    func distanceTo[self: Self&](other: Self&): Double {
+    func &.distanceTo(other: Self&): Double {
         return (self - other).length
     }
 
     /**
      * Returns a normalized copy.
      */
-    prop normalized[self: Self&]: Self ?! MathError where T is FloatingPoint {
-        if self.length == 0 { return .ZeroLength }
+    prop  &.normalized: Self ?! MathError where T is FloatingPoint {
+        if self.length == 0 { error MathError.ZeroLength }
         return Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} / self.length as T
@@ -227,23 +357,23 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     /**
      * Normalizes this vector in place.
      */
-    func normalize[self: Self!]() ?! MathError where T is FloatingPoint {
+    func !.normalize() ?! MathError where T is FloatingPoint {
         fin length = self.length
-        if length == 0 { return .ZeroLength }
+        if length == 0 { error MathError.ZeroLength }
         fin divisor = length as T
         inline for f in reflect<Self>.fields {
             self.${f.name} /= divisor
         }
     }
 
-    func perpendicular[self: Self&](): Self where T is SignedNumber && N == 2 {
+    func &.perpendicular(): Self where T is SignedNumber && N == 2 {
         return Self(-self.y, self.x)
     }
 
     /**
      * Three-dimensional cross product.
      */
-    func cross[self: Self&](rhs: Self&): Self where N == 3 {
+    func &.cross(rhs: Self&): Self where N == 3 {
         return Self(
             self.y * rhs.z - self.z * rhs.y,
             self.z * rhs.x - self.x * rhs.z,
@@ -252,35 +382,91 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     }
 }
 
-inline for op in @arr["+", "-", "*", "/", "%"] {
-    inline for Ty in Numbers {
-        inline fin zeroDivisorFails = (op == "/" || op == "%") && Ty is Integer
-
-        oper $op <N: Int>[self: Ty&](rhs: Vec<Ty, N>&): Vec<Ty, N>
-        inline if zeroDivisorFails { inline "?! MathError" }
-        where N in 2..4 {
-            inline if zeroDivisorFails {
-                inline for f in reflect<Vec<Ty, N>>.fields {
-                    if rhs.${f.name} == 0 { return .DivisionByZero }
-                }
+inline for Ty in Numbers {
+    oper+<N: Int> Ty&.(rhs: Vec<Ty, N>&): Vec<Ty, N>
+    where N in 2..4 {
+        return Vec<Ty, N>(
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                self + rhs.${f.name}
             }
-            return Vec<Ty, N>(
-                inline for f in reflect<Vec<Ty, N>>.fields {
-                    self $op rhs.${f.name}
-                }
-            )
-        }
+        )
     }
 }
 
 inline for Ty in Numbers {
-    oper as<N: Int> [self: Ty&]: Vec<Ty, N> where N in 2..4 {
-        return Vec<Ty, N>(self)
+    oper-<N: Int> Ty&.(rhs: Vec<Ty, N>&): Vec<Ty, N>
+    where N in 2..4 {
+        return Vec<Ty, N>(
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                self - rhs.${f.name}
+            }
+        )
     }
 }
 
-impl Vec<T, N>:: {
-    inline func axis<I: Int>(value: T = 1): Vec<T, N> where I in 0..<N {
+inline for Ty in Numbers {
+    oper*<N: Int> Ty&.(rhs: Vec<Ty, N>&): Vec<Ty, N>
+    where N in 2..4 {
+        return Vec<Ty, N>(
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                self * rhs.${f.name}
+            }
+        )
+    }
+}
+
+inline for Ty in Numbers {
+    oper/<N: Int> Ty&.(rhs: Vec<Ty, N>&): Vec<Ty, N>
+    inline if Ty is Integer { inline "?! MathError" }
+    where N in 2..4 {
+        inline if Ty is Integer {
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        return Vec<Ty, N>(
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                self / rhs.${f.name}
+            }
+        )
+    }
+}
+
+inline for Ty in Numbers {
+    oper%<N: Int> Ty&.(rhs: Vec<Ty, N>&): Vec<Ty, N>
+    inline if Ty is Integer { inline "?! MathError" }
+    where N in 2..4 {
+        inline if Ty is Integer {
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                if rhs.${f.name} == 0 { error MathError.DivisionByZero }
+            }
+        }
+        return Vec<Ty, N>(
+            inline for f in reflect<Vec<Ty, N>>.fields {
+                self % rhs.${f.name}
+            }
+        )
+    }
+}
+
+impl Cast<Vec<T, N>> for Vec<U, N> {
+    prop &.castValue: Vec<T, N> = Vec<T, N>(
+        inline for f in reflect<Vec<U, N>>.fields {
+            self.${f.name} as T
+        }
+    )
+}
+
+inline for Ty in Numbers {
+    inline for N in 2..4 {
+        impl Cast<Vec<Ty, N>> for Ty {
+            prop &.castValue: Vec<Ty, N> = Vec<Ty, N>(self)
+        }
+    }
+}
+
+impl Vec<T, N> {
+    inline func<I: Int> axis(value: T = 1): Vec<T, N> where I in 0..<N {
         return Vec<T, N>(
             inline for i in 0..<N {
                 if i == I { value } else { 0 as T }
@@ -288,20 +474,17 @@ impl Vec<T, N>:: {
         )
     }
 
-    fin zero = Vec<T, N>(0 as T)
-    fin one = Vec<T, N>(1 as T)
-    fin right = axis<0>()
-    fin up = axis<1>()
-    inline if N >= 3 { fin forward = axis<2>() }
+    prop zero: Vec<T, N> = Vec<T, N>(0 as T)
+    prop one: Vec<T, N> = Vec<T, N>(1 as T)
+    prop right: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 0 { 1 as T } else { 0 as T } })
+    prop up: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 1 { 1 as T } else { 0 as T } })
+    prop forward: Vec<T, N> where N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 { 1 as T } else { 0 as T } })
+    prop left: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 0 { -1 as T } else { 0 as T } })
+    prop down: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 1 { -1 as T } else { 0 as T } })
+    prop back: Vec<T, N> where T is SignedNumber && N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 { -1 as T } else { 0 as T } })
 }
 
-impl Vec<T, N>:: where T is SignedNumber {
-    fin left = axis<0>(-1 as T)
-    fin down = axis<1>(-1 as T)
-    inline if N >= 3 { fin back = axis<2>(-1 as T) }
-}
-
-inline for [t, Ty] in [@arr["i", "u", "f", ""], [Int, UInt, Float, Double]] {
+inline for [t, Ty] in [["i", "u", "f", ""], [Int, UInt, Float, Double]] {
     inline for i in 2..4 {
         typealias Vec$i$t = Vec<Ty, i>
     }

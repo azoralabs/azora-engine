@@ -137,7 +137,7 @@ func tileChunksNew(size: TilemapSize, shift: Int): TileChunks {
 
 impl TileChunks {
     /** The number of tiles in the chunk containing cell ([x], [y]). */
-    func countAt(x: Int, y: Int): Int {
+    func &.countAt(x: Int, y: Int): Int {
         fin cx = x >> self.shift
         fin cy = y >> self.shift
         if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
@@ -147,7 +147,7 @@ impl TileChunks {
     }
 
     /** Adds [delta] to the count of the chunk containing cell ([x], [y]). */
-    func adjust(x: Int, y: Int, delta: Int) {
+    func !.adjust(x: Int, y: Int, delta: Int) {
         fin cx = x >> self.shift
         fin cy = y >> self.shift
         if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
@@ -158,7 +158,7 @@ impl TileChunks {
     }
 
     /** The number of tiles in chunk ([cx], [cy]). */
-    func count(cx: Int, cy: Int): Int {
+    func &.count(cx: Int, cy: Int): Int {
         if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
             return 0
         }
@@ -166,13 +166,13 @@ impl TileChunks {
     }
 
     /** The cells chunk ([cx], [cy]) covers. */
-    func rect(cx: Int, cy: Int): TileRect {
+    func &.rect(cx: Int, cy: Int): TileRect {
         fin span = 1 << self.shift
         return TileRect(cx * span, cy * span, cx * span + span - 1, cy * span + span - 1)
     }
 
     /** The chunks overlapping a rectangle of cells. */
-    func rectOf(cells: TileRect): TileRect {
+    func &.rectOf(cells: TileRect): TileRect {
         if cells.isEmpty() {
             return tileRectEmpty()
         }
@@ -189,7 +189,7 @@ impl TileChunks {
 
 /** An empty layer of [size], with every cell clear and every plane sparse. */
 func tileLayerNew(name: String, size: TilemapSize): TileLayer {
-    var empty: Array<Int> = Array::fill<Int>(0)
+    var empty: Array<Int> = Array<Int>()
     return TileLayer(
         name,
         size,
@@ -204,7 +204,7 @@ func tileLayerNew(name: String, size: TilemapSize): TileLayer {
         0.0,
         0.0,
         0,
-        0L,
+        Long(0),
         tileChunksNew(size, tileChunkShift)
     )
 }
@@ -218,12 +218,12 @@ func tileLayerFilled(name: String, size: TilemapSize, index: Int): TileLayer {
 
 impl TileLayer {
     /** True when [pos] addresses a cell of this layer. */
-    func contains(pos: TilePos): Bool {
+    func &.contains(pos: TilePos): Bool {
         return self.size.contains(pos)
     }
 
     /** The row-major offset of [pos], or `-1` when it is off the layer. */
-    func offsetOf(pos: TilePos): Int {
+    func &.offsetOf(pos: TilePos): Int {
         if !self.size.contains(pos) {
             return -1
         }
@@ -231,20 +231,20 @@ impl TileLayer {
     }
 
     /** Allocates the flag plane if it is still sparse. */
-    func ensureFlags() {
+    func !.ensureFlags() {
         if self.flags.size == 0 && self.size.isValid {
             self.flags = intGridFill(self.size.x, self.size.y, 0)
         }
     }
 
     /** Allocates the tint plane if it is still sparse. */
-    func ensureTints() {
+    func !.ensureTints() {
         if self.tints.size == 0 && self.size.isValid {
             self.tints = intGridFill(self.size.x, self.size.y, tileTintNone)
         }
     }
 
-    func touch() {
+    func !.touch() {
         self.revision = self.revision + 1
     }
 }
@@ -681,8 +681,8 @@ func layerResize(layer: TileLayer!, size: TilemapSize): Unit ?! TilemapFault {
     fin hadTints = layer.tints.size > 0
 
     var indices = intGridFill(size.x, size.y, tileEmpty)
-    var flags: Array<Int> = Array::fill<Int>(0)
-    var tints: Array<Int> = Array::fill<Int>(0)
+    var flags: Array<Int> = Array<Int>()
+    var tints: Array<Int> = Array<Int>()
     if hadFlags {
         flags = intGridFill(size.x, size.y, 0)
     }
@@ -794,7 +794,7 @@ func tileStorageNew(size: TilemapSize): TileStorage {
 }
 
 impl TileStorage {
-    func offsetOf(pos: TilePos): Int {
+    func &.offsetOf(pos: TilePos): Int {
         if !self.size.contains(pos) {
             return -1
         }
@@ -917,20 +917,20 @@ func tileStorageSweep(storage: TileStorage!, world: World&): Int {
 
 test "writing and clearing a cell keeps the chunk counts honest" {
     var layer = tileLayerNew("ground", TilemapSize(40, 40))
-    assert layerCount(layer) == 0 { "a new layer holds no tiles" }
+    assert layerCount(layer) == 0 panic "a new layer holds no tiles"
 
     layerPut(layer, TilePos(3, 3), 7)
     layerPut(layer, TilePos(20, 20), 9)
-    assert layerCount(layer) == 2 { "two writes must register as two tiles" }
-    assert !layerChunkEmptyAt(layer, TilePos(3, 3)) { "an occupied chunk must not read as empty" }
-    assert layerChunkEmptyAt(layer, TilePos(3, 35)) { "an untouched chunk must read as empty" }
+    assert layerCount(layer) == 2 panic "two writes must register as two tiles"
+    assert !layerChunkEmptyAt(layer, TilePos(3, 3)) panic "an occupied chunk must not read as empty"
+    assert layerChunkEmptyAt(layer, TilePos(3, 35)) panic "an untouched chunk must read as empty"
 
     layerPut(layer, TilePos(3, 3), 8)
-    assert layerCount(layer) == 2 { "overwriting a tile must not change the count" }
+    assert layerCount(layer) == 2 panic "overwriting a tile must not change the count"
 
     layerPut(layer, TilePos(3, 3), tileEmpty)
-    assert layerCount(layer) == 1 { "clearing a cell must decrement the count" }
-    assert layerChunkEmptyAt(layer, TilePos(3, 3)) { "the chunk must fall back to empty" }
+    assert layerCount(layer) == 1 panic "clearing a cell must decrement the count"
+    assert layerChunkEmptyAt(layer, TilePos(3, 3)) panic "the chunk must fall back to empty"
 }
 
 test "an off-map write is refused rather than dropped" {
@@ -942,7 +942,7 @@ test "an off-map write is refused rather than dropped" {
     } catch {
         refused = true
     }
-    assert refused { "a write outside the layer must fail" }
+    assert refused panic "a write outside the layer must fail"
 
     var accepted = true
     try {
@@ -950,36 +950,34 @@ test "an off-map write is refused rather than dropped" {
     } catch {
         accepted = false
     }
-    assert accepted { "the last cell must be writable" }
+    assert accepted panic "the last cell must be writable"
 }
 
 test "the flag and tint planes stay sparse until they are used" {
     var layer = tileLayerNew("ground", TilemapSize(16, 16))
     layerFill(layer, 4)
-    assert layer.flags.size == 0 && layer.tints.size == 0 {
-        "a plain filled layer must not allocate flags or tints"
-    }
-    assert layerFlagsAt(layer, TilePos(2, 2)) == 0 { "a sparse flag plane must read as zero" }
-    assert layerTintAt(layer, TilePos(2, 2)) == tileTintNone { "a sparse tint plane must read as untinted" }
+    assert layer.flags.size == 0 && layer.tints.size == 0 panic "a plain filled layer must not allocate flags or tints"
+    assert layerFlagsAt(layer, TilePos(2, 2)) == 0 panic "a sparse flag plane must read as zero"
+    assert layerTintAt(layer, TilePos(2, 2)) == tileTintNone panic "a sparse tint plane must read as untinted"
 
     layerSetFlip(layer, TilePos(2, 2), tileFlip(true, false, false)) catch { }
-    assert layer.flags.size > 0 { "writing a mirror must allocate the flag plane" }
-    assert layerFlipAt(layer, TilePos(2, 2)).x { "the mirror must survive the round trip" }
-    assert !layerFlipAt(layer, TilePos(3, 2)).x { "a neighbouring cell must be unaffected" }
+    assert layer.flags.size > 0 panic "writing a mirror must allocate the flag plane"
+    assert layerFlipAt(layer, TilePos(2, 2)).x panic "the mirror must survive the round trip"
+    assert !layerFlipAt(layer, TilePos(3, 2)).x panic "a neighbouring cell must be unaffected"
 }
 
 test "bulk fills and copies move every plane" {
     var source = tileLayerNew("source", TilemapSize(8, 8))
     layerFillRectColor(source, tileRect(0, 0, 3, 3), 5, tileColor(1.0, 0.0, 0.0, 1.0))
     layerSetFlip(source, TilePos(1, 1), tileFlip(true, true, false)) catch { }
-    assert layerCountIn(source, tileRect(0, 0, 3, 3)) == 16 { "a 4x4 fill must write 16 cells" }
+    assert layerCountIn(source, tileRect(0, 0, 3, 3)) == 16 panic "a 4x4 fill must write 16 cells"
 
     var target = tileLayerNew("target", TilemapSize(8, 8))
     layerCopyRect(source, tileRect(0, 0, 3, 3), target, TilePos(4, 4))
-    assert layerIndexAt(target, TilePos(4, 4)) == 5 { "the copy must carry the tile index" }
-    assert layerFlipAt(target, TilePos(5, 5)).x { "the copy must carry the cell flags" }
-    assert layerTintAt(target, TilePos(4, 4)) != tileTintNone { "the copy must carry the tint" }
-    assert layerCount(target) == 16 { "the copy must register in the chunk counts" }
+    assert layerIndexAt(target, TilePos(4, 4)) == 5 panic "the copy must carry the tile index"
+    assert layerFlipAt(target, TilePos(5, 5)).x panic "the copy must carry the cell flags"
+    assert layerTintAt(target, TilePos(4, 4)) != tileTintNone panic "the copy must carry the tint"
+    assert layerCount(target) == 16 panic "the copy must register in the chunk counts"
 }
 
 test "resizing preserves the content that still fits" {
@@ -987,8 +985,8 @@ test "resizing preserves the content that still fits" {
     layerFill(layer, 3)
     layerPut(layer, TilePos(7, 7), 9)
     layerResize(layer, TilemapSize(4, 12)) catch { }
-    assert layer.size.x == 4 && layer.size.y == 12 { "the layer must adopt the new size" }
-    assert layerIndexAt(layer, TilePos(3, 7)) == 3 { "content inside the new extent must survive" }
-    assert layerIndexAt(layer, TilePos(3, 9)) == tileEmpty { "new rows must start empty" }
-    assert layerCount(layer) == 32 { "the chunk counts must be rebuilt for the new size" }
+    assert layer.size.x == 4 && layer.size.y == 12 panic "the layer must adopt the new size"
+    assert layerIndexAt(layer, TilePos(3, 7)) == 3 panic "content inside the new extent must survive"
+    assert layerIndexAt(layer, TilePos(3, 9)) == tileEmpty panic "new rows must start empty"
+    assert layerCount(layer) == 32 panic "the chunk counts must be rebuilt for the new size"
 }

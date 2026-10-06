@@ -65,7 +65,7 @@ impl Composition {
      * [SiblingOrder], so the arranged order is the composed order rather than whatever
      * order storage happens to hold (§10.3).
      */
-    func arrange[self: Composition!](
+    func (self: Composition!).arrange(
         node: Entity
         x: Double
         y: Double
@@ -100,10 +100,16 @@ impl Composition {
         // column of plain rows look right without anyone stating a size.
         // Annotated because `Array::fill` alone yields `Array<Any>`: the element
         // type does not survive into the local, and every write then fails.
-        var extents: Array<Double> = Array::fill<Double>(count)
-        var weights: Array<Double> = Array::fill<Double>(count)
-        var fixedTotal = 0.0
-        var weightTotal = 0.0
+        var extents: Array<Double> = Array<Double>()
+        var weights: Array<Double> = Array<Double>()
+        var allocated = 0
+        while allocated < count {
+            extents.add(0.0)
+            weights.add(0.0)
+            allocated = allocated + 1
+        }
+        var fixedTotal: Double = 0.0
+        var weightTotal: Double = 0.0
         var flexible = 0
         var index = 0
         while index < count {
@@ -171,7 +177,7 @@ impl Composition {
         //
         // `leftover` is only non-zero when nothing claimed the free space, which
         // is exactly when an arrangement has something to distribute.
-        var lead = 0.0
+        var lead: Double = 0.0
         var between = layout.spacing
         fin holes = (count - 1) as Double
         when layout.arrangement {
@@ -196,7 +202,7 @@ impl Composition {
         }
 
         var cursor = lead - scroll.offset
-        var content = 0.0
+        var content: Double = 0.0
         index = 0
         while index < count {
             fin child = self.childAt(node, index)
@@ -240,7 +246,7 @@ impl Composition {
      *
      * Returns the number of nodes moved.
      */
-    func applyScroll[self: Composition!](
+    func (self: Composition!).applyScroll(
         pointerX: Double
         pointerY: Double
         wheelDelta: Double
@@ -276,14 +282,14 @@ impl Composition {
     }
 
     /** How many children [parent] has. */
-    func childCount[self: Composition&](parent: Entity): Int {
+    func (self: Composition!).childCount(parent: Entity): Int {
         var total = 0
         var index = 0
-        while index < storageLength<Child>(self.children) {
-            fin entity = storageEntityAt<Child>(self.children, index)
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
             if entity.isValid {
-                fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
-                if link.parent.id == parent.id {
+                fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+                if link.parent.id == parent.id && link.parent.generation == parent.generation {
                     total = total + 1
                 }
             }
@@ -293,14 +299,14 @@ impl Composition {
     }
 
     /** [parent]'s child at composition position [position]. */
-    func childAt[self: Composition&](parent: Entity, position: Int): Entity {
+    func (self: Composition!).childAt(parent: Entity, position: Int): Entity {
         var index = 0
-        while index < storageLength<Child>(self.children) {
-            fin entity = storageEntityAt<Child>(self.children, index)
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
             if entity.isValid {
-                fin link = storageGetOrDefault<Child>(self.children, entity, Child(Entity::invalid))
-                if link.parent.id == parent.id {
-                    fin slot = storageGetOrDefault<SiblingOrder>(self.order, entity, SiblingOrder(0 - 1))
+                fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+                if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                    fin slot = storageGetOrDefault<SiblingOrder>(self.order(), entity, SiblingOrder(0 - 1))
                     if slot.index == position {
                         return entity
                     }
@@ -319,12 +325,12 @@ impl Composition {
      * which is exactly why a button can recolour a set of shapes it never named.
      */
     /** Writes [colour] onto [entity]'s paint, keeping its alpha and text size. */
-    func setPaint[self: Composition!](entity: Entity, r: Double, g: Double, b: Double) {
+    func (self: Composition!).setPaint(entity: Entity, r: Double, g: Double, b: Double) {
         fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
         storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
     }
 
-    func tintGroup[self: Composition!](
+    func (self: Composition!).tintGroup(
         group: Int
         r: Double
         g: Double
@@ -353,7 +359,7 @@ impl Composition {
      * Later siblings are tested first because they draw on top, so the node the
      * user believes they clicked is the one that answers.
      */
-    func hit[self: Composition&](pointerX: Double, pointerY: Double): Int {
+    func (self: Composition!).hit(pointerX: Double, pointerY: Double): Int {
         var found = 0
         var index = 0
         while index < storageLength<Action>(store<Action>(self)) {
@@ -374,7 +380,7 @@ impl Composition {
     }
 
     /** Moves a scroll container by [delta], clamped to its content. */
-    func scrollBy[self: Composition!](node: Entity, delta: Double, viewport: Double) {
+    func (self: Composition!).scrollBy(node: Entity, delta: Double, viewport: Double) {
         fin current = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
         var moved = current.offset + delta
         fin limit = current.contentExtent - viewport

@@ -25,3 +25,107 @@
 
 module engine.math
 
+
+exposed import engine.math.vec
+exposed import engine.math.mat
+exposed import engine.math.quat
+import std.math
+
+func vec3Zero(): Vec3 { return Vec3(0.0, 0.0, 0.0) }
+
+func mat4Identity(): Mat4 {
+    return Mat4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+/// a × b (row-major: applies b first, then a).
+func mat4Mul(a: Mat4, b: Mat4): Mat4 {
+    return Mat4(
+        a.m00 * b.m00 + a.m01 * b.m10 + a.m02 * b.m20 + a.m03 * b.m30,
+        a.m00 * b.m01 + a.m01 * b.m11 + a.m02 * b.m21 + a.m03 * b.m31,
+        a.m00 * b.m02 + a.m01 * b.m12 + a.m02 * b.m22 + a.m03 * b.m32,
+        a.m00 * b.m03 + a.m01 * b.m13 + a.m02 * b.m23 + a.m03 * b.m33,
+
+        a.m10 * b.m00 + a.m11 * b.m10 + a.m12 * b.m20 + a.m13 * b.m30,
+        a.m10 * b.m01 + a.m11 * b.m11 + a.m12 * b.m21 + a.m13 * b.m31,
+        a.m10 * b.m02 + a.m11 * b.m12 + a.m12 * b.m22 + a.m13 * b.m32,
+        a.m10 * b.m03 + a.m11 * b.m13 + a.m12 * b.m23 + a.m13 * b.m33,
+
+        a.m20 * b.m00 + a.m21 * b.m10 + a.m22 * b.m20 + a.m23 * b.m30,
+        a.m20 * b.m01 + a.m21 * b.m11 + a.m22 * b.m21 + a.m23 * b.m31,
+        a.m20 * b.m02 + a.m21 * b.m12 + a.m22 * b.m22 + a.m23 * b.m32,
+        a.m20 * b.m03 + a.m21 * b.m13 + a.m22 * b.m23 + a.m23 * b.m33,
+
+        a.m30 * b.m00 + a.m31 * b.m10 + a.m32 * b.m20 + a.m33 * b.m30,
+        a.m30 * b.m01 + a.m31 * b.m11 + a.m32 * b.m21 + a.m33 * b.m31,
+        a.m30 * b.m02 + a.m31 * b.m12 + a.m32 * b.m22 + a.m33 * b.m32,
+        a.m30 * b.m03 + a.m31 * b.m13 + a.m32 * b.m23 + a.m33 * b.m33
+    )
+}
+
+func mat4Translation(x: Double, y: Double, z: Double): Mat4 {
+    return Mat4(
+        1.0, 0.0, 0.0, x,
+        0.0, 1.0, 0.0, y,
+        0.0, 0.0, 1.0, z,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4Scale(x: Double, y: Double, z: Double): Mat4 {
+    return Mat4(
+        x, 0.0, 0.0, 0.0,
+        0.0, y, 0.0, 0.0,
+        0.0, 0.0, z, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationX(rad: Double): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, c, 0.0 - s, 0.0,
+        0.0, s, c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationY(rad: Double): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        c, 0.0, s, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0 - s, 0.0, c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+func mat4RotationZ(rad: Double): Mat4 {
+    fin c = cos(rad)
+    fin s = sin(rad)
+    return Mat4(
+        c, 0.0 - s, 0.0, 0.0,
+        s, c, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+}
+
+/// Right-handed perspective projection (depth 0..1, Metal/Vulkan convention).
+func mat4Perspective(fovYDeg: Double, aspect: Double, zNear: Double, zFar: Double): Mat4 {
+    fin f = 1.0 / tan((fovYDeg * Double(3.14159265358979) / Double(180.0)) * 0.5)
+    fin range = zNear - zFar
+    return Mat4(
+        f / aspect, 0.0, 0.0, 0.0,
+        0.0, f, 0.0, 0.0,
+        0.0, 0.0, zFar / range, zNear * zFar / range,
+        0.0, 0.0, 0.0 - 1.0, 0.0
+    )
+}

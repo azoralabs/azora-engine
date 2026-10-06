@@ -43,7 +43,7 @@ pack MediaTime {
 
 /** Zero seconds in the engine's default microsecond time base. */
 func mediaTimeZero(): MediaTime {
-    return MediaTime(0L, 1, 1000000)
+    return MediaTime(Long(0), 1, 1000000)
 }
 
 /** Builds a timestamp in a `1 / scale` time base. */
@@ -172,7 +172,7 @@ pack MediaInfo {
 
 /** An empty probe result used as a safe fallback in tools and tests. */
 func mediaInfoEmpty(): MediaInfo {
-    return MediaInfo("", mediaTimeZero(), false, false, Array::fill<MediaStreamInfo>(0))
+    return MediaInfo("", mediaTimeZero(), false, false, Array<MediaStreamInfo>())
 }
 
 /** Number of streams of [kind] in [info]. */
@@ -190,7 +190,7 @@ func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): Int {
 
 /** True when a caller-owned byte source has storage to probe. */
 func mediaBytesValid(bytes: Blob&): Bool {
-    return bytes.data != 0L && bytes.size > 0
+    return bytes.data != Long(0) && bytes.size > 0
 }
 
 /** True when [source] contains enough information for a provider to open it. */
@@ -233,10 +233,10 @@ pack MediaProviderCapabilities {
  * by [StreamId], never by a display name or codec string.
  */
 spec MediaProvider {
-    func name[self: Self&](): String
-    func capabilities[self: Self&](): MediaProviderCapabilities
-    func canOpen[self: Self&](source: MediaSource&): Bool
-    func probe[self: Self&](source: MediaSource&): MediaInfo ?! MediaError
+    func &.name(): String
+    func &.capabilities(): MediaProviderCapabilities
+    func &.canOpen(source: MediaSource&): Bool
+    func &.probe(source: MediaSource&): MediaInfo ?! MediaError
 }
 
 /**
@@ -293,19 +293,19 @@ func fakeMovieInfo(): MediaInfo {
 }
 
 impl MediaProvider for FakeMediaProvider {
-    func name[self: Self&](): String {
+    func &.name(): String {
         return "azora.fake-media"
     }
 
-    func capabilities[self: Self&](): MediaProviderCapabilities {
+    func &.capabilities(): MediaProviderCapabilities {
         return MediaProviderCapabilities(true, true, false, true, false, false, true, true)
     }
 
-    func canOpen[self: Self&](source: MediaSource&): Bool {
+    func &.canOpen(source: MediaSource&): Bool {
         return self.available && mediaSourceValid(source)
     }
 
-    func probe[self: Self&](source: MediaSource&): MediaInfo ?! MediaError {
+    func &.probe(source: MediaSource&): MediaInfo ?! MediaError {
         if !self.available {
             return .ProviderUnavailable
         }
@@ -317,20 +317,20 @@ impl MediaProvider for FakeMediaProvider {
 }
 
 test "media time preserves ordering across time bases" {
-    fin oneSecond = mediaTime(24L, 24)
-    fin halfSecond = mediaTime(500L, 1000)
-    assert mediaTimeCompare(oneSecond, halfSecond) > 0 { "one second must follow half a second" }
-    assert mediaTimeCompare(oneSecond, mediaTimeSeconds(1.0)) == 0 { "equal instants must compare equally" }
-    assert mediaTimeAdd(halfSecond, halfSecond).ticks == 1000L { "addition must retain the left time base" }
+    fin oneSecond = mediaTime(Long(24), 24)
+    fin halfSecond = mediaTime(Long(500), 1000)
+    assert mediaTimeCompare(oneSecond, halfSecond) > 0 panic "one second must follow half a second"
+    assert mediaTimeCompare(oneSecond, mediaTimeSeconds(1.0)) == 0 panic "equal instants must compare equally"
+    assert mediaTimeAdd(halfSecond, halfSecond).ticks == Long(1000) panic "addition must retain the left time base"
 }
 
 test "the fake provider exposes streams by stable identity and kind" {
     fin provider = FakeMediaProvider(true)
     fin info = provider.probe(MediaSource.Path("movie.mkv")) catch mediaInfoEmpty()
-    assert info.format == "matroska" { "the test provider must describe its container" }
-    assert mediaStreamCount(info, MediaStreamKind.Video) == 1 { "the movie must have one video stream" }
-    assert mediaStreamCount(info, MediaStreamKind.Audio) == 1 { "the movie must have one audio stream" }
-    assert info.streams[0].id.value == 10 { "stream selection must use ids, not names" }
+    assert info.format == "matroska" panic "the test provider must describe its container"
+    assert mediaStreamCount(info, MediaStreamKind.Video) == 1 panic "the movie must have one video stream"
+    assert mediaStreamCount(info, MediaStreamKind.Audio) == 1 panic "the movie must have one audio stream"
+    assert info.streams[0].id.value == 10 panic "stream selection must use ids, not names"
 }
 
 test "the provider rejects an empty source" {
@@ -341,5 +341,5 @@ test "the provider rejects an empty source" {
     } catch {
         rejected = true
     }
-    assert rejected { "an empty path must not reach a decoder" }
+    assert rejected panic "an empty path must not reach a decoder"
 }

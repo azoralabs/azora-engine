@@ -1,0 +1,54 @@
+module headless
+import std.io
+import engine.ecs
+
+func main() {
+    var world = World()
+    fin first = world.spawn()
+    var values = storageInit<Int>(0)
+    var labels = storageInit<String>("")
+    storageInsert<String>(labels, first, "original")
+    storageInsert<Int>(values, first, 42)
+    assert storageGet<Int>(values, first) == 42 panic "insert must preserve a component"
+    storageInsert<Int>(values, first, 99)
+    assert storageCount<Int>(values) == 1 panic "replace must preserve one slot"
+    assert storageGet<Int>(values, first) == 99 panic "replace must update the component"
+    fin indexed = storageEntityAt<Int>(values, 1)
+    assert indexed.id == first.id panic "indexed entity must preserve identity"
+    assert storageGet<String>(labels, indexed) == "original" panic "entity must identify components across storages"
+    storageInsert<String>(labels, indexed, "updated")
+    assert storageCount<String>(labels) == 1 panic "second storage replacement must retain one entity"
+    assert storageRemove<Int>(values, first) panic "remove must find the component"
+    assert !storageHas<Int>(values, first) panic "removed component must disappear"
+    assert first.isValid panic "storage removal must preserve the caller's handle"
+    assert indexed.isValid panic "indexed entity snapshot must remain valid after removal"
+    assert storageGet<String>(labels, first) == "updated" panic "removal must preserve another storage's entity"
+    assert storageRemove<String>(labels, indexed) panic "independent storage must remove its own handle"
+    assert first.isValid && indexed.isValid panic "independent removals must preserve entity values"
+    world.despawn(first)
+    assert !world.isAlive(first) panic "despawn must invalidate the handle"
+    fin second = world.spawn()
+    assert second.id == first.id panic "world must reuse a free slot"
+    assert second.generation != first.generation panic "reused slots must change generation"
+    assert !world.isAlive(first) panic "a stale handle must remain invalid"
+    var commands = commandBufferInit()
+    commands.despawn(second)
+    commands.apply(world)
+    assert !world.isAlive(second) panic "deferred despawn must apply to the world"
+    assert second.isValid panic "command cleanup must preserve the caller's handle"
+    commands.apply(world)
+    assert commands.despawns.size == 0 panic "applied command buffer must clear its owners"
+    fin third = world.spawn()
+    var query = queryScene(world)
+    assert query.count() == 1 panic "scene query must include the live entity"
+    fin fetched = query.next()
+    assert fetched.id == third.id && fetched.generation == third.generation panic "query must return an independent matching handle"
+    fin single = query.single()
+    assert single.ok && single.entity.id == third.id panic "single query must preserve its entity snapshot"
+    query.invalidateAt(1)
+    assert fetched.isValid && single.entity.isValid panic "query invalidation must preserve escaped handle snapshots"
+    query.reset()
+    assert !query.next().isValid panic "invalidated query row must not be yielded"
+    assert world.isAlive(third) panic "query cleanup must preserve the world entity"
+    println("headless ecs passed")
+}

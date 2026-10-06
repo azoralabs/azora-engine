@@ -61,25 +61,25 @@ pack EventReader {
 
 /** A reader positioned at the start of whatever is currently buffered. */
 func eventReader(): EventReader {
-    return EventReader(0L)
+    return EventReader(Long(0))
 }
 
 /** An empty queue with room for [capacity] events per frame. */
-func eventsNew<T>(capacity: Int): Events<T> {
+func<T> eventsNew(capacity: Int): Events<T> {
     fin room = if capacity > 0 { capacity } else { 0 }
     var current: Array<T> = Array::fill<T>(room)
     var previous: Array<T> = Array::fill<T>(room)
-    return Events<T>(current, 0, previous, 0, 0L)
+    return Events<T>(current, 0, previous, 0, Long(0))
 }
 
 /** The sequence number of the oldest event still readable. */
-func eventsOldest<T>(events: Events<T>&): Long {
+func<T> eventsOldest(events: Events<T>&): Long {
     fin buffered = (events.currentCount + events.previousCount) as Long
     return events.sent - buffered
 }
 
 /** Writes [event], giving it the next sequence number. */
-func eventsSend<T>(events: Events<T>!, event: T) {
+func<T> eventsSend(events: Events<T>!, event: T) {
     if events.currentCount >= events.current.size {
         fin room = if events.current.size * 2 > 8 { events.current.size * 2 } else { 8 }
         var grown: Array<T> = Array::fill<T>(room)
@@ -92,7 +92,7 @@ func eventsSend<T>(events: Events<T>!, event: T) {
     }
     events.current[events.currentCount] = event
     events.currentCount = events.currentCount + 1
-    events.sent = events.sent + 1L
+    events.sent = events.sent + Long(1)
 }
 
 /**
@@ -103,7 +103,7 @@ func eventsSend<T>(events: Events<T>!, event: T) {
  * of the *next* frame is gone, which is the contract that keeps the queue
  * bounded.
  */
-func eventsUpdate<T>(events: Events<T>!) {
+func<T> eventsUpdate(events: Events<T>!) {
     fin swap = events.previous
     events.previous = events.current
     events.previousCount = events.currentCount
@@ -112,13 +112,13 @@ func eventsUpdate<T>(events: Events<T>!) {
 }
 
 /** Drops everything buffered and resets the sequence. */
-func eventsClear<T>(events: Events<T>!) {
+func<T> eventsClear(events: Events<T>!) {
     events.currentCount = 0
     events.previousCount = 0
 }
 
 /** The number of events currently buffered, across both frames. */
-func eventsBuffered<T>(events: Events<T>&): Int {
+func<T> eventsBuffered(events: Events<T>&): Int {
     return events.currentCount + events.previousCount
 }
 
@@ -130,7 +130,7 @@ func eventsBuffered<T>(events: Events<T>&): Int {
  * present rather than as an error — a reader that fell behind sees what is
  * left, which is the only useful answer.
  */
-func eventsAt<T>(events: Events<T>&, sequence: Long, fallback: T): T {
+func<T> eventsAt(events: Events<T>&, sequence: Long, fallback: T): T {
     fin oldest = eventsOldest<T>(events)
     if events.sent <= oldest || sequence >= events.sent {
         return fallback
@@ -153,7 +153,7 @@ func eventsAt<T>(events: Events<T>&, sequence: Long, fallback: T): T {
  * event still buffered, not from where it left off, so the count never claims
  * events that are gone.
  */
-func eventsUnread<T>(events: Events<T>&, reader: EventReader&): Int {
+func<T> eventsUnread(events: Events<T>&, reader: EventReader&): Int {
     fin oldest = eventsOldest<T>(events)
     fin from = if reader.next < oldest { oldest } else { reader.next }
     if from >= events.sent {
@@ -163,7 +163,7 @@ func eventsUnread<T>(events: Events<T>&, reader: EventReader&): Int {
 }
 
 /** True when [reader] has an event waiting. */
-func eventsHasNext<T>(events: Events<T>&, reader: EventReader&): Bool {
+func<T> eventsHasNext(events: Events<T>&, reader: EventReader&): Bool {
     return eventsUnread<T>(events, reader) > 0
 }
 
@@ -173,7 +173,7 @@ func eventsHasNext<T>(events: Events<T>&, reader: EventReader&): Bool {
  * Returns [fallback] when there is nothing to read, so a caller that ignores
  * [eventsHasNext] gets a defined value rather than a stale one.
  */
-func eventsNext<T>(events: Events<T>&, reader: EventReader!, fallback: T): T {
+func<T> eventsNext(events: Events<T>&, reader: EventReader!, fallback: T): T {
     fin oldest = eventsOldest<T>(events)
     if reader.next < oldest {
         reader.next = oldest
@@ -182,12 +182,12 @@ func eventsNext<T>(events: Events<T>&, reader: EventReader!, fallback: T): T {
         return fallback
     }
     fin value = eventsAt<T>(events, reader.next, fallback)
-    reader.next = reader.next + 1L
+    reader.next = reader.next + Long(1)
     return value
 }
 
 /** Moves [reader] past everything currently buffered without reading it. */
-func eventsSkip<T>(events: Events<T>&, reader: EventReader!) {
+func<T> eventsSkip(events: Events<T>&, reader: EventReader!) {
     reader.next = events.sent
 }
 
@@ -195,15 +195,15 @@ test "a reader sees what was sent, once" {
     var events = eventsNew<Int>(4)
     var reader = eventReader()
 
-    assert !eventsHasNext<Int>(events, reader) { "a fresh queue has nothing to read" }
+    assert !eventsHasNext<Int>(events, reader) panic "a fresh queue has nothing to read"
 
     eventsSend<Int>(events, 10)
     eventsSend<Int>(events, 20)
-    assert eventsUnread<Int>(events, reader) == 2 { "both events must be waiting" }
-    assert eventsNext<Int>(events, reader, -1) == 10 { "events must arrive in order" }
-    assert eventsNext<Int>(events, reader, -1) == 20 { "and then the second" }
-    assert !eventsHasNext<Int>(events, reader) { "a drained reader must see nothing" }
-    assert eventsNext<Int>(events, reader, -1) == -1 { "reading past the end must give the fallback" }
+    assert eventsUnread<Int>(events, reader) == 2 panic "both events must be waiting"
+    assert eventsNext<Int>(events, reader, -1) == 10 panic "events must arrive in order"
+    assert eventsNext<Int>(events, reader, -1) == 20 panic "and then the second"
+    assert !eventsHasNext<Int>(events, reader) panic "a drained reader must see nothing"
+    assert eventsNext<Int>(events, reader, -1) == -1 panic "reading past the end must give the fallback"
 }
 
 test "two readers do not consume each other's events" {
@@ -212,11 +212,9 @@ test "two readers do not consume each other's events" {
     var second = eventReader()
 
     eventsSend<Int>(events, 7)
-    assert eventsNext<Int>(events, first, -1) == 7 { "the first reader sees the event" }
-    assert eventsNext<Int>(events, second, -1) == 7 {
-        "the second reader must see it too — that is the whole point of a cursor"
-    }
-    assert !eventsHasNext<Int>(events, first) { "each reader advances only itself" }
+    assert eventsNext<Int>(events, first, -1) == 7 panic "the first reader sees the event"
+    assert eventsNext<Int>(events, second, -1) == 7 panic "the second reader must see it too — that is the whole point of a cursor"
+    assert !eventsHasNext<Int>(events, first) panic "each reader advances only itself"
 }
 
 test "an event survives exactly one frame past the one it was sent in" {
@@ -226,12 +224,12 @@ test "an event survives exactly one frame past the one it was sent in" {
     eventsSend<Int>(events, 1)
     eventsUpdate<Int>(events)
     // A reader that only wakes up next frame must still see it.
-    assert eventsNext<Int>(events, late, -1) == 1 { "last frame's events must still be readable" }
+    assert eventsNext<Int>(events, late, -1) == 1 panic "last frame's events must still be readable"
 
     eventsSend<Int>(events, 2)
     eventsUpdate<Int>(events)
     eventsUpdate<Int>(events)
-    assert eventsBuffered<Int>(events) == 0 { "two frames on, the queue must be empty again" }
+    assert eventsBuffered<Int>(events) == 0 panic "two frames on, the queue must be empty again"
 }
 
 test "a reader that falls behind sees what is left rather than nothing" {
@@ -245,9 +243,9 @@ test "a reader that falls behind sees what is left rather than nothing" {
     eventsSend<Int>(events, 3)
 
     // Event 1 has aged out; 2 and 3 remain.
-    assert eventsUnread<Int>(events, asleep) == 2 { "the count must not claim dropped events" }
-    assert eventsNext<Int>(events, asleep, -1) == 2 { "reading resumes at the oldest survivor" }
-    assert eventsNext<Int>(events, asleep, -1) == 3 { "and continues into this frame" }
+    assert eventsUnread<Int>(events, asleep) == 2 panic "the count must not claim dropped events"
+    assert eventsNext<Int>(events, asleep, -1) == 2 panic "reading resumes at the oldest survivor"
+    assert eventsNext<Int>(events, asleep, -1) == 3 panic "and continues into this frame"
 }
 
 test "skipping moves past everything without reading it" {
@@ -256,10 +254,10 @@ test "skipping moves past everything without reading it" {
     eventsSend<Int>(events, 1)
     eventsSend<Int>(events, 2)
     eventsSkip<Int>(events, reader)
-    assert !eventsHasNext<Int>(events, reader) { "a skipped reader must be caught up" }
+    assert !eventsHasNext<Int>(events, reader) panic "a skipped reader must be caught up"
 
     eventsSend<Int>(events, 3)
-    assert eventsNext<Int>(events, reader, -1) == 3 { "and still see what comes after" }
+    assert eventsNext<Int>(events, reader, -1) == 3 panic "and still see what comes after"
 }
 
 test "the queue grows past its initial capacity" {
@@ -270,6 +268,6 @@ test "the queue grows past its initial capacity" {
         eventsSend<Int>(events, i)
         i = i + 1
     }
-    assert eventsUnread<Int>(events, reader) == 40 { "every event must be kept" }
-    assert eventsNext<Int>(events, reader, -1) == 0 { "the first must still be first" }
+    assert eventsUnread<Int>(events, reader) == 40 panic "every event must be kept"
+    assert eventsNext<Int>(events, reader, -1) == 0 panic "the first must still be first"
 }

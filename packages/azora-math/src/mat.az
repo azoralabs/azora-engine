@@ -55,7 +55,7 @@ where T is Number && R in 2..4 && C in 2..4 {
 }
 
 impl Mat<T, R, C, O> {
-    ctor [self: Self!](all: T) {
+    ctor .(all: T) {
         inline for f in reflect<Self>.fields {
             self.${f.name} = all
         }
@@ -64,10 +64,10 @@ impl Mat<T, R, C, O> {
     /**
      * Element-wise arithmetic against another matrix of the same shape.
      */
-    inline for op in @arr["+", "-"] {
+    inline for op in ["+", "-"] {
         inline fin assignOp = "${op}="
 
-        oper $op [self: Self&](rhs: Self&): Self {
+        oper$op &.(rhs: Self&): Self {
             var result = Self(0 as T)
             inline for r in 0..<R {
                 inline for c in 0..<C {
@@ -77,7 +77,7 @@ impl Mat<T, R, C, O> {
             return result
         }
 
-        oper $assignOp [self: Self!](rhs: Self&) {
+        oper$assignOp !.(rhs: Self&) {
             inline for r in 0..<R {
                 inline for c in 0..<C {
                     self.m$r$c $assignOp rhs.m$r$c
@@ -89,10 +89,10 @@ impl Mat<T, R, C, O> {
     /**
      * Element-wise arithmetic against a scalar.
      */
-    inline for op in @arr["*", "/"] {
+    inline for op in ["*", "/"] {
         inline fin assignOp = "${op}="
 
-        oper $op [self: Self&](rhs: T&): Self {
+        oper$op &.(rhs: T&): Self {
             var result = Self(0 as T)
             inline for r in 0..<R {
                 inline for c in 0..<C {
@@ -102,7 +102,7 @@ impl Mat<T, R, C, O> {
             return result
         }
 
-        oper $assignOp [self: Self!](rhs: T&) {
+        oper$assignOp !.(rhs: T&) {
             inline for r in 0..<R {
                 inline for c in 0..<C {
                     self.m$r$c $assignOp rhs
@@ -111,9 +111,9 @@ impl Mat<T, R, C, O> {
         }
     }
 
-    oper+ [self: Self&]: Self = self
+    oper+ &.(): Self = self
 
-    oper- [self: Self&]: Self where T is SignedNumber {
+    oper- &.(): Self where T is SignedNumber {
         var result = Self(0 as T)
         inline for r in 0..<R {
             inline for c in 0..<C {
@@ -123,7 +123,7 @@ impl Mat<T, R, C, O> {
         return result
     }
 
-    oper== [self: Self&](rhs: Self&): Bool {
+    oper== &.(rhs: Self&): Bool {
         inline for r in 0..<R {
             inline for c in 0..<C {
                 if self.m$r$c != rhs.m$r$c { return false }
@@ -136,7 +136,7 @@ impl Mat<T, R, C, O> {
      * Matrix product. Square only: the shape is what makes `a * b` a matrix of the
      * same type, which is what an operator has to return.
      */
-    oper* [self: Self&](rhs: Self&): Self where R == C {
+    oper* &.(rhs: Self&): Self where R == C {
         var result = Self(0 as T)
         inline for r in 0..<R {
             inline for c in 0..<C {
@@ -153,7 +153,7 @@ impl Mat<T, R, C, O> {
     /**
      * This matrix with rows and columns exchanged.
      */
-    prop transposed[self: Self&]: Mat<T, C, R, O> {
+    prop  &.transposed: Mat<T, C, R, O> {
         var result = Mat<T, C, R, O>(0 as T)
         inline for r in 0..<R {
             inline for c in 0..<C {
@@ -166,7 +166,7 @@ impl Mat<T, R, C, O> {
     /**
      * The sum of the diagonal.
      */
-    prop diagonalSum[self: Self&]: T where R == C {
+    prop  &.diagonalSum: T where R == C {
         var total: T = 0 as T
         inline for i in 0..<R {
             total += self.m$i$i
@@ -176,15 +176,15 @@ impl Mat<T, R, C, O> {
 
 }
 
-impl Mat<T, R, C, O>:: {
+impl Mat<T, R, C, O> {
     fin zero = Mat<T, R, C, O>(0 as T)
 }
 
-impl Mat<T, R, C, O>:: where R == C {
+impl Mat<T, R, C, O> {
     /**
      * The identity: ones down the diagonal, zeroes elsewhere.
      */
-    func identity(): Mat<T, R, C, O> {
+    func identity(): Mat<T, R, C, O> where R == C {
         var result = Mat<T, R, C, O>(0 as T)
         inline for i in 0..<R {
             result.m$i$i = 1 as T
@@ -193,7 +193,7 @@ impl Mat<T, R, C, O>:: where R == C {
     }
 }
 
-inline for [t, Ty] in [@arr["i", "u", "f", ""], [Int, UInt, Float, Double]] {
+inline for [t, Ty] in [["i", "u", "f", ""], [Int, UInt, Float, Double]] {
     inline for n in 2..4 {
         typealias Mat$n$t = Mat<Ty, n, n>
     }

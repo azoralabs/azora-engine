@@ -37,6 +37,10 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_DIR="${1:?usage: build.sh <project_dir> [build|run]}"
 ACTION="${2:-run}"
+case "$ACTION" in
+    build|run|check) ;;
+    *) echo "error: action must be build, run or check" >&2; exit 2 ;;
+esac
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 BUILD_DIR="$PROJECT_DIR/.azora-build"
@@ -60,14 +64,14 @@ find_java() {
     echo ""
 }
 
-JAVA_BIN="$(find_java)"
-if [ -z "$JAVA_BIN" ]; then
-    echo "error: Java 17+ is required to run the Azora compiler (set JAVA_HOME or install a JDK)." >&2
-    exit 1
-fi
-
 # ── Locate clang ─────────────────────────────────────────────────────────
 find_clang() {
+    if [ -n "${AZORA_CLANG:-}" ]; then
+        command -v "$AZORA_CLANG"; return
+    fi
+    if [ -x /usr/bin/clang ]; then
+        echo /usr/bin/clang; return
+    fi
     if command -v clang >/dev/null 2>&1; then
         command -v clang; return
     fi
@@ -124,14 +128,31 @@ fi
 APP_NAME="$(basename "$PROJECT_DIR" | tr -cd '[:alnum:]_-')"
 [ -n "$APP_NAME" ] || APP_NAME="app"
 
-echo "azora-engine: compiling ($APP_NAME)"
+COMPILER_ARGS=(compile llvm "$SRC_DIR/main.az")
+OUTPUT_FILE="$BUILD_DIR/$APP_NAME.ll"
+if [ "$ACTION" = "check" ]; then
+    COMPILER_ARGS=(check "$SRC_DIR/main.az")
+    OUTPUT_FILE="$BUILD_DIR/$APP_NAME.check.txt"
+fi
+
+echo "azora-engine: $ACTION ($APP_NAME)"
 if [ -n "${AZORA_COMPILER_BIN:-}" ]; then
     if [ ! -x "$AZORA_COMPILER_BIN" ]; then
         echo "error: AZORA_COMPILER_BIN is not executable: $AZORA_COMPILER_BIN" >&2
         exit 1
     fi
-    "$AZORA_COMPILER_BIN" compile llvm "$SRC_DIR/main.az" > "$BUILD_DIR/$APP_NAME.ll"
+    if ! "$AZORA_COMPILER_BIN" "${COMPILER_ARGS[@]}" > "$OUTPUT_FILE"; then
+        cat "$OUTPUT_FILE"
+        exit 1
+    fi
 else
+    # Legacy development bootstrap only. An explicitly selected native
+    # compiler must not require or discover a JVM.
+    JAVA_BIN="$(find_java)"
+    if [ -z "$JAVA_BIN" ]; then
+        echo "error: the legacy bundled compiler requires Java 17+; select a native compiler with AZORA_COMPILER_BIN." >&2
+        exit 1
+    fi
     CLASSPATH=""
     for jar in "$LIB_DIR/tools/azorac/lib/"*.jar; do
         [ -f "$jar" ] || continue
@@ -141,8 +162,15 @@ else
         echo "error: bundled Azora compiler not found in $LIB_DIR/tools/azorac/lib" >&2
         exit 1
     fi
-    "$JAVA_BIN" -cp "$CLASSPATH" dev.azora.lang.MainKt compile llvm "$SRC_DIR/main.az" \
-        > "$BUILD_DIR/$APP_NAME.ll"
+    if ! "$JAVA_BIN" -cp "$CLASSPATH" dev.azora.lang.MainKt "${COMPILER_ARGS[@]}" > "$OUTPUT_FILE"; then
+        cat "$OUTPUT_FILE"
+        exit 1
+    fi
+fi
+
+if [ "$ACTION" = "check" ]; then
+    cat "$OUTPUT_FILE"
+    exit 0
 fi
 
 if [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then

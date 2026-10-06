@@ -134,7 +134,7 @@ fin gamepadLeftY = 1
 fin gamepadRightX = 2
 fin gamepadRightY = 3
 
-realm engine::input {
+scope engine::input {
 /**
  * Stable keyboard key identifiers used by `ButtonInput<KeyCode>`.
  *
@@ -376,7 +376,7 @@ impl ButtonInput<KeyCode> {
 }
 }
 
-realm engine::input {
+scope engine::input {
     /* Internal WebAssembly device ABI; applications use the wrappers below. */
     bridge [.C, .WebAssembly] {
         func engineInputKeyDown(key: Int): Bool
@@ -626,37 +626,37 @@ realm engine::input {
     }
 
     impl MouseInput {
-        func pressed[self: Self&](button: MouseButton): Bool {
+        func &.pressed(button: MouseButton): Bool {
             return engineInputMouseDown(mouseButtonValue(button))
         }
 
-        func justPressed[self: Self&](button: MouseButton): Bool {
+        func &.justPressed(button: MouseButton): Bool {
             return engineInputMousePressed(mouseButtonValue(button))
         }
 
-        func justReleased[self: Self&](button: MouseButton): Bool {
+        func &.justReleased(button: MouseButton): Bool {
             return engineInputMouseReleased(mouseButtonValue(button))
         }
     }
 
     impl PointerInput {
-        prop kind[self: Self&]: PointerKind = pointerKindFromValue(engineInputPointerKind())
-        prop id[self: Self&]: Int = engineInputPointerId()
-        prop x[self: Self&]: Double = engineInputPointerX()
-        prop y[self: Self&]: Double = engineInputPointerY()
-        prop deltaX[self: Self&]: Double = engineInputPointerDeltaX()
-        prop deltaY[self: Self&]: Double = engineInputPointerDeltaY()
-        prop pressure[self: Self&]: Double = engineInputPointerPressure()
-        prop pressed[self: Self&]: Bool = engineInputPointerDown()
-        prop justPressed[self: Self&]: Bool = engineInputPointerPressed()
-        prop justReleased[self: Self&]: Bool = engineInputPointerReleased()
+        prop  &.kind: PointerKind = pointerKindFromValue(engineInputPointerKind())
+        prop  &.id: Int = engineInputPointerId()
+        prop  &.x: Double = engineInputPointerX()
+        prop  &.y: Double = engineInputPointerY()
+        prop  &.deltaX: Double = engineInputPointerDeltaX()
+        prop  &.deltaY: Double = engineInputPointerDeltaY()
+        prop  &.pressure: Double = engineInputPointerPressure()
+        prop  &.pressed: Bool = engineInputPointerDown()
+        prop  &.justPressed: Bool = engineInputPointerPressed()
+        prop  &.justReleased: Bool = engineInputPointerReleased()
     }
 
     impl TouchInput {
-        prop size[self: Self&]: Int = engineInputTouchCount()
+        prop  &.size: Int = engineInputTouchCount()
 
-        func at[self: Self&](index: Int): TouchPoint {
-            assert index >= 0 && index < self.size { "touch index out of bounds" }
+        func &.at(index: Int): TouchPoint {
+            assert index >= 0 && index < self.size panic "touch index out of bounds"
             return TouchPoint(
                 engineInputTouchId(index),
                 engineInputTouchX(index),
@@ -672,45 +672,45 @@ realm engine::input {
     }
 
     impl GamepadInput {
-        prop connected[self: Self&]: Bool = engineInputControllerConnected(self._index)
+        prop  &.connected: Bool = engineInputControllerConnected(self._index)
 
-        func pressed[self: Self&](button: GamepadButton): Bool {
+        func &.pressed(button: GamepadButton): Bool {
             return engineInputControllerButtonDown(self._index, gamepadButtonValue(button))
         }
 
-        func justPressed[self: Self&](button: GamepadButton): Bool {
+        func &.justPressed(button: GamepadButton): Bool {
             return engineInputControllerButtonPressed(self._index, gamepadButtonValue(button))
         }
 
-        func justReleased[self: Self&](button: GamepadButton): Bool {
+        func &.justReleased(button: GamepadButton): Bool {
             return engineInputControllerButtonReleased(self._index, gamepadButtonValue(button))
         }
 
-        func value[self: Self&](button: GamepadButton): Double {
+        func &.value(button: GamepadButton): Double {
             return engineInputControllerButtonValue(self._index, gamepadButtonValue(button))
         }
 
-        func axis[self: Self&](axis: GamepadAxis): Double {
+        func &.axis(axis: GamepadAxis): Double {
             return engineInputControllerAxis(self._index, gamepadAxisValue(axis))
         }
 
-        func rumble[self: Self&](low: Double, high: Double, durationMs: Int = 180): Bool {
+        func &.rumble(low: Double, high: Double, durationMs: Int = 180): Bool {
             return engineInputControllerRumble(self._index, low, high, durationMs)
         }
     }
 }
 
 test "typed input enums map to stable host values" {
-    assert engine::input::keyCodeValue(KeyCode.W) == keyW { "KeyCode.W mapping changed" }
-    assert engine::input::mouseButtonValue(MouseButton.Left) == mouseLeft { "left mouse mapping changed" }
-    assert engine::input::gamepadButtonValue(GamepadButton.South) == gamepadSouth { "south gamepad mapping changed" }
-    assert engine::input::gamepadAxisValue(GamepadAxis.RightY) == gamepadRightY { "right Y axis mapping changed" }
+    assert engine::input::keyCodeValue(KeyCode.W) == keyW panic "KeyCode.W mapping changed"
+    assert engine::input::mouseButtonValue(MouseButton.Left) == mouseLeft panic "left mouse mapping changed"
+    assert engine::input::gamepadButtonValue(GamepadButton.South) == gamepadSouth panic "south gamepad mapping changed"
+    assert engine::input::gamepadAxisValue(GamepadAxis.RightY) == gamepadRightY panic "right Y axis mapping changed"
 }
 
 test "typed pointer and touch state mappings are total" {
-    assert engine::input::pointerKindFromValue(pointerTouch) == PointerKind.Touch { "touch pointer kind was lost" }
-    assert engine::input::pointerKindFromValue(pointerNone) == PointerKind.None { "none pointer kind was lost" }
-    assert engine::input::touchPhaseFromValue(touchCancelled) == TouchPhase.Cancelled { "cancelled touch phase was lost" }
-    assert engine::input::touchPhaseFromValue(-1) == TouchPhase.None { "unknown touch phases must map to None" }
+    assert engine::input::pointerKindFromValue(pointerTouch) == PointerKind.Touch panic "touch pointer kind was lost"
+    assert engine::input::pointerKindFromValue(pointerNone) == PointerKind.None panic "none pointer kind was lost"
+    assert engine::input::touchPhaseFromValue(touchCancelled) == TouchPhase.Cancelled panic "cancelled touch phase was lost"
+    assert engine::input::touchPhaseFromValue(-1) == TouchPhase.None panic "unknown touch phases must map to None"
 }
 

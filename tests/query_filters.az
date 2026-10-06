@@ -41,7 +41,7 @@ func countOf(cursor: QueryCursor&): std::Int {
 }
 
 func main() {
-    var world = World::init()
+    var world = World()
 
     var positions = storageOf<Position>(world)
     var frozen = storageOf<Frozen>(world)
@@ -74,20 +74,20 @@ func main() {
     fin p = registerStorage<Position>(world, positions)
     fin f = registerStorage<Frozen>(world, frozen)
     fin t = registerStorage<Tagged>(world, tagged)
-    std::println("replacedAnything=${p || f || t}")
+    println("replacedAnything=${p || f || t}")
 
     var all = QueryOf<Position>::provide(world)
-    std::println("all=${countOf(all.cursor)}")
+    println("all=${countOf(all.cursor)}")
 
     var thawed = QueryWithout<QueryOf<Position>, Frozen>::provide(world)
-    std::println("withoutFrozen=${countOf(thawed.cursor)}")
+    println("withoutFrozen=${countOf(thawed.cursor)}")
 
     var chilled = QueryWith<QueryOf<Position>, Frozen>::provide(world)
-    std::println("withFrozen=${countOf(chilled.cursor)}")
+    println("withFrozen=${countOf(chilled.cursor)}")
 
     // Filters nest, and nesting is what composes them.
     var only = QueryWithout<QueryWith<QueryOf<Position>, Tagged>, Frozen>::provide(world)
-    std::println("taggedNotFrozen=${countOf(only.cursor)}")
+    println("taggedNotFrozen=${countOf(only.cursor)}")
 
     // Walking yields exactly the rows the count promised. This is the half that
     // was silently dead natively: an unbound `hasNext` returned false and the
@@ -98,5 +98,5 @@ func main() {
             walked = walked + 1
         }
     }
-    std::println("walkedThawed=${walked}")
+    println("walkedThawed=${walked}")
 }

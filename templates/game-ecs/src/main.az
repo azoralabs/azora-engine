@@ -22,7 +22,19 @@
 
 module game
 
-import engine
+import engine.app
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.gpu.draw
+import engine.input
+import engine.io
+import engine.math
+import engine.platform
+import engine.render
+import engine.ui
+import engine.jobs
+import std.traits
 
 @Component
 pack LocalTransform {
@@ -58,7 +70,7 @@ pack RenderableStore {
 }
 
 @Resource
-solo pack GameConfig {
+pack GameConfig {
     fin spinSpeed: Double = 1.0
     fin cameraSpeed: Double = 4.5
 }
@@ -68,7 +80,7 @@ func defaultLocalTransform(): LocalTransform {
 }
 
 func defaultRenderable(): Renderable {
-    return Renderable(Mesh(0L, 0), colorRgb(0.0, 0.0, 0.0))
+    return Renderable(Mesh(Long(0), 0), colorRgb(0.0, 0.0, 0.0))
 }
 
 func sameEntity(left: Entity, right: Entity): Bool {
@@ -76,15 +88,15 @@ func sameEntity(left: Entity, right: Entity): Bool {
 }
 
 func transformStoreInit(): TransformStore {
-    return TransformStore(@arr[Entity::invalid], @arr[defaultLocalTransform()])
+    return TransformStore([Entity::invalid], [defaultLocalTransform()])
 }
 
 func spinStoreInit(): SpinStore {
-    return SpinStore(@arr[Entity::invalid], @arr[Spin(0.0)])
+    return SpinStore([Entity::invalid], [Spin(0.0)])
 }
 
 func renderableStoreInit(): RenderableStore {
-    return RenderableStore(@arr[Entity::invalid], @arr[defaultRenderable()])
+    return RenderableStore([Entity::invalid], [defaultRenderable()])
 }
 
 func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore): QueryCursor {
@@ -114,7 +126,7 @@ func buildRenderQuery(world: World, transforms: TransformStore, renderables: Ren
 }
 
 impl TransformStore {
-    func indexOf(entity: Entity): Int {
+    func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -125,11 +137,11 @@ impl TransformStore {
         return -1
     }
 
-    func has(entity: Entity): Bool {
+    func &.has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
-    func insert(entity: Entity, value: LocalTransform) {
+    func !.insert(entity: Entity, value: LocalTransform) {
         fin index = self.indexOf(entity)
         if index >= 0 {
             self.values[index] = value
@@ -139,13 +151,13 @@ impl TransformStore {
         self.values.add(value)
     }
 
-    func get(entity: Entity): LocalTransform {
+    func &.get(entity: Entity): LocalTransform {
         return self.values[self.indexOf(entity)]
     }
 }
 
 impl SpinStore {
-    func indexOf(entity: Entity): Int {
+    func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -156,11 +168,11 @@ impl SpinStore {
         return -1
     }
 
-    func has(entity: Entity): Bool {
+    func &.has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
-    func insert(entity: Entity, value: Spin) {
+    func !.insert(entity: Entity, value: Spin) {
         fin index = self.indexOf(entity)
         if index >= 0 {
             self.values[index] = value
@@ -170,13 +182,13 @@ impl SpinStore {
         self.values.add(value)
     }
 
-    func get(entity: Entity): Spin {
+    func &.get(entity: Entity): Spin {
         return self.values[self.indexOf(entity)]
     }
 }
 
 impl RenderableStore {
-    func indexOf(entity: Entity): Int {
+    func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
             if sameEntity(self.entities[i], entity) {
@@ -187,11 +199,11 @@ impl RenderableStore {
         return -1
     }
 
-    func has(entity: Entity): Bool {
+    func &.has(entity: Entity): Bool {
         return self.indexOf(entity) >= 0
     }
 
-    func insert(entity: Entity, value: Renderable) {
+    func !.insert(entity: Entity, value: Renderable) {
         fin index = self.indexOf(entity)
         if index >= 0 {
             self.values[index] = value
@@ -201,23 +213,22 @@ impl RenderableStore {
         self.values.add(value)
     }
 
-    func get(entity: Entity): Renderable {
+    func &.get(entity: Entity): Renderable {
         return self.values[self.indexOf(entity)]
     }
 }
 
-@System("Update")
 func spinSystem(
     world: World&
-    query: @Query (LocalTransform!, Spin&)
-    transforms: TransformStore
-    spins: SpinStore
-    dt: Double
-    speedScale: Double
+    query: QueryCursor!,
+    transforms: TransformStore!,
+    spins: SpinStore&
+    dt: Double,
+    speedScale: Double,
 ) {
     query.reset()
-    while query.hasNext {
-        fin entity = query.next
+    while query.hasNext() {
+        fin entity = query.next()
         fin index = transforms.indexOf(entity)
         if index >= 0 && entity.isValid && world.isAlive(entity) && spins.has(entity) {
             fin transform = transforms.values[index]
@@ -227,26 +238,25 @@ func spinSystem(
     }
 }
 
-@System("Render")
 func renderSystem(
-    app: App
+    app: App,
     world: World&
-    query: @Query (LocalTransform&, Renderable&)
-    transforms: TransformStore
-    renderables: RenderableStore
-    queue: RenderQueue
+    query: QueryCursor!,
+    transforms: TransformStore,
+    renderables: RenderableStore,
+    queue: RenderQueue!,
 ) {
     query.reset()
-    while query.hasNext {
-        fin entity = query.next
+    while query.hasNext() {
+        fin entity = query.next()
         fin index = transforms.indexOf(entity)
         if index >= 0 && entity.isValid && world.isAlive(entity) && renderables.has(entity) {
             fin transform = transforms.values[index]
             fin renderable = renderables.get(entity)
             queue.add(
-                renderable.mesh
-                Transform3d(transform.position, transform.rotation, transform.scale)
-                materialColor(renderable.color)
+                renderable.mesh,
+                Transform3d(transform.position, transform.rotation, transform.scale),
+                materialColor(renderable.color),
             )
         }
     }
@@ -254,9 +264,8 @@ func renderSystem(
 }
 
 async func main() {
-    var registry = EngineRegistry(0, 0)
+    var frameIndex = Long(0)
     var config = GameConfig(1.0, 4.5)
-    registry.markModuleLoaded()
 
     fin cubeCount = await azIntJob(5)
 
@@ -272,10 +281,14 @@ async func main() {
     app.setLightDirection(-0.35, 0.85, 0.45)
     app.setAmbientLight(0.28)
 
-    fin cube = app.meshCube(1.0)
-    fin grid = app.meshGrid(12.0, 12)
+    var cube = app.meshCube(1.0)
+    var grid = app.meshGrid(12.0, 12)
+    defer {
+        app.releaseMesh(cube)
+        app.releaseMesh(grid)
+    }
 
-    var world = World::init()
+    var world = World()
     var transforms = transformStoreInit()
     var spins = spinStoreInit()
     var renderables = renderableStoreInit()
@@ -292,19 +305,19 @@ async func main() {
     while i < cubeCount {
         fin entity = world.spawnNamed("Cube")
         fin x = ((i as Double) - 2.0) * 1.7
-        fin y = 0.65 + ((i % 2) as Double) * 0.35
-        transforms.insert(entity, LocalTransform(Vec3(x, y, 0.0), Vec3(0.0, i as Double * 0.4, 0.0), Vec3(0.8, 0.8, 0.8)))
+        fin y: Double = 0.65 + ((i % 2) as Double) * 0.35
+        transforms.insert(entity, LocalTransform(Vec3(x, y, 0.0), Vec3(0.0, (i as Double) * 0.4, 0.0), Vec3(0.8, 0.8, 0.8)))
         spins.insert(entity, Spin(0.7 + (i as Double) * 0.18))
         renderables.insert(entity, Renderable(cube, colorRgb(0.30 + (i as Double) * 0.10, 0.70, 0.95 - (i as Double) * 0.08)))
         i = i + 1
     }
 
-    remember var paused: Bool = false
+    var paused: Bool = false
 
     while app.frame() {
         fin dt = app.deltaTime()
         world.progress(dt)
-        registry.nextFrame()
+        frameIndex = frameIndex + Long(1)
 
         var speedScale = config.spinSpeed
         if paused {
@@ -327,7 +340,7 @@ async func main() {
         if app.button(label, 16.0, 16.0, 142.0, 34.0) {
             paused = !paused
         }
-        app.uiText("Entities ${world.count()}   Frame ${registry.frameIndex}   ESC quit", 16.0, 62.0, 14.0)
+        app.uiText("Entities ${world.count}   Frame ${frameIndex}   ESC quit", 16.0, 62.0, 14.0)
 
         if app.keyPressed(keyEscape) {
             app.quit()

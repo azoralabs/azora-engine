@@ -186,42 +186,42 @@ func aabbAt(x: Double, y: Double, width: Double, height: Double): Aabb2D {
 }
 
 impl Aabb2D {
-    func width(): Double {
+    func &.width(): Double {
         return self.maxX - self.minX
     }
 
-    func height(): Double {
+    func &.height(): Double {
         return self.maxY - self.minY
     }
 
-    func center(): Vec2 {
+    func &.center(): Vec2 {
         return Vec2((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
     }
 
-    func halfExtents(): Vec2 {
+    func &.halfExtents(): Vec2 {
         return Vec2(self.width() * 0.5, self.height() * 0.5)
     }
 
-    func overlaps(other: Aabb2D): Bool {
+    func &.overlaps(other: Aabb2D): Bool {
         return self.minX < other.maxX && other.minX < self.maxX &&
             self.minY < other.maxY && other.minY < self.maxY
     }
 
-    func contains(point: Vec2): Bool {
+    func &.contains(point: Vec2): Bool {
         return point.x >= self.minX && point.x <= self.maxX &&
             point.y >= self.minY && point.y <= self.maxY
     }
 
-    func translate(delta: Vec2): Aabb2D {
+    func &.translate(delta: Vec2): Aabb2D {
         return Aabb2D(self.minX + delta.x, self.minY + delta.y, self.maxX + delta.x, self.maxY + delta.y)
     }
 
-    func expand(x: Double, y: Double): Aabb2D {
+    func &.expand(x: Double, y: Double): Aabb2D {
         return Aabb2D(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
     }
 
     /** The box covering this one and where it would be after [motion]. */
-    func sweptBy(motion: Vec2): Aabb2D {
+    func &.sweptBy(motion: Vec2): Aabb2D {
         return Aabb2D(
             realMinOf(self.minX, self.minX + motion.x),
             realMinOf(self.minY, self.minY + motion.y),
@@ -230,7 +230,7 @@ impl Aabb2D {
         )
     }
 
-    func union(other: Aabb2D): Aabb2D {
+    func &.union(other: Aabb2D): Aabb2D {
         return Aabb2D(
             realMinOf(self.minX, other.minX),
             realMinOf(self.minY, other.minY),
@@ -242,7 +242,7 @@ impl Aabb2D {
 
 impl Aabb2D {
     /** Moves the box by [delta]. */
-    oper+ [self: Self&](delta: Vec2): Aabb2D {
+    oper+ &.(delta: Vec2): Aabb2D {
         return self.translate(delta)
     }
 }
@@ -699,37 +699,25 @@ test "box contacts resolve along the shallowest axis" {
     // Overlapping by 2 horizontally and 8 vertically: the horizontal axis wins.
     when boxContact(Vec2(0.0, 0.0), Vec2(5.0, 5.0), Vec2(8.0, 2.0), Vec2(5.0, 5.0)) {
         Overlap2D.Touching(contact) -> {
-            assert contact.normal.x < 0.0 && contact.normal.y == 0.0 {
-                "the shallowest axis must be the one resolved along"
-            }
-            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
-                "the penetration must be the overlap on that axis"
-            }
+            assert contact.normal.x < 0.0 && contact.normal.y == 0.0 panic "the shallowest axis must be the one resolved along"
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "the penetration must be the overlap on that axis"
         }
-        Overlap2D.Separate() -> { assert false { "overlapping boxes must report a contact" } }
+        Overlap2D.Separate() -> { assert false panic "overlapping boxes must report a contact" }
     }
 
-    assert !overlapTouching(boxContact(Vec2(0.0, 0.0), Vec2(1.0, 1.0), Vec2(50.0, 0.0), Vec2(1.0, 1.0))) {
-        "boxes far apart must not report a contact"
-    }
+    assert !overlapTouching(boxContact(Vec2(0.0, 0.0), Vec2(1.0, 1.0), Vec2(50.0, 0.0), Vec2(1.0, 1.0))) panic "boxes far apart must not report a contact"
 }
 
 test "circle contacts measure from the surfaces" {
     when circleContact(Vec2(0.0, 0.0), 5.0, Vec2(8.0, 0.0), 5.0) {
         Overlap2D.Touching(contact) -> {
-            assert contact.penetration > 1.99 && contact.penetration < 2.01 {
-                "two 5-radius circles 8 apart overlap by 2"
-            }
-            assert contact.normal.x < -0.99 { "the normal must separate A from B" }
+            assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "two 5-radius circles 8 apart overlap by 2"
+            assert contact.normal.x < -0.99 panic "the normal must separate A from B"
         }
-        Overlap2D.Separate() -> { assert false { "overlapping circles must report a contact" } }
+        Overlap2D.Separate() -> { assert false panic "overlapping circles must report a contact" }
     }
-    assert !overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(9.0, 0.0), 1.0)) {
-        "circles further apart than their radii must be separate"
-    }
-    assert overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(0.0, 0.0), 1.0)) {
-        "coincident circles must still produce a contact rather than dividing by zero"
-    }
+    assert !overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(9.0, 0.0), 1.0)) panic "circles further apart than their radii must be separate"
+    assert overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(0.0, 0.0), 1.0)) panic "coincident circles must still produce a contact rather than dividing by zero"
 }
 
 test "a sweep stops a fast box at the first thing it meets" {
@@ -739,18 +727,14 @@ test "a sweep stops a fast box at the first thing it meets" {
     // A single step of 1000 units — a hundred times the body's own width.
     when sweepBox(body, Vec2(1000.0, 0.0), wall) {
         Sweep2D.Blocked(t, normal, point) -> {
-            assert t > 0.089 && t < 0.091 { "the box must stop where the wall is, not where it aimed" }
-            assert normal.x < -0.99 { "the normal must face back along the motion" }
+            assert t > 0.089 && t < 0.091 panic "the box must stop where the wall is, not where it aimed"
+            assert normal.x < -0.99 panic "the normal must face back along the motion"
         }
-        Sweep2D.Clear() -> { assert false { "a fast box must not tunnel through a wall" } }
+        Sweep2D.Clear() -> { assert false panic "a fast box must not tunnel through a wall" }
     }
 
-    assert !sweepBlocked(sweepBox(body, Vec2(0.0, 1000.0), wall)) {
-        "a sweep that misses the wall must be clear"
-    }
-    assert sweepFraction(sweepBox(body, Vec2(20.0, 0.0), wall)) == 1.0 {
-        "a motion that stops short must permit the whole distance"
-    }
+    assert !sweepBlocked(sweepBox(body, Vec2(0.0, 1000.0), wall)) panic "a sweep that misses the wall must be clear"
+    assert sweepFraction(sweepBox(body, Vec2(20.0, 0.0), wall)) == 1.0 panic "a motion that stops short must permit the whole distance"
 }
 
 test "a sweep permits motion away from a touching surface" {
@@ -758,45 +742,33 @@ test "a sweep permits motion away from a touching surface" {
     fin floor = aabbAt(0.0, 10.0, 40.0, 10.0)
     fin wall = aabbAt(10.0, 0.0, 10.0, 40.0)
 
-    assert !sweepBlocked(sweepBox(body, Vec2(0.0, -8.0), floor)) {
-        "jumping away from a touching floor must not report a ceiling"
-    }
-    assert sweepBlocked(sweepBox(body, Vec2(0.0, 8.0), floor)) {
-        "moving into a touching floor must remain blocked"
-    }
-    assert !sweepBlocked(sweepBox(body, Vec2(-8.0, 0.0), wall)) {
-        "moving away from a touching wall must be clear"
-    }
-    assert sweepBlocked(sweepBox(body, Vec2(8.0, 0.0), wall)) {
-        "moving into a touching wall must remain blocked"
-    }
+    assert !sweepBlocked(sweepBox(body, Vec2(0.0, -8.0), floor)) panic "jumping away from a touching floor must not report a ceiling"
+    assert sweepBlocked(sweepBox(body, Vec2(0.0, 8.0), floor)) panic "moving into a touching floor must remain blocked"
+    assert !sweepBlocked(sweepBox(body, Vec2(-8.0, 0.0), wall)) panic "moving away from a touching wall must be clear"
+    assert sweepBlocked(sweepBox(body, Vec2(8.0, 0.0), wall)) panic "moving into a touching wall must remain blocked"
 }
 
 test "rays report the face they struck" {
     fin wall = aabbAt(50.0, 0.0, 10.0, 100.0)
     when rayBox(Vec2(0.0, 50.0), Vec2(100.0, 0.0), wall) {
         RayHit2D.Hit(t, normal, point) -> {
-            assert t > 0.49 && t < 0.51 { "the ray must hit halfway along its direction" }
-            assert normal.x < -0.99 { "the normal must face the ray" }
-            assert point.x > 49.9 && point.x < 50.1 { "the hit point must be on the near face" }
+            assert t > 0.49 && t < 0.51 panic "the ray must hit halfway along its direction"
+            assert normal.x < -0.99 panic "the normal must face the ray"
+            assert point.x > 49.9 && point.x < 50.1 panic "the hit point must be on the near face"
         }
-        RayHit2D.Miss() -> { assert false { "a ray into a wall must hit" } }
+        RayHit2D.Miss() -> { assert false panic "a ray into a wall must hit" }
     }
-    assert !rayHit(rayBox(Vec2(0.0, 200.0), Vec2(100.0, 0.0), wall)) {
-        "a ray passing above the wall must miss"
-    }
+    assert !rayHit(rayBox(Vec2(0.0, 200.0), Vec2(100.0, 0.0), wall)) panic "a ray passing above the wall must miss"
 }
 
 test "sliding keeps the tangent and bouncing reverses the normal" {
     fin wall = Vec2(-1.0, 0.0)
     fin slid = slide(Vec2(10.0, 4.0), wall)
-    assert slid.x == 0.0 && slid.y == 4.0 { "sliding must remove only the component into the surface" }
+    assert slid.x == 0.0 && slid.y == 4.0 panic "sliding must remove only the component into the surface"
 
     fin bounced = bounce(Vec2(10.0, 4.0), wall, 1.0)
-    assert bounced.x < -9.9 { "a perfectly elastic bounce must reverse the normal component" }
-    assert bounced.y == 4.0 { "a bounce must leave the tangent alone" }
+    assert bounced.x < -9.9 panic "a perfectly elastic bounce must reverse the normal component"
+    assert bounced.y == 4.0 panic "a bounce must leave the tangent alone"
 
-    assert slide(Vec2(-10.0, 0.0), wall).x == -10.0 {
-        "a velocity already leaving the surface must be untouched"
-    }
+    assert slide(Vec2(-10.0, 0.0), wall).x == -10.0 panic "a velocity already leaving the surface must be untouched"
 }
