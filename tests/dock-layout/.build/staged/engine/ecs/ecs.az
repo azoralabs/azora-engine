@@ -269,22 +269,12 @@ impl World {
     }
 }
 
-/**
- * One component's values, densely packed, with the entity each belongs to.
- *
- * A sparse set: [sparse] maps an entity id straight to its dense index (plus
- * one; zero where the entity has none), so finding an entity's component is one
- * read, not a walk over every entity that has one. The dense arrays keep their
- * insertion order - a composition's children are read in that order - so
- * removal shifts the tail and renumbers it.
- */
 pack Storage<T> {
     var entities: Array<Entity>
     var values: Array<T>
     var added: Array<Bool>
     var changed: Array<Bool>
     var revision: Long
-    var sparse: Array<Int> = Array<Int>()
 }
 
 func<T> storageInit(defaultValue: T): Storage<T> {
@@ -296,26 +286,18 @@ func<T> storageInit(defaultValue: T): Storage<T> {
 }
 
 func<T> storageIndexOf(store: Storage<T>&, entity: Entity): Int {
-    fin id = entity.id
-    if id < 0 || id >= store.sparse.size {
+    if !entity.isValid {
         return -1
     }
-    fin index = store.sparse[id] - 1
-    if index < 0 || store.entities[index].generation != entity.generation {
-        return -1
+    var i = 0
+    while i < store.entities.size {
+        fin current = store.entities[i]
+        if current.isValid && current.id == entity.id && current.generation == entity.generation {
+            return i
+        }
+        i = i + 1
     }
-    return index
-}
-
-/** Points [id]'s sparse slot at dense [index] (-1: no component). */
-func<T> storageMark(store: Storage<T>!, id: Int, index: Int) {
-    if id < 0 {
-        return
-    }
-    while store.sparse.size <= id {
-        store.sparse.add(0)
-    }
-    store.sparse[id] = index + 1
+    return -1
 }
 
 func<T> storageHas(store: Storage<T>&, entity: Entity): Bool {
@@ -334,7 +316,6 @@ func<T> storageInsert(store: Storage<T>!, entity: Entity, value: T) {
     store.values.add(value)
     store.added.add(true)
     store.changed.add(false)
-    storageMark<T>(store, entity.id, store.entities.size - 1)
     store.revision = store.revision + 1
 }
 
@@ -343,17 +324,10 @@ func<T> storageGet(store: Storage<T>&, entity: Entity): T& {
     return store.values[index]
 }
 
-/**
- * [entity]'s component, or a copy of [defaultValue] when it has none.
- *
- * The default is borrowed, not taken: an erased body cannot free a value it
- * was handed but did not keep, so a default it only sometimes returned would
- * leak every time it was not.
- */
-func<T: Clone> storageGetOrDefault(store: Storage<T>&, entity: Entity, defaultValue: T&): T {
+func<T: Clone> storageGetOrDefault(store: Storage<T>&, entity: Entity, defaultValue: T): T {
     fin index = storageIndexOf<T>(store, entity)
     if index < 0 {
-        return defaultValue.clone()
+        return take defaultValue
     }
     return store.values[index].clone()
 }
@@ -373,13 +347,6 @@ func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     store.entities.remove(index)
     store.added.remove(index)
     store.changed.remove(index)
-    storageMark<T>(store, entity.id, -1)
-    // The tail moved down one place.
-    var i = index
-    while i < store.entities.size {
-        storageMark<T>(store, store.entities[i].id, i)
-        i = i + 1
-    }
     store.revision = store.revision + 1
     return true
 }

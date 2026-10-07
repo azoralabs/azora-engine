@@ -1,0 +1,269 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.scene.io
+ *
+ * Scene files: every live entity, its parent, and its inspectable components,
+ * as canonical AZON.
+ *
+ * ```
+ * {"format": "azora-scene", "version": 2, "entities": [
+ *   {"parent": -1, "components": {"Name": {"value": "Cube"}, "Transform": {...}}}
+ * ]}
+ * ```
+ *
+ * Components are keyed by declaration name and written field by field through
+ * `reflect<C>.fields`, so a component added to the program is saved and loaded
+ * without anything here naming it. A component or field the file does not
+ * mention keeps its declared default; one the program no longer declares is
+ * skipped rather than rejected, so an old scene still opens.
+ */
+module engine.scene.io
+
+import std.reflection
+import std.serializer
+import std.traits
+import std.container.list
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+
+// ── Writing ─────────────────────────────────────────────────────────────
+
+/** [text] as an AZON string literal. */
+func azonText(text: String): String {
+    var escaped = ""
+    var index = 0
+    fin length = stringLength(text)
+    while index < length {
+        fin ch = charAt(text, index)
+        when ch {
+            '"' -> { escaped = "${escaped}\\\"" }
+            '\\' -> { escaped = "${escaped}\\\\" }
+            '\n' -> { escaped = "${escaped}\\n" }
+            '\t' -> { escaped = "${escaped}\\t" }
+            else -> { escaped = "${escaped}${ch}" }
+        }
+        index = index + 1
+    }
+    return "\"${escaped}\""
+}
+
+/** [members] with `"name": value` appended, comma-separated. */
+func azonMember(members: String, name: String, value: String): String {
+    fin entry = "${azonText(name)}: ${value}"
+    if stringLength(members) == 0 { return entry }
+    return "${members}, ${entry}"
+}
+
+/** Every inspectable component [entity] carries, as one AZON object. */
+func componentsAzon(world: World!, entity: Entity): String {
+    var members = ""
+    inline for C in reflect<*>.withAnnot<Inspectable> {
+        if storageHas<C>(ensureStorage<C>(world), entity) {
+            fin value = storageGet<C>(ensureStorage<C>(world), entity).clone()
+            var fields = ""
+            inline for f in reflect<C>.fields {
+                inline if f.typeName == "Double" {
+                    fields = azonMember(fields, f.name, formatDecimal(value.${f.name}, 6))
+                }
+                inline if f.typeName == "Int" {
+                    fields = azonMember(fields, f.name, "${value.${f.name}}")
+                }
+                inline if f.typeName == "Bool" {
+                    fields = azonMember(fields, f.name, if value.${f.name} { "true" } else { "false" })
+                }
+                inline if f.typeName == "String" {
+                    fields = azonMember(fields, f.name, azonText(value.${f.name}))
+                }
+                inline if f.typeName == "Vec3" {
+                    fields = azonMember(fields, f.name, "[${formatDecimal(value.${f.name}.x, 6)}, ${formatDecimal(value.${f.name}.y, 6)}, ${formatDecimal(value.${f.name}.z, 6)}]")
+                }
+                inline if f.typeName == "Rgba" {
+                    fields = azonMember(fields, f.name, "[${formatDecimal(value.${f.name}.r, 4)}, ${formatDecimal(value.${f.name}.g, 4)}, ${formatDecimal(value.${f.name}.b, 4)}, ${formatDecimal(value.${f.name}.a, 4)}]")
+                }
+            }
+            members = azonMember(members, reflect<C>.declName, "{${fields}}")
+        }
+    }
+    return "{${members}}"
+}
+
+/** Whether [id] is a live entity a scene file should hold. */
+func sceneEntity(world: World&, id: Int): Bool {
+    return world.alive[id] && !world.resourceMarks[id]
+}
+
+/** The whole scene in [world] as AZON text. */
+func writeScene(world: World!): String {
+    // Parents are written as positions in this file, not as entity ids, so a
+    // file stays valid whatever ids the next world hands out.
+    var positions: Array<Int> = Array<Int>()
+    var count = 0
+    var id = 0
+    while id < world.entityCount {
+        positions.add(if sceneEntity(world, id) { count } else { -1 })
+        if sceneEntity(world, id) { count = count + 1 }
+        id = id + 1
+    }
+    var entities = ""
+    id = 0
+    while id < world.entityCount {
+        if sceneEntity(world, id) {
+            fin entity = world.entityAt(id)
+            fin parentId = world.parents[id]
+            fin parent = if parentId >= 0 && parentId < world.entityCount { positions[parentId] } else { -1 }
+            fin record = "{\"parent\": ${parent}, \"components\": ${componentsAzon(world, entity)}}"
+            entities = if stringLength(entities) == 0 { record } else { "${entities},\n    ${record}" }
+        }
+        id = id + 1
+    }
+    return "{\"format\": \"azora-scene\", \"version\": 2, \"entities\": [\n    ${entities}\n]}\n"
+}
+
+// ── Reading ─────────────────────────────────────────────────────────────
+
+/** The position of member [name] in [fields], or -1. */
+func memberIndex(fields: List<SerialField>&, name: String): Int {
+    var index = 0
+    while index < fields.size {
+        if fields[index].name == name { return index }
+        index = index + 1
+    }
+    return -1
+}
+
+/** [value] as a number, or [fallback] when it is not one. */
+func serialNumberOr(value: SerialValue&, fallback: Double): Double {
+    return serialAsReal(value) catch fallback
+}
+
+/** Element [index] of the array [value] as a number, or [fallback]. */
+func serialElementOr(value: SerialValue&, index: Int, fallback: Double): Double {
+    when value {
+        SerialValue.Array(elements) -> {
+            if index < elements.size { return serialAsReal(elements[index]) catch fallback }
+            return fallback
+        }
+        else -> return fallback
+    }
+}
+
+/**
+ * Puts on [entity] every inspectable component [components] mentions.
+ *
+ * Each starts from its declared default, so a field the file leaves out reads
+ * as it would on a freshly added component.
+ */
+func readComponents(world: World!, entity: Entity, components: List<SerialField>&) {
+    inline for C in reflect<*>.withAnnot<Inspectable> {
+        fin at = memberIndex(components, reflect<C>.declName)
+        if at >= 0 {
+            var value = C()
+            when components[at].value {
+                SerialValue.Object(fields) -> {
+                    inline for f in reflect<C>.fields {
+                        fin slot = memberIndex(fields, f.name)
+                        if slot >= 0 {
+                            inline if f.typeName == "Double" {
+                                value.${f.name} = serialNumberOr(fields[slot].value, value.${f.name})
+                            }
+                            inline if f.typeName == "Int" {
+                                value.${f.name} = serialNumberOr(fields[slot].value, value.${f.name} as Double) as Int
+                            }
+                            inline if f.typeName == "Bool" {
+                                value.${f.name} = serialAsBool(fields[slot].value) catch value.${f.name}
+                            }
+                            inline if f.typeName == "String" {
+                                value.${f.name} = serialAsText(fields[slot].value) catch value.${f.name}
+                            }
+                            inline if f.typeName == "Vec3" {
+                                value.${f.name}.x = serialElementOr(fields[slot].value, 0, value.${f.name}.x)
+                                value.${f.name}.y = serialElementOr(fields[slot].value, 1, value.${f.name}.y)
+                                value.${f.name}.z = serialElementOr(fields[slot].value, 2, value.${f.name}.z)
+                            }
+                            inline if f.typeName == "Rgba" {
+                                value.${f.name}.r = serialElementOr(fields[slot].value, 0, value.${f.name}.r)
+                                value.${f.name}.g = serialElementOr(fields[slot].value, 1, value.${f.name}.g)
+                                value.${f.name}.b = serialElementOr(fields[slot].value, 2, value.${f.name}.b)
+                                value.${f.name}.a = serialElementOr(fields[slot].value, 3, value.${f.name}.a)
+                            }
+                        }
+                    }
+                }
+                else -> { }
+            }
+            storageInsert<C>(ensureStorage<C>(world), entity, take value)
+        }
+    }
+}
+
+/**
+ * Loads the scene in [text] into [world], which should be empty.
+ *
+ * Answers the number of entities read, or -1 when the text is not a scene this
+ * version understands - in which case nothing was added.
+ */
+func readScene(world: World!, text: String): Int {
+    fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+    var spawned: Array<Entity> = Array<Entity>()
+    var parents: Array<Int> = Array<Int>()
+    when root {
+        SerialValue.Object(members) -> {
+            fin format = memberIndex(members, "format")
+            fin list = memberIndex(members, "entities")
+            if format < 0 || list < 0 { return -1 }
+            if (serialAsText(members[format].value) catch "") != "azora-scene" { return -1 }
+            when members[list].value {
+                SerialValue.Array(records) -> {
+                    var index = 0
+                    while index < records.size {
+                        when records[index] {
+                            SerialValue.Object(fields) -> {
+                                fin entity = world.spawn()
+                                spawned.add(entity)
+                                fin parentAt = memberIndex(fields, "parent")
+                                parents.add(if parentAt >= 0 { serialNumberOr(fields[parentAt].value, -1.0) as Int } else { -1 })
+                                fin componentsAt = memberIndex(fields, "components")
+                                if componentsAt >= 0 {
+                                    when fields[componentsAt].value {
+                                        SerialValue.Object(components) -> readComponents(world, entity, components)
+                                        else -> { }
+                                    }
+                                }
+                            }
+                            else -> { }
+                        }
+                        index = index + 1
+                    }
+                }
+                else -> return -1
+            }
+        }
+        else -> return -1
+    }
+    var index = 0
+    while index < spawned.size {
+        fin parent = parents[index]
+        if parent >= 0 && parent < spawned.size && parent != index {
+            world.setParent(spawned[index], spawned[parent])
+        }
+        index = index + 1
+    }
+    return spawned.size
+}

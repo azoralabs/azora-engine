@@ -1,0 +1,170 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.scene
+ *
+ * The Engine's built-in scene components, and the hints an editor reads them by.
+ *
+ * A component is an ordinary pack marked `@Component`. Marking it `@Inspectable`
+ * as well is what puts it in front of an editor: Studio enumerates
+ * `reflect<*>.withAnnot<Inspectable>` to list what an entity carries and what
+ * can be added to it, and `reflect<C>.fields` to draw and edit each field. No
+ * editor names a component, so one declared in a game's own source appears the
+ * same way these do.
+ *
+ * Field hints (`@Range`, `@Choice`, `@Hidden`) sit on the field they describe and
+ * are read back at compile time with `reflect<f>.annotMeta<Range>.step`.
+ */
+module engine.scene
+
+import std.traits
+import engine.core
+import engine.ecs
+import engine.math
+
+// ── Editor hints ────────────────────────────────────────────────────────
+
+/** A component an editor lists, adds, edits and saves. */
+@Experimental(since: "0.1")
+annot @Inspectable for .Pack {
+    /** The heading an editor shows; empty uses the declaration's own name. */
+    fin title: String = ""
+    /** A Lucide icon name. */
+    fin icon: String = "puzzle"
+    /** Groups the Add Component menu. */
+    fin category: String = "General"
+    /** Lower comes first, in the inspector and in the menu. */
+    fin order: Int = 100
+    /** Whether the component is drawn as a card of its own. */
+    fin visible: Bool = true
+    /** Whether an editor may take it off an entity. */
+    fin removable: Bool = true
+}
+
+/** Bounds and drag step for a numeric field. */
+@Experimental(since: "0.1")
+annot @Range for .Field {
+    fin min: Double = -1000000000.0
+    fin max: Double = 1000000000.0
+    fin step: Double = 0.1
+}
+
+/** An `Int` field that picks one of [options], separated by `|`. */
+@Experimental(since: "0.1")
+annot @Choice for .Field {
+    fin options: String = ""
+}
+
+/** A field an editor leaves out. It is still saved. */
+@Experimental(since: "0.1")
+annot @Hidden for .Field
+
+// ── Components ──────────────────────────────────────────────────────────
+
+/** What an entity is called in a scene tree. */
+@Component
+@Inspectable(icon: "tag", order: 0, visible: false, removable: false)
+pack Name derives Clone {
+    var value: String = "Entity"
+}
+
+/**
+ * Where an entity is, relative to its parent.
+ *
+ * Rotation is Euler angles in degrees, applied about X, then Y, then Z - the
+ * form a person types into a field. Systems that need a matrix build one.
+ */
+@Component
+@Inspectable(icon: "move-3d", order: 1, removable: false)
+pack Transform derives Clone {
+    @Range(step: 0.05)
+    var translation: Vec3 = Vec3(0.0, 0.0, 0.0)
+    @Range(min: -360.0, max: 360.0, step: 0.5)
+    var rotation: Vec3 = Vec3(0.0, 0.0, 0.0)
+    @Range(min: 0.001, max: 10000.0, step: 0.01)
+    var scale: Vec3 = Vec3(1.0, 1.0, 1.0)
+}
+
+/** Whether an entity and its children are drawn. */
+@Component
+@Inspectable(icon: "eye", order: 2)
+pack Visibility derives Clone {
+    var visible: Bool = true
+}
+
+/** A primitive shape drawn at the entity's transform. */
+@Component
+@Inspectable(title: "Mesh", icon: "box", category: "Rendering", order: 10)
+pack Mesh3d derives Clone {
+    @Choice(options: "Cube|Sphere|Cylinder|Plane")
+    var shape: Int = 0
+    @Range(min: 0.01, max: 1000.0, step: 0.05)
+    var size: Double = 1.0
+}
+
+/** How a mesh's surface responds to light. */
+@Component
+@Inspectable(title: "Material", icon: "palette", category: "Rendering", order: 11)
+pack StandardMaterial derives Clone {
+    var color: Rgba = Rgba(0.357, 0.639, 0.816, 1.0)
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var roughness: Double = 0.6
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var metallic: Double = 0.0
+}
+
+/** A point of view the scene can be rendered from. */
+@Component
+@Inspectable(title: "Camera", icon: "video", category: "Rendering", order: 12)
+pack Camera3d derives Clone {
+    @Choice(options: "Perspective|Orthographic")
+    var projection: Int = 0
+    @Range(min: 5.0, max: 170.0, step: 0.5)
+    var fov: Double = 60.0
+    @Range(min: 0.001, max: 100.0, step: 0.01)
+    var near: Double = 0.1
+    @Range(min: 1.0, max: 100000.0, step: 1.0)
+    var far: Double = 1000.0
+    @Range(min: 0.1, max: 10000.0, step: 0.1)
+    var orthoSize: Double = 5.0
+    var active: Bool = true
+}
+
+/** A light source. */
+@Component
+@Inspectable(title: "Light", icon: "sun", category: "Lighting", order: 13)
+pack Light3d derives Clone {
+    @Choice(options: "Directional|Point|Spot")
+    var kind: Int = 0
+    var color: Rgba = Rgba(1.0, 0.957, 0.878, 1.0)
+    @Range(min: 0.0, max: 100.0, step: 0.05)
+    var intensity: Double = 1.0
+    @Range(min: 0.0, max: 10000.0, step: 0.1)
+    var range: Double = 10.0
+    var shadows: Bool = true
+}
+
+/** A flat, coloured rectangle in the 2D plane. */
+@Component
+@Inspectable(icon: "image", category: "2D", order: 20)
+pack Sprite derives Clone {
+    var color: Rgba = Rgba(1.0, 1.0, 1.0, 1.0)
+    @Range(min: 0.0, max: 100000.0, step: 1.0)
+    var width: Double = 1.0
+    @Range(min: 0.0, max: 100000.0, step: 1.0)
+    var height: Double = 1.0
+}

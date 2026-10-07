@@ -60,8 +60,7 @@ pack AzInput {
     // Raw state block: key down [0..2047], key pressed [2048..4095],
     // mouse down [4096..4098], mouse clicked [4100..4102],
     // wheel x [4104..4111], wheel y [4112..4119] (doubles, per frame),
-    // typed text length [4120..4127] and UTF-8 bytes [4128..4639], per frame,
-    // pinch [4640..4647] (double, per frame), trackpad scrolling [4648].
+    // typed text length [4120..4127] and UTF-8 bytes [4128..4639], per frame.
     var state: Long
 }
 
@@ -136,7 +135,7 @@ func appInit(title: String, width: Int, height: Int): App {
         true,
         take win,
         take gpu,
-        AzInput(azAlloc(Long(4656))),
+        AzInput(azAlloc(Long(4640))),
         AzTime(now, now, 1.0 / 60.0),
         0.10, 0.10, 0.12,
         pool,
@@ -374,8 +373,6 @@ impl App {
         azPokeF64(self.inp.state, Long(4112), 0.0)
         azPoke64(self.inp.state, Long(4120), Long(0))
         azPoke8(self.inp.state, Long(4128), 0)
-        azPokeF64(self.inp.state, Long(4640), 0.0)
-        azPoke8(self.inp.state, Long(4648), 0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
@@ -430,13 +427,6 @@ impl App {
                 fin dy = azSendD0(ev, sel("scrollingDeltaY"))
                 azPokeF64(self.inp.state, Long(4104), azPeekF64(self.inp.state, Long(4104)) + dx)
                 azPokeF64(self.inp.state, Long(4112), azPeekF64(self.inp.state, Long(4112)) + dy)
-                if send0(ev, sel("hasPreciseScrollingDeltas")) != Long(0) {
-                    azPoke8(self.inp.state, Long(4648), 1)
-                }
-            }
-            if evType == Long(30) {
-                // magnify: a trackpad pinch, as the fraction it grew by.
-                azPokeF64(self.inp.state, Long(4640), azPeekF64(self.inp.state, Long(4640)) + azSendD0(ev, sel("magnification")))
             }
             if evType == Long(1) {
                 self.setMouse(0, 1)
@@ -449,14 +439,6 @@ impl App {
             }
             if evType == Long(4) {
                 self.setMouse(1, 0)
-            }
-            // otherMouseDown / otherMouseUp: the middle button (and beyond,
-            // which Studio and games read as middle too).
-            if evType == Long(25) {
-                self.setMouse(2, 1)
-            }
-            if evType == Long(26) {
-                self.setMouse(2, 0)
             }
 
             send1(nsapp, sel("sendEvent:"), ev)
@@ -542,17 +524,6 @@ impl App {
     /// Vertical wheel/trackpad motion this frame. Positive scrolls content down.
     func &.scrollY(): Double {
         return azPeekF64(self.inp.state, Long(4112))
-    }
-
-    /// True when this frame's scrolling came from a trackpad (precise deltas)
-    /// rather than a wheel's notches - two fingers moving, not a zoom request.
-    func &.scrollIsPrecise(): Bool {
-        return azPeek8(self.inp.state, Long(4648)) != 0
-    }
-
-    /// How much a trackpad pinch grew this frame (0.1 is 10% larger); 0 when none.
-    func &.pinch(): Double {
-        return azPeekF64(self.inp.state, Long(4640))
     }
 
     func &.setKey(key: Int, down: Int) {

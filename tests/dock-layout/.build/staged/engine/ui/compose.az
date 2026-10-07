@@ -93,8 +93,6 @@ pack Composition {
     var dirty: Bool = true
     var lastStamp: Long = Long(0)
     var disposed: Bool = false
-    /** The root's children in sibling order, as [Children] holds any other node's. */
-    var rootChildren: Array<Entity> = Array<Entity>()
 }
 
 /**
@@ -140,12 +138,6 @@ impl Composition {
     @ProvidesAccess
     func !.cursors(): Storage<Cursor>! {
         return store<Cursor>(self)
-    }
-
-    /** The world's storage for [Children]. */
-    @ProvidesAccess
-    func !.childLists(): Storage<Children>! {
-        return store<Children>(self)
     }
 
 
@@ -238,10 +230,8 @@ impl Composition {
      */
     func Composition!.claim(parent: Entity, key: String): Entity {
         self.composed = true
-        fin position = self.peekChildIndex(parent)
         fin existing = self.findChild(parent, key)
         if existing.isValid {
-            self.placeChild(parent, existing, position)
             storageInsert<Owned>(self.owned(), existing, .(self.owner, true))
             // Position *among siblings*, not a number shared by the whole self:
             // `parent.childAt(n)` asks for the nth child of that parent, so a
@@ -258,7 +248,6 @@ impl Composition {
         }
 
         fin created = spawnEntity(self.world)
-        self.placeChild(parent, created, position)
         storageInsert<Key>(self.keys(), created, .(key))
         storageInsert<Child>(self.children(), created, .(parent))
         storageInsert<Owned>(self.owned(), created, .(self.owner, true))
@@ -268,62 +257,24 @@ impl Composition {
         return created
     }
 
-    /**
-     * The child of [parent] keyed [key], or an invalid entity.
-     *
-     * Looked for among [parent]'s own children, starting where the next child
-     * goes: a tree described the way it was last time finds each node first try.
-     */
+    /** The child of [parent] keyed [key], or an invalid entity. */
     func Composition!.findChild(parent: Entity, key: String): Entity {
-        fin start = self.peekChildIndex(parent)
-        if !parent.isValid {
-            return self.keyedIn(self.rootChildren, start, key)
-        }
-        fin at = storageIndexOf<Children>(self.childLists(), parent)
-        if at < 0 {
-            return Entity::invalid
-        }
-        return self.keyedIn(self.childLists().values[at].list, start, key)
-    }
-
-    /** The entity in [list] this owner keyed [key], looking from [start] onwards first. */
-    func Composition!.keyedIn(list: Array<Entity>&, start: Int, key: String): Entity {
-        var step = 0
-        while step < list.size {
-            fin index = (start + step) % list.size
-            fin keyAt = storageIndexOf<Key>(self.keys(), list[index])
-            if keyAt >= 0 && self.keys().values[keyAt].value == key {
-                fin ownerAt = storageIndexOf<Owned>(self.owned(), list[index])
-                if ownerAt >= 0 && self.owned().values[ownerAt].owner == self.owner {
-                    return list[index].clone()
+        var index = 0
+        while index < storageLength<Key>(self.keys()) {
+            fin entity = storageEntityAt<Key>(self.keys(), index)
+            if entity.isValid {
+                fin candidate = storageGetOrDefault<Key>(self.keys(), entity, .())
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .())
+                if candidate.value == key && mark.owner == self.owner {
+                    fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+                    if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                        return entity
+                    }
                 }
             }
-            step = step + 1
+            index = index + 1
         }
         return Entity::invalid
-    }
-
-    /** Puts [child] at [position] among [parent]'s children, moving it if it sat elsewhere. */
-    func Composition!.placeChild(parent: Entity, child: Entity, position: Int) {
-        if !parent.isValid {
-            placeInList(self.rootChildren, child, position)
-            return
-        }
-        var at = storageIndexOf<Children>(self.childLists(), parent)
-        if at < 0 {
-            storageInsert<Children>(self.childLists(), parent, Children())
-            at = storageIndexOf<Children>(self.childLists(), parent)
-        }
-        placeInList(self.childLists().values[at].list, child, position)
-    }
-
-    /** The children this pass claimed under [parent]: the rest of its list is stale. */
-    func Composition!.claimedChildren(parent: Entity): Int {
-        if !parent.isValid {
-            return self.rootCursor
-        }
-        fin at = storageIndexOf<Cursor>(self.cursors(), parent)
-        return if at < 0 { 0 } else { self.cursors().values[at].next }
     }
 
     /**
@@ -338,65 +289,38 @@ impl Composition {
         if !self.composed {
             return 0
         }
-        // Everything this owner holds that the pass did not claim, gathered
-        // once: removal compacts the storages, so they are not walked while
-        // it happens.
-        var unclaimed: Array<Entity> = Array<Entity>()
-        var index = 0
-        while index < storageLength<Owned>(self.owned()) {
-            if self.owned().values[index].owner == self.owner && !self.owned().values[index].claimed && self.owned().entities[index].isValid {
-                unclaimed.add(self.owned().entities[index].clone())
-            }
-            index = index + 1
-        }
-        // Leaves go first, so component destructors observe child-before-parent
-        // disposal: each round removes the ones with no unclaimed child left.
         var removed = 0
-        while unclaimed.size > 0 {
-            var kept: Array<Entity> = Array<Entity>()
-            var round = 0
-            var slot = 0
-            while slot < unclaimed.size {
-                if self.unclaimedChild(unclaimed[slot]) {
-                    kept.add(unclaimed[slot].clone())
-                } else {
-                    despawnEntity(self.world, unclaimed[slot])
-                    round = round + 1
+        // Restart after each removal: storage removal compacts aligned arrays.
+        // Leaves go first, so component destructors observe child-before-parent disposal.
+        var progress = true
+        while progress {
+            progress = false
+            var index = 0
+            while index < storageLength<Owned>(self.owned()) {
+                fin entity = storageEntityAt<Owned>(self.owned(), index)
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .(claimed: true))
+                if entity.isValid && mark.owner == self.owner && !mark.claimed && !self.unclaimedChild(entity) {
+                    despawnEntity(self.world, entity)
+                    removed = removed + 1
+                    progress = true
+                    break
                 }
-                slot = slot + 1
+                index = index + 1
             }
-            removed = removed + round
-            unclaimed = take kept
-            if round == 0 { break }
-        }
-        // A parent's list may still name children it no longer has.
-        trimList(self.rootChildren, self.rootCursor)
-        index = 0
-        while index < storageLength<Children>(self.childLists()) {
-            trimList(self.childLists().values[index].list, self.claimedChildren(self.childLists().entities[index]))
-            index = index + 1
         }
         self.version = self.version + Long(1)
         self.dirty = false
         return removed
     }
 
-    /** Whether one of [parent]'s children is this owner's and went unclaimed. */
     func !.unclaimedChild(parent: Entity): Bool {
-        fin at = storageIndexOf<Children>(self.childLists(), parent)
-        if at < 0 {
-            return false
-        }
-        return self.unclaimedIn(self.childLists().values[at].list)
-    }
-
-    /** Whether an entity in [list] is this owner's and went unclaimed. */
-    func !.unclaimedIn(list: Array<Entity>&): Bool {
         var index = 0
-        while index < list.size {
-            fin ownerAt = storageIndexOf<Owned>(self.owned(), list[index])
-            if ownerAt >= 0 && self.world.isAlive(list[index]) {
-                if self.owned().values[ownerAt].owner == self.owner && !self.owned().values[ownerAt].claimed { return true }
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
+            fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+            if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                fin mark = storageGetOrDefault<Owned>(self.owned(), entity, .(claimed: true))
+                if mark.owner == self.owner && !mark.claimed { return true }
             }
             index = index + 1
         }
@@ -429,33 +353,6 @@ impl Composition {
             index = index + 1
         }
         return live
-    }
-}
-
-/** Puts [child] at [position] in [list], moving it from later in the list or inserting it. */
-func placeInList(list: Array<Entity>!, child: Entity, position: Int) {
-    if position < list.size && list[position].id == child.id && list[position].generation == child.generation {
-        return
-    }
-    var index = position + 1
-    while index < list.size {
-        if list[index].id == child.id && list[index].generation == child.generation {
-            list.remove(index)
-            break
-        }
-        index = index + 1
-    }
-    if position >= list.size {
-        list.add(child.clone())
-    } else {
-        list.insert(position, child.clone())
-    }
-}
-
-/** Drops [list]'s entries from [size] on. */
-func trimList(list: Array<Entity>!, size: Int) {
-    while list.size > size && list.size > 0 {
-        list.remove(list.size - 1)
     }
 }
 
@@ -625,7 +522,6 @@ impl Composition {
                     stroke = Stroke(entry.a, entry.b, entry.c, entry.d, 1.0)
                     hasStroke = true
                 }
-                ModifierKind.BorderAlpha -> { stroke.alpha = entry.a }
                 ModifierKind.Hover -> {
                     hover = HoverPaint(entry.a, entry.b, entry.c, entry.d)
                     hasHover = true
@@ -719,19 +615,6 @@ impl Composition {
     ): Entity {
         fin node = self.claim(parent, key)
         storageInsert<Layout>(store(self), node, .(layoutRow, horizontalArrangement, verticalAlignment, spacing))
-        self.applyModifier(node, modifier)
-        return node
-    }
-
-    /** A container that places fixed-size children across and wraps. */
-    func !.flow(
-        parent: Entity
-        key: String
-        modifier: Modifier&
-        spacing: Double
-    ): Entity {
-        fin node = self.claim(parent, key)
-        storageInsert<Layout>(store(self), node, .(layoutFlow, Arrangement.Start, Alignment.Start, spacing))
         self.applyModifier(node, modifier)
         return node
     }

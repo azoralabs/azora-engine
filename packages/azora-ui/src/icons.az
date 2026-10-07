@@ -1,0 +1,110 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * Icon atlases: one image of white icons on a grid, and the AZON index that
+ * names its cells. Loading one makes it the world's [IconAtlas] resource, and
+ * from then on any node can show an [Icon] by name.
+ */
+module engine.ui.icons
+
+import std.traits
+import std.serializer
+import std.container.list
+import engine.core
+import engine.ecs
+import engine.platform
+import engine.gpu.draw
+import engine.ui.node
+
+/** The member of [fields] called [name], or -1. */
+func iconMember(fields: List<SerialField>&, name: String): Int {
+    var index = 0
+    while index < fields.size {
+        if fields[index].name == name { return index }
+        index = index + 1
+    }
+    return -1
+}
+
+/** [fields]' integer [name], or [fallback]. */
+func iconNumber(fields: List<SerialField>&, name: String, fallback: Int): Int {
+    fin at = iconMember(fields, name)
+    return if at < 0 { fallback } else { serialAsInt(fields[at].value) catch fallback }
+}
+
+/**
+ * Loads the atlas image at [imagePath], indexed by [index] (the text of its
+ * index file: `cell`, `columns`, `width`, `height` and the `icons` names in
+ * cell order), as [world]'s icon atlas. Answers whether both were readable.
+ */
+func loadIconAtlas(app: App&, world: World!, imagePath: String, index: String): Bool {
+    fin root = decodeSerialValue(index, serializerOptions()) catch SerialValue.Null
+    var atlas = IconAtlas()
+    when root {
+        SerialValue.Object(fields) -> {
+            atlas.cell = iconNumber(fields, "cell", 64)
+            atlas.columns = iconNumber(fields, "columns", 16)
+            atlas.width = iconNumber(fields, "width", 0)
+            atlas.height = iconNumber(fields, "height", 0)
+            fin listAt = iconMember(fields, "icons")
+            if listAt >= 0 {
+                when fields[listAt].value {
+                    SerialValue.Array(items) -> {
+                        var item = 0
+                        while item < items.size {
+                            atlas.names.add(serialAsText(items[item]) catch "")
+                            item = item + 1
+                        }
+                    }
+                    else -> { }
+                }
+            }
+        }
+        else -> { return false }
+    }
+    fin image = app.loadImage(imagePath)
+    if image.texture == Long(0) {
+        return false
+    }
+    atlas.texture = image.texture
+    atlas.width = image.width
+    atlas.height = image.height
+    fin holder = world.spawnResource("icon-atlas")
+    storageInsert<IconAtlas>(ensureStorage<IconAtlas>(world), holder, take atlas)
+    return true
+}
+
+/**
+ * Draws the icon called [name] from [atlas], [size] points square at ([x], [y]),
+ * in [color] - for canvases that draw directly rather than through nodes.
+ */
+func App!.drawIcon(atlas: IconAtlas&, name: String, x: Double, y: Double, size: Double, color: Rgba) {
+    var cell = -1
+    var index = 0
+    while index < atlas.names.size && cell < 0 {
+        if atlas.names[index] == name { cell = index }
+        index = index + 1
+    }
+    if cell < 0 || atlas.texture == Long(0) || atlas.columns <= 0 || atlas.width <= 0 || atlas.height <= 0 {
+        return
+    }
+    fin span = atlas.cell as Double
+    fin u0 = ((cell % atlas.columns) as Double) * span / (atlas.width as Double)
+    fin v0 = ((cell / atlas.columns) as Double) * span / (atlas.height as Double)
+    self.drawQuad2d(x, y, size, size, u0, v0, u0 + span / (atlas.width as Double), v0 + span / (atlas.height as Double),
+        color.r, color.g, color.b, color.a, atlas.texture)
+}

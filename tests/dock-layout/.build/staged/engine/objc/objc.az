@@ -1,0 +1,111 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Azora Engine — Objective-C runtime & FFI plumbing bridge.
+//
+// This is the foundation that lets the entire platform layer be written in
+// the Azora language: Cocoa/Metal objects are `Long` handles and messages are
+// sent straight through `objc_msgSend`. Only signatures that involve doubles
+// or by-value structs go through the tiny trampoline shim (az_ffi.c), because
+// those need an exact C function type on arm64.
+//
+// C frameworks (Metal, CoreText, CoreGraphics, QuartzCore) export plain C
+// functions — those are bridged directly by name in az_gpu.az / az_platform.az.
+
+module engine.objc
+
+import engine.io
+
+bridge .C {
+    // Objective-C runtime
+    func @foreignName("objc_getClass")(name: String): Long
+    func @foreignName("sel_registerName")(name: String): Long
+    func @foreignName("objc_msgSend")(target: Long, selector: Long, a: Long, b: Long, c: Long, d: Long, e: Long, f: Long, g: Long, h: Long): Long
+    func @foreignName("objc_autoreleasePoolPush")(): Long
+    func @foreignName("objc_autoreleasePoolPop")(pool: Long)
+
+    // msgSend trampolines for double / by-value-struct signatures (az_ffi.c)
+    func @foreignName("az_send_d0")(target: Long, selector: Long): Double
+    func @foreignName("az_send_float0")(target: Long, selector: Long): Double
+    func @foreignName("az_send_float1")(target: Long, selector: Long, a: Double): Long
+    func @foreignName("az_send_f1")(target: Long, selector: Long, a: Double): Long
+    func @foreignName("az_send_f2")(target: Long, selector: Long, a: Double, b: Double): Long
+    func @foreignName("az_send_quad")(target: Long, selector: Long, a: Double, b: Double, c: Double, d: Double): Long
+    func @foreignName("az_send_quad_i3")(target: Long, selector: Long, a: Double, b: Double, c: Double, d: Double, i1: Long, i2: Long, i3: Long): Long
+    func @foreignName("az_send_pair")(target: Long, selector: Long, x: Double, y: Double): Long
+    func @foreignName("az_send_out_quad")(target: Long, selector: Long, out4: Long)
+    func @foreignName("az_send_out_pair")(target: Long, selector: Long, out2: Long)
+    func @foreignName("az_send_scissor")(target: Long, selector: Long, x: Long, y: Long, w: Long, h: Long)
+    func @foreignName("az_send_region")(target: Long, selector: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long, bytes: Long, bytesPerRow: Long): Long
+    func @foreignName("az_get_region")(target: Long, selector: Long, bytes: Long, bytesPerRow: Long, x: Long, y: Long, z: Long, w: Long, h: Long, d: Long, mip: Long)
+
+    // Exported symbols/constants (dlsym)
+    func @foreignName("az_sym")(name: String): Long
+}
+
+// ── Message-send helpers ────────────────────────────────────────────────
+
+func cls(name: String): Long {
+    return objcGetClass(name)
+}
+
+func sel(name: String): Long {
+    return selRegisterName(name)
+}
+
+func send0(o: Long, s: Long): Long {
+    return objcMsgSend(o, s, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
+}
+
+func send1(o: Long, s: Long, a: Long): Long {
+    return objcMsgSend(o, s, a, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
+}
+
+func send2(o: Long, s: Long, a: Long, b: Long): Long {
+    return objcMsgSend(o, s, a, b, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
+}
+
+func send3(o: Long, s: Long, a: Long, b: Long, c: Long): Long {
+    return objcMsgSend(o, s, a, b, c, Long(0), Long(0), Long(0), Long(0), Long(0))
+}
+
+func send4(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long): Long {
+    return objcMsgSend(o, s, a, b, c, d, Long(0), Long(0), Long(0), Long(0))
+}
+
+/// `[[Cls alloc] init]`
+func newObject(className: String): Long {
+    return send0(send0(cls(className), sel("alloc")), sel("init"))
+}
+
+/// An NSString from an Azora string (autoreleased).
+func nsString(text: String): Long {
+    return send1(cls("NSString"), sel("stringWithUTF8String:"), text as Long)
+}
+
+/// The UTF-8 contents of an NSString as an Azora string.
+func nsStringText(nsStr: Long): String {
+    return send0(nsStr, sel("UTF8String")) as String
+}
+
+/// Reads an exported object constant (e.g. NSDefaultRunLoopMode).
+func globalObject(symbolName: String): Long {
+    fin addr = azSym(symbolName)
+    if addr == Long(0) {
+        return Long(0)
+    }
+    return azPeek64(addr, Long(0))
+}

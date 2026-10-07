@@ -85,19 +85,6 @@ pack Cursor derives Clone {
     var next: Int = 0
 }
 
-/**
- * A node's children in sibling order.
- *
- * Kept as the tree is composed, so the nth child, the count, or the child with
- * a key is found among this node's own children rather than by walking every
- * node in the world. The first [Cursor.next] entries are the children this
- * pass claimed; any after them were not claimed again and go when it commits.
- */
-@Component
-pack Children derives Clone {
-    var list: Array<Entity> = Array<Entity>()
-}
-
 /** Text to display. */
 @Component
 pack Text derives (Copy, Clone, Equal, Hash, Display, Compose) {
@@ -226,31 +213,6 @@ impl Row {
     }
 }
 
-/**
- * Children placed left to right at their own fixed sizes, wrapping onto a new
- * line when the next would pass the right edge: a grid of tiles whose column
- * count follows the room it is given.
- */
-pack FlowRow derives Clone {
-    var spacing: Double = 0.0
-}
-impl FlowRow {
-    react ctor (anchor: Anchor!).(
-        modifier: Modifier& = .()
-        spacing: Double = 0.0
-        key: String = ""
-        children: inline react Anchor!.() -> Unit
-    ): Entity {
-        self.spacing = spacing
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "flow") } else { key }
-        fin node = anchor.pass.flow(anchor.parent, id, modifier, spacing)
-        using anchor.inside(node) {
-            children()
-        }
-        return node
-    }
-}
-
 /** A retained column whose children scroll within its arranged rectangle. */
 pack ScrollColumn derives Clone {
     var spacing: Double = 0.0
@@ -275,57 +237,6 @@ impl ScrollColumn {
 }
 
 /** A declarative rectangle with an ECS query group. */
-/**
- * An icon atlas: square [cell]-pixel icons, [columns] to a row, in [texture],
- * named by [names] in order. It is a world resource, so a node names an icon
- * without knowing where the pixels live, and one atlas serves every window.
- */
-@Component
-pack IconAtlas derives Clone {
-    var texture: Long = Long(0)
-    var cell: Int = 64
-    var columns: Int = 16
-    var width: Int = 0
-    var height: Int = 0
-    var names: Array<String> = Array<String>()
-}
-
-/**
- * Draws atlas cell [cell] over the node, tinted [r] [g] [b] [alpha]. Icons are
- * white masks, so one atlas draws in every colour and at any size.
- */
-@Component
-pack IconGlyph derives Clone {
-    var cell: Int = -1
-    var r: Double = 1.0
-    var g: Double = 1.0
-    var b: Double = 1.0
-    var alpha: Double = 1.0
-}
-
-/** Draws [texture] over the node, full colour; 0 draws nothing. */
-@Component
-pack ImageFill derives Clone {
-    var texture: Long = Long(0)
-    var alpha: Double = 1.0
-}
-
-/** The atlas cell called [name], or -1 when no atlas holds one. */
-func iconCell(world: World!, name: String): Int {
-    fin atlases = ensureStorage<IconAtlas>(world)
-    if storageLength<IconAtlas>(atlases) == 0 {
-        return -1
-    }
-    var index = 0
-    while index < atlases.values[0].names.size {
-        if atlases.values[0].names[index] == name {
-            return index
-        }
-        index = index + 1
-    }
-    return -1
-}
-
 pack Shape derives Clone {
     var group: Int = 0
 }
@@ -338,48 +249,6 @@ impl Shape {
         self.group = group
         fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "shape") } else { key }
         return anchor.pass.shape(anchor.parent, id, modifier, group)
-    }
-}
-
-/**
- * A picture: [texture] stretched over the node [modifier] lays out. The
- * texture is the caller's - typically from `App.loadImage` - and must outlive
- * the node.
- */
-pack ImageView { }
-impl ImageView {
-    react ctor (anchor: Anchor!).(
-        texture: Long
-        modifier: Modifier& = .()
-        alpha: Double = 1.0
-        key: String = ""
-    ): Entity {
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "image") } else { key }
-        fin node = anchor.pass.shape(anchor.parent, id, modifier.fill(Rgba(0.0, 0.0, 0.0, 0.0)), 0)
-        storageInsert<ImageFill>(ensureStorage<ImageFill>(anchor.pass.world), node, ImageFill(texture, alpha))
-        return node
-    }
-}
-
-/**
- * The icon called [name], [size] points square, in [color]. Every icon is
- * drawn from the same grid at the same stroke, so icons line up and read at
- * one weight wherever they appear.
- */
-pack Icon { }
-impl Icon {
-    react ctor (anchor: Anchor!).(
-        name: String
-        color: Rgba
-        size: Double = 16.0
-        key: String = ""
-    ): Entity {
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "icon") } else { key }
-        // Transparent paint: a shape with none gets a default fill, and an icon is only its glyph.
-        fin node = anchor.pass.shape(anchor.parent, id, Modifier::size(size, size).fill(color.withAlpha(0.0)), 0)
-        storageInsert<IconGlyph>(ensureStorage<IconGlyph>(anchor.pass.world), node,
-            IconGlyph(iconCell(anchor.pass.world, name), color.r, color.g, color.b, color.a))
-        return node
     }
 }
 
@@ -447,9 +316,6 @@ fin layoutColumn = 0
 
 /** Lays children across. */
 fin layoutRow = 1
-
-/** Places fixed-size children across, wrapping at the right edge. */
-fin layoutFlow = 2
 
 /**
  * A container whose children are offset by [offset] and clipped to its bounds.
@@ -528,7 +394,6 @@ enum ModifierKind {
     Weight
     Rounded
     Border
-    BorderAlpha
     Hover
     TextColor
     FontSize
@@ -708,7 +573,7 @@ impl Modifier {
 
     /** An inner border [width] points wide in [color]. */
     func &.outline(width: Double, color: Rgba): Modifier {
-        return self.border(width, color.r, color.g, color.b).then(ModifierEntry(ModifierKind.BorderAlpha, color.a, 0.0, 0.0, 0.0))
+        return self.border(width, color.r, color.g, color.b)
     }
 
     /** Where the node's text sits across its width; padding insets the edges. */

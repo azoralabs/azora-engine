@@ -161,7 +161,7 @@ func paintTree(
 // the one thing that changes without a layout: it is decided at replay, from
 // the pointer, against the rectangle the operation recorded.
 
-/** One recorded draw: 0 fill, 1 border, 2 text, 3 clip to a rectangle, 4 clip off, 5 icon, 6 image. */
+/** One recorded draw: 0 fill, 1 border, 2 text, 3 clip to a rectangle, 4 clip off. */
 pack PaintOp derives (Copy, Clone) {
     var kind: Int = 0
     var x: Double = 0.0
@@ -185,12 +185,6 @@ pack PaintOp derives (Copy, Clone) {
     var text: String = ""
     /** 0 regular, 1 semibold, 2 fixed-pitch. */
     var font: Int = 0
-    /** An icon's atlas texture and the cell's corners in it. */
-    var texture: Long = Long(0)
-    var u0: Double = 0.0
-    var v0: Double = 0.0
-    var u1: Double = 0.0
-    var v1: Double = 0.0
 }
 
 /**
@@ -229,18 +223,14 @@ impl PaintList {
      * Front-most is paint order: a later sibling, a child, a popup composed
      * last - whatever drew over the others. A node clipped away at the point is
      * not under it, even though its rectangle is.
-     *
-     * [store] is the component's storage, passed in rather than looked up:
-     * generics are erased, so inside this body `T` has no name to find a
-     * storage by, and the caller - which names the component - does.
      */
-    func <T> &.topmost(store: Storage<T>&, x: Double, y: Double): Entity {
+    func <T> &.topmost(pass: Composition!, x: Double, y: Double): Entity {
         var index = self.nodes.size - 1
         while index >= 0 {
             fin node = self.nodes[index]
             fin inside = x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height
             fin visible = x >= node.clipLeft && x < node.clipRight && y >= node.clipTop && y < node.clipBottom
-            if inside && visible && storageHas<T>(store, node.entity) {
+            if inside && visible && storageHas<T>(store<T>(pass), node.entity) {
                 return node.entity
             }
             index = index - 1
@@ -300,9 +290,6 @@ func recordTree(
                 false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, label.value, style.font))
         }
     }
-    if visible {
-        recordIcon(pass, node, rect, clipTop, clipBottom, list)
-    }
     // A scrolled container clips its content, and so does one that asked to.
     fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node) || storageHas<Clip>(store<Clip>(pass), node)
     var childTop = clipTop
@@ -330,44 +317,6 @@ func recordTree(
         list.ops.add(PaintOp(4, 0.0, 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
     }
-}
-
-/** Records [node]'s icon or picture, if it has one. */
-func recordIcon(pass: Composition!, node: Entity, rect: Rect&, clipTop: Double, clipBottom: Double, list: PaintList!) {
-    fin imageAt = storageIndexOf<ImageFill>(store<ImageFill>(pass), node)
-    if imageAt >= 0 && store<ImageFill>(pass).values[imageAt].texture != Long(0) {
-        var picture = PaintOp(6, rect.x, rect.y, rect.width, rect.height, 1.0, 1.0, 1.0, store<ImageFill>(pass).values[imageAt].alpha,
-            0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0)
-        picture.texture = store<ImageFill>(pass).values[imageAt].texture
-        picture.u1 = 1.0
-        picture.v1 = 1.0
-        list.ops.add(picture)
-    }
-    fin glyphAt = storageIndexOf<IconGlyph>(store<IconGlyph>(pass), node)
-    fin atlases = store<IconAtlas>(pass)
-    if glyphAt < 0 || storageLength<IconAtlas>(atlases) == 0 {
-        return
-    }
-    fin cell = store<IconGlyph>(pass).values[glyphAt].cell
-    fin columns = atlases.values[0].columns
-    fin size = atlases.values[0].cell as Double
-    fin width = atlases.values[0].width as Double
-    fin height = atlases.values[0].height as Double
-    if cell < 0 || columns <= 0 || width <= 0.0 || height <= 0.0 {
-        return
-    }
-    fin u0 = ((cell % columns) as Double) * size / width
-    fin v0 = ((cell / columns) as Double) * size / height
-    var op = PaintOp(5, rect.x, rect.y, rect.width, rect.height,
-        store<IconGlyph>(pass).values[glyphAt].r, store<IconGlyph>(pass).values[glyphAt].g,
-        store<IconGlyph>(pass).values[glyphAt].b, store<IconGlyph>(pass).values[glyphAt].alpha,
-        0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0)
-    op.texture = atlases.values[0].texture
-    op.u0 = u0
-    op.v0 = v0
-    op.u1 = u0 + size / width
-    op.v1 = v0 + size / height
-    list.ops.add(op)
 }
 
 /** Draws a recorded tree. */
@@ -428,11 +377,6 @@ func replayPaint(app: App!, list: PaintList&) {
             clipW.add(right - left)
             clipH.add(bottom - top)
             app.setScissor(left, top, right - left, bottom - top)
-        } else if kind == 6 {
-            app.drawImageQuad(x, y, width, height, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, list.ops[index].alpha, list.ops[index].texture)
-        } else if kind == 5 {
-            app.drawQuad2d(x, y, width, height, list.ops[index].u0, list.ops[index].v0, list.ops[index].u1, list.ops[index].v1,
-                list.ops[index].r, list.ops[index].g, list.ops[index].b, list.ops[index].alpha, list.ops[index].texture)
         } else if kind == 4 {
             if clipX.size > 0 {
                 clipX.removeLast()

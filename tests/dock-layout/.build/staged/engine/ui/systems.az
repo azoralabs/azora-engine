@@ -92,33 +92,6 @@ impl Composition {
             return
         }
 
-        // A flow places each child at its own size, wrapping at the right edge.
-        if layout.direction == layoutFlow {
-            var cursorX: Double = 0.0
-            var cursorY: Double = 0.0 - scroll.offset
-            var lineHeight: Double = 0.0
-            var flowIndex = 0
-            while flowIndex < count {
-                fin child = self.childAt(node, flowIndex)
-                if child.isValid {
-                    fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
-                    fin childWidth = if size.width > 0.0 { size.width } else { innerWidth }
-                    fin childHeight = if size.height > 0.0 { size.height } else { 24.0 }
-                    if cursorX > 0.0 && cursorX + childWidth > innerWidth {
-                        cursorX = 0.0
-                        cursorY = cursorY + lineHeight + layout.spacing
-                        lineHeight = 0.0
-                    }
-                    self.arrange(child, innerX + cursorX, innerY + cursorY, childWidth, childHeight)
-                    cursorX = cursorX + childWidth + layout.spacing
-                    if childHeight > lineHeight { lineHeight = childHeight }
-                }
-                flowIndex = flowIndex + 1
-            }
-            storageInsert<Scroll>(store<Scroll>(self), node, Scroll(scroll.offset, cursorY + lineHeight + scroll.offset))
-            return
-        }
-
         // ── Pass 1: how much each child wants along the axis ─────────────────
         //
         // No measure self exists yet (§12.2), so a child's extent is what its own
@@ -138,7 +111,6 @@ impl Composition {
         var fixedTotal: Double = 0.0
         var weightTotal: Double = 0.0
         var flexible = 0
-        var shares: Array<Bool> = Array<Bool>()
         var index = 0
         while index < count {
             fin child = self.childAt(node, index)
@@ -146,7 +118,6 @@ impl Composition {
             fin asked = if layout.direction == layoutRow { size.width } else { size.height }
             fin fills = if layout.direction == layoutRow { size.fillWidth } else { size.fillHeight }
             weights[index] = size.weight
-            shares.add(false)
             if size.weight > 0.0 {
                 extents[index] = 0.0
                 weightTotal = weightTotal + size.weight
@@ -160,18 +131,8 @@ impl Composition {
                 weights[index] = 1.0
                 weightTotal = weightTotal + 1.0
             } else {
-                // A container that asked for nothing wraps what it holds: a bar of
-                // fixed buttons is as wide as the buttons. Only a child with no
-                // extent of its own to offer shares what is left.
-                fin wrapped = self.intrinsicExtent(child, layout.direction == layoutRow)
-                if wrapped > 0.0 {
-                    extents[index] = wrapped
-                    fixedTotal = fixedTotal + wrapped
-                } else {
-                    extents[index] = 0.0
-                    shares[index] = true
-                    flexible = flexible + 1
-                }
+                extents[index] = 0.0
+                flexible = flexible + 1
             }
             index = index + 1
         }
@@ -203,7 +164,11 @@ impl Composition {
             fin share = leftover / (flexible as Double)
             index = 0
             while index < count {
-                if shares[index] {
+                fin child = self.childAt(node, index)
+                fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
+                fin asked = if layout.direction == layoutRow { size.width } else { size.height }
+                fin fills = if layout.direction == layoutRow { size.fillWidth } else { size.fillHeight }
+                if size.weight <= 0.0 && asked <= 0.0 && !fills {
                     extents[index] = share
                 }
                 index = index + 1
@@ -269,34 +234,6 @@ impl Composition {
     }
 
     /**
-     * The room [node] needs across ([horizontal]) or down when nothing gives
-     * it a size: its own fixed extent, or for a row or column what its
-     * children need - their sum along its axis, their largest across it - with
-     * its padding and spacing. 0 when it cannot tell, as for text, whose width
-     * the layout does not measure.
-     */
-    func Composition!.intrinsicExtent(node: Entity, horizontal: Bool): Double {
-        fin size = storageGetOrDefault<Size>(store<Size>(self), node, Size(false, false, 0.0, 0.0, 0.0))
-        fin asked = if horizontal { size.width } else { size.height }
-        if asked > 0.0 { return asked }
-        fin layout = storageGetOrDefault<Layout>(store<Layout>(self), node, Layout(0 - 1, Arrangement.Start, Alignment.Start, 0.0))
-        if layout.direction != layoutRow && layout.direction != layoutColumn { return 0.0 }
-        fin along = (layout.direction == layoutRow) == horizontal
-        fin count = self.childCount(node)
-        var total: Double = 0.0
-        var index = 0
-        while index < count {
-            fin extent = self.intrinsicExtent(self.childAt(node, index), horizontal)
-            if along { total = total + extent } else if extent > total { total = extent }
-            index = index + 1
-        }
-        if total <= 0.0 { return 0.0 }
-        if along && count > 1 { total = total + layout.spacing * ((count - 1) as Double) }
-        fin pad = storageGetOrDefault<Padding>(store<Padding>(self), node, Padding(0.0, 0.0, 0.0, 0.0))
-        return total + if horizontal { pad.start + pad.end } else { pad.top + pad.bottom }
-    }
-
-    /**
      * Scrolls whatever the pointer is over, and whatever the keyboard asks for.
      *
      * This is a system, not something an application calls: it asks the world for
@@ -349,28 +286,38 @@ impl Composition {
 
     /** How many children [parent] has. */
     func Composition!.childCount(parent: Entity): Int {
-        fin claimed = self.claimedChildren(parent)
-        if !parent.isValid {
-            return if claimed < self.rootChildren.size { claimed } else { self.rootChildren.size }
+        var total = 0
+        var index = 0
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
+            if entity.isValid {
+                fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+                if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                    total = total + 1
+                }
+            }
+            index = index + 1
         }
-        fin at = storageIndexOf<Children>(self.childLists(), parent)
-        if at < 0 {
-            return 0
-        }
-        fin size = self.childLists().values[at].list.size
-        return if claimed < size { claimed } else { size }
+        return total
     }
 
     /** [parent]'s child at composition position [position]. */
     func Composition!.childAt(parent: Entity, position: Int): Entity {
-        if position < 0 || position >= self.childCount(parent) {
-            return Entity::invalid
+        var index = 0
+        while index < storageLength<Child>(self.children()) {
+            fin entity = storageEntityAt<Child>(self.children(), index)
+            if entity.isValid {
+                fin link = storageGetOrDefault<Child>(self.children(), entity, Child(Entity::invalid))
+                if link.parent.id == parent.id && link.parent.generation == parent.generation {
+                    fin slot = storageGetOrDefault<SiblingOrder>(self.order(), entity, SiblingOrder(0 - 1))
+                    if slot.index == position {
+                        return entity
+                    }
+                }
+            }
+            index = index + 1
         }
-        if !parent.isValid {
-            return self.rootChildren[position].clone()
-        }
-        fin at = storageIndexOf<Children>(self.childLists(), parent)
-        return self.childLists().values[at].list[position].clone()
+        return Entity::invalid
     }
 
     /**

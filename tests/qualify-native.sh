@@ -18,13 +18,15 @@ if [ "$MODE" = all ] || [ "$MODE" = headless ]; then
     echo "$actual"
 fi
 if [ "$MODE" = all ] || [ "$MODE" = foundation ]; then
-    for probe in owned-ecs scheduled-ecs constructor-ui; do
+    for probe in owned-ecs scheduled-ecs constructor-ui scene-io dock-layout; do
         "$ENGINE_DIR/tools/build.sh" "$ENGINE_DIR/tests/$probe" build
         actual="$("$ENGINE_DIR/tests/$probe/.azora-build/$probe")"
         case "$probe" in
             owned-ecs) expected="owned ecs passed" ;;
             scheduled-ecs) expected="scheduled ecs passed" ;;
             constructor-ui) expected="constructor ui passed" ;;
+            scene-io) expected="scene io passed" ;;
+            dock-layout) expected="dock layout passed" ;;
         esac
         [ "$actual" = "$expected" ]
         echo "$actual"

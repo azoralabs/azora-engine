@@ -1,0 +1,153 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.render.scene
+ *
+ * Drawing an [engine.scene] world: every visible [Mesh3d] at its world
+ * transform in its [StandardMaterial]'s colour, lit by the scene's first
+ * [Light3d]. A game and an editor's viewport draw a scene the same way.
+ */
+module engine.render.scene
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.platform
+import engine.gpu
+import engine.gpu.draw
+import engine.scene
+
+/** One GPU mesh per [Mesh3d] shape, built once. */
+pack PrimitiveMeshes {
+    var cube: Mesh
+    var sphere: Mesh
+    var cylinder: Mesh
+    var plane: Mesh
+}
+
+impl App {
+    /** Builds the meshes [Mesh3d.shape] names, each a unit across. */
+    func &.primitiveMeshes(): PrimitiveMeshes {
+        return PrimitiveMeshes(self.meshCube(1.0), self.meshSphere(0.5, 18, 28), self.meshCylinder(0.5, 1.0, 28), self.meshGrid(0.5, 1))
+    }
+
+    func &.releasePrimitives(meshes: PrimitiveMeshes!) {
+        self.releaseMesh(meshes.cube)
+        self.releaseMesh(meshes.sphere)
+        self.releaseMesh(meshes.cylinder)
+        self.releaseMesh(meshes.plane)
+    }
+}
+
+/** [entity]'s own transform as a matrix (identity when it has none). */
+func localMatrix(world: World!, entity: Entity): Mat4 {
+    if !storageHas<Transform>(ensureStorage<Transform>(world), entity) { return mat4Identity() }
+    fin t = storageGet<Transform>(ensureStorage<Transform>(world), entity).clone()
+    return trsMatrix(t.translation, t.rotation, t.scale)
+}
+
+/** [entity]'s transform in the world: its own, inside each parent's. */
+func worldMatrix(world: World!, entity: Entity): Mat4 {
+    var matrix = localMatrix(world, entity)
+    var parent = world.getParent(entity)
+    var depth = 0
+    while world.isAlive(parent) && depth < 64 {
+        matrix = mat4Mul(localMatrix(world, parent), matrix)
+        parent = world.getParent(parent)
+        depth = depth + 1
+    }
+    return matrix
+}
+
+/** [entity]'s position in the world. */
+func worldPosition(world: World!, entity: Entity): Vec3 {
+    fin m = worldMatrix(world, entity)
+    return Vec3(m.m03, m.m13, m.m23)
+}
+
+/** Whether [entity] and every parent are visible. */
+func visibleInWorld(world: World!, entity: Entity): Bool {
+    var current = entity
+    var depth = 0
+    while world.isAlive(current) && depth < 64 {
+        if storageHas<Visibility>(ensureStorage<Visibility>(world), current) &&
+            !storageGet<Visibility>(ensureStorage<Visibility>(world), current).visible { return false }
+        current = world.getParent(current)
+        depth = depth + 1
+    }
+    return true
+}
+
+/** The mesh a [Mesh3d.shape] names. */
+func primitiveFor(meshes: PrimitiveMeshes&, shape: Int): Mesh& {
+    return when shape {
+        1 -> meshes.sphere
+        2 -> meshes.cylinder
+        3 -> meshes.plane
+        else -> meshes.cube
+    }
+}
+
+impl App {
+    /** Lights subsequent draws from the scene's first light; a scene with none keeps the default. */
+    func !.applySceneLight(world: World!) {
+        var index = 0
+        while index < storageLength<Light3d>(ensureStorage<Light3d>(world)) {
+            fin entity = storageEntityAt<Light3d>(ensureStorage<Light3d>(world), index)
+            if world.isAlive(entity) && visibleInWorld(world, entity) {
+                fin light = storageValueAt<Light3d>(ensureStorage<Light3d>(world), index).clone()
+                fin m = worldMatrix(world, entity)
+                // The light travels along its -Z; the shader wants the way back to it.
+                self.setLightDirection(m.m02, m.m12, m.m22)
+                self.setAmbientLight(clampAmbient(0.22 + 0.08 * light.intensity))
+                return
+            }
+            index = index + 1
+        }
+        self.setLightDirection(0.5, 0.8, 0.3)
+        self.setAmbientLight(0.35)
+    }
+
+    /** Draws every visible mesh in [world] under the view already begun. */
+    func !.drawScene(world: World!, meshes: PrimitiveMeshes&) {
+        var index = 0
+        while index < storageLength<Mesh3d>(ensureStorage<Mesh3d>(world)) {
+            fin entity = storageEntityAt<Mesh3d>(ensureStorage<Mesh3d>(world), index)
+            if world.isAlive(entity) && visibleInWorld(world, entity) {
+                fin mesh = storageValueAt<Mesh3d>(ensureStorage<Mesh3d>(world), index).clone()
+                var color = Rgba(0.8, 0.8, 0.82, 1.0)
+                if storageHas<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity) {
+                    color = storageGet<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity).color
+                }
+                var model = mat4Mul(worldMatrix(world, entity), mat4Scale(mesh.size, mesh.size, mesh.size))
+                // The cylinder is built lying along X; a scene's stands up along Y.
+                if mesh.shape == 2 { model = mat4Mul(model, mat4RotationZ(1.5707963267948966)) }
+                self.drawMesh(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b)
+            }
+            index = index + 1
+        }
+    }
+}
+
+func clampAmbient(value: Double): Double {
+    return when {
+        value < 0.0 -> 0.0
+        value > 0.9 -> 0.9
+        else -> value
+    }
+}

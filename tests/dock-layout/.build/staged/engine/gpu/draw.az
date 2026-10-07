@@ -43,13 +43,6 @@ func writeMeshVertex(bytes: Long, off: Long, x: Double, y: Double, z: Double, nx
     return off + Long(24)
 }
 
-/** A decoded image on the GPU: [texture] holds [width] x [height] pixels. 0 draws nothing. */
-pack ImageTexture derives (Copy, Clone) {
-    var texture: Long = Long(0)
-    var width: Int = 0
-    var height: Int = 0
-}
-
 impl App {
 
     /** Releases a caller-owned vertex buffer and clears its handle. Repeated release is harmless. */
@@ -163,49 +156,6 @@ impl App {
             segment = segment + 1
         }
 
-        fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, Long(0))
-        azFree(bytes)
-        return Mesh(buffer, vertexCount)
-    }
-
-    /**
-     * Creates a UV sphere of [radius] centred on the origin, [rings] bands from
-     * pole to pole and [segments] around. Normals point outward, so it shades
-     * smoothly under the 3D pipeline's single light.
-     */
-    func &.meshSphere(radius: Double, rings: Int = 16, segments: Int = 24): Mesh {
-        var bands = rings
-        if bands < 3 { bands = 3 }
-        var around = segments
-        if around < 3 { around = 3 }
-        fin vertexCount = bands * around * 6
-        fin total = (vertexCount * 24) as Long
-        fin bytes = azAlloc(total)
-        fin pi = 3.141592653589793
-        var off = Long(0)
-        var ring = 0
-        while ring < bands {
-            fin theta0 = pi * (ring as Double) / (bands as Double)
-            fin theta1 = pi * ((ring + 1) as Double) / (bands as Double)
-            var segment = 0
-            while segment < around {
-                fin phi0 = 2.0 * pi * (segment as Double) / (around as Double)
-                fin phi1 = 2.0 * pi * ((segment + 1) as Double) / (around as Double)
-                // Corners: (theta, phi) pairs of one quad, as two triangles.
-                fin ts = [theta0, theta1, theta1, theta0, theta1, theta0]
-                fin ps = [phi0, phi0, phi1, phi0, phi1, phi1]
-                var corner = 0
-                while corner < 6 {
-                    fin nx = sin(ts[corner]) * cos(ps[corner])
-                    fin ny = cos(ts[corner])
-                    fin nz = sin(ts[corner]) * sin(ps[corner])
-                    off = writeMeshVertex(bytes, off, nx * radius, ny * radius, nz * radius, nx, ny, nz)
-                    corner = corner + 1
-                }
-                segment = segment + 1
-            }
-            ring = ring + 1
-        }
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, Long(0))
         azFree(bytes)
         return Mesh(buffer, vertexCount)
@@ -408,46 +358,6 @@ impl App {
     }
 
     /**
-     * Decodes the PNG or JPEG at [path] onto the GPU.
-     *
-     * CoreGraphics decodes it and draws it into an RGBA bitmap, top row first,
-     * which is the layout [newTexture] takes. A file that is missing or is not
-     * an image gives an empty [ImageTexture], which draws nothing. The texture
-     * is the caller's until [releaseTexture].
-     */
-    func &.loadImage(path: String): ImageTexture {
-        fin provider = CGDataProviderCreateWithFilename(path)
-        if provider == Long(0) {
-            return ImageTexture()
-        }
-        var image = CGImageCreateWithPNGDataProvider(provider, Long(0), 1, 0)
-        if image == Long(0) {
-            image = CGImageCreateWithJPEGDataProvider(provider, Long(0), 1, 0)
-        }
-        CGDataProviderRelease(provider)
-        if image == Long(0) {
-            return ImageTexture()
-        }
-        fin width = CGImageGetWidth(image)
-        fin height = CGImageGetHeight(image)
-        fin space = CGColorSpaceCreateDeviceRGB()
-        // 1 = kCGImageAlphaPremultipliedLast: RGBA, as MTLPixelFormatRGBA8Unorm reads it.
-        fin ctx = CGBitmapContextCreate(Long(0), width, height, Long(8), width * Long(4), space, 1)
-        var loaded = ImageTexture()
-        if ctx != Long(0) {
-            CGContextDrawImage(ctx, 0.0, 0.0, width as Double, height as Double, image)
-            fin texture = self.newTexture(width as Int, height as Int, CGBitmapContextGetData(ctx))
-            if texture != Long(0) {
-                loaded = ImageTexture(texture, width as Int, height as Int)
-            }
-            CGContextRelease(ctx)
-        }
-        CGColorSpaceRelease(space)
-        CGImageRelease(image)
-        return loaded
-    }
-
-    /**
      * Re-uploads pixels into an existing texture.
      *
      * Palette animation rewrites the same image every frame, so reusing one
@@ -578,94 +488,6 @@ impl App {
         }
         fin s = self.gpu.scale
         self.drawQuad2dShaped(x, y, w, h, 0.0, 0.0, w * s, h * s, r, g, b, a, Long(0), 3.0, w * s, h * s, radius * s, stroke * s)
-    }
-
-    /**
-     * A quad with four arbitrary corners (points, in winding order) and their
-     * texture coordinates. Everything rectangular is a special case of this;
-     * a rotated line or a triangle (two equal corners) is not.
-     */
-    func !.drawQuad2dCorners(
-        x0: Double, y0: Double, x1: Double, y1: Double
-        x2: Double, y2: Double, x3: Double, y3: Double
-        u0: Double, v0: Double, u1: Double, v1: Double
-        u2: Double, v2: Double, u3: Double, v3: Double
-        r: Double, g: Double, b: Double, a: Double
-        texMode: Double
-        shapeW: Double, shapeH: Double, radius: Double, stroke: Double
-    ) {
-        var gpu: AzGpu! = self.gpu
-        if !gpu.hasEncoder {
-            return
-        }
-        if gpu.mode != 1 {
-            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe2d)
-            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
-            gpu.mode = 1
-        }
-        fin s = gpu.scale
-        fin p = gpu.scratch
-        pokeVert2d(p, Long(0), x0 * s, y0 * s, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(32), x1 * s, y1 * s, u1, v1, r, g, b, a)
-        pokeVert2d(p, Long(64), x2 * s, y2 * s, u2, v2, r, g, b, a)
-        pokeVert2d(p, Long(96), x0 * s, y0 * s, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(128), x2 * s, y2 * s, u2, v2, r, g, b, a)
-        pokeVert2d(p, Long(160), x3 * s, y3 * s, u3, v3, r, g, b, a)
-        azPokeF32(p, Long(192), gpu.depthW as Double)
-        azPokeF32(p, Long(196), gpu.depthH as Double)
-        azPokeF32(p, Long(200), texMode)
-        azPokeF32(p, Long(204), 0.0)
-        azPokeF32(p, Long(208), shapeW)
-        azPokeF32(p, Long(212), shapeH)
-        azPokeF32(p, Long(216), radius)
-        azPokeF32(p, Long(220), stroke)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, Long(192), Long(0))
-        fin up = p + Long(192)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, Long(32), Long(1))
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, Long(32), Long(1))
-        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, Long(0))
-        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), Long(3), Long(0), Long(6))
-    }
-
-    /**
-     * An antialiased line from ([x0], [y0]) to ([x1], [y1]), [width] points
-     * thick with round caps. The quad is a pixel wider than the line on every
-     * side, so the edge's coverage has room to fade.
-     */
-    func !.uiLine(x0: Double, y0: Double, x1: Double, y1: Double, width: Double, r: Double, g: Double, b: Double, a: Double) {
-        fin dx = x1 - x0
-        fin dy = y1 - y0
-        fin length = sqrt(dx * dx + dy * dy)
-        if length < 0.0001 || width <= 0.0 {
-            return
-        }
-        fin s = self.gpu.scale
-        fin ux = dx / length
-        fin uy = dy / length
-        fin nx = 0.0 - uy
-        fin ny = ux
-        fin pad = 1.0 / s
-        fin along = width * 0.5 + pad
-        fin across = width * 0.5 + pad
-        fin sx = x0 - ux * along
-        fin sy = y0 - uy * along
-        fin ex = x1 + ux * along
-        fin ey = y1 + uy * along
-        fin uStart = (0.0 - pad) * s
-        fin uEnd = (length + width + pad) * s
-        fin vTop = (0.0 - pad) * s
-        fin vBottom = (width + pad) * s
-        self.drawQuad2dCorners(
-            sx + nx * across, sy + ny * across, ex + nx * across, ey + ny * across,
-            ex - nx * across, ey - ny * across, sx - nx * across, sy - ny * across,
-            uStart, vTop, uEnd, vTop, uEnd, vBottom, uStart, vBottom,
-            r, g, b, a, 3.0, (length + width) * s, width * s, width * s * 0.5, 0.0)
-    }
-
-    /** A filled triangle (not antialiased): arrowheads and markers. */
-    func !.uiTriangle(x0: Double, y0: Double, x1: Double, y1: Double, x2: Double, y2: Double, r: Double, g: Double, b: Double, a: Double) {
-        self.drawQuad2dCorners(x0, y0, x1, y1, x2, y2, x2, y2,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, r, g, b, a, 0.0, 0.0, 0.0, 0.0, 0.0)
     }
 
     func !.drawQuad2dMode(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long, texMode: Double) {

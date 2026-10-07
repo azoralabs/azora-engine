@@ -1,0 +1,823 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.gizmos
+ *
+ * Seeing and handling a 3D scene in a rectangle of a window: an editor camera
+ * that orbits, pans and zooms (or looks flat along -Z in 2D), the projections
+ * between the world and the screen, world-space lines and grids, and the
+ * transform handles - move, rotate, scale - an editor drags.
+ *
+ * Everything here is immediate: a gizmo is drawn from the state passed in and
+ * picked against the same state, so a caller keeps one [TransformGizmo] and a
+ * [EditorCamera] per viewport and nothing else.
+ */
+module engine.gizmos
+
+import std.math
+import engine.core
+import engine.math
+import engine.platform
+import engine.gpu.draw
+import engine.gpu
+
+// ── Vectors ─────────────────────────────────────────────────────────────
+
+func v3(x: Double, y: Double, z: Double): Vec3 { return Vec3(x, y, z) }
+func v3add(a: Vec3&, b: Vec3&): Vec3 { return Vec3(a.x + b.x, a.y + b.y, a.z + b.z) }
+func v3sub(a: Vec3&, b: Vec3&): Vec3 { return Vec3(a.x - b.x, a.y - b.y, a.z - b.z) }
+func v3scale(a: Vec3&, s: Double): Vec3 { return Vec3(a.x * s, a.y * s, a.z * s) }
+func v3dot(a: Vec3&, b: Vec3&): Double { return a.x * b.x + a.y * b.y + a.z * b.z }
+func v3cross(a: Vec3&, b: Vec3&): Vec3 {
+    return Vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+}
+func v3length(a: Vec3&): Double { return sqrt(a.x * a.x + a.y * a.y + a.z * a.z) }
+func v3unit(a: Vec3&): Vec3 {
+    fin length = v3length(a)
+    if length < 0.000000001 { return Vec3(0.0, 0.0, 0.0) }
+    return Vec3(a.x / length, a.y / length, a.z / length)
+}
+
+// ── Rectangles and rays ─────────────────────────────────────────────────
+
+/** A rectangle of the window, in points: where a view draws. */
+pack ViewRect derives (Copy, Clone) {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var width: Double = 1.0
+    var height: Double = 1.0
+}
+
+impl ViewRect {
+    func &.contains(px: Double, py: Double): Bool {
+        return px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+    func &.aspect(): Double { return if self.height > 0.0 { self.width / self.height } else { 1.0 } }
+}
+
+/** A half-line: where it starts and its unit direction. */
+pack Ray derives Clone {
+    var origin: Vec3 = Vec3(0.0, 0.0, 0.0)
+    var direction: Vec3 = Vec3(0.0, 0.0, -1.0)
+}
+
+/** How far along [ray] it meets the box [low]..[high], or -1 when it misses. */
+func rayBox(ray: Ray&, low: Vec3&, high: Vec3&): Double {
+    var near: Double = 0.0 - 1000000000.0
+    var far: Double = 1000000000.0
+    fin origins = [ray.origin.x, ray.origin.y, ray.origin.z]
+    fin directions = [ray.direction.x, ray.direction.y, ray.direction.z]
+    fin lows = [low.x, low.y, low.z]
+    fin highs = [high.x, high.y, high.z]
+    var axis = 0
+    while axis < 3 {
+        if absValue(directions[axis]) < 0.000000001 {
+            if origins[axis] < lows[axis] || origins[axis] > highs[axis] { return -1.0 }
+        } else {
+            var t0 = (lows[axis] - origins[axis]) / directions[axis]
+            var t1 = (highs[axis] - origins[axis]) / directions[axis]
+            if t0 > t1 {
+                fin swap = t0
+                t0 = t1
+                t1 = swap
+            }
+            if t0 > near { near = t0 }
+            if t1 < far { far = t1 }
+            if near > far { return -1.0 }
+        }
+        axis = axis + 1
+    }
+    if far < 0.0 { return -1.0 }
+    return if near >= 0.0 { near } else { far }
+}
+
+/** How far along [ray] it meets the sphere at [center], or -1. */
+func raySphere(ray: Ray&, center: Vec3&, radius: Double): Double {
+    fin offset = v3sub(ray.origin, center)
+    fin b = v3dot(offset, ray.direction)
+    fin c = v3dot(offset, offset) - radius * radius
+    fin disc = b * b - c
+    if disc < 0.0 { return -1.0 }
+    fin root = sqrt(disc)
+    fin near = 0.0 - b - root
+    if near >= 0.0 { return near }
+    fin far = 0.0 - b + root
+    return if far >= 0.0 { far } else { -1.0 }
+}
+
+/** Where [ray] meets the plane through [point] with [normal]; -1 when parallel or behind. */
+func rayPlane(ray: Ray&, point: Vec3&, normal: Vec3&): Double {
+    fin denominator = v3dot(normal, ray.direction)
+    if absValue(denominator) < 0.000001 { return -1.0 }
+    fin t = v3dot(normal, v3sub(point, ray.origin)) / denominator
+    return if t >= 0.0 { t } else { -1.0 }
+}
+
+/** The point at distance [t] along [ray]. */
+func rayAt(ray: Ray&, t: Double): Vec3 { return v3add(ray.origin, v3scale(ray.direction, t)) }
+
+/**
+ * Where on the line through [origin] along unit [axis] the [ray] passes
+ * closest, as a distance along the axis. NaN-free: a ray parallel to the axis
+ * answers 0.
+ */
+func axisParameter(ray: Ray&, origin: Vec3&, axis: Vec3&): Double {
+    fin w0 = v3sub(origin, ray.origin)
+    fin b = v3dot(axis, ray.direction)
+    fin d = v3dot(axis, w0)
+    fin e = v3dot(ray.direction, w0)
+    fin denominator = 1.0 - b * b
+    if absValue(denominator) < 0.000001 { return 0.0 }
+    return (b * e - d) / denominator
+}
+
+// ── The editor camera ───────────────────────────────────────────────────
+
+/**
+ * A viewport camera. In 3D it orbits [target] at [distance], turned by [yaw]
+ * and [pitch] degrees; in 2D it looks along -Z at [target], [halfHeight] world
+ * units from centre to top.
+ */
+pack EditorCamera derives Clone {
+    var target: Vec3 = Vec3(0.0, 0.5, 0.0)
+    var yaw: Double = 35.0
+    var pitch: Double = -24.0
+    var distance: Double = 10.0
+    var fov: Double = 55.0
+    var orthographic: Bool = false
+    var halfHeight: Double = 6.0
+    var near: Double = 0.05
+    var far: Double = 800.0
+}
+
+impl EditorCamera {
+    func &.forward(): Vec3 {
+        if self.orthographic { return Vec3(0.0, 0.0, -1.0) }
+        fin yaw = self.yaw * degreesToRadians
+        fin pitch = self.pitch * degreesToRadians
+        return Vec3(0.0 - sin(yaw) * cos(pitch), sin(pitch), 0.0 - cos(yaw) * cos(pitch))
+    }
+
+    func &.right(): Vec3 {
+        if self.orthographic { return Vec3(1.0, 0.0, 0.0) }
+        fin yaw = self.yaw * degreesToRadians
+        return Vec3(cos(yaw), 0.0, 0.0 - sin(yaw))
+    }
+
+    func &.up(): Vec3 { return v3cross(self.right(), self.forward()) }
+
+    func &.position(): Vec3 {
+        if self.orthographic { return Vec3(self.target.x, self.target.y, self.target.z + 100.0) }
+        return v3sub(self.target, v3scale(self.forward(), self.distance))
+    }
+
+    /** World to camera space: the camera looks down its -Z. */
+    func &.view(): Mat4 {
+        fin r = self.right()
+        fin u = self.up()
+        fin f = self.forward()
+        fin p = self.position()
+        return Mat4(
+            r.x, r.y, r.z, 0.0 - v3dot(r, p),
+            u.x, u.y, u.z, 0.0 - v3dot(u, p),
+            0.0 - f.x, 0.0 - f.y, 0.0 - f.z, v3dot(f, p),
+            0.0, 0.0, 0.0, 1.0
+        )
+    }
+
+    func &.projection(aspect: Double): Mat4 {
+        if self.orthographic {
+            fin halfWidth = self.halfHeight * aspect
+            fin range = self.near - 1000.0
+            return Mat4(
+                1.0 / halfWidth, 0.0, 0.0, 0.0,
+                0.0, 1.0 / self.halfHeight, 0.0, 0.0,
+                0.0, 0.0, 1.0 / range, self.near / range,
+                0.0, 0.0, 0.0, 1.0
+            )
+        }
+        return mat4Perspective(self.fov, aspect, self.near, self.far)
+    }
+
+    func &.viewProj(aspect: Double): Mat4 { return mat4Mul(self.projection(aspect), self.view()) }
+
+    /** How many world units one point of [rect] spans at [point]'s depth. */
+    func &.unitsPerPoint(point: Vec3&, rect: ViewRect&): Double {
+        if self.orthographic { return 2.0 * self.halfHeight / rect.height }
+        var depth = v3dot(v3sub(point, self.position()), self.forward())
+        if depth < self.near { depth = self.near }
+        return 2.0 * depth * tan(self.fov * degreesToRadians * 0.5) / rect.height
+    }
+
+    /** The ray through ([x], [y]) of [rect]. */
+    func &.ray(rect: ViewRect&, x: Double, y: Double): Ray {
+        fin nx = (x - rect.x) / rect.width * 2.0 - 1.0
+        fin ny = 1.0 - (y - rect.y) / rect.height * 2.0
+        if self.orthographic {
+            fin halfWidth = self.halfHeight * rect.aspect()
+            fin origin = Vec3(self.target.x + nx * halfWidth, self.target.y + ny * self.halfHeight, self.target.z + 100.0)
+            return Ray(origin, Vec3(0.0, 0.0, -1.0))
+        }
+        fin spread = tan(self.fov * degreesToRadians * 0.5)
+        fin direction = v3add(self.forward(), v3add(v3scale(self.right(), nx * spread * rect.aspect()), v3scale(self.up(), ny * spread)))
+        return Ray(self.position(), v3unit(direction))
+    }
+
+    /** Turns the orbit by a pointer movement of ([dx], [dy]) points. */
+    func !.orbit(dx: Double, dy: Double) {
+        if self.orthographic { return }
+        self.yaw = self.yaw - dx * 0.35
+        self.pitch = self.pitch - dy * 0.35
+        if self.pitch > 89.0 { self.pitch = 89.0 }
+        if self.pitch < -89.0 { self.pitch = -89.0 }
+    }
+
+    /**
+     * Turns the view about the eye by a pointer movement of ([dx], [dy])
+     * points: looking around, as a first-person camera does. The eye stays put
+     * and the orbit centre swings around it, so orbiting afterwards circles
+     * what is now in front.
+     */
+    func !.look(dx: Double, dy: Double) {
+        if self.orthographic { return }
+        fin eye = self.position()
+        self.orbit(dx, dy)
+        self.target = v3add(eye, v3scale(self.forward(), self.distance))
+    }
+
+    /**
+     * Moves the eye and the orbit centre together for [seconds]: [forward]
+     * along the view, [right] across it and [up] along the world's Y, each -1
+     * to 1. The speed follows how far the camera is from what it orbits, so a
+     * close-up creeps and an overview sweeps; [fast] triples it. In 2D the view
+     * slides instead: forward is up the screen.
+     */
+    func !.fly(forward: Double, right: Double, up: Double, seconds: Double, fast: Bool) {
+        fin boost = if fast { 3.0 } else { 1.0 }
+        if self.orthographic {
+            fin step = self.halfHeight * 1.2 * seconds * boost
+            self.target = v3add(self.target, Vec3(right * step, forward * step, 0.0))
+            return
+        }
+        fin speed = (if self.distance < 2.0 { 2.0 } else { self.distance }) * 0.9 * boost
+        fin step = speed * seconds
+        fin motion = v3add(v3add(v3scale(self.forward(), forward * step), v3scale(self.right(), right * step)), Vec3(0.0, up * step, 0.0))
+        self.target = v3add(self.target, motion)
+    }
+
+    /** Slides the view so the point under the pointer follows it. */
+    func !.pan(dx: Double, dy: Double, rect: ViewRect&) {
+        fin scale = self.unitsPerPoint(self.target, rect)
+        self.target = v3add(self.target, v3add(v3scale(self.right(), 0.0 - dx * scale), v3scale(self.up(), dy * scale)))
+    }
+
+    /** Moves in (positive [steps]) or out. */
+    func !.zoom(steps: Double) {
+        fin factor = powr(0.88, steps)
+        self.distance = clampValue(self.distance * factor, 0.2, 500.0)
+        self.halfHeight = clampValue(self.halfHeight * factor, 0.1, 500.0)
+    }
+
+    /** Centres on [point], far enough back to see [radius] around it. */
+    func !.focus(point: Vec3&, radius: Double) {
+        self.target = Vec3(point.x, point.y, point.z)
+        fin room = if radius < 0.25 { 0.25 } else { radius }
+        self.distance = room * 3.2
+        self.halfHeight = room * 1.8
+    }
+
+    /** Looks along [axis] (0 X, 1 Y, 2 Z), from its positive side when [positive]. */
+    func !.lookAlong(axis: Int, positive: Bool) {
+        when axis {
+            0 -> {
+                self.yaw = if positive { 90.0 } else { -90.0 }
+                self.pitch = 0.0
+            }
+            1 -> { self.pitch = if positive { -89.0 } else { 89.0 } }
+            else -> {
+                self.yaw = if positive { 0.0 } else { 180.0 }
+                self.pitch = 0.0
+            }
+        }
+    }
+}
+
+func clampValue(value: Double, low: Double, high: Double): Double {
+    return when {
+        value < low -> low
+        value > high -> high
+        else -> value
+    }
+}
+
+// ── Projection ──────────────────────────────────────────────────────────
+
+/** A point of the world on the screen. [visible] is false behind the camera. */
+pack ScreenPoint derives (Copy, Clone) {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var depth: Double = 0.0
+    var visible: Bool = false
+}
+
+/** Homogeneous clip coordinates of [p] under [m]. */
+pack Clip4 derives (Copy, Clone) {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var z: Double = 0.0
+    var w: Double = 1.0
+}
+
+func clipOf(m: Mat4&, p: Vec3&): Clip4 {
+    return Clip4(
+        m.m00 * p.x + m.m01 * p.y + m.m02 * p.z + m.m03,
+        m.m10 * p.x + m.m11 * p.y + m.m12 * p.z + m.m13,
+        m.m20 * p.x + m.m21 * p.y + m.m22 * p.z + m.m23,
+        m.m30 * p.x + m.m31 * p.y + m.m32 * p.z + m.m33
+    )
+}
+
+func screenOf(c: Clip4&, rect: ViewRect&): ScreenPoint {
+    if c.w < 0.00001 { return ScreenPoint(0.0, 0.0, 0.0, false) }
+    fin nx = c.x / c.w
+    fin ny = c.y / c.w
+    return ScreenPoint(rect.x + (nx + 1.0) * 0.5 * rect.width, rect.y + (1.0 - ny) * 0.5 * rect.height, c.z / c.w, true)
+}
+
+/** Where [p] lands in [rect] under [viewProj]. */
+func project(viewProj: Mat4&, rect: ViewRect&, p: Vec3&): ScreenPoint {
+    return screenOf(clipOf(viewProj, p), rect)
+}
+
+/**
+ * Makes the 3D pipeline draw into [rect] of a [windowWidth] x [windowHeight]
+ * window: [viewProj] remapped from the whole window's clip space to the
+ * rectangle's, and a scissor so nothing spills.
+ */
+func App!.beginView(viewProj: Mat4&, rect: ViewRect&) {
+    fin width = self.width() as Double
+    fin height = self.height() as Double
+    fin sx = rect.width / width
+    fin sy = rect.height / height
+    fin tx = (rect.x + rect.width * 0.5) / width * 2.0 - 1.0
+    fin ty = 1.0 - (rect.y + rect.height * 0.5) / height * 2.0
+    fin remap = Mat4(
+        sx, 0.0, 0.0, tx,
+        0.0, sy, 0.0, ty,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    )
+    pokeMat4(self.gpu.viewProj, Long(0), mat4Mul(remap, viewProj))
+    self.setScissor(rect.x, rect.y, rect.width, rect.height)
+}
+
+/** Ends a [beginView]: drawing reaches the whole window again. */
+func App!.endView() {
+    self.clearScissor()
+}
+
+// ── World-space drawing ─────────────────────────────────────────────────
+
+/** A line between two world points, clipped at the camera so a line passing behind it still draws. */
+func App!.worldLine(viewProj: Mat4&, rect: ViewRect&, a: Vec3&, b: Vec3&, width: Double, color: Rgba) {
+    var ca = clipOf(viewProj, a)
+    var cb = clipOf(viewProj, b)
+    fin limit: Double = 0.0001
+    if ca.w < limit && cb.w < limit { return }
+    if ca.w < limit {
+        fin t = (limit - ca.w) / (cb.w - ca.w)
+        ca = Clip4(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t, ca.z + (cb.z - ca.z) * t, limit)
+    } else if cb.w < limit {
+        fin t = (limit - cb.w) / (ca.w - cb.w)
+        cb = Clip4(cb.x + (ca.x - cb.x) * t, cb.y + (ca.y - cb.y) * t, cb.z + (ca.z - cb.z) * t, limit)
+    }
+    fin sa = screenOf(ca, rect)
+    fin sb = screenOf(cb, rect)
+    self.uiLine(sa.x, sa.y, sb.x, sb.y, width, color.r, color.g, color.b, color.a)
+}
+
+/** A circle in the plane spanned by unit [u] and [v] around [center]. */
+func App!.worldCircle(viewProj: Mat4&, rect: ViewRect&, center: Vec3&, u: Vec3&, v: Vec3&, radius: Double, width: Double, color: Rgba) {
+    var previous = v3add(center, v3scale(u, radius))
+    var step = 1
+    while step <= 48 {
+        fin angle = 6.283185307179586 * (step as Double) / 48.0
+        fin next = v3add(center, v3add(v3scale(u, cos(angle) * radius), v3scale(v, sin(angle) * radius)))
+        self.worldLine(viewProj, rect, previous, next, width, color)
+        previous = next
+        step = step + 1
+    }
+}
+
+/** Colours the scene's furniture is drawn in. */
+pack GizmoColors derives Clone {
+    var x: Rgba = Rgba(0.82, 0.44, 0.48, 1.0)
+    var y: Rgba = Rgba(0.49, 0.75, 0.54, 1.0)
+    var z: Rgba = Rgba(0.36, 0.64, 0.82, 1.0)
+    var highlight: Rgba = Rgba(0.98, 0.86, 0.45, 1.0)
+    var neutral: Rgba = Rgba(0.85, 0.86, 0.86, 1.0)
+    var gridMinor: Rgba = Rgba(1.0, 1.0, 1.0, 0.04)
+    var gridMajor: Rgba = Rgba(1.0, 1.0, 1.0, 0.085)
+    var label: Rgba = Rgba(0.09, 0.09, 0.1, 1.0)
+}
+
+/**
+ * The ground grid: lines [spacing] apart out to [extent] in the XZ plane (XY
+ * in 2D), a stronger line every tenth, and the two axes in their colours.
+ */
+func App!.drawGrid(camera: EditorCamera&, rect: ViewRect&, spacing: Double, extent: Double, colors: GizmoColors&) {
+    fin viewProj = camera.viewProj(rect.aspect())
+    fin flat = camera.orthographic
+    fin count = (extent / spacing) as Int
+    var index = 0 - count
+    while index <= count {
+        fin offset = (index as Double) * spacing
+        fin major = index % 10 == 0
+        fin color = if major { colors.gridMajor } else { colors.gridMinor }
+        if index != 0 {
+            if flat {
+                self.worldLine(viewProj, rect, Vec3(offset, 0.0 - extent, 0.0), Vec3(offset, extent, 0.0), 1.0, color)
+                self.worldLine(viewProj, rect, Vec3(0.0 - extent, offset, 0.0), Vec3(extent, offset, 0.0), 1.0, color)
+            } else {
+                self.worldLine(viewProj, rect, Vec3(offset, 0.0, 0.0 - extent), Vec3(offset, 0.0, extent), 1.0, color)
+                self.worldLine(viewProj, rect, Vec3(0.0 - extent, 0.0, offset), Vec3(extent, 0.0, offset), 1.0, color)
+            }
+        }
+        index = index + 1
+    }
+    self.worldLine(viewProj, rect, Vec3(0.0 - extent, 0.0, 0.0), Vec3(extent, 0.0, 0.0), 1.5, colors.x.withAlpha(0.7))
+    if flat {
+        self.worldLine(viewProj, rect, Vec3(0.0, 0.0 - extent, 0.0), Vec3(0.0, extent, 0.0), 1.5, colors.y.withAlpha(0.7))
+    } else {
+        self.worldLine(viewProj, rect, Vec3(0.0, 0.0, 0.0 - extent), Vec3(0.0, 0.0, extent), 1.5, colors.z.withAlpha(0.7))
+    }
+}
+
+// ── Transform handles ───────────────────────────────────────────────────
+
+/** Handle ids: an axis, the plane of two axes, or the centre. */
+fin handleNone = 0
+fin handleX = 1
+fin handleY = 2
+fin handleZ = 3
+fin handleXY = 4
+fin handleYZ = 5
+fin handleXZ = 6
+fin handleCentre = 7
+
+/** The unit axis of handle [handle] (the plane's normal for a plane handle). */
+func handleAxis(handle: Int): Vec3 {
+    return when handle {
+        1 -> Vec3(1.0, 0.0, 0.0)
+        2 -> Vec3(0.0, 1.0, 0.0)
+        3 -> Vec3(0.0, 0.0, 1.0)
+        4 -> Vec3(0.0, 0.0, 1.0)
+        5 -> Vec3(1.0, 0.0, 0.0)
+        6 -> Vec3(0.0, 1.0, 0.0)
+        else -> Vec3(0.0, 0.0, 0.0)
+    }
+}
+
+/**
+ * Move, rotate and scale handles around one point.
+ *
+ * [mode] is 0 move, 1 rotate, 2 scale. While a handle is dragged [active] holds
+ * it and the begin values; [hover] is the handle under the pointer.
+ */
+pack TransformGizmo derives Clone {
+    var mode: Int = 0
+    var hover: Int = 0
+    var active: Int = 0
+    var origin: Vec3 = Vec3(0.0, 0.0, 0.0)
+    var startPoint: Vec3 = Vec3(0.0, 0.0, 0.0)
+    var startParameter: Double = 0.0
+    var startVector: Vec3 = Vec3(1.0, 0.0, 0.0)
+    var startX: Double = 0.0
+    var startY: Double = 0.0
+    /** The handles' length on screen, in points. */
+    var size: Double = 96.0
+}
+
+/** Distance in points from ([px], [py]) to the segment [a]-[b]. */
+func segmentDistance(px: Double, py: Double, a: ScreenPoint&, b: ScreenPoint&): Double {
+    fin dx = b.x - a.x
+    fin dy = b.y - a.y
+    fin length2 = dx * dx + dy * dy
+    var t = if length2 > 0.0 { ((px - a.x) * dx + (py - a.y) * dy) / length2 } else { 0.0 }
+    t = clampValue(t, 0.0, 1.0)
+    fin cx = a.x + dx * t - px
+    fin cy = a.y + dy * t - py
+    return sqrt(cx * cx + cy * cy)
+}
+
+impl TransformGizmo {
+    /** The handles' length in world units at [origin]. */
+    func &.length(camera: EditorCamera&, rect: ViewRect&): Double {
+        return camera.unitsPerPoint(self.origin, rect) * self.size
+    }
+
+    /** The two axes spanning plane handle [handle]. */
+    func &.planeAxes(handle: Int): Array<Vec3> {
+        return when handle {
+            4 -> [Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0)]
+            5 -> [Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0)]
+            else -> [Vec3(1.0, 0.0, 0.0), Vec3(0.0, 0.0, 1.0)]
+        }
+    }
+
+    /** The handle under ([x], [y]), or [handleNone]. */
+    func &.pick(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double): Int {
+        fin viewProj = camera.viewProj(rect.aspect())
+        fin length = self.length(camera, rect)
+        fin centre = project(viewProj, rect, self.origin)
+        if !centre.visible { return handleNone }
+        if self.mode == 1 {
+            // Rotation rings: the nearest ring within reach.
+            var best = handleNone
+            var bestDistance: Double = 8.0
+            var handle = 1
+            while handle <= 3 {
+                fin normal = handleAxis(handle)
+                fin u = if handle == 1 { Vec3(0.0, 1.0, 0.0) } else { Vec3(1.0, 0.0, 0.0) }
+                fin v = v3cross(normal, u)
+                var previous = project(viewProj, rect, v3add(self.origin, v3scale(u, length)))
+                var step = 1
+                while step <= 48 {
+                    fin angle = 6.283185307179586 * (step as Double) / 48.0
+                    fin next = project(viewProj, rect, v3add(self.origin, v3add(v3scale(u, cos(angle) * length), v3scale(v, sin(angle) * length))))
+                    if previous.visible && next.visible {
+                        fin distance = segmentDistance(x, y, previous, next)
+                        if distance < bestDistance {
+                            bestDistance = distance
+                            best = handle
+                        }
+                    }
+                    previous = next
+                    step = step + 1
+                }
+                handle = handle + 1
+            }
+            return best
+        }
+        // The centre square first: it sits over every axis.
+        if absValue(x - centre.x) < 7.0 && absValue(y - centre.y) < 7.0 {
+            return if self.mode == 2 { handleCentre } else { handleXZ }
+        }
+        if self.mode == 0 {
+            var plane = 4
+            while plane <= 6 {
+                fin axes = self.planeAxes(plane)
+                fin corner = project(viewProj, rect, v3add(self.origin, v3add(v3scale(axes[0], length * 0.32), v3scale(axes[1], length * 0.32))))
+                if corner.visible && absValue(x - corner.x) < 9.0 && absValue(y - corner.y) < 9.0 { return plane }
+                plane = plane + 1
+            }
+        }
+        var best = handleNone
+        var bestDistance: Double = 8.0
+        var axis = 1
+        while axis <= 3 {
+            fin tip = project(viewProj, rect, v3add(self.origin, v3scale(handleAxis(axis), length)))
+            if tip.visible {
+                fin distance = segmentDistance(x, y, centre, tip)
+                if distance < bestDistance {
+                    bestDistance = distance
+                    best = axis
+                }
+            }
+            axis = axis + 1
+        }
+        return best
+    }
+
+    /** Starts dragging [handle] from ([x], [y]). */
+    func !.begin(handle: Int, camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double) {
+        self.active = handle
+        self.startX = x
+        self.startY = y
+        fin ray = camera.ray(rect, x, y)
+        when {
+            handle >= 1 && handle <= 3 && self.mode != 1 -> {
+                self.startParameter = axisParameter(ray, self.origin, handleAxis(handle))
+            }
+            handle >= 4 && handle <= 6 -> {
+                fin t = rayPlane(ray, self.origin, handleAxis(handle))
+                self.startPoint = if t >= 0.0 { rayAt(ray, t) } else { Vec3(self.origin.x, self.origin.y, self.origin.z) }
+            }
+            self.mode == 1 -> {
+                fin t = rayPlane(ray, self.origin, handleAxis(handle))
+                fin point = if t >= 0.0 { rayAt(ray, t) } else { v3add(self.origin, Vec3(1.0, 0.0, 0.0)) }
+                self.startVector = v3unit(v3sub(point, self.origin))
+            }
+            else -> { }
+        }
+    }
+
+    func !.end() { self.active = handleNone }
+
+    /** How far the drag has moved the point, in world units (move mode). */
+    func &.translation(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double): Vec3 {
+        fin ray = camera.ray(rect, x, y)
+        fin handle = self.active
+        if handle >= 1 && handle <= 3 {
+            fin axis = handleAxis(handle)
+            return v3scale(axis, axisParameter(ray, self.origin, axis) - self.startParameter)
+        }
+        if handle >= 4 && handle <= 6 {
+            fin t = rayPlane(ray, self.origin, handleAxis(handle))
+            if t < 0.0 { return Vec3(0.0, 0.0, 0.0) }
+            return v3sub(rayAt(ray, t), self.startPoint)
+        }
+        return Vec3(0.0, 0.0, 0.0)
+    }
+
+    /** How far the drag has turned, in degrees about the active axis (rotate mode). */
+    func &.rotation(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double): Double {
+        fin normal = handleAxis(self.active)
+        fin ray = camera.ray(rect, x, y)
+        fin t = rayPlane(ray, self.origin, normal)
+        if t < 0.0 { return 0.0 }
+        fin current = v3unit(v3sub(rayAt(ray, t), self.origin))
+        fin sine = v3dot(v3cross(self.startVector, current), normal)
+        fin cosine = v3dot(self.startVector, current)
+        return atan2(sine, cosine) / degreesToRadians
+    }
+
+    /** The drag as a scale factor per axis (scale mode). */
+    func &.scaling(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double): Vec3 {
+        fin length = self.length(camera, rect)
+        if self.active == handleCentre {
+            fin factor = clampValue(1.0 + ((x - self.startX) - (y - self.startY)) / (self.size * 1.5), 0.01, 100.0)
+            return Vec3(factor, factor, factor)
+        }
+        if self.active >= 1 && self.active <= 3 {
+            fin ray = camera.ray(rect, x, y)
+            fin axis = handleAxis(self.active)
+            fin factor = clampValue(1.0 + (axisParameter(ray, self.origin, axis) - self.startParameter) / length, 0.01, 100.0)
+            return Vec3(if self.active == 1 { factor } else { 1.0 }, if self.active == 2 { factor } else { 1.0 }, if self.active == 3 { factor } else { 1.0 })
+        }
+        return Vec3(1.0, 1.0, 1.0)
+    }
+}
+
+func axisColor(colors: GizmoColors&, handle: Int, hovered: Int, active: Int): Rgba {
+    if handle == active || (active == handleNone && handle == hovered) { return colors.highlight }
+    return when handle {
+        1 -> colors.x
+        2 -> colors.y
+        3 -> colors.z
+        4 -> colors.z
+        5 -> colors.x
+        6 -> colors.y
+        else -> colors.neutral
+    }
+}
+
+/** Draws [gizmo]'s handles. */
+func App!.drawGizmo(gizmo: TransformGizmo&, camera: EditorCamera&, rect: ViewRect&, colors: GizmoColors&) {
+    fin viewProj = camera.viewProj(rect.aspect())
+    fin length = gizmo.length(camera, rect)
+    fin centre = project(viewProj, rect, gizmo.origin)
+    if !centre.visible { return }
+    if gizmo.mode == 1 {
+        var handle = 1
+        while handle <= 3 {
+            fin normal = handleAxis(handle)
+            fin u = if handle == 1 { Vec3(0.0, 1.0, 0.0) } else { Vec3(1.0, 0.0, 0.0) }
+            fin v = v3cross(normal, u)
+            self.worldCircle(viewProj, rect, gizmo.origin, u, v, length, if gizmo.hover == handle || gizmo.active == handle { 3.0 } else { 2.0 },
+                axisColor(colors, handle, gizmo.hover, gizmo.active))
+            handle = handle + 1
+        }
+        self.uiRoundRect(centre.x - 3.0, centre.y - 3.0, 6.0, 6.0, 3.0, colors.neutral.r, colors.neutral.g, colors.neutral.b, 0.9)
+        return
+    }
+    if gizmo.mode == 0 {
+        var plane = 4
+        while plane <= 6 {
+            fin axes = gizmo.planeAxes(plane)
+            fin a = project(viewProj, rect, v3add(gizmo.origin, v3scale(axes[0], length * 0.22)))
+            fin b = project(viewProj, rect, v3add(gizmo.origin, v3add(v3scale(axes[0], length * 0.22), v3scale(axes[1], length * 0.22))))
+            fin c = project(viewProj, rect, v3add(gizmo.origin, v3add(v3scale(axes[0], length * 0.42), v3scale(axes[1], length * 0.42))))
+            fin color = axisColor(colors, plane, gizmo.hover, gizmo.active)
+            fin far = project(viewProj, rect, v3add(gizmo.origin, v3scale(axes[1], length * 0.22)))
+            if a.visible && b.visible && c.visible && far.visible {
+                fin square = project(viewProj, rect, v3add(gizmo.origin, v3add(v3scale(axes[0], length * 0.42), v3scale(axes[1], length * 0.42))))
+                fin edgeA = project(viewProj, rect, v3add(gizmo.origin, v3add(v3scale(axes[0], length * 0.42), v3scale(axes[1], length * 0.22))))
+                fin edgeB = project(viewProj, rect, v3add(gizmo.origin, v3add(v3scale(axes[0], length * 0.22), v3scale(axes[1], length * 0.42))))
+                self.drawQuad2dCorners(b.x, b.y, edgeA.x, edgeA.y, square.x, square.y, edgeB.x, edgeB.y,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, color.r, color.g, color.b,
+                    if gizmo.hover == plane || gizmo.active == plane { 0.75 } else { 0.45 }, 0.0, 0.0, 0.0, 0.0, 0.0)
+            }
+            plane = plane + 1
+        }
+    }
+    var axis = 1
+    while axis <= 3 {
+        fin direction = handleAxis(axis)
+        fin tip = project(viewProj, rect, v3add(gizmo.origin, v3scale(direction, length)))
+        if tip.visible {
+            fin color = axisColor(colors, axis, gizmo.hover, gizmo.active)
+            fin width: Double = if gizmo.hover == axis || gizmo.active == axis { 3.5 } else { 2.5 }
+            self.uiLine(centre.x, centre.y, tip.x, tip.y, width, color.r, color.g, color.b, 1.0)
+            if gizmo.mode == 2 {
+                self.uiRoundRect(tip.x - 5.5, tip.y - 5.5, 11.0, 11.0, 2.0, color.r, color.g, color.b, 1.0)
+            } else {
+                // An arrowhead along the projected axis.
+                fin dx = tip.x - centre.x
+                fin dy = tip.y - centre.y
+                fin span = sqrt(dx * dx + dy * dy)
+                if span > 1.0 {
+                    fin ux = dx / span
+                    fin uy = dy / span
+                    self.uiTriangle(tip.x + ux * 14.0, tip.y + uy * 14.0,
+                        tip.x - uy * 6.0, tip.y + ux * 6.0, tip.x + uy * 6.0, tip.y - ux * 6.0,
+                        color.r, color.g, color.b, 1.0)
+                }
+            }
+        }
+        axis = axis + 1
+    }
+    fin centreColor = if gizmo.hover == handleCentre || gizmo.active == handleCentre || gizmo.hover == handleXZ && gizmo.mode == 2 { colors.highlight } else { colors.neutral }
+    self.uiRoundRect(centre.x - 4.5, centre.y - 4.5, 9.0, 9.0, 2.0, centreColor.r, centreColor.g, centreColor.b, 0.95)
+}
+
+// ── Orientation widget ──────────────────────────────────────────────────
+
+/** Where the orientation widget sits in [rect]: its centre and radius. */
+func orientationCentreX(rect: ViewRect&): Double { return rect.x + rect.width - 46.0 }
+func orientationCentreY(rect: ViewRect&): Double { return rect.y + 46.0 }
+
+/**
+ * Draws the axis widget in [rect]'s top-right corner, oriented with the
+ * camera; the axes' letters sit in their colours' discs.
+ */
+func App!.drawOrientation(camera: EditorCamera&, rect: ViewRect&, colors: GizmoColors&, hovered: Int) {
+    fin cx = orientationCentreX(rect)
+    fin cy = orientationCentreY(rect)
+    self.uiRoundRect(cx - 38.0, cy - 38.0, 76.0, 76.0, 38.0, 0.0, 0.0, 0.0, if hovered != 0 { 0.28 } else { 0.18 })
+    fin right = camera.right()
+    fin up = camera.up()
+    // Back axes first, so the front ones draw over them.
+    var pass = 0
+    while pass < 2 {
+        var axis = 0
+        while axis < 3 {
+            fin direction = handleAxis(axis + 1)
+            fin depth = v3dot(direction, camera.forward())
+            if (pass == 0 && depth > 0.0) || (pass == 1 && depth <= 0.0) {
+                fin color = when axis {
+                    0 -> colors.x
+                    1 -> colors.y
+                    else -> colors.z
+                }
+                fin ex = cx + v3dot(direction, right) * 26.0
+                fin ey = cy - v3dot(direction, up) * 26.0
+                self.uiLine(cx, cy, ex, ey, 2.0, color.r, color.g, color.b, 0.9)
+                fin lit = hovered == axis + 1
+                self.uiRoundRect(ex - 8.0, ey - 8.0, 16.0, 16.0, 8.0, color.r, color.g, color.b, if lit { 1.0 } else { 0.92 })
+                fin letter = when axis {
+                    0 -> "X"
+                    1 -> "Y"
+                    else -> "Z"
+                }
+                fin width = self.uiTextWidth(letter, 10.0)
+                self.uiTextColored(letter, ex - width * 0.5, ey - self.uiTextHeight(10.0) * 0.5, 10.0, colors.label.r, colors.label.g, colors.label.b)
+                // The negative axis: a faint ring.
+                fin nx = cx - v3dot(direction, right) * 26.0
+                fin ny = cy + v3dot(direction, up) * 26.0
+                self.uiRoundRectStroke(nx - 6.0, ny - 6.0, 12.0, 12.0, 6.0, 1.5, color.r, color.g, color.b, 0.6)
+            }
+            axis = axis + 1
+        }
+        pass = pass + 1
+    }
+}
+
+/** The positive axis disc of the orientation widget under ([x], [y]): 1 X, 2 Y, 3 Z, or 0. */
+func orientationPick(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Double): Int {
+    fin cx = orientationCentreX(rect)
+    fin cy = orientationCentreY(rect)
+    var axis = 0
+    while axis < 3 {
+        fin direction = handleAxis(axis + 1)
+        fin ex = cx + v3dot(direction, camera.right()) * 26.0
+        fin ey = cy - v3dot(direction, camera.up()) * 26.0
+        if absValue(x - ex) < 9.0 && absValue(y - ey) < 9.0 { return axis + 1 }
+        axis = axis + 1
+    }
+    return 0
+}

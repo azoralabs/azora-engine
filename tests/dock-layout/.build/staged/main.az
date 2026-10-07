@@ -1,0 +1,52 @@
+import std.io
+import engine.ecs
+import engine.ui.docking
+
+// The dock model without a window: a default layout from declared panels,
+// tabs moved and split off, a panel floated, and a layout that survives a
+// round trip through its file form.
+
+@Panel(title: "Viewport", area: .Center, order: 0, closable: false)
+pack ViewportPanel { }
+
+@Panel(title: "Code", area: .Center, order: 1)
+pack CodePanel { }
+
+@Panel(title: "Scene Tree", area: .Right, stack: 0)
+pack TreePanel { }
+
+@Panel(title: "Inspector", area: .Right, stack: 1)
+pack InspectorPanel { }
+
+@Panel(title: "Console", area: .Bottom, order: 0)
+pack ConsolePanel { }
+
+@Panel(title: "Assets", area: .Bottom, order: 1)
+pack AssetsPanel { }
+
+func main() {
+    var world = World()
+    fin root = dockDefaultLayout(world)
+    fin first = writeDockLayout(world)
+    println(first)
+
+    // Code moves next to the viewport; the console splits off to its right.
+    fin code = dockFindPanel(world, "CodePanel")
+    fin viewport = dockFindPanel(world, "ViewportPanel")
+    dockMove(world, code, dockParent(world, viewport), .Right)
+    fin console = dockFindPanel(world, "ConsolePanel")
+    fin assets = dockFindPanel(world, "AssetsPanel")
+    dockMove(world, console, dockParent(world, assets), .Center)
+    dockClose(world, dockFindPanel(world, "AssetsPanel"))
+    fin floating = dockFloat(world, "AssetsPanel", 100.0, 120.0, 400.0, 300.0)
+    fin second = writeDockLayout(world)
+    println(second)
+
+    var loaded = World()
+    assert readDockLayout(loaded, second) panic "layout did not load"
+    fin third = writeDockLayout(loaded)
+    assert second == third panic "layout changed on a round trip:\n${third}"
+    assert dockRoots(loaded).size == 2 panic "the floating window was lost"
+    assert !readDockLayout(loaded, "{}") panic "a foreign file was accepted"
+    println("dock layout passed")
+}
