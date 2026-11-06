@@ -28,7 +28,10 @@ func main() {
     var world = World()
     fin root = dockDefaultLayout(world)
     fin first = writeDockLayout(world)
-    println(first)
+    // Centre: Viewport then Code; bottom: Console then Assets; right: the tree
+    // above the inspector - the order and areas the @Panel declarations give.
+    fin expectedFirst = "{\"format\": \"azora-dock\", \"version\": 1, \"windows\": [\n    {\"floating\": false, \"x\": 0, \"y\": 0, \"width\": 0, \"height\": 0, \"node\": {\"split\": \"horizontal\", \"ratio\": 0.76, \"children\": [{\"split\": \"vertical\", \"ratio\": 0.72, \"children\": [{\"tabs\": [\"ViewportPanel\", \"CodePanel\"], \"active\": 0}, {\"tabs\": [\"ConsolePanel\", \"AssetsPanel\"], \"active\": 0}]}, {\"split\": \"vertical\", \"ratio\": 0.45, \"children\": [{\"tabs\": [\"TreePanel\"], \"active\": 0}, {\"tabs\": [\"InspectorPanel\"], \"active\": 0}]}]}}\n]}\n"
+    assert first == expectedFirst panic "default layout:\n${first}"
 
     // Code moves next to the viewport; the console splits off to its right.
     fin code = dockFindPanel(world, "CodePanel")
@@ -40,7 +43,10 @@ func main() {
     dockClose(world, dockFindPanel(world, "AssetsPanel"))
     fin floating = dockFloat(world, "AssetsPanel", 100.0, 120.0, 400.0, 300.0)
     fin second = writeDockLayout(world)
-    println(second)
+    // Code split off to the right of the viewport, Assets out of the bottom
+    // area and into its own floating window at the requested frame.
+    fin expectedSecond = "{\"format\": \"azora-dock\", \"version\": 1, \"windows\": [\n    {\"floating\": false, \"x\": 0, \"y\": 0, \"width\": 0, \"height\": 0, \"node\": {\"split\": \"horizontal\", \"ratio\": 0.76, \"children\": [{\"split\": \"vertical\", \"ratio\": 0.72, \"children\": [{\"split\": \"horizontal\", \"ratio\": 0.5, \"children\": [{\"tabs\": [\"ViewportPanel\"], \"active\": 0}, {\"tabs\": [\"CodePanel\"], \"active\": 0}]}, {\"tabs\": [\"ConsolePanel\"], \"active\": 0}]}, {\"split\": \"vertical\", \"ratio\": 0.45, \"children\": [{\"tabs\": [\"TreePanel\"], \"active\": 0}, {\"tabs\": [\"InspectorPanel\"], \"active\": 0}]}]}},\n    {\"floating\": true, \"x\": 100, \"y\": 120, \"width\": 400, \"height\": 300, \"node\": {\"tabs\": [\"AssetsPanel\"], \"active\": 0}}\n]}\n"
+    assert second == expectedSecond panic "edited layout:\n${second}"
 
     var loaded = World()
     assert readDockLayout(loaded, second) panic "layout did not load"

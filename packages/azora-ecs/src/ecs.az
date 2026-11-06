@@ -50,7 +50,13 @@ pack World {
     var aliveCount: Int = 0
     var tick: Int = 0
     var storageNames: Array<String> = []
-    var storages: Array<Any> = []
+    /**
+     * Every registered component storage. Typed as storages rather than `Any`
+     * so that the world owns them: replacing one destroys the old storage, and
+     * a world that is dropped destroys each storage and the components in it.
+     * An `Array<Any>` could not, since an erased slot may hold a plain value.
+     */
+    var storages: Array<Storage<Any>> = []
     var resourceNames: Array<String> = []
     var resources: Array<Any> = []
     var totalTime: Double = 0.0
