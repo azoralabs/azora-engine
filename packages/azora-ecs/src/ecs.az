@@ -58,7 +58,17 @@ pack World {
      */
     var storages: Array<Storage<Any>> = []
     var resourceNames: Array<String> = []
-    var resources: Array<Any> = []
+    /**
+     * Every resource, each in a slot built where its type was known (see
+     * [insertResource]), so the world owns them: replacing one destroys the
+     * old value, and a world that is dropped destroys every resource. An
+     * `Array<Any>` could not, since an erased slot may hold a plain value.
+     */
+    var resources: Array<ResourceSlot<Any>> = []
+    /** When each resource was last written, in [resourceWrites]: see [resourceStamp]. */
+    var resourceStamps: Array<Int> = []
+    /** How many resource writes this world has seen. */
+    var resourceWrites: Int = 0
     var totalTime: Double = 0.0
     var fixedTimestep: Double = Double(1.0) / Double(60.0)
     var fixedAccumulator: Double = 0.0
@@ -405,7 +415,7 @@ func removeFromEveryStorage(world: World!, entity: Entity): Int {
     var dropped = 0
     var i = 0
     while i < world.storages.size {
-        var store: Storage<Any>! = world.storages[i] as Storage<Any>!
+        let store: Storage<Any>! = world.storages[i] as Storage<Any>!
         if storageRemove<Any>(store, entity) {
             dropped = dropped + 1
         }
@@ -694,57 +704,84 @@ impl QueryOf<...T> {
 }
 
 /**
+ * One resource the world owns.
+ *
+ * Built by [insertResource] and [insertResourceNamed], which are `inline`: they
+ * expand where `T` is a concrete type, so the slot is built knowing how to
+ * destroy its value - the same discipline component storages follow.
+ */
+@Experimental(since: "0.1")
+pack ResourceSlot<T> {
+    var value: T
+}
+
+/**
  * Puts [value] in the world as the resource of its type.
  *
  * Answers whether it replaced one, which is how a system that inserts on first
- * use can tell. There is one resource per type, so inserting twice replaces.
+ * use can tell. There is one resource per type, so inserting twice replaces,
+ * and the replaced value is destroyed.
  */
 @Experimental(since: "0.1")
 inline func<T> insertResource(world: World!, value: T): Bool {
-    return insertResourceNamed<T>(world, T.typeName, take value)
+    return storeResource<T>(world, T.typeName, ResourceSlot<T>(take value))
 }
 
 /** Puts [value] under an explicit [name]. See [insertResource]. */
 @Experimental(since: "0.1")
-func<T> insertResourceNamed(world: World!, name: String, value: T): Bool {
-    // Appended rather than replaced in place, and read back to front: the newest
-    // entry for a name is the one that answers, so inserting is one operation
-    // whether or not the resource was already there.
-    var replaced = false
+inline func<T> insertResourceNamed(world: World!, name: String, value: T): Bool {
+    return storeResource<T>(world, name, ResourceSlot<T>(take value))
+}
+
+/** Stores [slot] under [name], destroying the resource it replaces. */
+func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool {
+    world.resourceWrites = world.resourceWrites + 1
     var i = 0
     while i < world.resourceNames.size {
         if world.resourceNames[i] == name {
-            replaced = true
+            // remove destroys the old resource before the new one is appended.
+            world.resourceNames.remove(i)
+            world.resources.remove(i)
+            world.resourceStamps.remove(i)
+            world.resourceNames.add(name)
+            world.resources.add(take slot)
+            world.resourceStamps.add(world.resourceWrites)
+            return true
         }
         i = i + 1
     }
     world.resourceNames.add(name)
-    world.resources.add(value)
-    return replaced
+    world.resources.add(take slot)
+    world.resourceStamps.add(world.resourceWrites)
+    return false
 }
 
 /**
- * How many times the resource under [name] has been written.
+ * How many times the resource under [name] has been written, as of its
+ * newest write; -1 when it has never been.
  *
- * Resources are appended, so the position of the newest entry is a number that
- * moves exactly when the resource is written and never otherwise. That is all a
- * reader needs to tell "the same as last time" from "different".
+ * A number that moves exactly when the resource is written and never
+ * otherwise. That is all a reader needs to tell "the same as last time" from
+ * "different".
  */
 @Experimental(since: "0.1")
 func resourceStamp(world: World&, name: String): Int {
-    var found = 0 - 1
     var i = 0
     while i < world.resourceNames.size {
         if world.resourceNames[i] == name {
-            found = i
+            return world.resourceStamps[i]
         }
         i = i + 1
     }
-    return found
+    return 0 - 1
 }
 
+/** Whether the world holds a resource under [name]. */
+@Experimental(since: "0.1")
+func hasResourceNamed(world: World&, name: String): Bool = resourceStamp(world, name) >= 0
+
 /**
- * The world's resource of type `T`.
+ * The world's resource of type `T`, as a copy of its own.
  *
  * A resource a system asks for and the world does not hold is a wiring mistake,
  * not a condition to handle: nothing sensible can be returned in its place, and
@@ -753,24 +790,34 @@ func resourceStamp(world: World&, name: String): Int {
 @Experimental(since: "0.1")
 @SignatureOnly
 inline func<T> resource(world: World&): T {
-    return resourceNamed<T>(world, T.typeName)
+    return resourceSlot<T>(world, T.typeName).value.clone()
 }
 
-/** The resource under an explicit [name]. See [resource]. */
+/** The resource under an explicit [name], as a copy. See [resource]. */
 @Experimental(since: "0.1")
-func<T> resourceNamed(world: World&, name: String): T {
-    var i = world.resourceNames.size - 1
-    while i >= 0 {
+inline func<T> resourceNamed(world: World&, name: String): T {
+    return resourceSlot<T>(world, name).value.clone()
+}
+
+/**
+ * The slot holding the resource under [name], borrowed from the world.
+ *
+ * Erased: the inline readers above give it a concrete `T`, and copy the value
+ * out where that type is known.
+ */
+func<T> resourceSlot(world: World&, name: String): ResourceSlot<T>&|world| {
+    var i = 0
+    while i < world.resourceNames.size {
         if world.resourceNames[i] == name {
-            return world.resources[i] as T
+            return world.resources[i] as ResourceSlot<T>&
         }
-        i = i - 1
+        i = i + 1
     }
     panic "no resource '${name}' in this world - insert it before the systems that ask for it"
 }
 
 /**
- * The world's resource of type `T`, or [fallback] when there is none.
+ * The world's resource of type `T` as a copy, or [fallback] when there is none.
  *
  * A fallback rather than a failure: a system that runs before whatever inserts
  * the resource should see a defined value, not stop the frame.
@@ -778,20 +825,15 @@ func<T> resourceNamed(world: World&, name: String): T {
 @Experimental(since: "0.1")
 @SignatureOnly
 inline func<T> resourceOr(world: World&, fallback: T): T {
-    return resourceNamedOr<T>(world, T.typeName, take fallback)
+    // Parenthesized: `return if …` is the statement form, and an inline body
+    // must be one returned expression to expand where `T` is known.
+    return (if hasResourceNamed(world, T.typeName) then resourceSlot<T>(world, T.typeName).value.clone() else fallback)
 }
 
-/** The resource under an explicit [name], or [fallback]. See [resourceOr]. */
+/** The resource under an explicit [name] as a copy, or [fallback]. See [resourceOr]. */
 @Experimental(since: "0.1")
-func<T> resourceNamedOr(world: World&, name: String, fallback: T): T {
-    var i = world.resourceNames.size - 1
-    while i >= 0 {
-        if world.resourceNames[i] == name {
-            return world.resources[i] as T
-        }
-        i = i - 1
-    }
-    return fallback
+inline func<T> resourceNamedOr(world: World&, name: String, fallback: T): T {
+    return (if hasResourceNamed(world, name) then resourceSlot<T>(world, name).value.clone() else fallback)
 }
 
 /**

@@ -99,7 +99,7 @@ func renderableStoreInit(): RenderableStore {
     return RenderableStore([Entity::invalid], [defaultRenderable()])
 }
 
-func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore): QueryCursor {
+func buildSpinQuery(world: World&, transforms: TransformStore&, spins: SpinStore&): QueryCursor {
     var query = queryEmpty()
     var i = 1
     while i < transforms.entities.size {
@@ -112,7 +112,7 @@ func buildSpinQuery(world: World, transforms: TransformStore, spins: SpinStore):
     return query
 }
 
-func buildRenderQuery(world: World, transforms: TransformStore, renderables: RenderableStore): QueryCursor {
+func buildRenderQuery(world: World&, transforms: TransformStore&, renderables: RenderableStore&): QueryCursor {
     var query = queryEmpty()
     var i = 1
     while i < transforms.entities.size {
@@ -144,11 +144,11 @@ impl TransformStore {
     func !.insert(entity: Entity, value: LocalTransform) {
         fin index = self.indexOf(entity)
         if index >= 0 {
-            self.values[index] = value
+            self.values[index] = take value
             return
         }
         self.entities.add(entity)
-        self.values.add(value)
+        self.values.add(take value)
     }
 
     func &.get(entity: Entity): LocalTransform {
@@ -231,7 +231,8 @@ func spinSystem(
         fin entity = query.next()
         fin index = transforms.indexOf(entity)
         if index >= 0 && entity.isValid && world.isAlive(entity) && spins.has(entity) {
-            fin transform = transforms.values[index]
+            // A copy: `insert` below changes the store this one is read from.
+            fin transform = transforms.values[index].clone()
             fin spin = spins.get(entity)
             transforms.insert(entity, LocalTransform(transform.position, transform.rotation + Vec3(0.0, spin.speed * speedScale * dt, 0.0), transform.scale))
         }
@@ -242,8 +243,8 @@ func renderSystem(
     app: App,
     world: World&
     query: QueryCursor!,
-    transforms: TransformStore,
-    renderables: RenderableStore,
+    transforms: TransformStore&,
+    renderables: RenderableStore&,
     queue: RenderQueue!,
 ) {
     query.reset()
@@ -251,7 +252,7 @@ func renderSystem(
         fin entity = query.next()
         fin index = transforms.indexOf(entity)
         if index >= 0 && entity.isValid && world.isAlive(entity) && renderables.has(entity) {
-            fin transform = transforms.values[index]
+            let transform: LocalTransform& = transforms.values[index].&
             fin renderable = renderables.get(entity)
             queue.add(
                 renderable.mesh,

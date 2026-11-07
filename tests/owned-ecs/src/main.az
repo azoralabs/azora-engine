@@ -11,6 +11,14 @@ pack OwnedComponent {
 impl OwnedComponent {
     dtor .() { self.audit.destroyed += 1 }
 }
+pack OwnedResource {
+    var id: Int
+    var audit: Audit!
+}
+impl OwnedResource {
+    dtor .() { self.audit.destroyed += 1 }
+}
+pack Tally { var counts: Array<Int> }
 
 func main() {
     var audit = Audit()
@@ -41,5 +49,20 @@ func main() {
         storageInsert<OwnedComponent>(ensureStorage<OwnedComponent>(scopedWorld), scopedEntity, OwnedComponent(5, audit))
     }
     assert audit.destroyed == 5 panic "world scope cleanup must destroy registered owned components"
+    // Resources: the world owns them. Replacing one destroys the old value, a
+    // dropped world destroys what it holds, and a read hands out a copy.
+    if true {
+        var resourceWorld = World()
+        insertResource<OwnedResource>(resourceWorld, OwnedResource(6, audit))
+        assert audit.destroyed == 5 panic "insert must transfer the resource into the world"
+        assert insertResource<OwnedResource>(resourceWorld, OwnedResource(7, audit)) panic "a second insert must report the replace"
+        assert audit.destroyed == 6 panic "replacing a resource must destroy the previous one once"
+        insertResource<Tally>(resourceWorld, Tally([1, 2]))
+        var copy = resource<Tally>(resourceWorld)
+        copy.counts.add(3)
+        assert resource<Tally>(resourceWorld).counts.size == 2 panic "a read resource must be a copy"
+        assert copy.counts.size == 3 panic "a resource copy must be the reader's own"
+    }
+    assert audit.destroyed == 7 panic "world scope cleanup must destroy its resources"
     println("owned ecs passed")
 }
