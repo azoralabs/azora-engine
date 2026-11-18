@@ -4,8 +4,6 @@
  * Licensed under the Apache License, Version 2.0.
  */
 
-module engine.input
-
 /**
  * @file engine/input/azInput
  *
@@ -20,425 +18,416 @@ module engine.input
  *
  * @since 0.1.0
  */
+module engine.input
 
-scope engine::input {
-    /**
-    * Stable keyboard key identifiers used by `ButtonInput<KeyCode>`.
-    *
-    * Values are translated to the platform ABI by `keyCodeValue`; game code never
-    * depends on browser or operating-system scan codes.
-    */
-    @Experimental(since: "0.1")
-    enum KeyCode: Int {
-        Backspace(8)
-        Tab(9)
-        Enter(13)
-        Escape(27)
-        Space(32)
-        Digit0(48)
-        Digit1(49)
-        Digit2(50)
-        Digit3(51)
-        Digit4(52)
-        Digit5(53)
-        Digit6(54)
-        Digit7(55)
-        Digit8(56)
-        Digit9(57)
-        A(65)
-        B(66)
-        C(67)
-        D(68)
-        E(69)
-        F(70)
-        G(71)
-        H(72)
-        I(73)
-        J(74)
-        K(75)
-        L(76)
-        M(77)
-        N(78)
-        O(79)
-        P(80)
-        Q(81)
-        R(82)
-        S(83)
-        T(84)
-        U(85)
-        V(86)
-        W(87)
-        X(88)
-        Y(89)
-        Z(90)
-        Left(1001)
-        Right(1002)
-        Up(1003)
-        Down(1004)
-        Shift(1005)
-        Control(1006)
-        Alt(1007)
-        Meta(1008)
-        CapsLock(1009)
-        Insert(1010)
-        Delete(1011)
-        Home(1012)
-        End(1013)
-        PageUp(1014)
-        PageDown(1015)
-        F1(1021)
-        F2(1022)
-        F3(1023)
-        F4(1024)
-        F5(1025)
-        F6(1026)
-        F7(1027)
-        F8(1028)
-        F9(1029)
-        F10(1030)
-        F11(1031)
-        F12(1032)
+/**
+* Stable keyboard key identifiers used by `ButtonInput<KeyCode>`.
+*
+* Values are translated to the platform ABI by `keyCodeValue`; game code never
+* depends on browser or operating-system scan codes.
+*/
+@Experimental(since: "0.1")
+enum KeyCode: Int {
+    Backspace(8)
+    Tab(9)
+    Enter(13)
+    Escape(27)
+    Space(32)
+    Digit0(48)
+    Digit1(49)
+    Digit2(50)
+    Digit3(51)
+    Digit4(52)
+    Digit5(53)
+    Digit6(54)
+    Digit7(55)
+    Digit8(56)
+    Digit9(57)
+    A(65)
+    B(66)
+    C(67)
+    D(68)
+    E(69)
+    F(70)
+    G(71)
+    H(72)
+    I(73)
+    J(74)
+    K(75)
+    L(76)
+    M(77)
+    N(78)
+    O(79)
+    P(80)
+    Q(81)
+    R(82)
+    S(83)
+    T(84)
+    U(85)
+    V(86)
+    W(87)
+    X(88)
+    Y(89)
+    Z(90)
+    Left(1001)
+    Right(1002)
+    Up(1003)
+    Down(1004)
+    Shift(1005)
+    Control(1006)
+    Alt(1007)
+    Meta(1008)
+    CapsLock(1009)
+    Insert(1010)
+    Delete(1011)
+    Home(1012)
+    End(1013)
+    PageUp(1014)
+    PageDown(1015)
+    F1(1021)
+    F2(1022)
+    F3(1023)
+    F4(1024)
+    F5(1025)
+    F6(1026)
+    F7(1027)
+    F8(1028)
+    F9(1029)
+    F10(1030)
+    F11(1031)
+    F12(1032)
+}
+
+@Experimental(since: "0.1")
+enum MouseButton: Int {
+    Left(0)
+    Right(1)
+    Middle(2)
+    Back(3)
+    Forward(4)
+}
+
+@Experimental(since: "0.1")
+enum PointerKind: Int {
+    Mouse(0)
+    Touch(1)
+    Pen(2)
+    None(-1)
+}
+
+@Experimental(since: "0.1")
+enum TouchPhase: Int {
+    None(0)
+    Began(1)
+    Moved(2)
+    Stationary(3)
+    Ended(4)
+    Cancelled(5)
+}
+
+@Experimental(since: "0.1")
+enum GamepadButton: Int {
+    South(0)
+    East(1)
+    West(2)
+    North(3)
+    LeftBumper(4)
+    RightBumper(5)
+    LeftTrigger(6)
+    RightTrigger(7)
+    Back(8)
+    Start(9)
+    LeftStick(10)
+    RightStick(11)
+    DpadUp(12)
+    DpadDown(13)
+    DpadLeft(14)
+    DpadRight(15)
+    Home(16)
+}
+
+@Experimental(since: "0.1")
+enum GamepadAxis: Int {
+    LeftX(0)
+    LeftY(1)
+    RightX(2)
+    RightY(3)
+}
+
+/**
+* Typed, read-only button state injected as `res ButtonInput<KeyCode>`.
+*
+* The zero-sized type parameter selects the button domain at compile time.
+* `device` identifies the host input stream and is constant for a resource.
+*/
+@Experimental(since: "0.1")
+pack ButtonInput<T> {
+    fin _device: Int
+}
+
+func keyboardInput(): ButtonInput<KeyCode> = .(0)
+
+// The keyboard's members. An implementation's target declares its parameters
+// (`ButtonInput<KeyCode>` here would declare one called `KeyCode`), and there
+// is no implementation for one instantiation, so these are every
+// `ButtonInput`'s; the `KeyCode` they take is what makes them the keyboard's.
+impl ButtonInput<T> {
+    /** True while the key is held. */
+    func pressed(key: KeyCode): Bool = engineInputKeyDown(key.value)
+
+    /** True only on the frame in which the key went down. */
+    func justPressed(key: KeyCode): Bool = engineInputKeyPressed(key.value)
+
+    /** True only on the frame in which the key went up. */
+    func justReleased(key: KeyCode): Bool = engineInputKeyReleased(key.value)
+}
+
+/* Internal WebAssembly device ABI; applications use the wrappers below. */
+bridge (.C, .WebAssembly) {
+    func engineInputKeyDown(key: Int): Bool
+    func engineInputKeyPressed(key: Int): Bool
+    func engineInputKeyReleased(key: Int): Bool
+    func engineInputAnyKeyDown(): Bool
+    func engineInputTextCount(): Int
+    func engineInputTextCodePoint(index: Int): Int
+
+    func engineInputMouseX(): Double
+    func engineInputMouseY(): Double
+    func engineInputMouseDeltaX(): Double
+    func engineInputMouseDeltaY(): Double
+    func engineInputMouseWheelX(): Double
+    func engineInputMouseWheelY(): Double
+    func engineInputMouseDown(button: Int): Bool
+    func engineInputMousePressed(button: Int): Bool
+    func engineInputMouseReleased(button: Int): Bool
+    func engineInputMouseInside(): Bool
+    func engineInputPointerLocked(): Bool
+    func engineInputRequestPointerLock(): Bool
+    func engineInputReleasePointerLock(): Unit
+
+    func engineInputPointerKind(): Int
+    func engineInputPointerId(): Int
+    func engineInputPointerX(): Double
+    func engineInputPointerY(): Double
+    func engineInputPointerDeltaX(): Double
+    func engineInputPointerDeltaY(): Double
+    func engineInputPointerPressure(): Double
+    func engineInputPointerDown(): Bool
+    func engineInputPointerPressed(): Bool
+    func engineInputPointerReleased(): Bool
+
+    func engineInputTouchCount(): Int
+    func engineInputTouchId(index: Int): Int
+    func engineInputTouchX(index: Int): Double
+    func engineInputTouchY(index: Int): Double
+    func engineInputTouchDeltaX(index: Int): Double
+    func engineInputTouchDeltaY(index: Int): Double
+    func engineInputTouchPressure(index: Int): Double
+    func engineInputTouchRadiusX(index: Int): Double
+    func engineInputTouchRadiusY(index: Int): Double
+    func engineInputTouchPhase(index: Int): Int
+
+    func engineInputControllerCount(): Int
+    func engineInputControllerConnected(index: Int): Bool
+    func engineInputControllerButtonDown(index: Int, button: Int): Bool
+    func engineInputControllerButtonPressed(index: Int, button: Int): Bool
+    func engineInputControllerButtonReleased(index: Int, button: Int): Bool
+    func engineInputControllerButtonValue(index: Int, button: Int): Double
+    func engineInputControllerAxis(index: Int, axis: Int): Double
+    func engineInputControllerRumble(index: Int, low: Double, high: Double, durationMs: Int): Bool
+}
+
+/** True while [key] is held. */
+func keyDown(key: KeyCode): Bool = engineInputKeyDown(key.value)
+
+/** True only during the frame in which [key] went down. */
+func keyPressed(key: KeyCode): Bool = engineInputKeyPressed(key.value)
+
+/** True only during the frame in which [key] went up. */
+func keyReleased(key: KeyCode): Bool = engineInputKeyReleased(key.value)
+
+/** True when at least one keyboard key is currently held. */
+func anyKeyDown(): Bool = engineInputAnyKeyDown()
+
+/** Number of Unicode code points entered during this frame. */
+func textCount(): Int = engineInputTextCount()
+
+/** Unicode code point at [index], or `0` when out of bounds. */
+func textCodePoint(index: Int): Int = engineInputTextCodePoint(index)
+
+/** Mouse position in logical pixels, origin at the top-left. */
+func mouseX(): Double = engineInputMouseX()
+func mouseY(): Double = engineInputMouseY()
+
+/** Mouse movement accumulated since the previous engine frame. */
+func mouseDeltaX(): Double = engineInputMouseDeltaX()
+func mouseDeltaY(): Double = engineInputMouseDeltaY()
+
+/** Horizontal and vertical wheel movement for this frame. */
+func mouseWheelX(): Double = engineInputMouseWheelX()
+func mouseWheelY(): Double = engineInputMouseWheelY()
+
+func mouseDown(button: MouseButton): Bool = engineInputMouseDown(button.value)
+func mousePressed(button: MouseButton): Bool = engineInputMousePressed(button.value)
+func mouseReleased(button: MouseButton): Bool = engineInputMouseReleased(button.value)
+func mouseInside(): Bool = engineInputMouseInside()
+
+/** True while relative pointer mode is active. */
+func pointerLocked(): Bool = engineInputPointerLocked()
+
+/** Requests relative pointer mode. Must be called from a user gesture. */
+func requestPointerLock(): Bool = engineInputRequestPointerLock()
+func releasePointerLock() = engineInputReleasePointerLock()
+
+/** Kind of the active unified pointer: pointerMouse/TOUCH/PEN/NONE. */
+func pointerKind(): Int = engineInputPointerKind()
+func pointerId(): Int = engineInputPointerId()
+func pointerX(): Double = engineInputPointerX()
+func pointerY(): Double = engineInputPointerY()
+func pointerDeltaX(): Double = engineInputPointerDeltaX()
+func pointerDeltaY(): Double = engineInputPointerDeltaY()
+func pointerPressure(): Double = engineInputPointerPressure()
+func pointerDown(): Bool = engineInputPointerDown()
+func pointerPressed(): Bool = engineInputPointerPressed()
+func pointerReleased(): Bool = engineInputPointerReleased()
+
+/** Active touch points, ordered by stable pointer id. */
+func touchCount(): Int = engineInputTouchCount()
+func touchId(index: Int): Int = engineInputTouchId(index)
+func touchX(index: Int): Double = engineInputTouchX(index)
+func touchY(index: Int): Double = engineInputTouchY(index)
+func touchDeltaX(index: Int): Double = engineInputTouchDeltaX(index)
+func touchDeltaY(index: Int): Double = engineInputTouchDeltaY(index)
+func touchPressure(index: Int): Double = engineInputTouchPressure(index)
+func touchRadiusX(index: Int): Double = engineInputTouchRadiusX(index)
+func touchRadiusY(index: Int): Double = engineInputTouchRadiusY(index)
+func touchPhase(index: Int): Int = engineInputTouchPhase(index)
+
+/** Number of connected standard-mapped controllers. */
+func controllerCount(): Int = engineInputControllerCount()
+func controllerConnected(index: Int): Bool = engineInputControllerConnected(index)
+func controllerButtonDown(index: Int, button: MouseButton): Bool =
+    engineInputControllerButtonDown(index, button.value)
+func controllerButtonPressed(index: Int, button: MouseButton): Bool =
+    engineInputControllerButtonPressed(index, button.value)
+func controllerButtonReleased(index: Int, button: MouseButton): Bool =
+    engineInputControllerButtonReleased(index, button.value)
+func controllerButtonValue(index: Int, button: MouseButton): Double =
+    engineInputControllerButtonValue(index, button.value)
+func controllerAxis(index: Int, axis: GamepadAxis): Double = engineInputControllerAxis(index, axis.value)
+
+/** Starts dual-rumble feedback when supported by the selected controller. */
+func controllerRumble(index: Int, low: Double, high: Double, durationMs: Int = 180): Bool {
+    return engineInputControllerRumble(index, low, high, durationMs)
+}
+
+/**
+ * Unified mouse, pen, and primary-touch resource.
+ *
+ * Values are read from the immutable input snapshot for the current frame,
+ * so every system observes the same coordinates and edge transitions.
+ */
+@Experimental(since: "0.1")
+pack PointerInput
+
+/** Typed mouse button and pointer-lock resource. */
+@Experimental(since: "0.1")
+pack MouseInput
+
+/** Snapshot of one active touch point. */
+@Experimental(since: "0.1")
+pack TouchPoint {
+    fin id: Int
+    fin x: Double
+    fin y: Double
+    fin deltaX: Double
+    fin deltaY: Double
+    fin pressure: Double
+    fin radiusX: Double
+    fin radiusY: Double
+    fin phase: TouchPhase
+}
+
+/** Read-only collection of touches active in the current frame. */
+@Experimental(since: "0.1")
+pack TouchInput
+
+/** One standard-mapped game controller. */
+@Experimental(since: "0.1")
+pack GamepadInput {
+    fin _index: Int
+}
+
+impl MouseInput {
+    func &.pressed(button: MouseButton): Bool {
+        return engineInputMouseDown(button.value)
     }
 
-    @Experimental(since: "0.1")
-    enum MouseButton: Int {
-        Left(0)
-        Right(1)
-        Middle(2)
-        Back(3)
-        Forward(4)
+    func &.justPressed(button: MouseButton): Bool {
+        return engineInputMousePressed(button.value)
     }
 
-    @Experimental(since: "0.1")
-    enum PointerKind: Int {
-        Mouse(0)
-        Touch(1)
-        Pen(2)
-        None(-1)
-    }
-
-    @Experimental(since: "0.1")
-    enum TouchPhase: Int {
-        None(0)
-        Began(1)
-        Moved(2)
-        Stationary(3)
-        Ended(4)
-        Cancelled(5)
-    }
-
-    @Experimental(since: "0.1")
-    enum GamepadButton: Int {
-        South(0)
-        East(1)
-        West(2)
-        North(3)
-        LeftBumper(4)
-        RightBumper(5)
-        LeftTrigger(6)
-        RightTrigger(7)
-        Back(8)
-        Start(9)
-        LeftStick(10)
-        RightStick(11)
-        DpadUp(12)
-        DpadDown(13)
-        DpadLeft(14)
-        DpadRight(15)
-        Home(16)
-    }
-
-    @Experimental(since: "0.1")
-    enum GamepadAxis: Int {
-        LeftX(0)
-        LeftY(1)
-        RightX(2)
-        RightY(3)
-    }
-
-    /**
-    * Typed, read-only button state injected as `res ButtonInput<KeyCode>`.
-    *
-    * The zero-sized type parameter selects the button domain at compile time.
-    * `device` identifies the host input stream and is constant for a resource.
-    */
-    @Experimental(since: "0.1")
-    pack ButtonInput<T> {
-        fin _device: Int
-    }
-
-    func keyboardInput(): ButtonInput<KeyCode> {
-        return ButtonInput<KeyCode>(0)
-    }
-
-    // The keyboard's members. An implementation's target declares its parameters
-    // (`ButtonInput<KeyCode>` here would declare one called `KeyCode`), and there
-    // is no implementation for one instantiation, so these are every
-    // `ButtonInput`'s; the `KeyCode` they take is what makes them the keyboard's.
-    impl ButtonInput<T> {
-        /** True while the key is held. */
-        func pressed(key: KeyCode): Bool {
-            return engineInputKeyDown(keyCodeValue(key))
-        }
-
-        /** True only on the frame in which the key went down. */
-        func justPressed(key: KeyCode): Bool {
-            return engineInputKeyPressed(keyCodeValue(key))
-        }
-
-        /** True only on the frame in which the key went up. */
-        func justReleased(key: KeyCode): Bool {
-            return engineInputKeyReleased(keyCodeValue(key))
-        }
+    func &.justReleased(button: MouseButton): Bool {
+        return engineInputMouseReleased(button.value)
     }
 }
 
-scope engine::input {
-    /* Internal WebAssembly device ABI; applications use the wrappers below. */
-    bridge [.C, .WebAssembly] {
-        func engineInputKeyDown(key: Int): Bool
-        func engineInputKeyPressed(key: Int): Bool
-        func engineInputKeyReleased(key: Int): Bool
-        func engineInputAnyKeyDown(): Bool
-        func engineInputTextCount(): Int
-        func engineInputTextCodePoint(index: Int): Int
+impl PointerInput {
+    prop &.kind: PointerKind = pointerKindFromValue(engineInputPointerKind())
+    prop &.id: Int = engineInputPointerId()
+    prop &.x: Double = engineInputPointerX()
+    prop &.y: Double = engineInputPointerY()
+    prop &.deltaX: Double = engineInputPointerDeltaX()
+    prop &.deltaY: Double = engineInputPointerDeltaY()
+    prop &.pressure: Double = engineInputPointerPressure()
+    prop &.pressed: Bool = engineInputPointerDown()
+    prop &.justPressed: Bool = engineInputPointerPressed()
+    prop &.justReleased: Bool = engineInputPointerReleased()
+}
 
-        func engineInputMouseX(): Double
-        func engineInputMouseY(): Double
-        func engineInputMouseDeltaX(): Double
-        func engineInputMouseDeltaY(): Double
-        func engineInputMouseWheelX(): Double
-        func engineInputMouseWheelY(): Double
-        func engineInputMouseDown(button: Int): Bool
-        func engineInputMousePressed(button: Int): Bool
-        func engineInputMouseReleased(button: Int): Bool
-        func engineInputMouseInside(): Bool
-        func engineInputPointerLocked(): Bool
-        func engineInputRequestPointerLock(): Bool
-        func engineInputReleasePointerLock(): Unit
+impl TouchInput {
+    prop &.size: Int = engineInputTouchCount()
 
-        func engineInputPointerKind(): Int
-        func engineInputPointerId(): Int
-        func engineInputPointerX(): Double
-        func engineInputPointerY(): Double
-        func engineInputPointerDeltaX(): Double
-        func engineInputPointerDeltaY(): Double
-        func engineInputPointerPressure(): Double
-        func engineInputPointerDown(): Bool
-        func engineInputPointerPressed(): Bool
-        func engineInputPointerReleased(): Bool
+    func &.at(index: Int): TouchPoint
+    in {
+        assert index >= 0 && index < self.size panic "Touch index out of bounds"
+    } = .(
+        engineInputTouchId(index),
+        engineInputTouchX(index),
+        engineInputTouchY(index),
+        engineInputTouchDeltaX(index),
+        engineInputTouchDeltaY(index),
+        engineInputTouchPressure(index),
+        engineInputTouchRadiusX(index),
+        engineInputTouchRadiusY(index),
+        touchPhaseFromValue(engineInputTouchPhase(index))
+    )
+}
 
-        func engineInputTouchCount(): Int
-        func engineInputTouchId(index: Int): Int
-        func engineInputTouchX(index: Int): Double
-        func engineInputTouchY(index: Int): Double
-        func engineInputTouchDeltaX(index: Int): Double
-        func engineInputTouchDeltaY(index: Int): Double
-        func engineInputTouchPressure(index: Int): Double
-        func engineInputTouchRadiusX(index: Int): Double
-        func engineInputTouchRadiusY(index: Int): Double
-        func engineInputTouchPhase(index: Int): Int
+impl GamepadInput {
+    prop &.connected: Bool = engineInputControllerConnected(self._index)
 
-        func engineInputControllerCount(): Int
-        func engineInputControllerConnected(index: Int): Bool
-        func engineInputControllerButtonDown(index: Int, button: Int): Bool
-        func engineInputControllerButtonPressed(index: Int, button: Int): Bool
-        func engineInputControllerButtonReleased(index: Int, button: Int): Bool
-        func engineInputControllerButtonValue(index: Int, button: Int): Double
-        func engineInputControllerAxis(index: Int, axis: Int): Double
-        func engineInputControllerRumble(index: Int, low: Double, high: Double, durationMs: Int): Bool
+    func &.pressed(button: GamepadButton): Bool {
+        return engineInputControllerButtonDown(self._index, gamepadButtonValue(button))
     }
 
-    /** True while [key] is held. */
-    func keyDown(key: Int): Bool = engineInputKeyDown(key)
-
-    /** True only during the frame in which [key] went down. */
-    func keyPressed(key: Int): Bool = engineInputKeyPressed(key)
-
-    /** True only during the frame in which [key] went up. */
-    func keyReleased(key: Int): Bool = engineInputKeyReleased(key)
-
-    /** True when at least one keyboard key is currently held. */
-    func anyKeyDown(): Bool = engineInputAnyKeyDown()
-
-    /** Number of Unicode code points entered during this frame. */
-    func textCount(): Int = engineInputTextCount()
-
-    /** Unicode code point at [index], or `0` when out of bounds. */
-    func textCodePoint(index: Int): Int = engineInputTextCodePoint(index)
-
-    /** Mouse position in logical pixels, origin at the top-left. */
-    func mouseX(): Double = engineInputMouseX()
-    func mouseY(): Double = engineInputMouseY()
-
-    /** Mouse movement accumulated since the previous engine frame. */
-    func mouseDeltaX(): Double = engineInputMouseDeltaX()
-    func mouseDeltaY(): Double = engineInputMouseDeltaY()
-
-    /** Horizontal and vertical wheel movement for this frame. */
-    func mouseWheelX(): Double = engineInputMouseWheelX()
-    func mouseWheelY(): Double = engineInputMouseWheelY()
-
-    func mouseDown(button: Int): Bool = engineInputMouseDown(button)
-    func mousePressed(button: Int): Bool = engineInputMousePressed(button)
-    func mouseReleased(button: Int): Bool = engineInputMouseReleased(button)
-    func mouseInside(): Bool = engineInputMouseInside()
-
-    /** True while relative pointer mode is active. */
-    func pointerLocked(): Bool = engineInputPointerLocked()
-
-    /** Requests relative pointer mode. Must be called from a user gesture. */
-    func requestPointerLock(): Bool = engineInputRequestPointerLock()
-    func releasePointerLock() = engineInputReleasePointerLock()
-
-    /** Kind of the active unified pointer: pointerMouse/TOUCH/PEN/NONE. */
-    func pointerKind(): Int = engineInputPointerKind()
-    func pointerId(): Int = engineInputPointerId()
-    func pointerX(): Double = engineInputPointerX()
-    func pointerY(): Double = engineInputPointerY()
-    func pointerDeltaX(): Double = engineInputPointerDeltaX()
-    func pointerDeltaY(): Double = engineInputPointerDeltaY()
-    func pointerPressure(): Double = engineInputPointerPressure()
-    func pointerDown(): Bool = engineInputPointerDown()
-    func pointerPressed(): Bool = engineInputPointerPressed()
-    func pointerReleased(): Bool = engineInputPointerReleased()
-
-    /** Active touch points, ordered by stable pointer id. */
-    func touchCount(): Int = engineInputTouchCount()
-    func touchId(index: Int): Int = engineInputTouchId(index)
-    func touchX(index: Int): Double = engineInputTouchX(index)
-    func touchY(index: Int): Double = engineInputTouchY(index)
-    func touchDeltaX(index: Int): Double = engineInputTouchDeltaX(index)
-    func touchDeltaY(index: Int): Double = engineInputTouchDeltaY(index)
-    func touchPressure(index: Int): Double = engineInputTouchPressure(index)
-    func touchRadiusX(index: Int): Double = engineInputTouchRadiusX(index)
-    func touchRadiusY(index: Int): Double = engineInputTouchRadiusY(index)
-    func touchPhase(index: Int): Int = engineInputTouchPhase(index)
-
-    /** Number of connected standard-mapped controllers. */
-    func controllerCount(): Int = engineInputControllerCount()
-    func controllerConnected(index: Int): Bool = engineInputControllerConnected(index)
-    func controllerButtonDown(index: Int, button: Int): Bool = engineInputControllerButtonDown(index, button)
-    func controllerButtonPressed(index: Int, button: Int): Bool = engineInputControllerButtonPressed(index, button)
-    func controllerButtonReleased(index: Int, button: Int): Bool = engineInputControllerButtonReleased(index, button)
-    func controllerButtonValue(index: Int, button: Int): Double = engineInputControllerButtonValue(index, button)
-    func controllerAxis(index: Int, axis: Int): Double = engineInputControllerAxis(index, axis)
-
-    /** Starts dual-rumble feedback when supported by the selected controller. */
-    func controllerRumble(index: Int, low: Double, high: Double, durationMs: Int = 180): Bool {
-        return engineInputControllerRumble(index, low, high, durationMs)
+    func &.justPressed(button: GamepadButton): Bool {
+        return engineInputControllerButtonPressed(self._index, gamepadButtonValue(button))
     }
 
-    /**
-     * Unified mouse, pen, and primary-touch resource.
-     *
-     * Values are read from the immutable input snapshot for the current frame,
-     * so every system observes the same coordinates and edge transitions.
-     */
-    @Experimental(since: "0.1")
-    pack PointerInput
-
-    /** Typed mouse button and pointer-lock resource. */
-    @Experimental(since: "0.1")
-    pack MouseInput
-
-    /** Snapshot of one active touch point. */
-    @Experimental(since: "0.1")
-    pack TouchPoint {
-        fin id: Int
-        fin x: Double
-        fin y: Double
-        fin deltaX: Double
-        fin deltaY: Double
-        fin pressure: Double
-        fin radiusX: Double
-        fin radiusY: Double
-        fin phase: TouchPhase
+    func &.justReleased(button: GamepadButton): Bool {
+        return engineInputControllerButtonReleased(self._index, gamepadButtonValue(button))
     }
 
-    /** Read-only collection of touches active in the current frame. */
-    @Experimental(since: "0.1")
-    pack TouchInput
-
-    /** One standard-mapped game controller. */
-    @Experimental(since: "0.1")
-    pack GamepadInput {
-        fin _index: Int
+    func &.value(button: GamepadButton): Double {
+        return engineInputControllerButtonValue(self._index, gamepadButtonValue(button))
     }
 
-    impl MouseInput {
-        func &.pressed(button: MouseButton): Bool {
-            return engineInputMouseDown(mouseButtonValue(button))
-        }
-
-        func &.justPressed(button: MouseButton): Bool {
-            return engineInputMousePressed(mouseButtonValue(button))
-        }
-
-        func &.justReleased(button: MouseButton): Bool {
-            return engineInputMouseReleased(mouseButtonValue(button))
-        }
+    func &.axis(axis: GamepadAxis): Double {
+        return engineInputControllerAxis(self._index, gamepadAxisValue(axis))
     }
 
-    impl PointerInput {
-        prop &.kind: PointerKind = pointerKindFromValue(engineInputPointerKind())
-        prop &.id: Int = engineInputPointerId()
-        prop &.x: Double = engineInputPointerX()
-        prop &.y: Double = engineInputPointerY()
-        prop &.deltaX: Double = engineInputPointerDeltaX()
-        prop &.deltaY: Double = engineInputPointerDeltaY()
-        prop &.pressure: Double = engineInputPointerPressure()
-        prop &.pressed: Bool = engineInputPointerDown()
-        prop &.justPressed: Bool = engineInputPointerPressed()
-        prop &.justReleased: Bool = engineInputPointerReleased()
-    }
-
-    impl TouchInput {
-        prop &.size: Int = engineInputTouchCount()
-
-        func &.at(index: Int): TouchPoint
-        in {
-            assert index >= 0 && index < self.size panic "Touch index out of bounds"
-        } scope {
-            return TouchPoint(
-                engineInputTouchId(index),
-                engineInputTouchX(index),
-                engineInputTouchY(index),
-                engineInputTouchDeltaX(index),
-                engineInputTouchDeltaY(index),
-                engineInputTouchPressure(index),
-                engineInputTouchRadiusX(index),
-                engineInputTouchRadiusY(index),
-                touchPhaseFromValue(engineInputTouchPhase(index))
-            )
-        }
-    }
-
-    impl GamepadInput {
-        prop &.connected: Bool = engineInputControllerConnected(self._index)
-
-        func &.pressed(button: GamepadButton): Bool {
-            return engineInputControllerButtonDown(self._index, gamepadButtonValue(button))
-        }
-
-        func &.justPressed(button: GamepadButton): Bool {
-            return engineInputControllerButtonPressed(self._index, gamepadButtonValue(button))
-        }
-
-        func &.justReleased(button: GamepadButton): Bool {
-            return engineInputControllerButtonReleased(self._index, gamepadButtonValue(button))
-        }
-
-        func &.value(button: GamepadButton): Double {
-            return engineInputControllerButtonValue(self._index, gamepadButtonValue(button))
-        }
-
-        func &.axis(axis: GamepadAxis): Double {
-            return engineInputControllerAxis(self._index, gamepadAxisValue(axis))
-        }
-
-        func &.rumble(low: Double, high: Double, durationMs: Int = 180): Bool {
-            return engineInputControllerRumble(self._index, low, high, durationMs)
-        }
+    func &.rumble(low: Double, high: Double, durationMs: Int = 180): Bool {
+        return engineInputControllerRumble(self._index, low, high, durationMs)
     }
 }
