@@ -1,0 +1,274 @@
+module engine.material.fusion.compiler
+
+import std.string
+import std.math
+import engine.core
+import engine.math
+import engine.lighting.photon.shader
+import engine.sky.shader
+import engine.material.fusion
+
+pack FusionProgram {
+    var source: String = ""
+    var diagnostic: String = ""
+    var albedo: Rgba = .(0.8, 0.8, 0.82, 1.0)
+    var textureSets: Array<String> = []
+}
+
+/** Topological walk from the output, checking the pins before emitting code. */
+func orderFusion(document: FusionGraph&, index: Int, marks: Array<Int>!, order: Array<Int>!): String {
+    if marks[index] == 2 then return ""
+    fin node = document.nodes[index].clone()
+    if marks[index] == 1 then return "Cycle at ${fusionNodeLabel(node.kind)} ${node.id}"
+    marks[index] = 1
+    var pin = 0
+    while pin < fusionPinCount(node.kind) {
+        fin input = fusionInput(node, pin)
+        if input != 0 || pin != 2 {
+            fin source = document.indexOfNode(input)
+            fin label = "${fusionNodeLabel(node.kind)} ${node.id} · ${fusionPinLabel(node.kind, pin)}"
+            if source < 0 then return "Connect ${label}"
+            if fusionType(document.nodes[source].kind) != (if pin == 2 then 2 else 1) then return "Invalid type at ${label}"
+            fin diagnostic = orderFusion(document, source, marks, order)
+            if diagnostic != "" then return diagnostic
+        }
+        pin = pin + 1
+    }
+    marks[index] = 2
+    order.add(index)
+    return ""
+}
+
+func metalReal(value: Double, minimum: Double, maximum: Double): String =
+    "float(${formatDecimal(fusionClamp(value, minimum, maximum), 6)})"
+
+func emitFusionNode(node: FusionNode&, slot: Int): String {
+    fin id = node.id
+    fin mask = if node.mask > 0 then "n${node.mask}" else metalReal(node.value, 0.0, 1.0)
+    return when node.kind {
+        "slab" -> "    Sample n${id} = slab(ctx, float3(${metalReal(node.red, 0.0, 1.0)}, ${metalReal(node.green, 0.0, 1.0)}, ${metalReal(node.blue, 0.0, 1.0)}), ${metalReal(node.roughness, 0.02, 1.0)}, ${metalReal(node.metallic, 0.0, 1.0)}, ${metalReal(node.emission, 0.0, 16.0)});\n"
+        "texture" -> "    Sample n${id} = textureSlab(ctx, in.world, n, base${slot}, normal${slot}, surface${slot}, ${metalReal(node.scale, 0.01, 100.0)}, ${metalReal(node.value, 0.0, 1.0)}, ${metalReal(node.emission, 0.0, 16.0)}, ${metalReal(node.offset,0.0,8.0)}, ${metalReal(node.contrast,0.0,1.0)}, ${metalReal(node.macroScale,0.0,1000.0)}, ${metalReal(node.rotation,0.0,1.0)});\n"
+        "altitude" -> "    float n${id} = altitudeMask(in.world, n, ${metalReal(node.low,-100000.0,100000.0)}, ${metalReal(node.high,-100000.0,100000.0)}, ${metalReal(node.variation,0.0,10000.0)}, ${metalReal(node.value,0.0,1.0)});\n"
+        "slope" -> "    float n${id} = smoothstep(${metalReal(node.low,0.0,1.0)}, max(${metalReal(node.low,0.0,1.0)}+0.001, ${metalReal(node.high,0.0,1.0)}), 1.0-saturate(n.y) + ${metalReal(node.variation,0.0,1.0)}*(noiseMask(in.world*0.15)-0.5));\n"
+        "scalar" -> "    float n${id} = ${metalReal(node.value, 0.0, 1.0)};\n"
+        "checker" -> "    float n${id} = checker(in.local * ${metalReal(node.scale, 0.01, 100.0)});\n"
+        "noise" -> "    float n${id} = noiseMask(in.local * ${metalReal(node.scale, 0.01, 100.0)});\n"
+        "mix" -> "    Sample n${id} = mixSurfaces(n${node.a}, n${node.b}, ${mask});\n"
+        "layer" -> "    Sample n${id} = stackLayers(ctx, n${node.a}, n${node.b}, ${mask}, ${metalReal(node.thickness, 0.0, 8.0)});\n"
+        else -> "    float3 finalColor=(int(u.eye.w)&1)!=0 ? n${node.a}.color : mix(n${node.a}.light,pow(u.fog.xyz,float3(2.2)),heightFog(u.eye.xyz,in.world,u.fog.w,u.fogShape));\n    return float4(pow(saturate(finalColor),float3(0.454545)),1.0);\n"
+    }
+}
+
+/** Representative diffuse color for the low-frequency Photon Field surfels. */
+func fusionAlbedo(document: FusionGraph&, order: Array<Int>&): Rgba {
+    var red: Array<Double> = .() * document.nodes.size
+    var green: Array<Double> = .() * document.nodes.size
+    var blue: Array<Double> = .() * document.nodes.size
+    for index in order {
+        fin node = document.nodes[index].clone()
+        if node.kind == "slab" || node.kind == "texture" {
+            fin diffuse = 1.0 - fusionClamp(node.metallic, 0.0, 1.0)
+            red[index] = fusionClamp(node.red, 0.0, 1.0) * diffuse
+            green[index] = fusionClamp(node.green, 0.0, 1.0) * diffuse
+            blue[index] = fusionClamp(node.blue, 0.0, 1.0) * diffuse
+        } else if node.kind == "mix" || node.kind == "layer" {
+            fin a = document.indexOfNode(node.a)
+            fin b = document.indexOfNode(node.b)
+            fin mask = document.indexOfNode(node.mask)
+            var weight = fusionClamp(node.value, 0.0, 1.0)
+            if mask >= 0 then weight = if document.nodes[mask].kind == "scalar" then fusionClamp(document.nodes[mask].value, 0.0, 1.0) else 0.5
+            if node.kind == "layer" then weight = weight * (1.0 - 0.96 * exp(-fusionClamp(node.thickness, 0.0, 8.0)))
+            red[index] = red[a] * (1.0 - weight) + red[b] * weight
+            green[index] = green[a] * (1.0 - weight) + green[b] * weight
+            blue[index] = blue[a] * (1.0 - weight) + blue[b] * weight
+        } else if node.kind == "output" {
+            fin source = document.indexOfNode(node.a)
+            return Rgba(red[source], green[source], blue[source], 1.0)
+        }
+    }
+    return Rgba(0.8, 0.8, 0.82, 1.0)
+}
+
+/** Compiles the typed document into a Metal vertex/fragment pair with the Engine mesh ABI. */
+func compileFusionGraph(document: FusionGraph&): FusionProgram {
+    if document.diagnostic != "" then return FusionProgram("", document.diagnostic)
+    fin root = document.indexOfNode(document.output)
+    if root < 0 || document.nodes[root].kind != "output" then return FusionProgram("", "Missing Material Output")
+    var marks: Array<Int> = .() * document.nodes.size
+    var order: Array<Int> = []
+    fin diagnostic = orderFusion(document, root, marks, order)
+    if diagnostic != "" then return FusionProgram("", diagnostic)
+    var source = StringBuilder()
+    source.append(fusionMetalPrelude())
+    source.append(fusionTexturePrelude())
+    source.append("fragment float4 fusion_fragment(Vertex in [[stage_in]], constant Uniforms& u [[buffer(1)]], const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]], constant float4* detailLight [[buffer(4)]], depth2d<float> detail [[texture(30)]]")
+    var sets: Array<String> = []
+    for index in order {
+        fin node = document.nodes[index].clone()
+        if node.kind == "texture" {
+            if !fusionTexturePath(node.textureSet) then return FusionProgram("", "Set a project-relative .aztex texture on Texture Bombing ${node.id}")
+            if !sets.contains(node.textureSet) {
+                if sets.size >= 8 then return FusionProgram("", "Use at most eight texture sets in one material")
+                fin i = sets.size
+                source.append(", texture2d<float> base${i} [[texture(${i*3})]], texture2d<float> normal${i} [[texture(${i*3+1})]], texture2d<float> surface${i} [[texture(${i*3+2})]]")
+                sets.add(node.textureSet)
+            }
+        }
+    }
+    source.append(") {\n")
+    source.append("    float3 n=normalize(in.normal), l=normalize(u.light.xyz), v=normalize(u.eye.xyz-in.world), h=normalize(l+v+float3(1e-6));\n")
+    source.append("    PhotonLighting lighting=scenePhotonLight(photons,baked,detail,detailLight,in.world,n,u.eye.w,u.direct.xyz);\n")
+    // direct.w scales texture footprints: 0.5 while the scene is drawn at half resolution,
+    // so it samples the mip a full-resolution frame would (a -1 bias), not a blurrier one.
+    source.append("    Context ctx=makeContext(n,l,v,h,saturate(u.light.w),lighting,u.direct.w>0.0?u.direct.w:1.0);\n")
+    for index in order {
+        fin node = document.nodes[index].clone()
+        var slot = 0
+        if node.kind == "texture" {
+            while slot < sets.size && sets[slot] != node.textureSet { slot += 1 }
+        }
+        source.append(emitFusionNode(node, slot))
+    }
+    source.append("}\n")
+    return FusionProgram(source.build(), "", fusionAlbedo(document, order), take sets)
+}
+
+/** Stable key for cached shader libraries; source equality is checked before use. */
+func fusionSourceKey(source: String): Long {
+    var key: Long = 2166136261
+    var index = 0
+    while index < stringLength(source) {
+        key = key * 16777619 + ((charAt(source, index) as Int) as Long)
+        index = index + 1
+    }
+    return key
+}
+
+func fusionMetalPrelude(): String {
+    return (""
+    + "#include <metal_stdlib>\nusing namespace metal;\n"
+    + photonMetalSource()
+    + heightFogShader()
+    + "struct Uniforms { float4x4 vp, model; float4 color, light, eye, fog, direct, fogShape; };\n"
+    + "struct Vertex { float4 clip [[position]]; float3 normal, world, local; };\n"
+    + "vertex Vertex fusion_vertex(uint i [[vertex_id]], const device float* v [[buffer(0)]], constant Uniforms& u [[buffer(1)]]) {\n"
+    + "    float3 p = float3(v[i*6], v[i*6+1], v[i*6+2]);\n"
+    + "    float3 n = float3(v[i*6+3], v[i*6+4], v[i*6+5]);\n"
+    + "    float3 x = u.model[0].xyz, y = u.model[1].xyz, z = u.model[2].xyz;\n"
+    + "    float3x3 cof = float3x3(cross(y,z), cross(z,x), cross(x,y));\n"
+    + "    float4 world = u.model * float4(p,1);\n"
+    + "    return {u.vp * world, (cof * n) * (dot(x,cof[0]) < 0 ? -1.0 : 1.0), world.xyz, p};\n"
+    + "}\n"
+    + "struct Context { float nl, nv, nh, vh, ambient; PhotonLighting lighting; float3 l,v,h; float footprint; };\n"
+    + "struct Sample { float3 color, light, f0; };\n"
+    + "float3 fresnel(float3 f0, float cosAngle) { return f0 + (1.0-f0) * pow(1.0-cosAngle, 5.0); }\n"
+    + "Sample slab(Context c, float3 color, float roughness, float metal, float emission) {\n"
+    + "    float3 f0 = mix(float3(0.04), color, metal), f = fresnel(f0,c.vh);\n"
+    + "    float alpha = roughness * roughness, a2 = alpha * alpha;\n"
+    + "    float denom = c.nh*c.nh*(a2-1.0)+1.0;\n"
+    + "    float d = a2 / max(3.14159265*denom*denom, 1e-7);\n"
+    + "    float k = (roughness+1.0)*(roughness+1.0)/8.0;\n"
+    + "    float vis = 0.25 / max((c.nv*(1.0-k)+k)*(c.nl*(1.0-k)+k), 1e-5);\n"
+    + "    float3 diffuse = color * (1.0-metal) * (1.0-f);\n"
+    + "    float3 lit = (diffuse + f*d*vis) * c.nl * (1.0-c.ambient) * c.lighting.visibility * c.lighting.direct + color * (c.ambient * (1.0-0.35*metal)+emission + c.lighting.indirect*(1.0-metal));\n"
+    + "    return {color, lit, f0};\n"
+    + "}\n"
+    + "Sample mixSurfaces(Sample a, Sample b, float mask) {\n"
+    + "    float t = saturate(mask);\n"
+    + "    return {mix(a.color,b.color,t), mix(a.light,b.light,t), mix(a.f0,b.f0,t)};\n"
+    + "}\n"
+    + "Sample stackLayers(Context c, Sample bottom, Sample top, float mask, float thickness) {\n"
+    + "    float t = saturate(mask);\n"
+    + "    float3 f = fresnel(top.f0,c.nv);\n"
+    + "    float3 transmission = exp(-thickness*(1.05-top.color) / max(c.nv,0.15));\n"
+    + "    float3 through = bottom.light * transmission * (1.0-f);\n"
+    + "    Sample coated = {mix(bottom.color*transmission,top.color,f), mix(through,top.light,1.0-transmission*(1.0-f)), top.f0};\n"
+    + "    return mixSurfaces(bottom,coated,t);\n"
+    + "}\n"
+    + "float checker(float3 p) { float3 q = floor(p); return fract((q.x+q.y+q.z)*0.5)*2.0; }\n"
+    + "float hashPoint(float3 p) { return fract(sin(dot(p,float3(127.1,311.7,74.7)))*43758.5453); }\n"
+    + "float noiseMask(float3 p) {\n"
+    + "    float3 q = floor(p), t = smoothstep(float3(0),float3(1),fract(p));\n"
+    + "    float a = mix(mix(hashPoint(q),hashPoint(q+float3(1,0,0)),t.x),mix(hashPoint(q+float3(0,1,0)),hashPoint(q+float3(1,1,0)),t.x),t.y);\n"
+    + "    q.z += 1;\n"
+    + "    float b = mix(mix(hashPoint(q),hashPoint(q+float3(1,0,0)),t.x),mix(hashPoint(q+float3(0,1,0)),hashPoint(q+float3(1,1,0)),t.x),t.y);\n"
+    + "    return mix(a,b,t.z);\n"
+    + "}\n"
+    + "Context makeContext(float3 n,float3 l,float3 v,float3 h,float ambient,PhotonLighting lighting,float footprint) {\n"
+    + "    return {saturate(dot(n,l)), max(saturate(dot(n,v)),1e-4), saturate(dot(n,h)), saturate(dot(v,h)), ambient, lighting, l, v, h, footprint};\n"
+    + "}\n")
+}
+
+func fusionTexturePrelude(): String {
+    return (""
+    + "float altitudeMask(float3 wp,float3 n,float low,float high,float variation,float slopeWeight) {\n"
+    + "    float warped = wp.y + (noiseMask(wp*0.05)-0.5)*variation;\n"
+    + "    float height = smoothstep(low,max(high,low+0.001),warped);\n"
+    + "    return height*mix(1.0,smoothstep(0.48,0.79,n.y),slopeWeight);\n"
+    + "}\n"
+    + "struct BombSample { float3 color; float2 bump; float4 surface; };\n"
+    + "float2x2 bombRotation(float2 cell, float rotation) {\n"
+    + "    float angle = rotation*6.2831853*hashPoint(float3(cell,23.4));\n"
+    + "    float s=sin(angle), c=cos(angle);\n"
+    + "    float flip=hashPoint(float3(cell,78.6))<0.5 ? -1.0 : 1.0;\n"
+    + "    return float2x2(float2(c,s)*flip,float2(-s,c));\n"
+    + "}\n"
+    + "BombSample bombTile(texture2d<float> base, texture2d<float> normals, texture2d<float> packed,\n"
+    + "                    float2 uv, float2 dx, float2 dy, float2 cell, float offset, float rotation) {\n"
+    + "    constexpr sampler wrap(address::repeat,filter::linear,mip_filter::linear);\n"
+    + "    float2x2 axes=bombRotation(cell,rotation);\n"
+    + "    float2 randomOffset=float2(hashPoint(float3(cell,8.1)),hashPoint(float3(cell,49.5)));\n"
+    + "    float2 point=axes*uv+randomOffset*offset;\n"
+    + "    gradient2d gradients=gradient2d(axes*dx,axes*dy);\n"
+    + "    float3 col=pow(base.sample(wrap,point,gradients).rgb,float3(2.2));\n"
+    + "    float2 xy=normals.sample(wrap,point,gradients).xy*2.0-1.0;\n"
+    + "    return {col,transpose(axes)*xy,packed.sample(wrap,point,gradients)};\n"
+    + "}\n"
+    + "BombSample bombProjection(texture2d<float> base, texture2d<float> normals, texture2d<float> packed,\n"
+    + "                          float2 uv, float2 dx, float2 dy, float offset, float contrast, float rotation) {\n"
+    + "    // Three adjacent vertices of a skewed triangular grid. The two cells sharing\n"
+    + "    // an edge evaluate the same samples with the same weights along that edge.\n"
+    + "    float2 grid=float2(uv.x+uv.y*0.57735027,uv.y*1.15470054)*0.69;\n"
+    + "    float2 cell=floor(grid), f=fract(grid);\n"
+    + "    bool upper=f.x+f.y>1.0;\n"
+    + "    float3 w=float3(abs(1.0-f.x-f.y),upper?1.0-f.y:f.x,upper?1.0-f.x:f.y);\n"
+    + "    BombSample a=bombTile(base,normals,packed,uv,dx,dy,cell+float2(upper?1.0:0.0),offset,rotation);\n"
+    + "    BombSample b=bombTile(base,normals,packed,uv,dx,dy,cell+float2(1,0),offset,rotation);\n"
+    + "    BombSample c=bombTile(base,normals,packed,uv,dx,dy,cell+float2(0,1),offset,rotation);\n"
+    + "    w=smoothstep(float3(0),float3(1),w);\n"
+    + "    // Height lerp biases transitions toward the higher texels and keeps each\n"
+    + "    // sample at zero contribution when crossing its opposite cell edge.\n"
+    + "    float3 peaks=w+(float3(a.surface.b,b.surface.b,c.surface.b)-0.5)*0.55*saturate(4.0*w);\n"
+    + "    float highest=max(max(peaks.x,peaks.y),peaks.z);\n"
+    + "    float transition=mix(1.0,0.16,contrast);\n"
+    + "    w*=mix(float3(1),max(float3(0.03),saturate((peaks-highest+transition)/transition)),contrast);\n"
+    + "    w/=max(w.x+w.y+w.z,1e-5);\n"
+    + "    return {a.color*w.x+b.color*w.y+c.color*w.z,a.bump*w.x+b.bump*w.y+c.bump*w.z,\n"
+    + "        a.surface*w.x+b.surface*w.y+c.surface*w.z};\n"
+    + "}\n"
+    + "Sample textureSlab(Context c,float3 wp,float3 n,texture2d<float> base,texture2d<float> normals,\n"
+    + "                   texture2d<float> packed,float tile,float detail,float emission,float offset,\n"
+    + "                   float contrast,float macroScale,float rotation) {\n"
+    + "    float3 uv=wp/max(tile,0.01), dx=dfdx(uv)*c.footprint, dy=dfdy(uv)*c.footprint;\n"
+    + "    float3 w=max(pow(abs(n),float3(4))-0.025,0.0); w/=max(w.x+w.y+w.z,1e-5);\n"
+    + "    float3 col=0.0, bump=0.0; float4 surface=0.0;\n"
+    + "    if (w.x>0.0) {\n"
+    + "        BombSample s=bombProjection(base,normals,packed,uv.zy,dx.zy,dy.zy,offset,contrast,rotation);\n"
+    + "        col+=s.color*w.x; surface+=s.surface*w.x; bump+=float3(0,s.bump.y,s.bump.x)*w.x;\n"
+    + "    }\n"
+    + "    if (w.y>0.0) {\n"
+    + "        BombSample s=bombProjection(base,normals,packed,uv.xz,dx.xz,dy.xz,offset,contrast,rotation);\n"
+    + "        col+=s.color*w.y; surface+=s.surface*w.y; bump+=float3(s.bump.x,0,s.bump.y)*w.y;\n"
+    + "    }\n"
+    + "    if (w.z>0.0) {\n"
+    + "        BombSample s=bombProjection(base,normals,packed,uv.xy,dx.xy,dy.xy,offset,contrast,rotation);\n"
+    + "        col+=s.color*w.z; surface+=s.surface*w.z; bump+=float3(s.bump.x,s.bump.y,0)*w.z;\n"
+    + "    }\n"
+    + "    float factor=noiseMask(wp/max(macroScale,0.1)+float3(12,37,19))*0.65\n"
+    + "                 +noiseMask(wp*(0.29/max(macroScale,0.1))+float3(48,17,33))*0.35;\n"
+    + "    col*=macroScale>0.0 ? 0.71+0.61*factor : 1.0;\n"
+    + "    float3 perturbed=normalize(n+detail*(bump-n*dot(n,bump)));\n"
+    + "    c=makeContext(perturbed,c.l,c.v,c.h,c.ambient*(0.40+0.60*surface.g),c.lighting,c.footprint);\n"
+    + "    return slab(c,col,max(surface.r,0.04),surface.a,emission);\n"
+    + "}\n")
+}

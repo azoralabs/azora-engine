@@ -26,6 +26,9 @@ import std.io
 import engine.objc
 import engine.math.mat
 import engine.shaders
+import engine.material.fusion.metal
+import engine.gpu.terrain
+import engine.lighting.photon
 import engine.io
 
 bridge .C {
@@ -90,6 +93,110 @@ pack AzGpu {
     var lightY: Double
     var lightZ: Double
     var ambient: Double
+    var fusion: FusionLibrary = .()
+    var meshPipeline: Long = 0
+    var flatMaterials: Bool = false
+    var photonBuffer: Long = 0
+    var photonKey: Long = 0
+    var photonPages: Int = 0
+    /** The dynamic field's pages from its last build, reused where nothing over them moved. */
+    var photonCache: PhotonPageCache = .()
+    var staticShadowBuffer: Long = 0
+    var staticShadowReady: Bool = false
+    var virtualShadows: Bool = true
+    var indirectLighting: Bool = true
+    var shadowsActive: Bool = true
+    var skyPipeline: Long = 0
+    var terrains: Array<TerrainMesh> = []
+    /** The clip transform of the view being drawn, as `beginView` set it. */
+    var view: Mat4 = .(0.0)
+    var terrainIndices: TerrainIndices = .()
+    /** Heightfield triangles the last view drew, after culling and detail levels. */
+    var terrainTriangles: Int = 0
+    /**
+     * Temporal upscaling: the 3D scene is drawn at half the drawable's width and
+     * height with a sub-pixel jitter, and each frame is reconstructed at full
+     * resolution from it and the last one. Interface drawing stays native.
+     */
+    var upscale: Bool = false
+    var scenePass: ScenePass = .()
+    /** How the scissor of the pass being encoded relates to the drawable: below 1 inside a scene pass. */
+    var passScale: Double = 1.0
+    var resolvePipeline: Long = 0
+    /**
+     * Per-object motion for the upscaler. Every mesh drawn into the scene pass
+     * leaves a record - its vertex buffer, vertex count and model transform -
+     * and the next frame's draw at the same position in the same order, of the
+     * same mesh, is the same object: its two transforms say how it moved.
+     */
+    var motionCurrent: Long = 0
+    var motionPrevious: Long = 0
+    var motionCount: Int = 0
+    var motionPreviousCount: Int = 0
+    var velocityPipeline: Long = 0
+    var velocityDepth: Long = 0
+    /** Gathers each Photon Field sample's bounce light once, when the field is rebuilt. */
+    var irradiancePipeline: Long = 0
+    /**
+     * The sharp cascade of Virtual Shadows: a depth map seen from the sun over
+     * [detailHalf] metres either side of the view's focus, drawn every frame.
+     * The Photon Field's pages are metres across, so a car under them cast no
+     * shadow it could see; this one's texels are centimetres.
+     */
+    var detailMap: Long = 0
+    var detailPipeline: Long = 0
+    /** The map's clip transform and its texel size, as the fragment stages read them (buffer 4). */
+    var detailLight: Long = 0
+    var detailReady: Bool = false
+    var detailHalf: Double = 40.0
+    /** How dark the cascade's shadow is: the Photon Field's shadow strength. */
+    var detailStrength: Double = 0.9
+    /** True while meshes are drawn into [detailMap]: depth only, the sun's view. */
+    var casting: Bool = false
+    var focusX: Double = 0.0
+    var focusY: Double = 0.0
+    var focusZ: Double = 0.0
+    /** Benchmark: when set, every frame waits for the GPU and its time is summed. */
+    var timing: Bool = false
+    var gpuSeconds: Double = 0.0
+    var timedFrames: Int = 0
+}
+
+/**
+ * The half-resolution scene targets and the full-resolution history they are
+ * reconstructed into.
+ *
+ * [viewProj] is this frame's clip transform before its jitter and [previous]
+ * last frame's: together they say where a pixel's surface was drawn before.
+ */
+pack ScenePass {
+    var color: Long = 0
+    var depth: Long = 0
+    var historyA: Long = 0
+    var historyB: Long = 0
+    /** True while [historyA] holds the last frame and [historyB] receives this one. */
+    var readA: Bool = true
+    var width: Long = 0
+    var height: Long = 0
+    var fullWidth: Long = 0
+    var fullHeight: Long = 0
+    var active: Bool = false
+    var historyValid: Bool = false
+    /** Whether a view set [viewProj] in this pass; a pass with only sky has no surfaces to reproject. */
+    var viewed: Bool = false
+    var frame: Int = 0
+    var jitterX: Double = 0.0
+    var jitterY: Double = 0.0
+    var viewProj: Mat4 = .(0.0)
+    var previous: Mat4 = .(0.0)
+    /** [viewProj] with this frame's jitter: what the scene was rasterized with. */
+    var jittered: Mat4 = .(0.0)
+    /** Half resolution, RGBA16F: each moving object's screen motion, alpha 1 where one was drawn. */
+    var velocity: Long = 0
+    var rectX: Double = 0.0
+    var rectY: Double = 0.0
+    var rectWidth: Double = 0.0
+    var rectHeight: Double = 0.0
 }
 
 /// A GPU mesh: vertex buffer handle + vertex count (interleaved pos+normal).
@@ -205,18 +312,80 @@ func gpuInit(scale: Double): AzGpu {
         pipe3d, pipe2d, depthOn, depthOff, sampler,
         Long(0), Long(0), Long(0),
         Long(0), Long(0), Long(0), false, -1,
-        azAlloc(Long(64)),
+        azAlloc(Long(128)),
         azAlloc(Long(4096)),
         scale,
         0.5, 0.8, 0.3, 0.35
     )
+    gpu.skyPipeline = makeSkyPipeline(device, lib)
+    gpu.resolvePipeline = makeResolvePipeline(device, lib)
+    gpu.detailPipeline = makeDepthPipeline(device, lib)
+    gpu.detailMap = sceneTexture(device, 252, detailResolution, detailResolution)
+    gpu.detailLight = azAlloc(80)
+    gpu.velocityPipeline = makeVelocityPipeline(device, lib)
+    fin nearer = newObject("MTLDepthStencilDescriptor")
+    send1(nearer, sel("setDepthCompareFunction:"), 3)
+    send1(nearer, sel("setDepthWriteEnabled:"), 0)
+    gpu.velocityDepth = send1(device, sel("newDepthStencilStateWithDescriptor:"), nearer)
+    send0(nearer, sel("release"))
+    gpu.motionCurrent = azAlloc((motionCapacity as Long) * motionRecord)
+    gpu.motionPrevious = azAlloc((motionCapacity as Long) * motionRecord)
+    fin gather = send1(lib, sel("newFunctionWithName:"), nsString("photon_irradiance"))
+    if gather != 0 {
+        gpu.irradiancePipeline = send2(device, sel("newComputePipelineStateWithFunction:error:"), gather, 0)
+        send0(gather, sel("release"))
+    }
+    gpu.fusion.queue = queue
     // Identity view-projection until a camera is applied.
     pokeIdentity(gpu.viewProj)
+    azPokeF32(gpu.viewProj, 64, 0.0)
+    azPokeF32(gpu.viewProj, 68, 1.5)
+    azPokeF32(gpu.viewProj, 72, 5.0)
+    azPokeF32(gpu.viewProj, 92, 0.0)
+    azPokeF32(gpu.viewProj, 96, 1.0)
+    azPokeF32(gpu.viewProj, 100, 1.0)
+    azPokeF32(gpu.viewProj, 104, 1.0)
+    azPokeF32(gpu.viewProj, 112, 0.0)
+    azPokeF32(gpu.viewProj, 116, 0.0)
+    azPokeF32(gpu.viewProj, 120, 0.0)
+    azPokeF32(gpu.viewProj, 124, 0.0)
     return take gpu
 }
 
 /** Releases retained Metal objects and native upload memory. Repeated shutdown is harmless. */
 func gpuShutdown(gpu: AzGpu!) {
+    gpu.fusion.release()
+    releaseTerrains(gpu)
+    if gpu.skyPipeline != 0 then send0(gpu.skyPipeline, sel("release"))
+    gpu.skyPipeline = 0
+    if gpu.resolvePipeline != 0 then send0(gpu.resolvePipeline, sel("release"))
+    gpu.resolvePipeline = 0
+    if gpu.irradiancePipeline != 0 then send0(gpu.irradiancePipeline, sel("release"))
+    gpu.irradiancePipeline = 0
+    releaseScenePass(gpu.scenePass)
+    if gpu.detailPipeline != 0 then send0(gpu.detailPipeline, sel("release"))
+    if gpu.detailMap != 0 then send0(gpu.detailMap, sel("release"))
+    if gpu.detailLight != 0 then azFree(gpu.detailLight)
+    gpu.detailPipeline = 0
+    gpu.detailMap = 0
+    gpu.detailLight = 0
+    gpu.detailReady = false
+    if gpu.velocityPipeline != 0 then send0(gpu.velocityPipeline, sel("release"))
+    if gpu.velocityDepth != 0 then send0(gpu.velocityDepth, sel("release"))
+    if gpu.motionCurrent != 0 then azFree(gpu.motionCurrent)
+    if gpu.motionPrevious != 0 then azFree(gpu.motionPrevious)
+    gpu.velocityPipeline = 0
+    gpu.velocityDepth = 0
+    gpu.motionCurrent = 0
+    gpu.motionPrevious = 0
+    gpu.motionCount = 0
+    gpu.motionPreviousCount = 0
+    discardStaticShadows(gpu)
+    if gpu.photonBuffer != 0 {
+        send0(gpu.photonBuffer, sel("release"))
+        gpu.photonBuffer = 0
+    }
+    releasePhotonCache(gpu.photonCache)
     if gpu.depthTex != Long(0) { send0(gpu.depthTex, sel("release")) }
     if gpu.sampler != Long(0) { send0(gpu.sampler, sel("release")) }
     if gpu.depthOff != Long(0) { send0(gpu.depthOff, sel("release")) }
@@ -258,6 +427,10 @@ func pokeIdentity(buf: Long) {
 }
 
 /// Writes a row-major Mat4 into [buf] as column-major float16 (GPU layout).
+/** An independent copy of [m]. */
+func copyMat4(m: Mat4&): Mat4 = Mat4(m.m00, m.m01, m.m02, m.m03, m.m10, m.m11, m.m12, m.m13,
+    m.m20, m.m21, m.m22, m.m23, m.m30, m.m31, m.m32, m.m33)
+
 func pokeMat4(buf: Long, offset: Long, m: Mat4&) {
     azPokeF32(buf, offset, m.m00)
     azPokeF32(buf, offset + Long(4), m.m10)
@@ -275,4 +448,378 @@ func pokeMat4(buf: Long, offset: Long, m: Mat4&) {
     azPokeF32(buf, offset + Long(52), m.m13)
     azPokeF32(buf, offset + Long(56), m.m23)
     azPokeF32(buf, offset + Long(60), m.m33)
+}
+
+func releaseTerrains(gpu: AzGpu!) {
+    for terrain in gpu.terrains { releaseTerrainMesh(terrain) }
+    gpu.terrains.clear()
+    releaseTerrainIndices(gpu.terrainIndices)
+}
+
+impl AzGpu {
+    func !.terrainIndex(path: String): Int {
+        var i = 0
+        while i < self.terrains.size {
+            if self.terrains[i].path == path then return i
+            i += 1
+        }
+        if self.terrainIndices.buffers.size == 0 then self.terrainIndices = buildTerrainIndices(self.device)
+        self.terrains.add(loadTerrainMesh(self.device, self.fusion.root, path))
+        return self.terrains.size - 1
+    }
+}
+
+func makeSkyPipeline(device: Long, library: Long): Long {
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("sky_vertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("sky_fragment"))
+    defer {
+        send0(vertex, sel("release"))
+        send0(fragment, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), 80)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+/**
+ * The pass that turns the half-resolution scene into the drawable's pixels:
+ * colour into the drawable over what is already there, and the same colour,
+ * unblended, into the history the next frame starts from.
+ */
+func makeResolvePipeline(device: Long, library: Long): Long {
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("resolve_vertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("resolve_fragment"))
+    defer {
+        if vertex != 0 then send0(vertex, sel("release"))
+        if fragment != 0 then send0(fragment, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    fin attachments = send0(descriptor, sel("colorAttachments"))
+    fin screen = send1(attachments, sel("objectAtIndexedSubscript:"), 0)
+    send1(screen, sel("setPixelFormat:"), 80)
+    // Premultiplied over: where the scene drew nothing, what was beneath stays.
+    send1(screen, sel("setBlendingEnabled:"), 1)
+    send1(screen, sel("setSourceRGBBlendFactor:"), 1)
+    send1(screen, sel("setDestinationRGBBlendFactor:"), 5)
+    send1(screen, sel("setSourceAlphaBlendFactor:"), 1)
+    send1(screen, sel("setDestinationAlphaBlendFactor:"), 5)
+    fin history = send1(attachments, sel("objectAtIndexedSubscript:"), 1)
+    send1(history, sel("setPixelFormat:"), 115)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+/**
+ * Gathers the bounce light of each of a Photon Field's [samples] once, on the
+ * GPU, into the 18 floats per sample that follow the field in [buffer].
+ *
+ * The frame's own command buffer is still being encoded when the field is
+ * rebuilt, and is committed after this one, so the gather has finished before
+ * any pixel reads it.
+ */
+func gatherPhotonIrradiance(gpu: AzGpu!, buffer: Long, samples: Int) {
+    if gpu.irradiancePipeline == 0 || buffer == 0 || samples <= 0 then return
+    fin sizes = azAlloc(64)
+    if sizes == 0 then return
+    fin commands = send0(gpu.queue, sel("commandBuffer"))
+    fin encoder = send0(commands, sel("computeCommandEncoder"))
+    send1(encoder, sel("setComputePipelineState:"), gpu.irradiancePipeline)
+    send3(encoder, sel("setBuffer:offset:atIndex:"), buffer, 0, 0)
+    azPokeF32(sizes, 0, samples as Double)
+    send3(encoder, sel("setBytes:length:atIndex:"), sizes, 4, 1)
+    // Two MTLSize values: arm64 passes a struct this large as a pointer to a copy.
+    azPoke64(sizes, 16, ((samples + 63) / 64) as Long)
+    azPoke64(sizes, 24, 1)
+    azPoke64(sizes, 32, 1)
+    azPoke64(sizes, 40, 64)
+    azPoke64(sizes, 48, 1)
+    azPoke64(sizes, 56, 1)
+    send2(encoder, sel("dispatchThreadgroups:threadsPerThreadgroup:"), sizes + 16, sizes + 40)
+    send0(encoder, sel("endEncoding"))
+    send0(commands, sel("commit"))
+    azFree(sizes)
+}
+
+/** Scene mesh draws a frame can record for motion, and the bytes of one record (buffer, count, model). */
+fin motionCapacity: Int = 1024
+fin motionRecord: Long = 96
+
+/** Each moving object's screen motion, tested against the scene's depth so only what is visible writes. */
+func makeVelocityPipeline(device: Long, library: Long): Long {
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("velocity_vertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("velocity_fragment"))
+    defer {
+        if vertex != 0 then send0(vertex, sel("release"))
+        if fragment != 0 then send0(fragment, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), 115)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+/** Texels across the sharp shadow cascade. */
+fin detailResolution: Long = 2048
+
+/** Depth only, with the 3D vertex stage: what a shadow map needs of a mesh. */
+func makeDepthPipeline(device: Long, library: Long): Long {
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("v3_main"))
+    if vertex == 0 then return 0
+    defer { send0(vertex, sel("release")) }
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+/** A private texture the GPU both draws into and reads. */
+func sceneTexture(device: Long, format: Long, width: Long, height: Long): Long {
+    fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), format, width, height, 0)
+    send1(descriptor, sel("setUsage:"), 5)
+    send1(descriptor, sel("setStorageMode:"), 2)
+    return send1(device, sel("newTextureWithDescriptor:"), descriptor)
+}
+
+func releaseScenePass(pass: ScenePass!) {
+    if pass.color != 0 then send0(pass.color, sel("release"))
+    if pass.depth != 0 then send0(pass.depth, sel("release"))
+    if pass.historyA != 0 then send0(pass.historyA, sel("release"))
+    if pass.historyB != 0 then send0(pass.historyB, sel("release"))
+    if pass.velocity != 0 then send0(pass.velocity, sel("release"))
+    pass.velocity = 0
+    pass.color = 0
+    pass.depth = 0
+    pass.historyA = 0
+    pass.historyB = 0
+    pass.width = 0
+    pass.height = 0
+    pass.fullWidth = 0
+    pass.fullHeight = 0
+    pass.historyValid = false
+}
+
+/** Sizes the scene targets for a [width] x [height] drawable: the scene at half of each, the history at all of it. */
+func ensureScenePass(gpu: AzGpu!, width: Long, height: Long) {
+    if gpu.scenePass.fullWidth == width && gpu.scenePass.fullHeight == height && gpu.scenePass.color != 0 then return
+    releaseScenePass(gpu.scenePass)
+    fin low = (width + 1) / 2
+    fin lowHeight = (height + 1) / 2
+    gpu.scenePass.color = sceneTexture(gpu.device, 80, low, lowHeight)
+    gpu.scenePass.depth = sceneTexture(gpu.device, 252, low, lowHeight)
+    gpu.scenePass.historyA = sceneTexture(gpu.device, 115, width, height)
+    gpu.scenePass.historyB = sceneTexture(gpu.device, 115, width, height)
+    gpu.scenePass.velocity = sceneTexture(gpu.device, 115, low, lowHeight)
+    if gpu.scenePass.color == 0 || gpu.scenePass.depth == 0 || gpu.scenePass.historyA == 0 || gpu.scenePass.historyB == 0 ||
+        gpu.scenePass.velocity == 0 {
+        releaseScenePass(gpu.scenePass)
+        return
+    }
+    gpu.scenePass.width = low
+    gpu.scenePass.height = lowHeight
+    gpu.scenePass.fullWidth = width
+    gpu.scenePass.fullHeight = height
+}
+
+func discardStaticShadows(gpu: AzGpu!) {
+    if gpu.staticShadowBuffer != 0 then send0(gpu.staticShadowBuffer, sel("release"))
+    gpu.staticShadowBuffer = 0
+    gpu.staticShadowReady = false
+}
+
+// ── Temporal upscaling ──────────────────────────────────────────────────
+
+/** Element [index] of the base-[base] Halton sequence, in 0..<1: a jitter pattern that covers a pixel evenly. */
+func halton(index: Int, base: Int): Double {
+    var result: Double = 0.0
+    var fraction = 1.0 / (base as Double)
+    var rest = index
+    while rest > 0 {
+        result += fraction * ((rest % base) as Double)
+        rest = rest / base
+        fraction = fraction / (base as Double)
+    }
+    return result
+}
+
+/**
+ * Moves 3D drawing into the half-resolution scene target, when temporal
+ * upscaling is on: the sky and every mesh up to [resolveScenePass] are drawn
+ * at a quarter of the pixels. Nothing happens when it is off or already begun.
+ */
+func beginScenePass(gpu: AzGpu!) {
+    if !gpu.upscale || !gpu.hasEncoder || gpu.scenePass.active || gpu.resolvePipeline == 0 then return
+    ensureScenePass(gpu, gpu.depthW, gpu.depthH)
+    if gpu.scenePass.color == 0 then return
+    send0(gpu.enc, sel("endEncoding"))
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), gpu.scenePass.color)
+    send1(color, sel("setLoadAction:"), 2)
+    send1(color, sel("setStoreAction:"), 1)
+    // Transparent where nothing is drawn, so what lies beneath the view survives the resolve.
+    fin cleared = azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
+    fin depth = send0(pass, sel("depthAttachment"))
+    send1(depth, sel("setTexture:"), gpu.scenePass.depth)
+    send1(depth, sel("setLoadAction:"), 2)
+    send1(depth, sel("setStoreAction:"), 1)
+    fin far = azSendF1(depth, sel("setClearDepth:"), 1.0)
+    gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
+    gpu.mode = -1
+    gpu.meshPipeline = 0
+    gpu.passScale = (gpu.scenePass.width as Double) / (gpu.scenePass.fullWidth as Double)
+    gpu.scenePass.active = true
+    gpu.scenePass.viewed = false
+    // This frame's sub-pixel offset, in half-resolution pixels; it cycles through eight.
+    fin phase = gpu.scenePass.frame % 8 + 1
+    gpu.scenePass.jitterX = halton(phase, 2) - 0.5
+    gpu.scenePass.jitterY = halton(phase, 3) - 0.5
+}
+
+/**
+ * Ends the scene pass: reconstructs the view at full resolution into the
+ * drawable and the history, then reopens the drawable for what follows.
+ */
+/**
+ * Draws the screen motion of every mesh recorded in this scene pass into the
+ * velocity target: where it is now under the unjittered view, less where its
+ * last transform put it under last frame's. Answers whether it drew anything;
+ * the terrain is not recorded, as the camera's motion is all it has.
+ */
+func drawMotion(gpu: AzGpu!): Bool {
+    fin count = gpu.motionCount
+    if count == 0 || gpu.velocityPipeline == 0 || gpu.scenePass.velocity == 0 || !gpu.scenePass.viewed then return false
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), gpu.scenePass.velocity)
+    send1(color, sel("setLoadAction:"), 2)
+    send1(color, sel("setStoreAction:"), 1)
+    fin still = azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
+    fin depth = send0(pass, sel("depthAttachment"))
+    send1(depth, sel("setTexture:"), gpu.scenePass.depth)
+    send1(depth, sel("setLoadAction:"), 1)
+    send1(depth, sel("setStoreAction:"), 0)
+    fin encoder = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
+    send1(encoder, sel("setRenderPipelineState:"), gpu.velocityPipeline)
+    send1(encoder, sel("setDepthStencilState:"), gpu.velocityDepth)
+    fin uniforms = gpu.scratch
+    pokeMat4(uniforms, 0, gpu.scenePass.jittered)
+    pokeMat4(uniforms, 64, gpu.scenePass.viewProj)
+    pokeMat4(uniforms, 128, gpu.scenePass.previous)
+    var index = 0
+    while index < count {
+        fin record = gpu.motionCurrent + (index as Long) * motionRecord
+        fin before = gpu.motionPrevious + (index as Long) * motionRecord
+        // The same mesh at the same place in the draw order was this object last frame.
+        fin same = index < gpu.motionPreviousCount && azPeek64(before, 0) == azPeek64(record, 0) &&
+            azPeek64(before, 8) == azPeek64(record, 8)
+        azCopy(uniforms + 192, record + 16, 64)
+        azCopy(uniforms + 256, (if same then before else record) + 16, 64)
+        send3(encoder, sel("setVertexBuffer:offset:atIndex:"), azPeek64(record, 0), 0, 0)
+        send3(encoder, sel("setVertexBytes:length:atIndex:"), uniforms, 320, 1)
+        send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, azPeek64(record, 8))
+        index += 1
+    }
+    send0(encoder, sel("endEncoding"))
+    return true
+}
+
+func resolveScenePass(gpu: AzGpu!) {
+    if !gpu.scenePass.active then return
+    send0(gpu.enc, sel("endEncoding"))
+    gpu.scenePass.active = false
+    gpu.passScale = 1.0
+    fin moved = drawMotion(gpu)
+    // This frame's records are the next one's past.
+    fin spare = gpu.motionPrevious
+    gpu.motionPrevious = gpu.motionCurrent
+    gpu.motionCurrent = spare
+    gpu.motionPreviousCount = gpu.motionCount
+    gpu.motionCount = 0
+    fin read = if gpu.scenePass.readA then gpu.scenePass.historyA else gpu.scenePass.historyB
+    fin write = if gpu.scenePass.readA then gpu.scenePass.historyB else gpu.scenePass.historyA
+    fin screen = send0(gpu.drawable, sel("texture"))
+
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin attachments = send0(pass, sel("colorAttachments"))
+    fin onScreen = send1(attachments, sel("objectAtIndexedSubscript:"), 0)
+    send1(onScreen, sel("setTexture:"), screen)
+    send1(onScreen, sel("setLoadAction:"), 1)
+    send1(onScreen, sel("setStoreAction:"), 1)
+    fin kept = send1(attachments, sel("objectAtIndexedSubscript:"), 1)
+    send1(kept, sel("setTexture:"), write)
+    send1(kept, sel("setLoadAction:"), 0)
+    send1(kept, sel("setStoreAction:"), 1)
+    fin resolve = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
+
+    // Points, as the view's rectangle is given.
+    fin windowW = (gpu.scenePass.fullWidth as Double) / gpu.scale
+    fin windowH = (gpu.scenePass.fullHeight as Double) / gpu.scale
+    fin viewed = gpu.scenePass.viewed
+    fin x = if viewed then gpu.scenePass.rectX else 0.0
+    fin y = if viewed then gpu.scenePass.rectY else 0.0
+    fin w = if viewed then gpu.scenePass.rectWidth else windowW
+    fin h = if viewed then gpu.scenePass.rectHeight else windowH
+    fin uniforms = gpu.scratch
+    pokeMat4(uniforms, 0, mat4Inverse(gpu.scenePass.viewProj))
+    pokeMat4(uniforms, 64, gpu.scenePass.previous)
+    azPokeF32(uniforms, 128, w/windowW)
+    azPokeF32(uniforms, 132, h/windowH)
+    azPokeF32(uniforms, 136, (x+w*0.5)*2.0/windowW - 1.0)
+    azPokeF32(uniforms, 140, 1.0 - (y+h*0.5)*2.0/windowH)
+    azPokeF32(uniforms, 144, gpu.scenePass.jitterX)
+    azPokeF32(uniforms, 148, gpu.scenePass.jitterY)
+    azPokeF32(uniforms, 152, gpu.scenePass.width as Double)
+    azPokeF32(uniforms, 156, gpu.scenePass.height as Double)
+    azPokeF32(uniforms, 160, if gpu.scenePass.historyValid && viewed then 1.0 else 0.0)
+    azPokeF32(uniforms, 164, gpu.scenePass.fullWidth as Double)
+    azPokeF32(uniforms, 168, gpu.scenePass.fullHeight as Double)
+    azPokeF32(uniforms, 172, 0.1)
+    azPokeF32(uniforms, 176, if moved then 1.0 else 0.0)
+    azPokeF32(uniforms, 180, 0.0)
+    azPokeF32(uniforms, 184, 0.0)
+    azPokeF32(uniforms, 188, 0.0)
+    send1(resolve, sel("setRenderPipelineState:"), gpu.resolvePipeline)
+    send3(resolve, sel("setVertexBytes:length:atIndex:"), uniforms, 192, 0)
+    send3(resolve, sel("setFragmentBytes:length:atIndex:"), uniforms, 192, 0)
+    send2(resolve, sel("setFragmentTexture:atIndex:"), gpu.scenePass.color, 0)
+    send2(resolve, sel("setFragmentTexture:atIndex:"), gpu.scenePass.depth, 1)
+    send2(resolve, sel("setFragmentTexture:atIndex:"), read, 2)
+    send2(resolve, sel("setFragmentTexture:atIndex:"), gpu.scenePass.velocity, 3)
+    send3(resolve, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4)
+    send0(resolve, sel("endEncoding"))
+
+    // The interface draws on at native resolution over the reconstructed view.
+    fin next = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(next, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), screen)
+    send1(color, sel("setLoadAction:"), 1)
+    send1(color, sel("setStoreAction:"), 1)
+    fin depth = send0(next, sel("depthAttachment"))
+    send1(depth, sel("setTexture:"), gpu.depthTex)
+    send1(depth, sel("setLoadAction:"), 2)
+    send1(depth, sel("setStoreAction:"), 0)
+    fin far = azSendF1(depth, sel("setClearDepth:"), 1.0)
+    gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), next)
+    gpu.mode = -1
+    gpu.meshPipeline = 0
+
+    gpu.scenePass.readA = !gpu.scenePass.readA
+    if viewed then gpu.scenePass.previous = copyMat4(gpu.scenePass.viewProj)
+    gpu.scenePass.historyValid = viewed
+    gpu.scenePass.frame += 1
 }

@@ -1,0 +1,412 @@
+module engine.lighting.photon
+
+import std.math
+import std.traits
+import engine.core
+import engine.ecs
+import engine.scene
+import engine.scene.terrain
+import engine.io
+import engine.math
+
+/** Attach to a directional light to allocate a local virtual shadow map and diffuse photon field. */
+@Component
+@Inspectable(title: "Photon Field", serializedName: "PhotonField", icon: "sun", category: "Lighting", order: 14)
+pack PhotonField derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.5, max: 100.0, step: 0.25)
+    var pageSize: Double = 3.0
+    @Range(min: 1.0, max: 4.0, step: 1.0)
+    var pageRadius: Int = 2
+    @Range(min: 8.0, max: 48.0, step: 4.0)
+    var pageResolution: Int = 24
+    @Range(min: 0.001, max: 0.5, step: 0.005)
+    var shadowBias: Double = 0.055
+    @Range(min: 0.0, max: 1.0, step: 0.05)
+    var shadowStrength: Double = 0.92
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var indirectStrength: Double = 1.25
+    @Range(min: 0.1, max: 10.0, step: 0.1)
+    var bounceRadius: Double = 2.6
+}
+
+pack PhotonLight derives Clone {
+    var direction: Vec3 = .(0.0, 1.0, 0.0)
+    var color: Rgba = .(1.0, 1.0, 1.0, 1.0)
+    var intensity: Double = 1.0
+    var shadows: Bool = true
+}
+
+pack PhotonBasis derives Clone {
+    var x: Vec3 = .(0.0, 0.0, 0.0)
+    var y: Vec3 = .(0.0, 0.0, 0.0)
+    var z: Vec3 = .(0.0, 0.0, 0.0)
+}
+
+pack PhotonCaster derives Clone {
+    var shape: Int = 0
+    var center: Vec3 = .(0.0, 0.0, 0.0)
+    var invX: Vec3 = .(0.0, 0.0, 0.0)
+    var invY: Vec3 = .(0.0, 0.0, 0.0)
+    var invZ: Vec3 = .(0.0, 0.0, 0.0)
+    var color: Rgba = .(0.8, 0.8, 0.8, 1.0)
+    var lowX: Double = 0.0
+    var highX: Double = 0.0
+    var lowY: Double = 0.0
+    var highY: Double = 0.0
+    var top: Double = 0.0
+    var terrain: TerrainImage = .()
+}
+
+pack PhotonData {
+    var bytes: Long = 0
+    var size: Long = 0
+    var pages: Int = 0
+}
+
+fin photonHeader: Int = 24
+fin photonSample: Int = 8
+
+/**
+ * The pages the last build traced, kept for the next one. A page whose
+ * placement, light and casters are unchanged is copied instead of traced
+ * again, so a car driving through the field re-traces the page or two it is
+ * in, not every page under the terrain.
+ */
+pack PhotonPageCache {
+    /** A copy of the last build's floats; each cached page's samples start at its entry in [starts]. */
+    var data: Long = 0
+    var keys: Array<Long> = []
+    var starts: Array<Int> = []
+}
+
+func releasePhotonCache(cache: PhotonPageCache!) {
+    if cache.data != 0 then azFree(cache.data)
+    cache.data = 0
+    cache.keys.clear()
+    cache.starts.clear()
+}
+
+func photonMix(key: Long, value: Double): Long {
+    fin bounded = photonClamp(value, -1000000000.0, 1000000000.0)
+    return (key * 1099511628211) + ((bounded * 10000.0) as Long)
+}
+
+func photonMixVector(key: Long, value: Vec3&): Long = photonMix(photonMix(photonMix(key, value.x), value.y), value.z)
+
+func photonMin(a: Double, b: Double): Double = if a < b then a else b
+func photonMax(a: Double, b: Double): Double = if a > b then a else b
+func photonAbs(a: Double): Double = if a < 0.0 then -a else a
+func photonClamp(a: Double, low: Double, high: Double): Double = photonMin(photonMax(a, low), high)
+
+func photonDot(a: Vec3&, b: Vec3&): Double = a.x*b.x + a.y*b.y + a.z*b.z
+
+func photonCross(a: Vec3&, b: Vec3&): Vec3 =
+    Vec3(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x)
+
+func photonScale(v: Vec3&, s: Double): Vec3 = Vec3(v.x*s, v.y*s, v.z*s)
+
+func photonUnit(v: Vec3&): Vec3 {
+    fin length = sqrt(photonDot(v, v))
+    return if length < 0.000001 then Vec3(0.0, 1.0, 0.0) else photonScale(v, 1.0 / length)
+}
+
+func photonBasis(direction: Vec3&): PhotonBasis {
+    fin z = photonUnit(direction)
+    fin helper = if photonAbs(z.y) < 0.95 then Vec3(0.0, 1.0, 0.0) else Vec3(1.0, 0.0, 0.0)
+    fin x = photonUnit(photonCross(helper, z))
+    return PhotonBasis(x, photonCross(z, x), z)
+}
+
+func photonRadius(axis: Vec3&, x: Vec3&, y: Vec3&, z: Vec3&, flat: Bool): Double =
+    (photonAbs(photonDot(axis, x)) + (if flat then 0.0 else photonAbs(photonDot(axis, y))) + photonAbs(photonDot(axis, z))) * 0.5
+
+/** Projects a transformed Engine primitive into the light's virtual page coordinates. */
+func photonCaster(shape: Int, model: Mat4&, color: Rgba&, basis: PhotonBasis&): PhotonCaster {
+    fin x = Vec3(model.m00, model.m10, model.m20)
+    fin y = Vec3(model.m01, model.m11, model.m21)
+    fin z = Vec3(model.m02, model.m12, model.m22)
+    fin row = photonCross(y, z)
+    fin det = photonDot(x, row)
+    if photonAbs(det) < 0.000001 then return PhotonCaster(-1)
+    fin centre = Vec3(model.m03, model.m13, model.m23)
+    fin u = photonDot(centre, basis.x)
+    fin v = photonDot(centre, basis.y)
+    fin flat = shape == 3
+    fin du = photonRadius(basis.x, x, y, z, flat)
+    fin dv = photonRadius(basis.y, x, y, z, flat)
+    return PhotonCaster(shape, centre, photonScale(row, 1.0 / det), photonScale(photonCross(z, x), 1.0 / det),
+        photonScale(photonCross(x, y), 1.0 / det), color, u-du, u+du, v-dv, v+dv, photonDot(centre, basis.z)+photonRadius(basis.z, x, y, z, flat))
+}
+
+pack PhotonHit {
+    var t: Double = -1.0
+    var normal: Vec3 = .(0.0, 0.0, 0.0)
+}
+
+func photonBox(o: Vec3&, d: Vec3&): PhotonHit {
+    var near: Double = -1000000.0
+    var far: Double = 1000000.0
+    var normal = Vec3(0.0, 1.0, 0.0)
+    var i = 0
+    while i < 3 {
+        fin origin = if i == 0 then o.x else if i == 1 then o.y else o.z
+        fin delta = if i == 0 then d.x else if i == 1 then d.y else d.z
+        if photonAbs(delta) < 0.000001 {
+            if photonAbs(origin) > 0.5 then return PhotonHit()
+        } else {
+            fin a = (-0.5 - origin) / delta
+            fin b = (0.5 - origin) / delta
+            fin entry = photonMin(a, b)
+            if entry > near {
+                near = entry
+                fin sign: Double = if delta > 0.0 then -1.0 else 1.0
+                normal = Vec3(if i == 0 then sign else 0.0, if i == 1 then sign else 0.0, if i == 2 then sign else 0.0)
+            }
+            far = photonMin(far, photonMax(a, b))
+        }
+        if far < near then return PhotonHit()
+        i = i + 1
+    }
+    return PhotonHit(near, normal)
+}
+
+/** Intersects the sampled triangle surface inside its transformed light-space bounds. */
+func photonTerrainRay(image: TerrainImage&, o: Vec3&, d: Vec3&): PhotonHit {
+    var low: Double = 0.0
+    var high: Double = 1000000.0
+    var axis = 0
+    while axis < 3 {
+        fin origin = if axis == 0 then o.x else if axis == 1 then o.y else o.z
+        fin slope = if axis == 0 then d.x else if axis == 1 then d.y else d.z
+        if photonAbs(slope) < 0.0000001 {
+            if photonAbs(origin) > 0.5 then return PhotonHit()
+        } else {
+            fin a = (-0.5-origin)/slope
+            fin b = (0.5-origin)/slope
+            low = photonMax(low, photonMin(a,b))
+            high = photonMin(high, photonMax(a,b))
+        }
+        if low > high then return PhotonHit()
+        axis += 1
+    }
+    fin speed = photonMax(photonAbs(d.x) * (image.columns as Double), photonAbs(d.z) * (image.rows as Double))
+    fin step = photonMax(0.48 / photonMax(speed, 0.000001), (high-low)/512.0)
+    var previous = low
+    var last = o.y+d.y*low-sampleTerrain(image,o.x+d.x*low,o.z+d.z*low)
+    while previous < high {
+        fin t = photonMin(previous+step, high)
+        fin height = o.y+d.y*t-sampleTerrain(image,o.x+d.x*t,o.z+d.z*t)
+        if last >= 0.0 && height <= 0.0 {
+            var a = previous
+            var b = t
+            var round = 0
+            while round < 8 {
+                fin mid = (a+b)*0.5
+                if o.y+d.y*mid > sampleTerrain(image,o.x+d.x*mid,o.z+d.z*mid) then a = mid else b = mid
+                round += 1
+            }
+            fin x = o.x+d.x*b
+            fin z = o.z+d.z*b
+            fin hx = 1.0/((image.columns-1) as Double)
+            fin hz = 1.0/((image.rows-1) as Double)
+            return PhotonHit(b, Vec3(
+                (sampleTerrain(image,x-hx,z)-sampleTerrain(image,x+hx,z))/(2*hx),
+                1.0,
+                (sampleTerrain(image,x,z-hz)-sampleTerrain(image,x,z+hz))/(2*hz)))
+        }
+        previous = t
+        last = height
+    }
+    return PhotonHit()
+}
+
+func photonRay(caster: PhotonCaster&, source: Vec3&, againstLight: Vec3&): PhotonHit {
+    fin offset = Vec3(source.x-caster.center.x, source.y-caster.center.y, source.z-caster.center.z)
+    fin o = Vec3(photonDot(offset, caster.invX), photonDot(offset, caster.invY), photonDot(offset, caster.invZ))
+    fin d = Vec3(photonDot(againstLight, caster.invX), photonDot(againstLight, caster.invY), photonDot(againstLight, caster.invZ))
+    if caster.shape == 4 && caster.terrain.samples != 0 then return photonTerrainRay(caster.terrain, o, d)
+    if caster.shape == 3 {
+        if photonAbs(d.y) < 0.000001 then return PhotonHit()
+        fin t = -o.y/d.y
+        if photonAbs(o.x+d.x*t) > 0.5 || photonAbs(o.z+d.z*t) > 0.5 then return PhotonHit()
+        return PhotonHit(t, Vec3(0.0, if d.y < 0.0 then 1.0 else -1.0, 0.0))
+    }
+    if caster.shape == 1 {
+        fin a = photonDot(d, d)
+        fin b = photonDot(o, d)
+        fin disc = b*b-a*(photonDot(o,o)-0.25)
+        if disc < 0.0 || a < 0.000001 then return PhotonHit()
+        fin t = (-b-sqrt(disc))/a
+        return PhotonHit(t, Vec3((o.x+d.x*t)*2.0, (o.y+d.y*t)*2.0, (o.z+d.z*t)*2.0))
+    }
+    if caster.shape == 2 {
+        var hit = PhotonHit()
+        fin a = d.x*d.x+d.z*d.z
+        fin b = o.x*d.x+o.z*d.z
+        fin disc = b*b-a*(o.x*o.x+o.z*o.z-0.25)
+        if a > 0.000001 && disc >= 0.0 {
+            fin t = (-b-sqrt(disc))/a
+            if t >= 0.0 && photonAbs(o.y+d.y*t) <= 0.5 then hit = PhotonHit(t, Vec3((o.x+d.x*t)*2.0, 0.0, (o.z+d.z*t)*2.0))
+        }
+        if photonAbs(d.y) > 0.000001 {
+            fin y: Double = if d.y < 0.0 then 0.5 else -0.5
+            fin t = (y-o.y)/d.y
+            fin x = o.x+d.x*t
+            fin z = o.z+d.z*t
+            if t >= 0.0 && x*x+z*z <= 0.25 && (hit.t < 0.0 || t < hit.t) then hit = PhotonHit(t, Vec3(0.0, y*2.0, 0.0))
+        }
+        return hit
+    }
+    return photonBox(o, d)
+}
+
+func photonStore(data: Long, index: Int, value: Double) {
+    azPokeF32(data, (index as Long) * 4, value)
+}
+
+func photonStoreVec(data: Long, index: Int, value: Vec3&) {
+    photonStore(data, index, value.x)
+    photonStore(data, index + 1, value.y)
+    photonStore(data, index + 2, value.z)
+}
+
+func photonPageSize(settings: PhotonField&): Double = photonClamp(settings.pageSize, 0.5, 100000.0)
+func photonPageX(focus: Vec3&, basis: PhotonBasis&, settings: PhotonField&): Int = floor(photonDot(focus, basis.x) / photonPageSize(settings))
+func photonPageY(focus: Vec3&, basis: PhotonBasis&, settings: PhotonField&): Int = floor(photonDot(focus, basis.y) / photonPageSize(settings))
+
+/** Allocates only demanded virtual pages touched by scene geometry. Each sample stores depth and a lit surfel. */
+func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: PhotonBasis&, focus: Vec3&, casters: Array<PhotonCaster>&,
+                      cache: PhotonPageCache!): PhotonData {
+    if !settings.enabled || casters.size == 0 then return PhotonData()
+    fin radius = photonClamp(settings.pageRadius as Double, 1.0, 4.0) as Int
+    fin res = photonClamp(settings.pageResolution as Double, 8.0, 48.0) as Int
+    fin side = radius * 2 + 1
+    fin cellCount = side * side
+    fin size = photonPageSize(settings)
+    fin minX = photonPageX(focus, basis, settings) - radius
+    fin minY = photonPageY(focus, basis, settings) - radius
+    var pages: Array<Int> = []
+    var cursor = 0
+    var top: Double = -1000000.0
+    for caster in casters {
+        if caster.shape >= 0 then top = photonMax(top, caster.top)
+    }
+    while cursor < cellCount {
+        fin x = ((minX + cursor % side) as Double) * size
+        fin y = ((minY + cursor / side) as Double) * size
+        for caster in casters {
+            if caster.shape >= 0 && caster.lowX < x + size && caster.highX >= x && caster.lowY < y + size && caster.highY >= y {
+                pages.add(cursor)
+                break
+            }
+        }
+        cursor = cursor + 1
+    }
+    if pages.size == 0 then return PhotonData()
+    fin first = photonHeader + cellCount
+    fin bytes = ((first + pages.size * res * res * photonSample) as Long) * 4
+    fin data = azAlloc(bytes)
+    if data == 0 then return PhotonData()
+    photonStore(data, 0, 1.0)
+    photonStore(data, 1, minX as Double)
+    photonStore(data, 2, minY as Double)
+    photonStore(data, 3, side as Double)
+    photonStore(data, 4, res as Double)
+    photonStore(data, 5, size)
+    photonStore(data, 6, photonClamp(settings.shadowBias, 0.001, 0.5))
+    photonStore(data, 7, if light.shadows then photonClamp(settings.shadowStrength, 0.0, 1.0) else 0.0)
+    photonStore(data, 8, photonClamp(settings.indirectStrength, 0.0, 4.0))
+    photonStore(data, 9, photonClamp(settings.bounceRadius, 0.1, 10.0))
+    photonStoreVec(data, 10, basis.x)
+    photonStoreVec(data, 13, basis.y)
+    photonStoreVec(data, 16, basis.z)
+    photonStore(data, 19, photonClamp(light.intensity, 0.0, 100.0))
+    photonStoreVec(data, 20, Vec3(light.color.r, light.color.g, light.color.b))
+    photonStore(data, 23, 0.0)
+    cursor = 0
+    while cursor < cellCount {
+        photonStore(data, photonHeader + cursor, -1.0)
+        cursor = cursor + 1
+    }
+    fin startDepth = top + 1.0
+    fin direction = photonScale(basis.z, -1.0)
+    fin pixel = size / (res as Double)
+    // What a page's samples depend on: where it is, the light, and the casters over it.
+    var shared = photonMixVector(photonMixVector(photonMixVector(photonMix(photonMix(77, res as Double), size), basis.x), basis.y), basis.z)
+    shared = photonMix(photonMix(photonMix(photonMix(shared, light.color.r), light.color.g), light.color.b), photonClamp(light.intensity, 0.0, 100.0))
+    var keys: Array<Long> = []
+    var starts: Array<Int> = []
+    var page = 0
+    while page < pages.size {
+        fin cell = pages[page]
+        photonStore(data, photonHeader + cell, page as Double)
+        fin x = ((minX + cell % side) as Double) * size
+        fin y = ((minY + cell / side) as Double) * size
+        var key = photonMix(photonMix(shared, (minX + cell % side) as Double), (minY + cell / side) as Double)
+        for caster in casters {
+            if caster.shape >= 0 && caster.lowX < x + size && caster.highX >= x && caster.lowY < y + size && caster.highY >= y {
+                key = photonMixVector(photonMixVector(photonMixVector(photonMixVector(photonMix(key, caster.shape as Double),
+                    caster.center), caster.invX), caster.invY), caster.invZ)
+                key = photonMix(photonMix(photonMix(photonMix(key, caster.color.r), caster.color.g), caster.color.b), caster.terrain.samples as Double)
+            }
+        }
+        fin start = first + page*res*res*photonSample
+        keys.add(key)
+        starts.add(start)
+        var reused = -1
+        var look = 0
+        while look < cache.keys.size && reused < 0 {
+            if cache.keys[look] == key then reused = cache.starts[look]
+            look += 1
+        }
+        if reused >= 0 && cache.data != 0 {
+            azCopy(data + (start as Long)*4, cache.data + (reused as Long)*4, ((res*res*photonSample) as Long)*4)
+            page = page + 1
+            continue
+        }
+        var uy = 0
+        while uy < res {
+            var ux = 0
+            while ux < res {
+                fin sx = x + ((ux as Double)+0.5)*pixel
+                fin sy = y + ((uy as Double)+0.5)*pixel
+                fin world = Vec3(basis.x.x*sx+basis.y.x*sy+basis.z.x*startDepth,
+                    basis.x.y*sx+basis.y.y*sy+basis.z.y*startDepth, basis.x.z*sx+basis.y.z*sy+basis.z.z*startDepth)
+                fin at = first + ((page*res+uy)*res+ux)*photonSample
+                var best: Double = 1000000.0
+                var radiance = Vec3(0.0, 0.0, 0.0)
+                var normal = Vec3(0.0, 0.0, 0.0)
+                for caster in casters {
+                    if caster.shape >= 0 && sx >= caster.lowX && sx <= caster.highX && sy >= caster.lowY && sy <= caster.highY {
+                        fin hit = photonRay(caster, world, direction)
+                        if hit.t >= 0.0 && hit.t < best {
+                            best = hit.t
+                            fin n = hit.normal
+                            normal = photonUnit(Vec3(n.x*caster.invX.x+n.y*caster.invY.x+n.z*caster.invZ.x,
+                                n.x*caster.invX.y+n.y*caster.invY.y+n.z*caster.invZ.y, n.x*caster.invX.z+n.y*caster.invY.z+n.z*caster.invZ.z))
+                            fin lit = photonMax(0.0, photonDot(normal, basis.z)) * photonClamp(light.intensity, 0.0, 100.0)
+                            radiance = Vec3(lit*caster.color.r*light.color.r, lit*caster.color.g*light.color.g, lit*caster.color.b*light.color.b)
+                        }
+                    }
+                }
+                photonStore(data, at, if best < 1000000.0 then startDepth-best else -1.0e9)
+                photonStoreVec(data, at+1, radiance)
+                photonStoreVec(data, at+4, normal)
+                photonStore(data, at+7, if best < 1000000.0 then 1.0 else 0.0)
+                ux = ux + 1
+            }
+            uy = uy + 1
+        }
+        page = page + 1
+    }
+    // Keep this build's floats for the next: the caller hands `data` to the GPU and frees it.
+    releasePhotonCache(cache)
+    cache.data = azAlloc(bytes)
+    if cache.data != 0 {
+        azCopy(cache.data, data, bytes)
+        cache.keys = take keys
+        cache.starts = take starts
+    }
+    return PhotonData(data, bytes, pages.size)
+}

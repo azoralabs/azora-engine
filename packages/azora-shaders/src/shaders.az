@@ -26,29 +26,45 @@
 
 module engine.shaders
 
+import engine.lighting.photon.shader
+import engine.sky.shader
+
 /** Complete Metal shader library containing the equivalent 3D and 2D stages. */
 func metalShaderSource(): String {
     return (""
         + "#include <metal_stdlib>\n"
         + "using namespace metal;\n"
-        + "struct V3Out { float4 pos [[position]]; float3 normal; };\n"
-        + "struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; };\n"
+        + photonMetalSource()
+        + heightFogShader()
+        + skyMetalSource()
+        + "struct V3Out { float4 pos [[position]]; float3 normal; float3 world; };
+"
+        + "struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; float4 eye; float4 fog; float4 direct; float4 fogShape; };\n"
         + "vertex V3Out v3_main(uint vid [[vertex_id]],\n"
         + "                     const device float* verts [[buffer(0)]],\n"
         + "                     constant U3& u [[buffer(1)]]) {\n"
         + "    V3Out out;\n"
         + "    float3 p = float3(verts[vid*6+0], verts[vid*6+1], verts[vid*6+2]);\n"
         + "    float3 n = float3(verts[vid*6+3], verts[vid*6+4], verts[vid*6+5]);\n"
-        + "    out.pos = u.viewProj * u.model * float4(p, 1.0);\n"
-        + "    out.normal = (u.model * float4(n, 0.0)).xyz;\n"
+        + "    float4 world = u.model * float4(p, 1.0);
+"
+        + "    out.pos = u.viewProj * world;
+"
+        + "    out.world = world.xyz;
+"
+        + "    float3 x = u.model[0].xyz, y = u.model[1].xyz, z = u.model[2].xyz;\n"
+        + "    float3x3 cof = float3x3(cross(y,z), cross(z,x), cross(x,y));\n"
+        + "    out.normal = (cof*n) * (dot(x,cof[0]) < 0.0 ? -1.0 : 1.0);\n"
         + "    return out;\n"
         + "}\n"
-        + "fragment float4 f3_main(V3Out in [[stage_in]], constant U3& u [[buffer(1)]]) {\n"
-        + "    float3 l = normalize(u.light.xyz);\n"
-        + "    float d = max(dot(normalize(in.normal), l), 0.0);\n"
+        + "fragment float4 f3_main(V3Out in [[stage_in]], constant U3& u [[buffer(1)]], const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]], constant float4* detailLight [[buffer(4)]], depth2d<float> detail [[texture(30)]]) {\n"
+        + "    float3 n = normalize(in.normal);\n"
+        + "    float d = max(dot(n, normalize(u.light.xyz)), 0.0);\n"
         + "    float ambient = clamp(u.light.w, 0.0, 1.0);\n"
-        + "    float i = ambient + (1.0 - ambient) * d;\n"
-        + "    return float4(u.color.rgb * i, u.color.a);\n"
+        + "    PhotonLighting p = scenePhotonLight(photons,baked,detail,detailLight,in.world,n,u.eye.w,u.direct.xyz);\n"
+        + "    float3 i = float3(ambient) + (1.0 - ambient) * d * p.visibility * p.direct + p.indirect;\n"
+        + "    float haze=heightFog(u.eye.xyz,in.world,u.fog.w,u.fogShape);\n"
+        + "    return float4(mix(u.color.rgb*i,u.fog.xyz,haze), u.color.a);\n"
         + "}\n"
         + "struct V2Out { float4 pos [[position]]; float2 uv; float4 color; };\n"
         + "struct U2 { float2 viewport; float useTex; float pad; float4 shape; };\n"
@@ -90,6 +106,101 @@ func metalShaderSource(): String {
         + "        return float4(in.color.rgb, in.color.a * t.a);\n"
         + "    }\n"
         + "    return in.color;\n"
+        + "}\n"
+        + temporalUpscaleSource()
+    )
+}
+
+/**
+ * Temporal upscaling: one full-resolution pixel from the half-resolution scene
+ * and the history.
+ *
+ * The scene was drawn with its geometry shifted by `jitter` low-resolution
+ * pixels, so sample `i` holds the point that sits at `i + 0.5 - jitter`. The
+ * 3x3 samples nearest the pixel are blended by distance, and their spread
+ * bounds how far the reprojected history may differ from them - what a surface
+ * that moved, appeared or vanished would otherwise leave behind as a ghost.
+ */
+func temporalUpscaleSource(): String {
+    return (""
+        + "struct ResolveU { float4x4 invViewProj; float4x4 prevViewProj; float4 rect; float4 jitter; float4 params; float4 motion; };\n"
+        + "struct VelocityU { float4x4 jittered, current, previous, model, previousModel; };\n"
+        + "struct VelocityOut { float4 pos [[position]]; float4 now; float4 before; };\n"
+        + "vertex VelocityOut velocity_vertex(uint vid [[vertex_id]], const device float* verts [[buffer(0)]], constant VelocityU& u [[buffer(1)]]) {\n"
+        + "    float4 p = float4(verts[vid*6], verts[vid*6+1], verts[vid*6+2], 1.0), world = u.model * p;\n"
+        + "    VelocityOut out; out.pos = u.jittered * world;\n"
+        + "    // A hair in front of the scene's own depth for the same surface, so the test lets it through.\n"
+        + "    out.pos.z -= 0.0002 * out.pos.w;\n"
+        + "    out.now = u.current * world; out.before = u.previous * (u.previousModel * p); return out;\n"
+        + "}\n"
+        + "fragment float4 velocity_fragment(VelocityOut in [[stage_in]]) {\n"
+        + "    return float4(in.now.xy / in.now.w - in.before.xy / in.before.w, 0.0, 1.0);\n"
+        + "}\n"
+        + "struct ResolveVOut { float4 pos [[position]]; };\n"
+        + "struct ResolveOut { float4 screen [[color(0)]]; float4 history [[color(1)]]; };\n"
+        + "vertex ResolveVOut resolve_vertex(uint vid [[vertex_id]], constant ResolveU& u [[buffer(0)]]) {\n"
+        + "    float2 corner = float2(float(vid & 1u), float(vid >> 1u)) * 2.0 - 1.0;\n"
+        + "    ResolveVOut out; out.pos = float4(corner * u.rect.xy + u.rect.zw, 0.0, 1.0); return out;\n"
+        + "}\n"
+        + "float3 toYCoCg(float3 c) { return float3(0.25*c.r+0.5*c.g+0.25*c.b, 0.5*c.r-0.5*c.b, -0.25*c.r+0.5*c.g-0.25*c.b); }\n"
+        + "float3 fromYCoCg(float3 c) { return float3(c.x+c.y-c.z, c.x+c.z, c.x-c.y-c.z); }\n"
+        + "float4 historyAt(texture2d<float> h, sampler s, float2 pixel, float2 size) {\n"
+        + "    float2 one = floor(pixel - 0.5) + 0.5, f = pixel - one;\n"
+        + "    float2 w0 = f*(-0.5+f*(1.0-0.5*f)), w1 = 1.0+f*f*(-2.5+1.5*f), w2 = f*(0.5+f*(2.0-1.5*f)), w3 = f*f*(-0.5+0.5*f);\n"
+        + "    float2 w12 = w1+w2, at12 = (one+w2/w12)/size, at0 = (one-1.0)/size, at3 = (one+2.0)/size;\n"
+        + "    float4 sum = h.sample(s,float2(at12.x,at0.y))*(w12.x*w0.y) + h.sample(s,float2(at0.x,at12.y))*(w0.x*w12.y)\n"
+        + "        + h.sample(s,at12)*(w12.x*w12.y) + h.sample(s,float2(at3.x,at12.y))*(w3.x*w12.y) + h.sample(s,float2(at12.x,at3.y))*(w12.x*w3.y);\n"
+        + "    return sum / (w12.x*w0.y + w0.x*w12.y + w12.x*w12.y + w3.x*w12.y + w12.x*w3.y);\n"
+        + "}\n"
+        + "fragment ResolveOut resolve_fragment(ResolveVOut in [[stage_in]], constant ResolveU& u [[buffer(0)]],\n"
+        + "        texture2d<float> current [[texture(0)]], depth2d<float> depth [[texture(1)]], texture2d<float> history [[texture(2)]],\n"
+        + "        texture2d<float> motion [[texture(3)]]) {\n"
+        + "    constexpr sampler linear(filter::linear, address::clamp_to_edge);\n"
+        + "    float2 full = u.params.yz, low = u.jitter.zw, jitter = u.jitter.xy, pixel = in.pos.xy;\n"
+        + "    float2 q = pixel * (low / full);\n"
+        + "    int2 base = int2(floor(q + jitter)), limit = int2(low) - 1;\n"
+        + "    float4 sum = 0.0, crisp = 0.0, m1 = 0.0, m2 = 0.0; float weights = 0.0, crispWeights = 0.0, closest = 0.0, nearest = 1.0;\n"
+        + "    int2 front = base;\n"
+        + "    float2 outward = full / low;\n"
+        + "    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {\n"
+        + "        int2 at = clamp(base + int2(i, j), int2(0), limit);\n"
+        + "        float4 c = current.read(uint2(at)); float4 v = float4(toYCoCg(c.rgb), c.a);\n"
+        + "        float2 d = float2(at) + 0.5 - jitter - q; float w = exp(-2.0 * dot(d, d));\n"
+        + "        // The same distance in output pixels: a sample this close is this pixel's own.\n"
+        + "        float2 e = d * outward; float k = exp(-2.47 * dot(e, e));\n"
+        + "        sum += v * w; weights += w; crisp += v * k; crispWeights += k; closest = max(closest, k);\n"
+        + "        m1 += v; m2 += v * v;\n"
+        + "        float z = depth.read(uint2(at)); if (z < nearest) { nearest = z; front = at; }\n"
+        + "    }\n"
+        + "    float4 now = sum / weights, mean = m1 / 9.0, spread = sqrt(max(m2 / 9.0 - mean * mean, 0.0));\n"
+        + "    float4 own = crispWeights > 1e-3 ? crisp / crispWeights : now;\n"
+        + "    float4 result = now;\n"
+        + "    if (u.params.x > 0.5) {\n"
+        + "        float2 ndc = float2(pixel.x / full.x * 2.0 - 1.0, 1.0 - pixel.y / full.y * 2.0), was; bool ahead = true;\n"
+        + "        // The nearest surface in reach decides: a moving object's own motion where one\n"
+        + "        // was drawn, the camera's for everything that stood still.\n"
+        + "        float4 moved = u.motion.x > 0.5 ? motion.read(uint2(front)) : float4(0.0);\n"
+        + "        if (moved.a > 0.5) { was = ndc - moved.xy; }\n"
+        + "        else {\n"
+        + "            float4 world = u.invViewProj * float4(ndc, nearest, 1.0);\n"
+        + "            float4 before = u.prevViewProj * float4(world.xyz / world.w, 1.0);\n"
+        + "            was = before.xy / before.w; ahead = before.w > 0.0;\n"
+        + "        }\n"
+        + "        float2 seen = float2((was.x + 1.0) * 0.5 * full.x, (1.0 - was.y) * 0.5 * full.y);\n"
+        + "        if (ahead && all(seen >= 0.5) && all(seen <= full - 0.5)) {\n"
+        + "            float4 h = historyAt(history, linear, seen, full), was = float4(toYCoCg(h.rgb), h.a);\n"
+        + "            float4 kept = clamp(was, mean - 1.25 * spread, mean + 1.25 * spread);\n"
+        + "            // History the neighbourhood rejected belongs to something that moved: there the\n"
+        + "            // smooth reconstruction stands in, rather than the nearest sample's stair-step.\n"
+        + "            float rejected = saturate(length(was.rgb - kept.rgb) / (length(spread.rgb) + 1e-3) - 0.5);\n"
+        + "            // A sample landing on the pixel refreshes it; one beside it barely does,\n"
+        + "            // so over the eight jitter phases each pixel gathers its own samples.\n"
+        + "            float refresh = mix(u.params.w * (0.25 + 1.75 * closest), 0.5, rejected);\n"
+        + "            result = mix(kept, mix(own, now, rejected), refresh);\n"
+        + "        }\n"
+        + "    }\n"
+        + "    float4 color = float4(max(fromYCoCg(result.rgb), 0.0), saturate(result.a));\n"
+        + "    ResolveOut out; out.screen = color; out.history = color; return out;\n"
         + "}\n"
     )
 }

@@ -54,5 +54,21 @@ func main() {
     assert second == third panic "layout changed on a round trip:\n${third}"
     assert dockRoots(loaded).size == 2 panic "the floating window was lost"
     assert !readDockLayout(loaded, "{}") panic "a foreign file was accepted"
+    fin group = dockParent(loaded, dockFindPanel(loaded, "TreePanel"))
+    fin firstTool = dockAddTab(loaded, group, "plugin:first", title: "First Tool")
+    fin secondTool = dockAddTab(loaded, group, "plugin:second", title: "Second Tool")
+    dockMove(loaded, secondTool, group, .Center, 0)
+    fin order = dockChildren(loaded, group)
+    assert order[2].id == firstTool.id panic "reordering tabs changed the wrong tab"
+    dockClose(loaded, dockFindPanel(loaded, "TreePanel"))
+    var dynamic = World()
+    assert readDockLayout(dynamic, writeDockLayout(loaded), "plugin:", false) panic "plugin layout did not load"
+    assert dynamic.isAlive(dockFindPanel(dynamic, "plugin:first")) panic "plugin tab did not survive reload"
+    assert !dynamic.isAlive(dockFindPanel(dynamic, "TreePanel")) panic "closed optional panel reopened"
+    fin floatA = dockFloat(dynamic, "plugin:a", 100.0, 100.0, 300.0, 200.0)
+    dockFloat(dynamic, "plugin:b", 120.0, 120.0, 300.0, 200.0)
+    assert dockRaise(dynamic, floatA) panic "could not raise a floating window"
+    fin windows = dockRoots(dynamic)
+    assert windows[windows.size - 1].id == floatA.id panic "raised window stayed behind"
     println("dock layout passed")
 }

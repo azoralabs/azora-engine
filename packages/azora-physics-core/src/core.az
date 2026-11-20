@@ -26,6 +26,9 @@ module engine.physics.core
 import std.container.array
 import engine.core
 import engine.ecs
+import std.traits
+import engine.math
+import engine.scene
 
 // ── Tuning constants ────────────────────────────────────────────────────
 
@@ -395,4 +398,23 @@ test "a body sleeps only after staying still" {
     updateSleep(sleep, 10.0, 0.016)
     assert sleep.awake panic "movement must wake a sleeping body"
     assert sleep.stillFor == 0.0 panic "waking must reset the stillness timer"
+}
+
+/** World acceleration. Scenes without an active Gravity component have zero gravity. */
+@Component
+@Inspectable(title: "Gravity", serializedName: "Gravity", icon: "axis-3d", category: "Physics", order: 24)
+pack Gravity derives Clone {
+    var enabled: Bool = true
+    var acceleration: Vec3 = .(0.0, -9.81, 0.0)
+}
+
+func sceneGravity(world: World!): Vec3 {
+    fin fields = ensureStorage<Gravity>(world)
+    var index = 0
+    while index < storageLength<Gravity>(fields) {
+        fin entity = storageEntityAt<Gravity>(fields, index)
+        if world.isAlive(entity) && fields.values[index].enabled then return fields.values[index].acceleration
+        index += 1
+    }
+    return Vec3(0.0, 0.0, 0.0)
 }

@@ -1,0 +1,17 @@
+import std.io
+import engine.material.fusion
+import engine.material.fusion.compiler
+import engine.material.fusion.metal
+
+bridge .C {
+    func getenv(name: String): Long
+}
+
+func main() {
+    fin path = getenv("AZORA_FUSION_ASSET") as String
+    fin document = readFusionGraph(fusionReadText(path))
+    fin program = compileFusionGraph(document)
+    assert program.diagnostic == "" panic program.diagnostic
+    println("${fusionSourceKey(program.source)}")
+    print(program.source)
+}

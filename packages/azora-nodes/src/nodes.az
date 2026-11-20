@@ -1,0 +1,101 @@
+module engine.ui.nodes
+
+import std.math
+import std.traits
+import engine.core
+import engine.platform
+import engine.gpu.draw
+import engine.gizmos
+
+pack NodeCamera derives Clone {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var zoom: Double = 1.0
+}
+
+pack NodePoint derives Clone {
+    var x: Double = 0.0
+    var y: Double = 0.0
+}
+
+pack NodeStyle derives Clone {
+    var grid: Rgba = .(0.25, 0.31, 0.38, 0.22)
+    var major: Rgba = .(0.33, 0.41, 0.50, 0.30)
+    var card: Rgba = .(0.11, 0.14, 0.18, 1.0)
+    var edge: Rgba = .(0.25, 0.32, 0.40, 1.0)
+    var text: Rgba = .(0.86, 0.90, 0.95, 1.0)
+    var selected: Rgba = .(0.35, 0.66, 0.94, 1.0)
+}
+
+impl NodeCamera {
+    func &.screen(rect: ViewRect&, x: Double, y: Double): NodePoint =
+        NodePoint(rect.x + self.x + x * self.zoom, rect.y + self.y + y * self.zoom)
+
+    func &.worldPoint(rect: ViewRect&, x: Double, y: Double): NodePoint =
+        NodePoint((x - rect.x - self.x) / self.zoom, (y - rect.y - self.y) / self.zoom)
+
+    func !.zoomAt(rect: ViewRect&, x: Double, y: Double, delta: Double) {
+        fin anchor = self.worldPoint(rect, x, y)
+        self.zoom = clampValue(self.zoom * exp(delta), 0.45, 2.0)
+        self.x = x - rect.x - anchor.x * self.zoom
+        self.y = y - rect.y - anchor.y * self.zoom
+    }
+}
+
+func NodePoint&.near(x: Double, y: Double, radius: Double): Bool {
+    fin dx = self.x - x
+    fin dy = self.y - y
+    return dx * dx + dy * dy <= radius * radius
+}
+
+func drawNodeGrid(app: App!, rect: ViewRect&, camera: NodeCamera&, style: NodeStyle&) {
+    fin step = 24.0 * camera.zoom
+    fin ox = (camera.x / step)
+    fin oy = (camera.y / step)
+    var i = -floor(ox)
+    var x = rect.x + camera.x + (i as Double) * step
+    while x < rect.x + rect.width {
+        fin color = if i % 4 == 0 then style.major else style.grid
+        app.uiRect(x, rect.y, 1.0, rect.height, color.r, color.g, color.b, color.a)
+        i = i + 1
+        x = x + step
+    }
+    i = -floor(oy)
+    var y = rect.y + camera.y + (i as Double) * step
+    while y < rect.y + rect.height {
+        fin color = if i % 4 == 0 then style.major else style.grid
+        app.uiRect(rect.x, y, rect.width, 1.0, color.r, color.g, color.b, color.a)
+        i = i + 1
+        y = y + step
+    }
+}
+
+func drawNodeCard(app: App!, rect: ViewRect&, zoom: Double, title: String, tint: Rgba, selected: Bool, style: NodeStyle&) {
+    fin radius = 8.0 * zoom
+    app.uiRoundRect(rect.x, rect.y, rect.width, rect.height, radius, style.card.r, style.card.g, style.card.b, style.card.a)
+    app.uiRoundRect(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 27.0 * zoom, radius - 1.0, tint.r, tint.g, tint.b, 0.35)
+    fin edge = if selected then style.selected else style.edge
+    app.uiRoundRectStroke(rect.x, rect.y, rect.width, rect.height, radius, if selected then 2.0 else 1.0, edge.r, edge.g, edge.b, 1.0)
+    app.uiTextColored(title, rect.x + 10.0 * zoom, rect.y + 6.0 * zoom, 12.0 * zoom, style.text.r, style.text.g, style.text.b)
+}
+
+func drawNodeSocket(app: App!, p: NodePoint&, color: Rgba, fill: Bool, zoom: Double) {
+    fin radius = 4.5 * zoom
+    app.uiRoundRect(p.x - radius, p.y - radius, radius * 2.0, radius * 2.0, radius, color.r, color.g, color.b, if fill then 1.0 else 0.17)
+    app.uiRoundRectStroke(p.x - radius, p.y - radius, radius * 2.0, radius * 2.0, radius, 1.0, color.r, color.g, color.b, 1.0)
+}
+
+func drawNodeLink(app: App!, from: NodePoint&, to: NodePoint&, color: Rgba) {
+    fin bend = clampValue(absValue(to.x - from.x) * 0.45, 28.0, 185.0)
+    var last = from.clone()
+    var segment = 1
+    while segment <= 14 {
+        fin t = (segment as Double) / 14.0
+        fin u = 1.0 - t
+        fin x = u*u*u*from.x + 3.0*u*u*t*(from.x+bend) + 3.0*u*t*t*(to.x-bend) + t*t*t*to.x
+        fin y = u*u*u*from.y + 3.0*u*u*t*from.y + 3.0*u*t*t*to.y + t*t*t*to.y
+        app.uiLine(last.x, last.y, x, y, 2.0, color.r, color.g, color.b, color.a)
+        last = NodePoint(x, y)
+        segment = segment + 1
+    }
+}

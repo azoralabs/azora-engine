@@ -43,6 +43,8 @@ import engine.math
 annot @Inspectable for .Pack {
     /** The heading an editor shows; empty uses the declaration's own name. */
     fin title: String = ""
+    /** Stable scene-file name for components provided by separate packages. */
+    fin serializedName: String = ""
     /** A Lucide icon name. */
     fin icon: String = "puzzle"
     /** Groups the Add Component menu. */
@@ -127,6 +129,13 @@ pack StandardMaterial derives Clone {
     var metallic: Double = 0.0
 }
 
+/** Asset-backed surface graph. StandardMaterial provides the missing-asset fallback. */
+@Component
+@Inspectable(title: "Material Fusion", icon: "palette", category: "Rendering", order: 12)
+pack FusionMaterial derives Clone {
+    var asset: String = ""
+}
+
 /** A point of view the scene can be rendered from. */
 @Component
 @Inspectable(title: "Camera", icon: "video", category: "Rendering", order: 12)
@@ -167,4 +176,25 @@ pack Sprite derives Clone {
     var width: Double = 1.0
     @Range(min: 0.0, max: 100000.0, step: 1.0)
     var height: Double = 1.0
+}
+
+/** Spawn marker read by gameplay when the scene starts. */
+@Component
+@Inspectable(title: "Player Start", serializedName: "PlayerStart", icon: "gamepad-2", category: "Gameplay", order: 20)
+pack PlayerStart derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 15.0, step: 1.0)
+    var slot: Int = 0
+}
+
+/** Local player and chase camera settings. */
+@Component
+@Inspectable(title: "Player Controller", serializedName: "PlayerController", icon: "gamepad-2", category: "Gameplay", order: 21)
+pack PlayerController derives Clone {
+    @Range(min: 0.0, max: 15.0, step: 1.0)
+    var slot: Int = 0
+    @Range(min: 2.0, max: 40.0, step: 0.25)
+    var cameraDistance: Double = 8.5
+    @Range(min: 0.5, max: 20.0, step: 0.25)
+    var cameraHeight: Double = 3.4
 }

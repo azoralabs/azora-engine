@@ -214,13 +214,19 @@ pack PaintNode derives (Copy, Clone) {
 pack PaintList {
     var ops: Array<PaintOp> = Array<PaintOp>()
     var nodes: Array<PaintNode> = Array<PaintNode>()
+    var pointerFloor: Int = 0
+    var pointerLimit: Int = -1
 }
 
 impl PaintList {
     func !.clear() {
         self.ops = Array<PaintOp>()
         self.nodes = Array<PaintNode>()
+        self.pointerFloor = 0
+        self.pointerLimit = -1
     }
+
+    func &.pointerEnd(): Int = if self.pointerLimit < 0 then self.nodes.size else self.pointerLimit
 
     /**
      * The front-most node under ([x], [y]) that carries component `T`, or an
@@ -235,8 +241,8 @@ impl PaintList {
      * storage by, and the caller - which names the component - does.
      */
     func <T> &.topmost(store: Storage<T>&, x: Double, y: Double): Entity {
-        var index = self.nodes.size - 1
-        while index >= 0 {
+        var index = self.pointerEnd() - 1
+        while index >= self.pointerFloor {
             fin node = self.nodes[index]
             fin inside = x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height
             fin visible = x >= node.clipLeft && x < node.clipRight && y >= node.clipTop && y < node.clipBottom
@@ -371,7 +377,7 @@ func recordIcon(pass: Composition!, node: Entity, rect: Rect&, clipTop: Double, 
 }
 
 /** Draws a recorded tree. */
-func replayPaint(app: App!, list: PaintList&) {
+func replayPaint(app: App!, list: PaintList&, from: Int = 0, until: Int = -1) {
     fin pointerX = app.mouseX()
     fin pointerY = app.mouseY()
     // Clips nest: each one is the intersection of its own rectangle with the
@@ -380,8 +386,9 @@ func replayPaint(app: App!, list: PaintList&) {
     var clipY: Array<Double> = Array<Double>()
     var clipW: Array<Double> = Array<Double>()
     var clipH: Array<Double> = Array<Double>()
-    var index = 0
-    while index < list.ops.size {
+    var index = from
+    fin end = if until < 0 then list.ops.size else until
+    while index < end {
         fin kind = list.ops[index].kind
         fin x = list.ops[index].x
         fin y = list.ops[index].y

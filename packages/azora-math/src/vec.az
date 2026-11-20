@@ -50,7 +50,9 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         }
     }
 
-    oper+ &.(rhs: Self&): Self {
+    oper+ &.(rhs: Self&): Self = self.add(rhs)
+
+    func &.add(rhs: Self&): Self {
         return Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} + rhs.${f.name}
@@ -78,7 +80,9 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         }
     }
 
-    oper- &.(rhs: Self&): Self {
+    oper- &.(rhs: Self&): Self = self.subtract(rhs)
+
+    func &.subtract(rhs: Self&): Self {
         return Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} - rhs.${f.name}
@@ -119,6 +123,9 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
             self.${f.name} *= rhs.${f.name}
         }
     }
+
+    /** Returns this vector multiplied by a scalar. */
+    func &.scale(factor: T): Self = self * factor
 
     oper* &.(rhs: T&): Self {
         return Self(
@@ -335,7 +342,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     }
 
     func &.distanceTo(other: Self&): Double {
-        return (self - other).length
+        return self.subtract(other).length
     }
 
     /**

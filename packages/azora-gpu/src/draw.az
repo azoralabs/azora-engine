@@ -26,8 +26,10 @@ import std.io
 import engine.objc
 import engine.gpu
 import engine.platform
+import engine.math
 import engine.math.mat
 import engine.shaders
+import engine.sky
 import std.math
 import engine.io
 
@@ -258,34 +260,125 @@ impl App {
         return Mesh(buffer, vertCount)
     }
 
-    /// Draws a mesh with a model transform and base color (simple lambert shading).
+    /// Draws a mesh with a model transform and the standard Lambert pipeline.
     func !.drawMesh(mesh: Mesh&, model: Mat4&, r: Double, g: Double, b: Double) {
+        self.drawMeshPipeline(mesh, model, r, g, b, 0)
+    }
+
+    /// Uses the same mesh buffers and transforms for standard and Fusion materials.
+    func !.drawMeshPipeline(mesh: Mesh&, model: Mat4&, r: Double, g: Double, b: Double, pipeline: Long, lighting: Bool = true,
+                            indices: Long = 0, indexCount: Int = 0) {
         let gpu: AzGpu! = self.gpu
-        if !gpu.hasEncoder || mesh.buffer == Long(0) {
+        if !gpu.hasEncoder || mesh.buffer == 0 then return
+        if gpu.casting {
+            // Into the sun's depth map: position only, no material.
+            if gpu.mode != 2 {
+                send1(gpu.enc, sel("setRenderPipelineState:"), gpu.detailPipeline)
+                send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+                gpu.mode = 2
+            }
+            azCopy(gpu.scratch, gpu.viewProj, 64)
+            pokeMat4(gpu.scratch, 64, model)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0, 0)
+            send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 224, 1)
+            if indices != 0 {
+                send5(gpu.enc, sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:"), 3, indexCount as Long, 1, indices, 0)
+            } else {
+                send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, mesh.count as Long)
+            }
             return
         }
-        if gpu.mode != 0 {
-            send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe3d)
+        fin active = if pipeline == 0 then gpu.pipe3d else pipeline
+        if gpu.mode != 0 || gpu.meshPipeline != active {
+            send1(gpu.enc, sel("setRenderPipelineState:"), active)
             send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
             gpu.mode = 0
+            gpu.meshPipeline = active
         }
 
-        // Uniforms: viewProj (64) + model (64) + color (16) + light (16) = 160 bytes.
-        azCopy(gpu.scratch, gpu.viewProj, Long(64))
-        pokeMat4(gpu.scratch, Long(64), model)
-        azPokeF32(gpu.scratch, Long(128), r)
-        azPokeF32(gpu.scratch, Long(132), g)
-        azPokeF32(gpu.scratch, Long(136), b)
-        azPokeF32(gpu.scratch, Long(140), 1.0)
-        azPokeF32(gpu.scratch, Long(144), gpu.lightX)
-        azPokeF32(gpu.scratch, Long(148), gpu.lightY)
-        azPokeF32(gpu.scratch, Long(152), gpu.lightZ)
-        azPokeF32(gpu.scratch, Long(156), gpu.ambient)
+        azCopy(gpu.scratch, gpu.viewProj, 64)
+        pokeMat4(gpu.scratch, 64, model)
+        azPokeF32(gpu.scratch, 128, r)
+        azPokeF32(gpu.scratch, 132, g)
+        azPokeF32(gpu.scratch, 136, b)
+        azPokeF32(gpu.scratch, 140, 1.0)
+        azPokeF32(gpu.scratch, 144, gpu.lightX)
+        azPokeF32(gpu.scratch, 148, gpu.lightY)
+        azPokeF32(gpu.scratch, 152, gpu.lightZ)
+        azPokeF32(gpu.scratch, 156, gpu.ambient)
+        if pipeline != 0 then gpu.fusion.bindTextures(gpu.enc, pipeline)
+        azCopy(gpu.scratch + 160, gpu.viewProj + 64, 12)
+        fin flags: Double = (if gpu.flatMaterials then 1.0 else 0.0) +
+            (if gpu.indirectLighting && lighting then 2.0 else 0.0) +
+            (if !gpu.virtualShadows && lighting then 4.0 else 0.0) +
+            (if gpu.detailReady && gpu.shadowsActive && lighting && !gpu.flatMaterials then 8.0 else 0.0)
+        azPokeF32(gpu.scratch, 172, flags)
+        azCopy(gpu.scratch + 176, gpu.viewProj + 80, 16)
+        if !lighting || gpu.flatMaterials then azPokeF32(gpu.scratch, 188, 0.0)
+        azCopy(gpu.scratch+192,gpu.viewProj+96,12)
+        if !lighting || gpu.flatMaterials {
+            azPokeF32(gpu.scratch,192,1.0)
+            azPokeF32(gpu.scratch,196,1.0)
+            azPokeF32(gpu.scratch,200,1.0)
+        }
+        // Texture footprint: a half-resolution scene pass samples as finely as a full one.
+        azPokeF32(gpu.scratch,204,gpu.passScale)
+        azCopy(gpu.scratch+208,gpu.viewProj+112,16)
+        fin size: Long = 224
+        send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0, 0)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, size, 1)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, size, 1)
+        azPokeF32(gpu.scratch, 224, 0.0)
+        if lighting && !gpu.flatMaterials && gpu.photonBuffer != 0 && (gpu.shadowsActive || gpu.indirectLighting) {
+            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.photonBuffer, 0, 2)
+        } else {
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch + 224, 4, 2)
+        }
+        if lighting && !gpu.flatMaterials && gpu.shadowsActive && gpu.staticShadowBuffer != 0 {
+            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.staticShadowBuffer, 0, 3)
+        } else {
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch + 224, 4, 3)
+        }
+        if gpu.detailLight != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.detailLight, 80, 4)
+        if gpu.detailMap != 0 then send2(gpu.enc, sel("setFragmentTexture:atIndex:"), gpu.detailMap, 30)
+        // A mesh in the upscaler's scene pass leaves what its motion needs; the
+        // terrain's indexed chunks do not move, so the camera's motion covers them.
+        if gpu.scenePass.active && indices == 0 && gpu.motionCurrent != 0 && gpu.motionCount < motionCapacity {
+            fin record = gpu.motionCurrent + (gpu.motionCount as Long) * motionRecord
+            azPoke64(record, 0, mesh.buffer)
+            azPoke64(record, 8, mesh.count as Long)
+            pokeMat4(record, 16, model)
+            gpu.motionCount += 1
+        }
+        if indices != 0 {
+            // Triangles, 32-bit indices from the start of [indices].
+            send5(gpu.enc, sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:"), 3, indexCount as Long, 1, indices, 0)
+        } else {
+            send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, mesh.count as Long)
+        }
+    }
 
-        send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, Long(0), Long(0))
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, Long(160), Long(1))
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, Long(160), Long(1))
-        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), Long(3), Long(0), mesh.count as Long)
+    func &.setMaterialEye(eye: Vec3&) {
+        azPokeF32(self.gpu.viewProj, 64, eye.x)
+        azPokeF32(self.gpu.viewProj, 68, eye.y)
+        azPokeF32(self.gpu.viewProj, 72, eye.z)
+    }
+
+    func &.setDirectColor(color: Rgba&, intensity: Double) {
+        azPokeF32(self.gpu.viewProj, 96, color.r*intensity)
+        azPokeF32(self.gpu.viewProj, 100, color.g*intensity)
+        azPokeF32(self.gpu.viewProj, 104, color.b*intensity)
+    }
+
+    func &.setSkyHaze(color: Rgba&, density: Double, altitude: Double = 0.0, falloff: Double = 0.0, start: Double = 0.0, opacity: Double = 0.78) {
+        azPokeF32(self.gpu.viewProj, 80, color.r)
+        azPokeF32(self.gpu.viewProj, 84, color.g)
+        azPokeF32(self.gpu.viewProj, 88, color.b)
+        azPokeF32(self.gpu.viewProj, 92, density)
+        azPokeF32(self.gpu.viewProj, 112, altitude)
+        azPokeF32(self.gpu.viewProj, 116, falloff)
+        azPokeF32(self.gpu.viewProj, 120, start)
+        azPokeF32(self.gpu.viewProj, 124, opacity)
     }
 
     /// Directional light for subsequent 3D draws. Values are normalized.
@@ -327,7 +420,7 @@ impl App {
      * clamping here is not defensive, it is required.
      */
     func &.setScissor(x: Double, y: Double, w: Double, h: Double) {
-        fin scale = self.gpu.scale
+        fin scale = self.gpu.scale * self.gpu.passScale
         fin maxW = (self.width() as Double) * scale
         fin maxH = (self.height() as Double) * scale
 
@@ -365,7 +458,7 @@ impl App {
 
     /** Removes any scissor, restoring drawing to the whole window. */
     func &.clearScissor() {
-        fin scale = self.gpu.scale
+        fin scale = self.gpu.scale * self.gpu.passScale
         fin w = (self.width() as Double) * scale
         fin h = (self.height() as Double) * scale
         azSendScissor(self.gpu.enc, sel("setScissorRect:"), Long(0), Long(0), w as Long, h as Long)
@@ -910,4 +1003,45 @@ func ctLineCreate(text: String, size: Double, scratch: Long, font: String = uiFo
     CFRelease(fontName)
     CFRelease(cfText)
     return line
+}
+
+func skyUniformVec(bytes: Long, offset: Long, vector: Vec3&, scale: Double, w: Double) {
+    azPokeF32(bytes, offset, vector.x*scale)
+    azPokeF32(bytes, offset+4, vector.y*scale)
+    azPokeF32(bytes, offset+8, vector.z*scale)
+    azPokeF32(bytes, offset+12, w)
+}
+
+impl App {
+    func !.drawSkyView(x: Double, y: Double, width: Double, height: Double,
+        sky: SkySample&, forward: Vec3&, right: Vec3&, up: Vec3&, tangent: Double) {
+        self.beginScenePass()
+        let gpu: AzGpu! = self.gpu
+        if !gpu.hasEncoder || gpu.skyPipeline == 0 || height < 1.0 then return
+        fin windowW = self.width() as Double
+        fin windowH = self.height() as Double
+        azPokeF32(gpu.scratch, 0, width/windowW)
+        azPokeF32(gpu.scratch, 4, height/windowH)
+        azPokeF32(gpu.scratch, 8, (x+width*0.5)*2.0/windowW - 1.0)
+        azPokeF32(gpu.scratch, 12, 1.0 - (y+height*0.5)*2.0/windowH)
+        skyUniformVec(gpu.scratch, 16, forward, 1.0, 0.0)
+        skyUniformVec(gpu.scratch, 32, right, tangent*width/height, 0.0)
+        skyUniformVec(gpu.scratch, 48, up, tangent, 0.0)
+        skyUniformVec(gpu.scratch, 64, sky.sun, 1.0, sky.daylight)
+        skyUniformVec(gpu.scratch, 80, sky.moon, 1.0, 0.0)
+        send1(gpu.enc, sel("setRenderPipelineState:"), gpu.skyPipeline)
+        send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 96, 0)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 96, 0)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
+        self.gpu.mode = -1
+    }
+}
+
+impl App {
+    /** Draws what follows into the half-resolution scene target when temporal upscaling is on (see [beginScenePass]). */
+    func !.beginScenePass() { beginScenePass(self.gpu) }
+
+    /** Reconstructs the scene pass into the drawable and reopens it (see [resolveScenePass]). */
+    func !.resolveScenePass() { resolveScenePass(self.gpu) }
 }

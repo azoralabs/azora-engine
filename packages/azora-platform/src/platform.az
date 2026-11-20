@@ -42,9 +42,12 @@ import engine.gpu
 import engine.objc
 import engine.io
 import engine.core
+import std.os::{envVar}
+import std.io::{println}
 
 bridge .C {
     func CACurrentMediaTime(): Double
+    func system(command: String): Int
 }
 
 // ── State ───────────────────────────────────────────────────────────────
@@ -85,6 +88,25 @@ pack App {
     var pool: Long
     var closing: Bool
     var everVisible: Bool
+    /** Benchmark: frame() ends the loop after this many frames (AZORA_FRAME_LIMIT); 0 never. */
+    var frameLimit: Int = 0
+    var framesRun: Int = 0
+    /** When the measured frames began: after a warm-up, so loading is not counted. */
+    var measuredSince: Double = 0.0
+    /** AZORA_CAPTURE=frame:path saves this window as presented at that frame, for comparing renders. */
+    var captureFrame: Int = 0
+    var capturePath: String = ""
+}
+
+/** The decimal number [text] starts with from [from]; 0 when it starts with none. */
+func leadingNumber(text: String, from: Int = 0): Int {
+    var value = 0
+    var at = from
+    while at < stringLength(text) && isDigit(charAt(text, at)) {
+        value = value * 10 + ord(charAt(text, at)) - 48
+        at += 1
+    }
+    return value
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -92,6 +114,11 @@ pack App {
 /// Creates the window and GPU renderer. Check `.ok` before entering the loop.
 func appInit(title: String, width: Int, height: Int): App {
     fin pool = objcAutoreleasePoolPush()
+    // AZORA_WINDOW_SIZE=WxH (points) overrides the size asked for, for benchmarks.
+    fin requested = envVar("AZORA_WINDOW_SIZE")
+    fin across = indexOf(requested, "x")
+    fin chosenWidth = if across > 0 && leadingNumber(requested) > 0 then leadingNumber(requested) else width
+    fin chosenHeight = if across > 0 && leadingNumber(requested, across + 1) > 0 then leadingNumber(requested, across + 1) else height
 
     // NSApplication as a regular, activatable app.
     fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
@@ -101,7 +128,7 @@ func appInit(title: String, width: Int, height: Int): App {
     fin winAlloc = send0(cls("NSWindow"), sel("alloc"))
     fin window = azSendQuadI3(
         winAlloc, sel("initWithContentRect:styleMask:backing:defer:"),
-        0.0, 0.0, width as Double, height as Double,
+        0.0, 0.0, chosenWidth as Double, chosenHeight as Double,
         Long(15), Long(2), Long(0)
     )
     if window == Long(0) {
@@ -116,7 +143,12 @@ func appInit(title: String, width: Int, height: Int): App {
     fin contentV = send0(window, sel("contentView"))
 
     // GPU device + CAMetalLayer backing the content view.
-    fin gpu = gpuInit(scale)
+    var gpu = gpuInit(scale)
+    // The rendering a player chose: Studio passes its Preferences to the game it runs.
+    gpu.indirectLighting = envVar("AZORA_RENDER_LIGHTING") != "standard"
+    gpu.virtualShadows = envVar("AZORA_RENDER_SHADOWS") != "computed"
+    gpu.upscale = envVar("AZORA_RENDER_UPSCALING") == "temporal"
+    gpu.timing = envVar("AZORA_GPU_TIMING") == "1"
     if !gpu.ok {
         send0(window, sel("release"))
         objcAutoreleasePoolPop(pool)
@@ -143,6 +175,13 @@ func appInit(title: String, width: Int, height: Int): App {
         false,
         false
     )
+    app.frameLimit = leadingNumber(envVar("AZORA_FRAME_LIMIT"))
+    fin capture = envVar("AZORA_CAPTURE")
+    fin colon = indexOf(capture, ":")
+    if colon > 0 {
+        app.captureFrame = leadingNumber(capture)
+        app.capturePath = substring(capture, colon + 1, stringLength(capture))
+    }
     return take app
 }
 
@@ -177,6 +216,13 @@ impl App {
         self.pool = objcAutoreleasePoolPush()
 
         self.pumpEvents()
+        if self.frameLimit > 0 && self.framesRun >= self.frameLimit then return false
+        self.framesRun += 1
+        if self.framesRun == 60 && self.gpu.timing {
+            self.measuredSince = CACurrentMediaTime()
+            self.gpu.gpuSeconds = 0.0
+            self.gpu.timedFrames = 0
+        }
         // Two ways to stop: this window's own quit(), and the application-wide
         // request any code can make - including a reactive effect, which has no
         // window to call quit() on.
@@ -184,13 +230,14 @@ impl App {
             return false
         }
         // The window server may map the window a few frames late; only treat
-        // "not visible" as closed once it has been visible.
+        // "not visible" as closed once it has been visible. A minimized window
+        // and a hidden application (⌘H) are not visible either, and neither is
+        // closed: reading them as a close quit Studio when it was minimized to
+        // watch the game, and took the game it was running down with it.
         if send0(self.win.handle, sel("isVisible")) != Long(0) {
             self.everVisible = true
-        } else {
-            if self.everVisible {
-                return false
-            }
+        } else if self.everVisible && !self.isSetAside() {
+            return false
         }
 
         fin now = CACurrentMediaTime()
@@ -208,9 +255,19 @@ impl App {
     /// Finishes the frame and presents it.
     func !.present() {
         gpuEndFrame(self)
+        if self.captureFrame > 0 && self.framesRun == self.captureFrame {
+            fin window = send0(self.win.handle, sel("windowNumber"))
+            if system("/usr/sbin/screencapture -x -o -l${window} '${self.capturePath}'") != 0 then println("capture failed: ${self.capturePath}")
+        }
         // About two seconds at 60 Hz: long enough that text which blinks or
         // alternates stays cached, short enough that churn cannot accumulate.
         self.releaseStaleText(Long(120))
+    }
+
+    /// True while the window is minimized or the application hidden: out of sight, not closed.
+    func &.isSetAside(): Bool {
+        if send0(self.win.handle, sel("isMiniaturized")) != Long(0) then return true
+        return send0(send0(cls("NSApplication"), sel("sharedApplication")), sel("isHidden")) != Long(0)
     }
 
     /// Requests exit: the next frame() returns false.
@@ -218,10 +275,19 @@ impl App {
         self.closing = true
     }
 
+    /// Enters or leaves macOS full screen, as the window's green button does.
+    func &.toggleFullScreen() {
+        send1(self.win.handle, sel("toggleFullScreen:"), Long(0))
+    }
+
     /// Closes the window and releases resources.
     func !.shutdown() {
         if !self.ok {
             return
+        }
+        if self.gpu.timing && self.gpu.timedFrames > 0 {
+            fin wall = (CACurrentMediaTime() - self.measuredSince) / (self.gpu.timedFrames as Double)
+            println("gpu frames ${self.gpu.timedFrames} mean gpu ms ${self.gpu.gpuSeconds * 1000.0 / (self.gpu.timedFrames as Double)} mean frame ms ${wall * 1000.0} pixels ${self.gpu.depthW}x${self.gpu.depthH} upscale ${self.gpu.upscale} gi ${self.gpu.indirectLighting} virtual ${self.gpu.virtualShadows}")
         }
         // Discard an in-flight frame (loop exited between frame() and present()).
         if self.gpu.hasEncoder {
@@ -443,6 +509,24 @@ impl App {
 
             send1(nsapp, sel("sendEvent:"), ev)
         }
+        // A key released while another application is active sends its key-up
+        // there, so the state read from events alone stays down: after ⌘Tab,
+        // ⌘ stayed held and the next key Studio saw ran as a shortcut (⌘Q
+        // quit it), and a game kept driving on a key let go elsewhere. Held
+        // keys are dropped while inactive, and the modifiers always follow the
+        // keyboard's actual state.
+        if send0(nsapp, sel("isActive")) == Long(0) {
+            var key = 0
+            while key < 2048 {
+                azPoke8(self.inp.state, key as Long, 0)
+                key = key + 1
+            }
+        }
+        fin flags = send0(cls("NSEvent"), sel("modifierFlags"))
+        self.setKey(KeyCode.Shift.value, if (flags & Long(131072)) != Long(0) then 1 else 0)
+        self.setKey(KeyCode.Control.value, if (flags & Long(262144)) != Long(0) then 1 else 0)
+        self.setKey(KeyCode.Alt.value, if (flags & Long(524288)) != Long(0) then 1 else 0)
+        self.setKey(KeyCode.Meta.value, if (flags & Long(1048576)) != Long(0) then 1 else 0)
     }
 
     /**
@@ -717,9 +801,16 @@ func gpuEndFrame(app: App!) {
     if !gpu.hasEncoder {
         return
     }
+    // A scene pass nothing ended still reaches the screen.
+    resolveScenePass(gpu)
     send0(gpu.enc, sel("endEncoding"))
     send1(gpu.cmd, sel("presentDrawable:"), gpu.drawable)
     send0(gpu.cmd, sel("commit"))
+    if gpu.timing {
+        send0(gpu.cmd, sel("waitUntilCompleted"))
+        gpu.gpuSeconds += azSendD0(gpu.cmd, sel("GPUEndTime")) - azSendD0(gpu.cmd, sel("GPUStartTime"))
+        gpu.timedFrames += 1
+    }
     gpu.enc = Long(0)
     gpu.cmd = Long(0)
     gpu.drawable = Long(0)

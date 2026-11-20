@@ -1,0 +1,110 @@
+module engine.scene.terrain
+
+import std.traits
+import engine.ecs
+import engine.io
+import engine.math
+import engine.scene
+
+/** Terrain generated from a 16-bit grayscale P2 PGM image. */
+@Component
+@Inspectable(title: "Heightfield", serializedName: "HeightfieldTerrain", icon: "mountain", category: "Rendering", order: 15)
+pack HeightfieldTerrain derives Clone {
+    var image: String = ""
+    @Range(min: 1.0, max: 100000.0, step: 1.0)
+    var width: Double = 240.0
+    @Range(min: 1.0, max: 100000.0, step: 1.0)
+    var length: Double = 240.0
+    @Range(min: 0.1, max: 10000.0, step: 1.0)
+    var elevation: Double = 70.0
+    /**
+     * How far, in screen points, a distant part of the terrain may stray from
+     * the full-resolution surface before it is drawn with more triangles. Zero
+     * draws everything at full resolution.
+     */
+    @Range(min: 0.0, max: 32.0, step: 0.5)
+    var detailError: Double = 4.0
+}
+
+pack TerrainImage derives Clone {
+    var columns: Int = 0
+    var rows: Int = 0
+    var samples: Long = 0
+}
+
+func terrainFile(path: String): Bool {
+    if !endsWith(path, ".pgm") || startsWith(path, "/") || indexOf(path, "..") >= 0 || indexOf(path, "\\") >= 0 then return false
+    return true
+}
+
+pack TerrainCursor { var cursor: Int = 2 }
+
+func terrainToken(blob: Blob&, reader: TerrainCursor!): Int {
+    while reader.cursor < blob.size {
+        fin byte = blob.u8(reader.cursor)
+        if byte == 35 {
+            while reader.cursor < blob.size && blob.u8(reader.cursor) != 10 { reader.cursor += 1 }
+        } else if byte <= 32 {
+            reader.cursor += 1
+        } else {
+            break
+        }
+    }
+    var total = 0
+    var digits = 0
+    while reader.cursor < blob.size {
+        fin byte = blob.u8(reader.cursor)
+        if byte < 48 || byte > 57 then break
+        total = total * 10 + byte - 48
+        if total > 65535 then return -1
+        reader.cursor += 1
+        digits += 1
+    }
+    return if digits > 0 then total else -1
+}
+
+func readTerrainImage(path: String): TerrainImage {
+    var blob = readFile(path)
+    defer { blob.release() }
+    if blob.size > 3000000 || !blob.matches(0, "P2") then return TerrainImage()
+    var reader = TerrainCursor()
+    fin columns = terrainToken(blob, reader)
+    fin rows = terrainToken(blob, reader)
+    fin peak = terrainToken(blob, reader)
+    if columns < 2 || rows < 2 || columns > 513 || rows > 513 || peak <= 0 then return TerrainImage()
+    fin bytes = azAlloc((columns as Long) * (rows as Long) * 8)
+    if bytes == 0 then return TerrainImage()
+    var index = 0
+    while index < columns * rows {
+        fin value = terrainToken(blob, reader)
+        if value < 0 || value > peak {
+            azFree(bytes)
+            return TerrainImage()
+        }
+        azPokeF64(bytes, (index as Long) * 8, (value as Double) / (peak as Double) - 0.5)
+        index += 1
+    }
+    return TerrainImage(columns, rows, bytes)
+}
+
+func terrainHeight(image: TerrainImage&, x: Int, z: Int): Double {
+    return azPeekF64(image.samples, ((z * image.columns + x) as Long) * 8)
+}
+
+func sampleTerrain(image: TerrainImage&, x: Double, z: Double): Double {
+    fin u = terrainClamp(x + 0.5, 0.0, 1.0) * ((image.columns - 1) as Double)
+    fin v = terrainClamp(z + 0.5, 0.0, 1.0) * ((image.rows - 1) as Double)
+    fin i = if (u as Int) < image.columns - 1 then u as Int else image.columns - 2
+    fin j = if (v as Int) < image.rows - 1 then v as Int else image.rows - 2
+    fin s = u - (i as Double)
+    fin t = v - (j as Double)
+    // The same split as the two triangles in the mesh cache.
+    fin a = terrainHeight(image,i,j)
+    fin b = terrainHeight(image,i+1,j)
+    fin c = terrainHeight(image,i,j+1)
+    fin d = terrainHeight(image,i+1,j+1)
+    if s + t <= 1.0 then return a + s*(b-a) + t*(c-a)
+    return d + (1.0-s)*(c-d) + (1.0-t)*(b-d)
+}
+
+func terrainClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x

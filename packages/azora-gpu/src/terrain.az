@@ -1,0 +1,239 @@
+module engine.gpu.terrain
+
+import std.traits
+import std.math
+import engine.core
+import engine.io
+import engine.math
+import engine.objc
+import engine.scene.terrain
+
+// A heightfield is drawn as square chunks of 32 x 32 cells, each with its own
+// vertex buffer of 33 x 33 full-resolution vertices. A chunk draws at one of six
+// levels of detail: level L keeps every 2^L-th vertex of the grid. Every chunk
+// has the same vertex layout, so one set of index buffers serves all of them:
+// one per level and per mask of neighbours that are one level coarser. Along
+// such an edge the vertices the neighbour does not have are folded onto the
+// ones it does, so the two meshes meet edge to edge with no cracks.
+
+/** Cells along a chunk's side; its vertex grid is one more. */
+fin terrainChunkCells: Int = 32
+fin terrainChunkSide: Int = 33
+fin terrainLevels: Int = 6
+
+pack TerrainChunk derives Clone {
+    var buffer: Long = 0
+    /** The image column and row of the chunk's first vertex. */
+    var column: Int = 0
+    var row: Int = 0
+    /** The chunk's height range in the image's own units. */
+    var low: Double = 0.0
+    var high: Double = 0.0
+    /** The largest height error of each level against the full grid, in the image's own units. */
+    var errors: Array<Double> = []
+    /** The level drawn last frame, kept so a chunk near a threshold does not flicker. */
+    var level: Int = 0
+}
+
+pack TerrainMesh derives Clone {
+    var path: String = ""
+    var image: TerrainImage = .()
+    var chunks: Array<TerrainChunk> = []
+    var chunksX: Int = 0
+    var chunksZ: Int = 0
+}
+
+/** The 32-bit index buffers every chunk shares, by level * 16 + coarser-neighbour mask. */
+pack TerrainIndices derives Clone {
+    var buffers: Array<Long> = []
+    var counts: Array<Int> = []
+}
+
+func terrainVertex(data: Long, at: Int, image: TerrainImage&, x: Int, z: Int) {
+    fin dx = image.columns - 1
+    fin dz = image.rows - 1
+    fin left = if x > 0 then x - 1 else x
+    fin right = if x < dx then x + 1 else x
+    fin front = if z > 0 then z - 1 else z
+    fin back = if z < dz then z + 1 else z
+    fin normalX = (terrainHeight(image,left,z) - terrainHeight(image,right,z)) * (dx as Double) / ((right-left) as Double)
+    fin normalZ = (terrainHeight(image,x,front) - terrainHeight(image,x,back)) * (dz as Double) / ((back-front) as Double)
+    fin offset = (at as Long) * 24
+    azPokeF32(data, offset, (x as Double) / (dx as Double) - 0.5)
+    azPokeF32(data, offset+4, terrainHeight(image,x,z))
+    azPokeF32(data, offset+8, (z as Double) / (dz as Double) - 0.5)
+    azPokeF32(data, offset+12, normalX)
+    azPokeF32(data, offset+16, 1.0)
+    azPokeF32(data, offset+20, normalZ)
+}
+
+/** The image height at chunk vertex (i, j), clamped to the image so edge chunks repeat their last row. */
+func chunkHeight(image: TerrainImage&, chunk: TerrainChunk&, i: Int, j: Int): Double {
+    fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
+    fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
+    return terrainHeight(image, x, z)
+}
+
+/**
+ * Whether a cell's diagonal runs from its first corner to its last. The cells
+ * of each 2 x 2 block turn their diagonals toward the block's centre, which is
+ * what lets an edge fold onto a coarser neighbour with no gap.
+ */
+func cellRunsDown(ci: Int, cj: Int): Bool = (ci + cj) % 2 == 0
+
+/** The height the level with cells of [step] vertices draws at chunk vertex (i, j). */
+func levelHeight(image: TerrainImage&, chunk: TerrainChunk&, step: Int, i: Int, j: Int): Double {
+    fin last = terrainChunkCells / step - 1
+    fin ci = if i / step < last then i / step else last
+    fin cj = if j / step < last then j / step else last
+    fin u = ((i - ci * step) as Double) / (step as Double)
+    fin v = ((j - cj * step) as Double) / (step as Double)
+    fin h00 = chunkHeight(image, chunk, ci * step, cj * step)
+    fin h10 = chunkHeight(image, chunk, (ci + 1) * step, cj * step)
+    fin h01 = chunkHeight(image, chunk, ci * step, (cj + 1) * step)
+    fin h11 = chunkHeight(image, chunk, (ci + 1) * step, (cj + 1) * step)
+    if cellRunsDown(ci, cj) {
+        return if u >= v then h00 + u * (h10 - h00) + v * (h11 - h10) else h00 + v * (h01 - h00) + u * (h11 - h01)
+    }
+    return if u + v <= 1.0 then h00 + u * (h10 - h00) + v * (h01 - h00) else h11 + (1.0 - u) * (h01 - h11) + (1.0 - v) * (h10 - h11)
+}
+
+func loadTerrainMesh(device: Long, root: String, path: String): TerrainMesh {
+    if !terrainFile(path) then return TerrainMesh(path)
+    fin image = readTerrainImage("${root}/${path}")
+    if image.samples == 0 then return TerrainMesh(path)
+    var mesh = TerrainMesh(path, image)
+    mesh.chunksX = (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells
+    mesh.chunksZ = (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells
+    fin bytes = (terrainChunkSide * terrainChunkSide * 24) as Long
+    fin data = azAlloc(bytes)
+    if data == 0 then return take mesh
+    var cz = 0
+    while cz < mesh.chunksZ {
+        var cx = 0
+        while cx < mesh.chunksX {
+            var chunk = TerrainChunk(column: cx * terrainChunkCells, row: cz * terrainChunkCells)
+            chunk.low = 1000000.0
+            chunk.high = -1000000.0
+            var j = 0
+            while j < terrainChunkSide {
+                var i = 0
+                while i < terrainChunkSide {
+                    fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
+                    fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
+                    terrainVertex(data, j * terrainChunkSide + i, image, x, z)
+                    fin h = terrainHeight(image, x, z)
+                    if h < chunk.low then chunk.low = h
+                    if h > chunk.high then chunk.high = h
+                    i += 1
+                }
+                j += 1
+            }
+            // Each level's error is the largest gap between the grid and what the level draws,
+            // never smaller than a finer level's, so a coarser level is never thought closer.
+            var level = 0
+            var worst: Double = 0.0
+            while level < terrainLevels {
+                fin step = 1 << level
+                if level > 0 {
+                    j = 0
+                    while j < terrainChunkSide {
+                        var i = 0
+                        while i < terrainChunkSide {
+                            fin gap = absValue(chunkHeight(image, chunk, i, j) - levelHeight(image, chunk, step, i, j))
+                            if gap > worst then worst = gap
+                            i += 1
+                        }
+                        j += 1
+                    }
+                }
+                chunk.errors.add(worst)
+                level += 1
+            }
+            chunk.buffer = send3(device, sel("newBufferWithBytes:length:options:"), data, bytes, 0)
+            mesh.chunks.add(take chunk)
+            cx += 1
+        }
+        cz += 1
+    }
+    azFree(data)
+    return take mesh
+}
+
+/** Chunk vertex (i, j) at [step] with the edges in [mask] folded onto a coarser neighbour. */
+func foldedVertex(i: Int, j: Int, step: Int, mask: Int): Int {
+    var x = i
+    var y = j
+    if step < terrainChunkCells {
+        if ((j == 0 && mask % 2 == 1) || (j == terrainChunkCells && (mask / 2) % 2 == 1)) && (i / step) % 2 == 1 then x = i - step
+        if ((i == 0 && (mask / 4) % 2 == 1) || (i == terrainChunkCells && (mask / 8) % 2 == 1)) && (j / step) % 2 == 1 then y = j - step
+    }
+    return y * terrainChunkSide + x
+}
+
+func addTerrainTriangle(data: Long, count: Int, a: Int, b: Int, c: Int): Int {
+    if a == b || b == c || a == c then return count
+    azPoke32(data, (count as Long) * 4, a)
+    azPoke32(data, ((count + 1) as Long) * 4, b)
+    azPoke32(data, ((count + 2) as Long) * 4, c)
+    return count + 3
+}
+
+/**
+ * The index buffers for every level and neighbour mask. Mask bits: 1 the first
+ * row's neighbour, 2 the last row's, 4 the first column's, 8 the last column's.
+ */
+func buildTerrainIndices(device: Long): TerrainIndices {
+    var indices: TerrainIndices = .()
+    fin data = azAlloc((terrainChunkCells * terrainChunkCells * 6 * 4) as Long)
+    if data == 0 then return take indices
+    var level = 0
+    while level < terrainLevels {
+        fin step = 1 << level
+        fin cells = terrainChunkCells / step
+        var mask = 0
+        while mask < 16 {
+            var count = 0
+            var cj = 0
+            while cj < cells {
+                var ci = 0
+                while ci < cells {
+                    fin p00 = foldedVertex(ci * step, cj * step, step, mask)
+                    fin p10 = foldedVertex((ci + 1) * step, cj * step, step, mask)
+                    fin p01 = foldedVertex(ci * step, (cj + 1) * step, step, mask)
+                    fin p11 = foldedVertex((ci + 1) * step, (cj + 1) * step, step, mask)
+                    if cellRunsDown(ci, cj) {
+                        count = addTerrainTriangle(data, count, p00, p01, p11)
+                        count = addTerrainTriangle(data, count, p00, p11, p10)
+                    } else {
+                        count = addTerrainTriangle(data, count, p00, p01, p10)
+                        count = addTerrainTriangle(data, count, p10, p01, p11)
+                    }
+                    ci += 1
+                }
+                cj += 1
+            }
+            indices.buffers.add(send3(device, sel("newBufferWithBytes:length:options:"), data, ((if count > 0 then count else 1) * 4) as Long, 0))
+            indices.counts.add(count)
+            mask += 1
+        }
+        level += 1
+    }
+    azFree(data)
+    return take indices
+}
+
+func releaseTerrainMesh(mesh: TerrainMesh&) {
+    for chunk in mesh.chunks {
+        if chunk.buffer != 0 then send0(chunk.buffer, sel("release"))
+    }
+    if mesh.image.samples != 0 then azFree(mesh.image.samples)
+}
+
+func releaseTerrainIndices(indices: TerrainIndices!) {
+    for buffer in indices.buffers {
+        if buffer != 0 then send0(buffer, sel("release"))
+    }
+    indices.buffers.clear()
+    indices.counts.clear()
+}

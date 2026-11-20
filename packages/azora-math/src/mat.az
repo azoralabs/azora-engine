@@ -198,3 +198,48 @@ inline for [t, Ty] in [["i", "u", "f", ""], [Int, UInt, Float, Double]] {
         typealias Mat$n$t = Mat<Ty, n, n>
     }
 }
+
+/**
+ * The inverse of [m], by cofactors; the identity when [m] is singular.
+ *
+ * A view-projection's inverse takes a pixel and its depth back to the world,
+ * which is how a frame finds where the same point was drawn the frame before.
+ */
+func mat4Inverse(m: Mat4&): Mat4 {
+    fin s0 = m.m00 * m.m11 - m.m10 * m.m01
+    fin s1 = m.m00 * m.m12 - m.m10 * m.m02
+    fin s2 = m.m00 * m.m13 - m.m10 * m.m03
+    fin s3 = m.m01 * m.m12 - m.m11 * m.m02
+    fin s4 = m.m01 * m.m13 - m.m11 * m.m03
+    fin s5 = m.m02 * m.m13 - m.m12 * m.m03
+    fin c5 = m.m22 * m.m33 - m.m32 * m.m23
+    fin c4 = m.m21 * m.m33 - m.m31 * m.m23
+    fin c3 = m.m21 * m.m32 - m.m31 * m.m22
+    fin c2 = m.m20 * m.m33 - m.m30 * m.m23
+    fin c1 = m.m20 * m.m32 - m.m30 * m.m22
+    fin c0 = m.m20 * m.m31 - m.m30 * m.m21
+    fin det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
+    if det > -1.0e-12 && det < 1.0e-12 then return Mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    fin k = 1.0 / det
+    return Mat4(
+        (m.m11 * c5 - m.m12 * c4 + m.m13 * c3) * k,
+        (-m.m01 * c5 + m.m02 * c4 - m.m03 * c3) * k,
+        (m.m31 * s5 - m.m32 * s4 + m.m33 * s3) * k,
+        (-m.m21 * s5 + m.m22 * s4 - m.m23 * s3) * k,
+
+        (-m.m10 * c5 + m.m12 * c2 - m.m13 * c1) * k,
+        (m.m00 * c5 - m.m02 * c2 + m.m03 * c1) * k,
+        (-m.m30 * s5 + m.m32 * s2 - m.m33 * s1) * k,
+        (m.m20 * s5 - m.m22 * s2 + m.m23 * s1) * k,
+
+        (m.m10 * c4 - m.m11 * c2 + m.m13 * c0) * k,
+        (-m.m00 * c4 + m.m01 * c2 - m.m03 * c0) * k,
+        (m.m30 * s4 - m.m31 * s2 + m.m33 * s0) * k,
+        (-m.m20 * s4 + m.m21 * s2 - m.m23 * s0) * k,
+
+        (-m.m10 * c3 + m.m11 * c1 - m.m12 * c0) * k,
+        (m.m00 * c3 - m.m01 * c1 + m.m02 * c0) * k,
+        (-m.m30 * s3 + m.m31 * s1 - m.m32 * s0) * k,
+        (m.m20 * s3 - m.m21 * s1 + m.m22 * s0) * k
+    )
+}

@@ -144,16 +144,16 @@ func aabb3d(min: Vec3, max: Vec3): Aabb3D {
 /** The box of [size] centred on [center]. */
 func aabbAround3d(center: Vec3, size: Vec3): Aabb3D {
     fin half = size.scale(0.5)
-    return Aabb3D(center - half, center + half)
+    return Aabb3D(center.subtract(half), center.add(half))
 }
 
 impl Aabb3D {
     func &.size(): Vec3 {
-        return self.max - self.min
+        return self.max.subtract(self.min)
     }
 
     func &.center(): Vec3 {
-        return (self.min + self.max).scale(0.5)
+        return self.min.add(self.max).scale(0.5)
     }
 
     func &.halfExtents(): Vec3 {
@@ -173,11 +173,11 @@ impl Aabb3D {
     }
 
     func &.translate(delta: Vec3): Aabb3D {
-        return Aabb3D(self.min + delta, self.max + delta)
+        return Aabb3D(self.min.add(delta), self.max.add(delta))
     }
 
     func &.expand(amount: Vec3): Aabb3D {
-        return Aabb3D(self.min - amount, self.max + amount)
+        return Aabb3D(self.min.subtract(amount), self.max.add(amount))
     }
 
     /** The box covering this one and where it would be after [motion]. */
@@ -255,7 +255,7 @@ func colliderAsSensor3d(collider: Collider3D): Collider3D {
 }
 
 /** The box half-extents a collider is treated as for a box-vs-box test. */
-func boxHalfOf3d(collider: Collider3D): Vec3 {
+func boxHalfOf3d(collider: Collider3D&): Vec3 {
     return when collider.shape {
         ColliderShape3D.Sphere -> Vec3(collider.radius, collider.radius, collider.radius)
         ColliderShape3D.Capsule -> Vec3(
@@ -268,10 +268,10 @@ func boxHalfOf3d(collider: Collider3D): Vec3 {
 }
 
 /** The world-space bounding box of [collider] on a body at [position]. */
-func colliderBounds3d(collider: Collider3D, position: Vec3): Aabb3D {
-    fin center = position + collider.offset
+func colliderBounds3d(collider: Collider3D&, position: Vec3): Aabb3D {
+    fin center = position.add(collider.offset)
     fin half = boxHalfOf3d(collider)
-    return Aabb3D(center - half, center + half)
+    return Aabb3D(center.subtract(half), center.add(half))
 }
 
 func transform3d(position: Vec3): Transform3D {
@@ -292,7 +292,7 @@ func forces3d(): Forces3D {
  * A sphere is uniform about every axis; a box and a capsule are not, which is
  * why a tall body resists tipping differently from how it resists spinning.
  */
-func inertiaOf3d(collider: Collider3D, mass: Double): Vec3 {
+func inertiaOf3d(collider: Collider3D&, mass: Double): Vec3 {
     return when collider.shape {
         ColliderShape3D.Sphere -> {
             fin i = realMaxOf(0.4 * mass * collider.radius * collider.radius, 0.000001)
@@ -313,7 +313,7 @@ func inertiaOf3d(collider: Collider3D, mass: Double): Vec3 {
 }
 
 /** A rigid body of [kind] and [mass], with inertia derived from [collider]. */
-func rigidBody3d(kind: RigidBodyKind, collider: Collider3D, mass: Double = 1.0, fixedRotation: Bool = false): RigidBody3D {
+func rigidBody3d(kind: RigidBodyKind, collider: Collider3D&, mass: Double = 1.0, fixedRotation: Bool = false): RigidBody3D {
     fin inverseMass = inverseMassFor(kind, mass)
     var inverseInertia = vec3Zero()
     if inverseMass > 0.0 && !fixedRotation {
@@ -336,7 +336,7 @@ func gravity3d(value: Vec3 = Vec3(0.0, -9.81, 0.0)): Gravity3D {
  * along: any other axis moves the body further than it has to.
  */
 func boxContact3d(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Overlap3D {
-    fin delta = centerA - centerB
+    fin delta = centerA.subtract(centerB)
     fin overlapX = halfA.x + halfB.x - absReal(delta.x)
     fin overlapY = halfA.y + halfB.y - absReal(delta.y)
     fin overlapZ = halfA.z + halfB.z - absReal(delta.z)
@@ -356,13 +356,13 @@ func boxContact3d(centerA: Vec3, halfA: Vec3, centerB: Vec3, halfB: Vec3): Overl
         penetration = overlapZ
     }
     return Overlap3D.Touching(
-        Contact3D(normal, centerA - normal.scale(penetration * 0.5), penetration, false)
+        Contact3D(normal, centerA.subtract(normal.scale(penetration * 0.5)), penetration, false)
     )
 }
 
 /** The contact between two spheres, or [Overlap3D.Separate]. */
 func sphereContact3d(centerA: Vec3, radiusA: Double, centerB: Vec3, radiusB: Double): Overlap3D {
-    fin delta = centerA - centerB
+    fin delta = centerA.subtract(centerB)
     fin reach = radiusA + radiusB
     fin distanceSquared = delta.dot(delta)
     if distanceSquared >= reach * reach {
@@ -376,7 +376,7 @@ func sphereContact3d(centerA: Vec3, radiusA: Double, centerB: Vec3, radiusB: Dou
     fin distance = sqrt(distanceSquared)
     fin normal = delta.scale(1.0 / distance)
     return Overlap3D.Touching(
-        Contact3D(normal, centerA - normal.scale(radiusA), reach - distance, false)
+        Contact3D(normal, centerA.subtract(normal.scale(radiusA)), reach - distance, false)
     )
 }
 
@@ -387,7 +387,7 @@ func sphereBoxContact3d(sphereCenter: Vec3, radius: Double, boxCenter: Vec3, box
         realClampTo(sphereCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y),
         realClampTo(sphereCenter.z, boxCenter.z - boxHalf.z, boxCenter.z + boxHalf.z)
     )
-    fin delta = sphereCenter - closest
+    fin delta = sphereCenter.subtract(closest)
     fin distanceSquared = delta.dot(delta)
     if distanceSquared >= radius * radius {
         return Overlap3D.Separate
@@ -433,8 +433,8 @@ func colliderContact3d(
     if !layersInteract(colliderA.layers, colliderB.layers) {
         return Overlap3D.Separate
     }
-    fin centerA = positionA + colliderA.offset
-    fin centerB = positionB + colliderB.offset
+    fin centerA = positionA.add(colliderA.offset)
+    fin centerB = positionB.add(colliderB.offset)
     fin sensor = colliderA.sensor || colliderB.sensor
 
     fin found = when colliderA.shape {
@@ -538,7 +538,7 @@ func sweepBox3d(moving: Aabb3D, motion: Vec3, target: Aabb3D): Sweep3D {
     if entryZ >= entryX && entryZ >= entryY {
         normal = Vec3(0.0, 0.0, 0.0 - realSign(motion.z))
     }
-    return Sweep3D.Blocked(entry, normal, moving.center() + motion.scale(entry))
+    return Sweep3D.Blocked(entry, normal, moving.center().add(motion.scale(entry)))
 }
 
 /** True when [sweep] was interrupted. */
@@ -573,14 +573,14 @@ func sweepNormal3d(sweep: Sweep3D): Vec3 {
  */
 func rayBox3d(origin: Vec3, direction: Vec3, target: Aabb3D): RayHit3D {
     return when sweepBox3d(Aabb3D(origin, origin), direction, target) {
-        Sweep3D.Blocked(t, normal, point) -> RayHit3D.Hit(t, normal, origin + direction.scale(t))
+        Sweep3D.Blocked(t, normal, point) -> RayHit3D.Hit(t, normal, origin.add(direction.scale(t)))
         else -> RayHit3D.Miss
     }
 }
 
 /** Casts a ray against a sphere. */
 func raySphere3d(origin: Vec3, direction: Vec3, center: Vec3, radius: Double): RayHit3D {
-    fin toCenter = origin - center
+    fin toCenter = origin.subtract(center)
     fin a = direction.dot(direction)
     if a <= 0.0 {
         return RayHit3D.Miss
@@ -601,12 +601,12 @@ func raySphere3d(origin: Vec3, direction: Vec3, center: Vec3, radius: Double): R
     if t < 0.0 || t > 1.0 {
         return RayHit3D.Miss
     }
-    fin point = origin + direction.scale(t)
-    return RayHit3D.Hit(t, (point - center).normalized, point)
+    fin point = origin.add(direction.scale(t))
+    return RayHit3D.Hit(t, (point.subtract(center).normalized catch vec3Zero()), point)
 }
 
 /** True when [hit] met something. */
-func rayHit3d(hit: RayHit3D): Bool {
+func rayHit3d(hit: RayHit3D&): Bool {
     return when hit {
         RayHit3D.Hit(t, normal, point) -> true
         else -> false
@@ -614,7 +614,7 @@ func rayHit3d(hit: RayHit3D): Bool {
 }
 
 /** The fraction of the ray travelled before the hit, or `-1`. */
-func rayFraction3d(hit: RayHit3D): Double {
+func rayFraction3d(hit: RayHit3D&): Double {
     return when hit {
         RayHit3D.Hit(t, normal, point) -> t
         else -> -1.0
@@ -629,7 +629,7 @@ func slide3d(velocity: Vec3, normal: Vec3): Vec3 {
     if into >= 0.0 {
         return velocity
     }
-    return velocity - normal.scale(into)
+    return velocity.subtract(normal.scale(into))
 }
 
 /** The velocity left after bouncing off [normal] with the given restitution. */
@@ -638,21 +638,21 @@ func bounce3d(velocity: Vec3, normal: Vec3, restitution: Double): Vec3 {
     if into >= 0.0 {
         return velocity
     }
-    return velocity - normal.scale(into * (1.0 + realClamp01(restitution)))
+    return velocity.subtract(normal.scale(into * (1.0 + realClamp01(restitution))))
 }
 
 /** Applies [amount] to a body's velocity under [mode]. */
-func applyToVelocity3d(velocity: Velocity3D, amount: Vec3, mode: ForceMode, inverseMass: Double, dt: Double) {
-    velocity.linear = velocity.linear + amount.scale(forceScale(mode, inverseMass, dt))
+func applyToVelocity3d(velocity: Velocity3D!, amount: Vec3, mode: ForceMode, inverseMass: Double, dt: Double) {
+    velocity.linear = velocity.linear.add(amount.scale(forceScale(mode, inverseMass, dt)))
 }
 
 /** Applies gravity to [velocity] for one substep. */
-func applyGravity3d(velocity: Velocity3D, gravity: Gravity3D, scale: GravityScale, dt: Double) {
-    velocity.linear = velocity.linear + gravity.value.scale(scale.value * dt)
+func applyGravity3d(velocity: Velocity3D!, gravity: Gravity3D&, scale: GravityScale, dt: Double) {
+    velocity.linear = velocity.linear.add(gravity.value.scale(scale.value * dt))
 }
 
 /** Decays [velocity] by [drag] over one substep. */
-func applyDamping3d(velocity: Velocity3D, drag: Damping, dt: Double) {
+func applyDamping3d(velocity: Velocity3D!, drag: Damping&, dt: Double) {
     velocity.linear = velocity.linear.scale(realClamp01(1.0 - drag.linear * dt))
     velocity.angular = velocity.angular.scale(realClamp01(1.0 - drag.angular * dt))
 }
@@ -675,7 +675,7 @@ func resolvePenetration3d(
         return positionA
     }
     fin depth = realMaxOf(contact.penetration - settings.contactSlop, 0.0)
-    return positionA + contact.normal.scale(depth * settings.correctionRate / total * inverseMassA)
+    return positionA.add(contact.normal.scale(depth * settings.correctionRate / total * inverseMassA))
 }
 
 test "box contacts resolve along the shallowest axis" {

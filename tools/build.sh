@@ -37,8 +37,11 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_DIR="${1:?usage: build.sh <project_dir> [build|run]}"
 ACTION="${2:-run}"
+if [ -n "${3:-}" ]; then
+    export AZORA_COMPILER_BIN="$3"
+fi
 case "$ACTION" in
-    build|run|check) ;;
+    build|run|check|inspect) ;;
     *) echo "error: action must be build, run or check" >&2; exit 2 ;;
 esac
 
@@ -113,6 +116,10 @@ while IFS=$'\t' read -r kind a b; do
             mkdir -p "$SRC_DIR/$b"
             cp "$a/"*.az "$SRC_DIR/$b/" 2>/dev/null || true
             ;;
+        SOURCE)
+            mkdir -p "$SRC_DIR/$b"
+            cp "$a" "$SRC_DIR/$b/"
+            ;;
         FRAMEWORK) NATIVE_FLAGS="$NATIVE_FLAGS -framework $a" ;;
         LIB)       NATIVE_FLAGS="$NATIVE_FLAGS -l$a" ;;
     esac
@@ -123,6 +130,10 @@ cp "$PROJECT_DIR/src/"*.az "$SRC_DIR/"
 if [ ! -f "$SRC_DIR/main.az" ]; then
     echo "error: project has no src/main.az entry point" >&2
     exit 1
+fi
+
+if [ "$ACTION" = "inspect" ]; then
+    exec "${AZORA_COMPILER_BIN:?select a native compiler}" analyze "$SRC_DIR/main.az"
 fi
 
 APP_NAME="$(basename "$PROJECT_DIR" | tr -cd '[:alnum:]_-')"
@@ -210,9 +221,12 @@ echo "azora-engine: linking"
     -Wno-override-module \
     -o "$BUILD_DIR/$APP_NAME"
 
+bash "$LIB_DIR/tools/fusion-cook.sh" "$PROJECT_DIR" "${AZORA_COMPILER_BIN:-}" "$CLANG_BIN" "$NATIVE_DIR"
+
 echo "azora-engine: built $BUILD_DIR/$APP_NAME"
 
 if [ "$ACTION" = "run" ]; then
     echo "azora-engine: launching"
+    cd "$PROJECT_DIR"
     exec "$BUILD_DIR/$APP_NAME"
 fi

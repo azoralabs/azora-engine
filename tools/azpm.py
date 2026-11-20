@@ -31,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -42,6 +43,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMPORT_RE = re.compile(r"^\s*(?:export\s+)?import\s+(engine(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b")
 
 
+def load_manifest(path: str) -> dict:
+    with open(path, encoding="utf-8") as source:
+        text = source.read()
+    return json.loads(text) if text.lstrip().startswith("{") else azon.loads(text)
+
+
 class Package:
     def __init__(self, path: str, manifest: dict):
         pkg = manifest.get("package", {})
@@ -49,7 +56,9 @@ class Package:
         self.name = pkg.get("name") or os.path.basename(path)
         self.module = pkg.get("module", "")
         self.kind = pkg.get("kind", "core")
-        self.deps = list((manifest.get("dependencies") or {}).keys())
+        self.dependencies = manifest.get("dependencies") or {}
+        self.deps = list(self.dependencies)
+        self.shared_sources = list(pkg.get("sharedSources") or [])
         native = manifest.get("native") or {}
         self.frameworks = list(native.get("frameworks") or [])
         self.libs = list(native.get("libs") or [])
@@ -74,7 +83,7 @@ class Workspace:
             manifest_path = os.path.join(root, member, "package.azon")
             if not os.path.exists(manifest_path):
                 continue
-            pkg = Package(os.path.join(root, member), azon.load(manifest_path))
+            pkg = Package(os.path.join(root, member), load_manifest(manifest_path))
             self.packages[pkg.name] = pkg
             if pkg.module:
                 self.by_module[pkg.module] = pkg
@@ -135,8 +144,29 @@ class Workspace:
                 roots.append(facade.name)
         return roots
 
+    def project_dependencies(self, directory: str, dependencies: dict) -> list[str]:
+        for name, config in dependencies.items():
+            if name in self.packages:
+                continue
+            if not isinstance(config, dict) or not config.get("path"):
+                raise SystemExit(f"azpm: local package '{name}' requires a path")
+            path = os.path.realpath(os.path.join(directory, config["path"]))
+            manifest = os.path.join(path, "package.azon")
+            if not os.path.isfile(manifest):
+                raise SystemExit(f"azpm: missing manifest for '{name}' at {manifest}")
+            pkg = Package(path, load_manifest(manifest))
+            if pkg.name != name or not pkg.module or pkg.module in self.by_module:
+                raise SystemExit(f"azpm: invalid name or duplicate module for local package '{name}'")
+            self.packages[name] = pkg
+            self.by_module[pkg.module] = pkg
+            self.project_dependencies(path, pkg.dependencies)
+        return list(dependencies)
+
     def resolve(self, project_dir: str) -> list[Package]:
-        return self.closure(self.project_roots(project_dir))
+        manifest = os.path.join(project_dir, "azora.azon")
+        dependencies = load_manifest(manifest).get("dependencies", {}) if os.path.isfile(manifest) else {}
+        explicit = self.project_dependencies(project_dir, dependencies)
+        return self.closure(explicit + self.project_roots(project_dir))
 
 
 def _cmd_resolve(ws: Workspace, project_dir: str) -> None:
@@ -145,6 +175,11 @@ def _cmd_resolve(ws: Workspace, project_dir: str) -> None:
     libs: list[str] = []
     for pkg in pkgs:
         print(f"STAGE\t{pkg.src_dir}\t{pkg.stage_dir}")
+        for relative in pkg.shared_sources:
+            path = os.path.join(pkg.dir, relative)
+            if not os.path.isfile(path) or not path.endswith(".az"):
+                raise SystemExit(f"azpm: shared Azora source not found: {path}")
+            print(f"SOURCE\t{path}\t{pkg.stage_dir}")
         for f in pkg.frameworks:
             if f not in frameworks:
                 frameworks.append(f)

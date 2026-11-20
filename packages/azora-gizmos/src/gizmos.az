@@ -381,12 +381,46 @@ func App!.beginView(viewProj: Mat4&, rect: ViewRect&) {
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0
     )
-    pokeMat4(self.gpu.viewProj, Long(0), mat4Mul(remap, viewProj))
+    fin combined = mat4Mul(remap, copyMat4(viewProj))
+    self.beginScenePass()
+    if self.gpu.scenePass.active {
+        // The history belongs to one rectangle; a view that moved or resized starts afresh.
+        if self.gpu.scenePass.rectX != rect.x || self.gpu.scenePass.rectY != rect.y ||
+            self.gpu.scenePass.rectWidth != rect.width || self.gpu.scenePass.rectHeight != rect.height {
+            self.gpu.scenePass.historyValid = false
+        }
+        self.gpu.scenePass.rectX = rect.x
+        self.gpu.scenePass.rectY = rect.y
+        self.gpu.scenePass.rectWidth = rect.width
+        self.gpu.scenePass.rectHeight = rect.height
+        self.gpu.scenePass.viewProj = copyMat4(combined)
+        self.gpu.scenePass.viewed = true
+        // Shift the geometry by this frame's sub-pixel jitter, in clip space.
+        fin jx = 2.0 * self.gpu.scenePass.jitterX / (self.gpu.scenePass.width as Double)
+        fin jy = -2.0 * self.gpu.scenePass.jitterY / (self.gpu.scenePass.height as Double)
+        fin jittered = Mat4(
+            combined.m00 + jx * combined.m30, combined.m01 + jx * combined.m31,
+            combined.m02 + jx * combined.m32, combined.m03 + jx * combined.m33,
+            combined.m10 + jy * combined.m30, combined.m11 + jy * combined.m31,
+            combined.m12 + jy * combined.m32, combined.m13 + jy * combined.m33,
+            combined.m20, combined.m21, combined.m22, combined.m23,
+            combined.m30, combined.m31, combined.m32, combined.m33
+        )
+        pokeMat4(self.gpu.viewProj, Long(0), jittered)
+        self.gpu.scenePass.jittered = copyMat4(jittered)
+    } else {
+        pokeMat4(self.gpu.viewProj, Long(0), combined)
+    }
+    self.gpu.view = copyMat4(combined)
     self.setScissor(rect.x, rect.y, rect.width, rect.height)
 }
 
-/** Ends a [beginView]: drawing reaches the whole window again. */
+/** Ends a [beginView]: drawing reaches the whole window again, reconstructed at full resolution when upscaled. */
 func App!.endView() {
+    if self.gpu.scenePass.active {
+        self.resolveScenePass()
+        return
+    }
     self.clearScissor()
 }
 
@@ -820,4 +854,80 @@ func orientationPick(camera: EditorCamera&, rect: ViewRect&, x: Double, y: Doubl
         axis = axis + 1
     }
     return 0
+}
+
+// ── Frame statistics ────────────────────────────────────────────────────
+
+/** Frames per second and frame time, averaged over half a second so the numbers can be read. */
+pack FrameStats derives Clone {
+    var frames: Int = 0
+    var elapsed: Double = 0.0
+    var slowest: Double = 0.0
+    var fps: Double = 0.0
+    var milliseconds: Double = 0.0
+    var worstMilliseconds: Double = 0.0
+}
+
+/** Counts one frame that took [seconds]. */
+func FrameStats!.tick(seconds: Double) {
+    if seconds <= 0.0 then return
+    self.frames += 1
+    self.elapsed += seconds
+    if seconds > self.slowest then self.slowest = seconds
+    if self.elapsed >= 0.5 {
+        self.fps = (self.frames as Double)/self.elapsed
+        self.milliseconds = self.elapsed*1000.0/(self.frames as Double)
+        self.worstMilliseconds = self.slowest*1000.0
+        self.frames = 0
+        self.elapsed = 0.0
+        self.slowest = 0.0
+    }
+}
+
+/** [value] with exactly [places] decimals, so a counter keeps its width. */
+func fixedDecimal(value: Double, places: Int): String {
+    var scale = 1
+    var step = 0
+    while step < places {
+        scale *= 10
+        step += 1
+    }
+    fin scaled = (absValue(value)*(scale as Double)+0.5) as Int
+    var fraction = "${scaled % scale}"
+    while stringLength(fraction) < places { fraction = "0${fraction}" }
+    fin sign = if value < 0.0 && scaled != 0 then "-" else ""
+    return if places > 0 then "${sign}${scaled / scale}.${fraction}" else "${sign}${scaled / scale}"
+}
+
+/**
+ * Draws the FPS and frame-time counter with its top-right corner at
+ * ([right], [top]), and an optional second line of [detail]. Answers the
+ * height it took.
+ */
+func App!.drawFrameStats(stats: FrameStats&, right: Double, top: Double, detail: String = ""): Double {
+    fin rate = if stats.fps > 0.0 then "${round(stats.fps)} FPS" else "-- FPS"
+    fin time = if stats.fps > 0.0 then "${fixedDecimal(stats.milliseconds,2)} ms" else "-- ms"
+    fin size: Double = 11.0
+    fin gap: Double = 8.0
+    fin rateWidth = self.uiTextWidth(rate, size)
+    fin timeWidth = self.uiTextWidth(time, size)
+    fin detailWidth = if detail == "" then 0.0 else self.uiTextWidth(detail, size)
+    fin firstWidth = rateWidth + gap + timeWidth
+    fin width = (if detailWidth > firstWidth then detailWidth else firstWidth) + 18.0
+    fin height: Double = if detail == "" then 22.0 else 38.0
+    fin left = right - width
+    self.uiRoundRect(left, top, width, height, 11.0, 0.0, 0.0, 0.0, 0.42)
+    fin baseline = top + (22.0 - self.uiTextHeight(size)) * 0.5
+    fin good = stats.fps >= 55.0
+    fin fair = stats.fps >= 30.0
+    fin r: Double = if good then 0.46 else if fair then 0.96 else 0.97
+    fin g: Double = if good then 0.86 else if fair then 0.80 else 0.42
+    fin b: Double = if good then 0.52 else if fair then 0.36 else 0.38
+    fin start = right - 9.0 - firstWidth
+    self.uiTextColored(rate, start, baseline, size, r, g, b)
+    self.uiTextColored(time, start + rateWidth + gap, baseline, size, 0.86, 0.88, 0.92)
+    if detail != "" {
+        self.uiTextColored(detail, right - 9.0 - detailWidth, baseline + 16.0, size, 0.70, 0.74, 0.80)
+    }
+    return height
 }

@@ -1,0 +1,60 @@
+import std.io
+import engine.core
+import engine.io
+import engine.math
+import engine.material.fusion
+import engine.material.fusion.compiler
+import engine.lighting.photon
+import engine.scene.terrain
+import engine.scene.io
+import engine.ecs
+import engine.sky
+
+func main() {
+    var material = newFusionGraph()
+    fin coat = material.addNode("slab", 0.0, 100.0)
+    fin layers = material.addNode("layer", 150.0, 100.0)
+    fin mask = material.addNode("noise", 0.0, 300.0)
+    assert material.connect(1, layers, 0) panic "bottom surface"
+    assert material.connect(coat, layers, 1) panic "top surface"
+    assert material.connect(mask, layers, 2) panic "coverage"
+    assert material.connect(layers, material.output, 0) panic "material output"
+    assert !material.connect(mask, material.output, 0) panic "wrong pin type accepted"
+    assert !material.connect(layers, layers, 0) panic "cycle accepted"
+    fin restored = readFusionGraph(writeFusionGraph(material))
+    assert restored.diagnostic == "" && restored.nodes.size == 5 panic "graph serialization round trip"
+    fin program = compileFusionGraph(restored)
+    assert program.diagnostic == "" && startsWith(program.source, "#include <metal_stdlib>") panic "MSL generation"
+    assert fusionSourceKey(program.source) == fusionSourceKey(compileFusionGraph(material).source) panic "unstable precompile key"
+    assert material.removeNode(coat) panic "delete a layer input"
+    assert compileFusionGraph(material).diagnostic != "" panic "missing reachable input was accepted"
+    assert !fusionAssetPath("../Material.azfusion") && fusionAssetPath("Materials/Material.azfusion") panic "asset path validation"
+
+    fin light = PhotonLight()
+    fin basis = photonBasis(light.direction)
+    fin target = Vec3(0.0, 0.0, 0.0)
+    var casters: Array<PhotonCaster> = []
+    fin cube = photonCaster(0, mat4Identity(), Rgba(0.9, 0.1, 0.1, 1.0), basis)
+    fin ray = photonRay(cube, Vec3(0.0, 2.0, 0.0), Vec3(0.0, -1.0, 0.0))
+    assert photonAbs(ray.t - 1.5) < 0.00001 panic "directional depth on the cube"
+    casters.add(take cube)
+    fin pages = buildPhotonField(PhotonField(), light, basis, target, casters)
+    assert pages.pages > 0 && pages.pages < 25 && pages.size > 0 panic "virtual page allocation is not sparse"
+    assert azPeek32(pages.bytes, 0) == 1065353216 panic "page buffer header"
+    azFree(pages.bytes)
+    var world = World()
+    fin entity = world.spawn()
+    storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world), entity, HeightfieldTerrain(image: "Terrain/demo.pgm"))
+    storageInsert<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity, SkyEnvironment(hour: 1.25))
+    storageInsert<PhotonField>(ensureStorage<PhotonField>(world), entity, PhotonField())
+    fin scene = writeScene(world)
+    var reloaded = World()
+    assert readScene(reloaded, scene) == 1 panic "could not read scene"
+    fin copy = reloaded.entityAt(0)
+    fin facts = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(reloaded), copy)
+    assert facts.hour == 1.25 panic "sky hour round trip"
+    assert storageGet<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(reloaded), copy).image == "Terrain/demo.pgm" panic "height image round trip"
+    assert storageHas<PhotonField>(ensureStorage<PhotonField>(reloaded), copy) panic "photon data round trip"
+    assert sampleSky(facts, 0.0).daylight < sampleSky(SkyEnvironment(hour: 12.0), 0.0).daylight panic "day-night environment"
+    println("material fusion graph and photon field passed")
+}

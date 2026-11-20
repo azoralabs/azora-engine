@@ -31,6 +31,13 @@ import engine.platform
 import engine.gpu
 import engine.gpu.draw
 import engine.scene
+import engine.scene.terrain
+import engine.gpu.terrain
+import engine.material.fusion.metal
+import engine.lighting.photon
+import engine.sky
+import engine.objc
+import engine.io
 
 /** One GPU mesh per [Mesh3d] shape, built once. */
 pack PrimitiveMeshes {
@@ -103,9 +110,51 @@ func primitiveFor(meshes: PrimitiveMeshes&, shape: Int): Mesh& {
     }
 }
 
+func sceneSkyLight(world: World!): Entity {
+    fin skies = ensureStorage<SkyEnvironment>(world)
+    var index = 0
+    while index < storageLength<SkyEnvironment>(skies) {
+        fin entity = storageEntityAt<SkyEnvironment>(skies, index)
+        if skies.values[index].enabled && world.isAlive(entity) && visibleInWorld(world, entity) then return entity
+        index += 1
+    }
+    return Entity::invalid
+}
+
 impl App {
+    func !.applyHeightFog(world: World!, day: Double) {
+        fin layers = ensureStorage<ExponentialHeightFog>(world)
+        var index = 0
+        while index < storageLength<ExponentialHeightFog>(layers) {
+            fin entity = storageEntityAt<ExponentialHeightFog>(layers, index)
+            if layers.values[index].enabled && world.isAlive(entity) && visibleInWorld(world, entity) {
+                fin fog = layers.values[index].clone()
+                fin color = if fog.followSky then Rgba(fog.color.r*(0.10+0.90*day), fog.color.g*(0.14+0.86*day), fog.color.b*(0.27+0.73*day), 1.0) else fog.color
+                self.setSkyHaze(color, skyClamp(fog.density,0.0,0.5), worldPosition(world, entity).y,
+                    skyClamp(fog.heightFalloff,0.0,2.0), skyClamp(fog.startDistance,0.0,100000.0), skyClamp(fog.maxOpacity,0.0,1.0))
+                return
+            }
+            index += 1
+        }
+    }
+
     /** Lights subsequent draws from the scene's first light; a scene with none keeps the default. */
-    func !.applySceneLight(world: World!) {
+    func !.applySceneLight(world: World!, elapsed: Double = 0.0) {
+        fin sky = sceneSkyLight(world)
+        if world.isAlive(sky) {
+            fin settings = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky)
+            fin sampled = sampleSky(settings, elapsed)
+            self.setLightDirection(sampled.light.x, sampled.light.y, sampled.light.z)
+            self.setAmbientLight(sampled.ambient)
+            self.setDirectColor(sampled.color, sampled.intensity)
+            fin day = sampled.daylight
+            self.setSkyHaze(Rgba(0.07+0.52*day, 0.10+0.62*day, 0.19+0.65*day, 1.0), skyClamp(settings.hazeDensity, 0.0, 0.04))
+            self.applyHeightFog(world, day)
+            return
+        }
+        self.setSkyHaze(Rgba(0.0, 0.0, 0.0, 1.0), 0.0)
+        self.applyHeightFog(world, 1.0)
+        self.setDirectColor(Rgba(1.0, 1.0, 1.0, 1.0), 1.0)
         var index = 0
         while index < storageLength<Light3d>(ensureStorage<Light3d>(world)) {
             fin entity = storageEntityAt<Light3d>(ensureStorage<Light3d>(world), index)
@@ -123,23 +172,495 @@ impl App {
         self.setAmbientLight(0.35)
     }
 
+    /** Points Fusion's asset resolver at the scene's project directory. */
+    func !.setFusionRoot(root: String) {
+        if self.gpu.fusion.root == root then return
+        self.gpu.fusion.release()
+        releaseTerrains(self.gpu)
+        discardStaticShadows(self.gpu)
+        self.gpu.photonKey = 0
+        self.gpu.fusion.root = root
+    }
+
+    /** Performs graph and Metal compilation before the scene begins rendering. */
+    func !.prepareFusionMaterials(world: World!) {
+        fin components = ensureStorage<FusionMaterial>(world)
+        var index = 0
+        while index < storageLength<FusionMaterial>(components) {
+            self.gpu.fusion.resolve(self.gpu.device, components.values[index].asset)
+            index = index + 1
+        }
+    }
+
+    func !.scenePipeline(world: World!, entity: Entity): Long {
+        if !storageHas<FusionMaterial>(ensureStorage<FusionMaterial>(world), entity) then return 0
+        fin asset = storageGet<FusionMaterial>(ensureStorage<FusionMaterial>(world), entity).asset
+        return self.gpu.fusion.resolve(self.gpu.device, asset)
+    }
+
+    /**
+     * Draws every visible heightfield, each chunk at the coarsest level whose
+     * error stays within the terrain's `detailError` on screen. Chunks outside
+     * the view are skipped.
+     */
+    func !.drawHeightfields(world: World!) {
+        fin items = ensureStorage<HeightfieldTerrain>(world)
+        fin view = copyMat4(self.gpu.view)
+        // Screen points one world unit spans at clip depth one, across and up the window.
+        fin across = sqrt(view.m00*view.m00+view.m01*view.m01+view.m02*view.m02)*(self.width() as Double)*0.5
+        fin upward = sqrt(view.m10*view.m10+view.m11*view.m11+view.m12*view.m12)*(self.height() as Double)*0.5
+        fin spread = if across > upward then across else upward
+        var drawn = 0
+        var index = 0
+        while index < storageLength<HeightfieldTerrain>(items) {
+            fin entity = storageEntityAt<HeightfieldTerrain>(items, index)
+            if visibleInWorld(world, entity) && world.isAlive(entity) {
+                fin surface = items.values[index].clone()
+                fin asset = self.gpu.terrainIndex(surface.image)
+                fin model = heightfieldMatrix(world, entity, surface)
+                fin color = sceneAlbedo(world, entity)
+                fin pipeline = self.scenePipeline(world, entity)
+                // World metres per unit of the image's own height.
+                fin rise = sqrt(model.m01*model.m01+model.m11*model.m11+model.m21*model.m21)
+                drawn += self.drawTerrainChunks(asset, mat4Mul(copyMat4(view), copyMat4(model)), model, rise*spread,
+                    terrainClamp(surface.detailError, 0.0, 64.0), color, pipeline)
+            }
+            index += 1
+        }
+        self.gpu.terrainTriangles = drawn
+    }
+
+    /** Picks, joins and draws the chunks of terrain [asset]. Answers the triangles drawn. */
+    func !.drawTerrainChunks(asset: Int, clip: Mat4&, model: Mat4&, rise: Double, tolerance: Double,
+                             color: Rgba&, pipeline: Long): Int {
+        if self.gpu.terrains[asset].image.samples == 0 then return 0
+        fin columns = self.gpu.terrains[asset].image.columns
+        fin rows = self.gpu.terrains[asset].image.rows
+        fin chunksX = self.gpu.terrains[asset].chunksX
+        fin count = self.gpu.terrains[asset].chunks.size
+        fin perspective = absValue(clip.m30)+absValue(clip.m31)+absValue(clip.m32) > 0.000001
+        var levels: Array<Int> = .() * count
+        var depths: Array<Double> = .() * count
+        var c = 0
+        while c < count {
+            fin chunk = self.gpu.terrains[asset].chunks[c].&
+            fin x0 = (chunk.column as Double)/((columns-1) as Double)-0.5
+            fin x1 = (terrainMinInt(chunk.column+terrainChunkCells,columns-1) as Double)/((columns-1) as Double)-0.5
+            fin z0 = (chunk.row as Double)/((rows-1) as Double)-0.5
+            fin z1 = (terrainMinInt(chunk.row+terrainChunkCells,rows-1) as Double)/((rows-1) as Double)-0.5
+            // The box's eight corners in clip space: outside one side of the view with all of them, it is skipped.
+            var left = 0
+            var right = 0
+            var below = 0
+            var above = 0
+            var behind = 0
+            var nearest: Double = 1000000000.0
+            var corner = 0
+            while corner < 8 {
+                fin x = if corner % 2 == 0 then x0 else x1
+                fin y = if (corner / 2) % 2 == 0 then chunk.low else chunk.high
+                fin z = if corner / 4 == 0 then z0 else z1
+                fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
+                fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+                fin cw = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
+                if cx < -cw then left += 1
+                if cx > cw then right += 1
+                if cy < -cw then below += 1
+                if cy > cw then above += 1
+                if cw <= 0.0 then behind += 1
+                if cw < nearest then nearest = cw
+                corner += 1
+            }
+            depths[c] = nearest
+            if left == 8 || right == 8 || below == 8 || above == 8 || behind == 8 {
+                levels[c] = -1
+            } else {
+                var level = 0
+                if tolerance > 0.0 && (!perspective || nearest > 0.05) {
+                    fin perUnit = if perspective then rise/nearest else rise
+                    level = terrainLevels-1
+                    while level > 0 && chunk.errors[level]*perUnit > tolerance { level -= 1 }
+                    // A chunk only coarsens once it is well inside the next level's reach, so it does not flicker.
+                    if level > chunk.level && chunk.errors[level]*perUnit > tolerance*0.8 then level -= 1
+                }
+                levels[c] = level
+            }
+            c += 1
+        }
+        // Neighbours may differ by one level at most: a chunk coarser than that is refined.
+        var pass = 0
+        var changed = true
+        while changed && pass < terrainLevels {
+            changed = false
+            c = 0
+            while c < count {
+                if levels[c] > 0 {
+                    fin cx = c % chunksX
+                    fin cz = c / chunksX
+                    var finest = terrainLevels
+                    if cz > 0 && levels[c-chunksX] >= 0 && levels[c-chunksX] < finest then finest = levels[c-chunksX]
+                    if c+chunksX < count && levels[c+chunksX] >= 0 && levels[c+chunksX] < finest then finest = levels[c+chunksX]
+                    if cx > 0 && levels[c-1] >= 0 && levels[c-1] < finest then finest = levels[c-1]
+                    if cx+1 < chunksX && levels[c+1] >= 0 && levels[c+1] < finest then finest = levels[c+1]
+                    if levels[c] > finest+1 {
+                        levels[c] = finest+1
+                        changed = true
+                    }
+                }
+                c += 1
+            }
+            pass += 1
+        }
+        // Nearest first, so the depth test rejects terrain hidden behind closer slopes before it is shaded.
+        var order: Array<Int> = []
+        c = 0
+        while c < count {
+            if levels[c] >= 0 {
+                var at = order.size
+                order.add(c)
+                while at > 0 && depths[order[at-1]] > depths[c] {
+                    order[at] = order[at-1]
+                    at -= 1
+                }
+                order[at] = c
+            }
+            c += 1
+        }
+        var drawn = 0
+        for chunk in order {
+            c = chunk
+            fin level = levels[c]
+            if level >= 0 {
+                fin cx = c % chunksX
+                fin cz = c / chunksX
+                // Edges next to a chunk one level coarser fold onto its vertices.
+                var mask = 0
+                if cz > 0 && levels[c-chunksX] > level then mask += 1
+                if c+chunksX < count && levels[c+chunksX] > level then mask += 2
+                if cx > 0 && levels[c-1] > level then mask += 4
+                if cx+1 < chunksX && levels[c+1] > level then mask += 8
+                fin slot = level*16+mask
+                fin indexCount = self.gpu.terrainIndices.counts[slot]
+                // The sun's view picks its own levels; only the camera's are remembered.
+                if !self.gpu.casting then self.gpu.terrains[asset].chunks[c].level = level
+                fin mesh = Mesh(self.gpu.terrains[asset].chunks[c].buffer, terrainChunkSide*terrainChunkSide)
+                self.drawMeshPipeline(mesh, model, color.r, color.g, color.b, pipeline,
+                    indices: self.gpu.terrainIndices.buffers[slot], indexCount: indexCount)
+                drawn += indexCount/3
+            }
+        }
+        return drawn
+    }
+
     /** Draws every visible mesh in [world] under the view already begun. */
     func !.drawScene(world: World!, meshes: PrimitiveMeshes&) {
+        self.drawDetailShadows(world, meshes)
+        self.drawSceneMeshes(world, meshes)
+        self.drawHeightfields(world)
+    }
+
+    /**
+     * The sharp cascade of Virtual Shadows: the scene's depth from the sun over
+     * a square around the focus, in a command buffer of its own that runs before
+     * the frame's. The square is snapped to whole texels in the sun's plane so
+     * its shadows do not shimmer as the focus moves, and reaches far along the
+     * sun's rays, so a slope that shades the square from afar is in it too.
+     */
+    func !.drawDetailShadows(world: World!, meshes: PrimitiveMeshes&) {
+        self.gpu.detailReady = false
+        if !self.gpu.virtualShadows || !self.gpu.shadowsActive || self.gpu.flatMaterials || !self.gpu.hasEncoder ||
+            self.gpu.detailPipeline == 0 || self.gpu.detailMap == 0 || self.gpu.detailLight == 0 then return
+        fin z = Vec3(self.gpu.lightX, self.gpu.lightY, self.gpu.lightZ)
+        // A sun at or below the horizon lights nothing a cascade could shade.
+        if z.y <= 0.02 then return
+        fin up = if absValue(z.y) > 0.95 then Vec3(1.0, 0.0, 0.0) else Vec3(0.0, 1.0, 0.0)
+        fin x = photonUnit(photonCross(up, z))
+        fin y = photonCross(z, x)
+        fin half = self.gpu.detailHalf
+        fin texel = 2.0 * half / (detailResolution as Double)
+        fin focus = Vec3(self.gpu.focusX, self.gpu.focusY, self.gpu.focusZ)
+        fin cx = (floor(photonDot(x, focus) / texel) as Double) * texel
+        fin cy = (floor(photonDot(y, focus) / texel) as Double) * texel
+        fin cz = photonDot(z, focus)
+        fin reach = 1500.0
+        fin light = Mat4(
+            x.x / half, x.y / half, x.z / half, -cx / half,
+            y.x / half, y.y / half, y.z / half, -cy / half,
+            -z.x / (2.0 * reach), -z.y / (2.0 * reach), -z.z / (2.0 * reach), 0.5 + cz / (2.0 * reach),
+            0.0, 0.0, 0.0, 1.0
+        )
+        fin commands = send0(self.gpu.queue, sel("commandBuffer"))
+        fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+        fin depth = send0(pass, sel("depthAttachment"))
+        send1(depth, sel("setTexture:"), self.gpu.detailMap)
+        send1(depth, sel("setLoadAction:"), 2)
+        send1(depth, sel("setStoreAction:"), 1)
+        fin cleared = azSendF1(depth, sel("setClearDepth:"), 1.0)
+        fin encoder = send1(commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+        // The frame's encoder and camera wait while the sun's view is drawn.
+        fin frameEncoder = self.gpu.enc
+        fin cameraView = copyMat4(self.gpu.view)
+        fin cameraClip = azAlloc(64)
+        azCopy(cameraClip, self.gpu.viewProj, 64)
+        self.gpu.enc = encoder
+        self.gpu.mode = -1
+        self.gpu.casting = true
+        pokeMat4(self.gpu.viewProj, 0, light)
+        self.gpu.view = copyMat4(light)
+        self.drawSceneMeshes(world, meshes)
+        self.drawHeightfields(world)
+        self.gpu.casting = false
+        send0(encoder, sel("endEncoding"))
+        send0(commands, sel("commit"))
+        self.gpu.enc = frameEncoder
+        self.gpu.mode = -1
+        self.gpu.meshPipeline = 0
+        azCopy(self.gpu.viewProj, cameraClip, 64)
+        azFree(cameraClip)
+        self.gpu.view = copyMat4(cameraView)
+        pokeMat4(self.gpu.detailLight, 0, light)
+        azPokeF32(self.gpu.detailLight, 64, texel)
+        azPokeF32(self.gpu.detailLight, 68, 1.0 / (detailResolution as Double))
+        azPokeF32(self.gpu.detailLight, 72, self.gpu.detailStrength)
+        // Two texels of depth: enough that a lit slope does not shade itself.
+        azPokeF32(self.gpu.detailLight, 76, texel / reach)
+        self.gpu.detailReady = true
+    }
+
+    /** Every visible mesh of [world], without the terrain. */
+    func !.drawSceneMeshes(world: World!, meshes: PrimitiveMeshes&) {
         var index = 0
         while index < storageLength<Mesh3d>(ensureStorage<Mesh3d>(world)) {
             fin entity = storageEntityAt<Mesh3d>(ensureStorage<Mesh3d>(world), index)
             if world.isAlive(entity) && visibleInWorld(world, entity) {
                 fin mesh = storageValueAt<Mesh3d>(ensureStorage<Mesh3d>(world), index).clone()
-                var color = Rgba(0.8, 0.8, 0.82, 1.0)
-                if storageHas<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity) {
-                    color = storageGet<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity).color
-                }
-                var model = mat4Mul(worldMatrix(world, entity), mat4Scale(mesh.size, mesh.size, mesh.size))
-                // The cylinder is built lying along X; a scene's stands up along Y.
-                if mesh.shape == 2 { model = mat4Mul(model, mat4RotationZ(1.5707963267948966)) }
-                self.drawMesh(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b)
+                fin color = sceneAlbedo(world, entity)
+                var model = sceneMeshMatrix(world, entity, mesh.size)
+                if mesh.shape == 2 then model = mat4Mul(model, mat4RotationZ(1.5707963267948966))
+                fin pipeline = self.scenePipeline(world, entity)
+                self.drawMeshPipeline(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b, pipeline)
             }
             index = index + 1
+        }
+    }
+}
+
+func terrainMinInt(a: Int, b: Int): Int = if a < b then a else b
+
+func heightfieldMatrix(world: World!, entity: Entity, surface: HeightfieldTerrain&): Mat4 =
+    mat4Mul(worldMatrix(world, entity), mat4Scale(
+        terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0),
+        terrainClamp(surface.length, 1.0, 100000.0)))
+
+func sceneAlbedo(world: World!, entity: Entity): Rgba {
+    if storageHas<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity) {
+        return storageGet<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity).color
+    }
+    return Rgba(0.8, 0.8, 0.82, 1.0)
+}
+
+func sceneMeshMatrix(world: World!, entity: Entity, size: Double): Mat4 =
+    mat4Mul(worldMatrix(world, entity), mat4Scale(size, size, size))
+
+func photonHash(key: Long, number: Double): Long {
+    fin value = photonClamp(number, -1000000000.0, 1000000000.0)
+    return (key * 1099511628211) + ((value * 10000.0) as Long)
+}
+
+func photonVectorHash(key: Long, value: Vec3&): Long =
+    photonHash(photonHash(photonHash(key, value.x), value.y), value.z)
+
+func photonColorHash(key: Long, value: Rgba&): Long =
+    photonHash(photonHash(photonHash(key, value.r), value.g), value.b)
+
+func photonCasterHash(key: Long, caster: PhotonCaster&): Long {
+    var result = photonHash(key, caster.shape as Double)
+    result = photonVectorHash(result, caster.center)
+    result = photonVectorHash(result, caster.invX)
+    result = photonVectorHash(result, caster.invY)
+    result = photonVectorHash(result, caster.invZ)
+    return photonColorHash(result, caster.color)
+}
+
+func photonFrameHash(settings: PhotonField&, light: PhotonLight&, basis: PhotonBasis&, focus: Vec3&): Long {
+    var key = photonVectorHash(123, basis.z)
+    key = photonColorHash(key, light.color)
+    key = photonHash(key, light.intensity)
+    key = photonHash(key, if light.shadows then 1.0 else 0.0)
+    key = photonHash(key, photonPageX(focus, basis, settings) as Double)
+    key = photonHash(key, photonPageY(focus, basis, settings) as Double)
+    key = photonHash(key, settings.pageSize)
+    key = photonHash(key, settings.pageRadius as Double)
+    key = photonHash(key, settings.pageResolution as Double)
+    key = photonHash(key, settings.shadowBias)
+    key = photonHash(key, settings.shadowStrength)
+    key = photonHash(key, settings.indirectStrength)
+    return photonHash(key, settings.bounceRadius)
+}
+
+/** Directional light whose Photon Field is active in the current scene. */
+func photonSceneLight(world: World!, activeOnly: Bool = true): Entity {
+    fin lights = ensureStorage<Light3d>(world)
+    var index = 0
+    while index < storageLength<Light3d>(lights) {
+        fin entity = storageEntityAt<Light3d>(lights, index)
+        if lights.values[index].kind == 0 && world.isAlive(entity) && visibleInWorld(world, entity) {
+            if !activeOnly || (storageHas<PhotonField>(ensureStorage<PhotonField>(world), entity) &&
+                storageGet<PhotonField>(ensureStorage<PhotonField>(world), entity).enabled) then return entity
+        }
+        index = index + 1
+    }
+    return Entity::invalid
+}
+
+/** Centers a static atlas on the casters instead of the editor camera. */
+func staticShadowFocus(casters: Array<PhotonCaster>&, basis: PhotonBasis&, settings: PhotonField!): Vec3 {
+    fin first = casters[0].clone()
+    var lowX = first.lowX
+    var highX = first.highX
+    var lowY = first.lowY
+    var highY = first.highY
+    for caster in casters {
+        lowX = photonMin(lowX, caster.lowX)
+        highX = photonMax(highX, caster.highX)
+        lowY = photonMin(lowY, caster.lowY)
+        highY = photonMax(highY, caster.highY)
+    }
+    settings.pageRadius = 4
+    settings.pageResolution = 40
+    settings.indirectStrength = 0.0
+    settings.pageSize = photonMax(settings.pageSize, photonMax(highX-lowX, highY-lowY)/7.9)
+    fin x = (lowX+highX)*0.5
+    fin y = (lowY+highY)*0.5
+    return Vec3(basis.x.x*x+basis.y.x*y, basis.x.y*x+basis.y.y*y, basis.x.z*x+basis.y.z*y)
+}
+
+/**
+ * A Photon Field on the GPU, with room after it for the bounce light of
+ * [irradianceSamples] samples (see `gatherPhotonIrradiance`). Header float 23
+ * says where that starts; 0 keeps the per-pixel gather.
+ */
+func uploadPhotonData(device: Long, data: PhotonData&, irradianceSamples: Int = 0): Long {
+    if data.bytes == 0 then return 0
+    fin extra = (irradianceSamples as Long) * 72
+    fin buffer = send2(device, sel("newBufferWithLength:options:"), data.size + extra, 0)
+    if buffer != 0 {
+        fin contents = send0(buffer, sel("contents"))
+        azCopy(contents, data.bytes, data.size)
+        azPokeF32(contents, 92, if irradianceSamples > 0 then (data.size / 4) as Double else 0.0)
+    }
+    azFree(data.bytes)
+    return buffer
+}
+
+impl App {
+    func &.photonAlbedo(world: World!, entity: Entity): Rgba {
+        if storageHas<FusionMaterial>(ensureStorage<FusionMaterial>(world), entity) {
+            fin path = storageGet<FusionMaterial>(ensureStorage<FusionMaterial>(world), entity).asset
+            fin index = self.gpu.fusion.index(path)
+            if index >= 0 && self.gpu.fusion.items[index].pipeline.handle != 0 then return self.gpu.fusion.items[index].pipeline.albedo
+        }
+        return sceneAlbedo(world, entity)
+    }
+
+    /** Rebuilds demanded pages when light, geometry, or the focus page changes. */
+    func !.updateScenePhotons(world: World!, focus: Vec3&, elapsed: Double = 0.0) {
+        self.gpu.focusX = focus.x
+        self.gpu.focusY = focus.y
+        self.gpu.focusZ = focus.z
+        var entity = sceneSkyLight(world)
+        if !world.isAlive(entity) || !storageHas<Light3d>(ensureStorage<Light3d>(world), entity) {
+            entity = photonSceneLight(world, false)
+        }
+        if !world.isAlive(entity) {
+            if self.gpu.photonBuffer != 0 then send0(self.gpu.photonBuffer, sel("release"))
+            self.gpu.photonBuffer = 0
+            self.gpu.photonKey = 0
+            self.gpu.photonPages = 0
+            discardStaticShadows(self.gpu)
+            return
+        }
+        fin fields = ensureStorage<PhotonField>(world)
+        var settings = storageGetOrDefault<PhotonField>(fields, entity, PhotonField(enabled: false))
+        if !settings.enabled || !self.gpu.indirectLighting then settings.indirectStrength = 0.0
+        settings.enabled = true
+        fin source = storageGet<Light3d>(ensureStorage<Light3d>(world), entity).clone()
+        fin pose = worldMatrix(world, entity)
+        var light = PhotonLight(Vec3(pose.m02, pose.m12, pose.m22), source.color, source.intensity, source.shadows)
+        if storageHas<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity) {
+            fin sky = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity).clone()
+            if sky.enabled {
+                // Update CPU pages in one-minute steps during a running day cycle.
+                var stepped = sky.clone()
+                fin raw = sky.hour + (if sky.cycleMinutes > 0 then elapsed*0.4/sky.cycleMinutes else 0.0)
+                stepped.hour = if sky.cycleMinutes > 0 then ((floor(raw*60.0) as Double)/60.0) else raw
+                stepped.cycleMinutes = 0.0
+                fin sampled = sampleSky(stepped, 0.0)
+                light = PhotonLight(sampled.light, sampled.color, sampled.intensity, source.shadows)
+            }
+        }
+        self.gpu.shadowsActive = source.shadows
+        self.gpu.detailStrength = photonClamp(settings.shadowStrength, 0.0, 1.0)
+        self.setDirectColor(light.color, light.intensity)
+        fin needDynamic = (self.gpu.virtualShadows && source.shadows) || settings.indirectStrength > 0.0
+        fin needStatic = !self.gpu.virtualShadows && source.shadows && !self.gpu.staticShadowReady
+        fin basis = photonBasis(light.direction)
+        self.setLightDirection(basis.z.x, basis.z.y, basis.z.z)
+        if !needDynamic && !needStatic then return
+        var key = photonFrameHash(settings, light, basis, focus)
+        var casters: Array<PhotonCaster> = []
+        fin meshes = ensureStorage<Mesh3d>(world)
+        var index = 0
+        while index < storageLength<Mesh3d>(meshes) {
+            fin meshEntity = storageEntityAt<Mesh3d>(meshes, index)
+            if world.isAlive(meshEntity) && visibleInWorld(world, meshEntity) {
+                fin mesh = meshes.values[index].clone()
+                fin model = sceneMeshMatrix(world, meshEntity, mesh.size)
+                fin caster = photonCaster(mesh.shape, model, self.photonAlbedo(world, meshEntity), basis)
+                key = photonCasterHash(key, caster)
+                casters.add(take caster)
+            }
+            index = index + 1
+        }
+        fin surfaces = ensureStorage<HeightfieldTerrain>(world)
+        index = 0
+        while index < storageLength<HeightfieldTerrain>(surfaces) {
+            fin terrainEntity = storageEntityAt<HeightfieldTerrain>(surfaces, index)
+            if world.isAlive(terrainEntity) && visibleInWorld(world, terrainEntity) {
+                fin surface = surfaces.values[index].clone()
+                fin asset = self.gpu.terrainIndex(surface.image)
+                fin terrain = self.gpu.terrains[asset].&
+                if terrain.image.samples != 0 {
+                    var caster = photonCaster(4, heightfieldMatrix(world, terrainEntity, surface),
+                        self.photonAlbedo(world, terrainEntity), basis)
+                    caster.terrain = terrain.image.clone()
+                    key = photonCasterHash(photonHash(key, asset as Double), caster)
+                    casters.add(take caster)
+                }
+            }
+            index += 1
+        }
+        if needStatic {
+            if casters.size > 0 {
+                var staticSettings = settings.clone()
+                fin staticFocus = staticShadowFocus(casters, basis, staticSettings)
+                var once: PhotonPageCache = .()
+                fin data = buildPhotonField(staticSettings, light, basis, staticFocus, casters, once)
+                releasePhotonCache(once)
+                self.gpu.staticShadowBuffer = uploadPhotonData(self.gpu.device, data)
+            }
+            self.gpu.staticShadowReady = true
+        }
+        if needDynamic && key != self.gpu.photonKey {
+            fin data = buildPhotonField(settings, light, basis, focus, casters, self.gpu.photonCache)
+            fin resolution = photonClamp(settings.pageResolution as Double, 8.0, 48.0) as Int
+            fin gathered = if settings.indirectStrength > 0.0 && self.gpu.irradiancePipeline != 0 then data.pages*resolution*resolution else 0
+            fin buffer = uploadPhotonData(self.gpu.device, data, gathered)
+            gatherPhotonIrradiance(self.gpu, buffer, gathered)
+            if self.gpu.photonBuffer != 0 then send0(self.gpu.photonBuffer, sel("release"))
+            self.gpu.photonBuffer = buffer
+            self.gpu.photonKey = key
+            self.gpu.photonPages = if buffer != 0 then data.pages else 0
         }
     }
 }

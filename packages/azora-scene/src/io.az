@@ -29,8 +29,8 @@
  * Components are keyed by declaration name and written field by field through
  * `reflect<C>.fields`, so a component added to the program is saved and loaded
  * without anything here naming it. A component or field the file does not
- * mention keeps its declared default; one the program no longer declares is
- * skipped rather than rejected, so an old scene still opens.
+ * mention keeps its declared default. Unknown components are preserved until
+ * their owning package is available.
  */
 module engine.scene.io
 
@@ -42,6 +42,49 @@ import engine.core
 import engine.ecs
 import engine.math
 import engine.scene
+
+/** Component data preserved by an editor without the owning runtime package. */
+pack ExternalSceneComponent derives Clone {
+    var name: String = ""
+    var text: String = "{}"
+}
+
+@Component
+pack ExternalSceneComponents derives Clone {
+    var values: Array<ExternalSceneComponent> = []
+}
+
+func externalComponentText(world: World&, entity: Entity, name: String): String {
+    fin components = storageOf<ExternalSceneComponents>(world)
+    if !storageHas<ExternalSceneComponents>(components, entity) then return ""
+    fin saved = storageGet<ExternalSceneComponents>(components, entity)
+    for value in saved.values {
+        if value.name == name then return value.text
+    }
+    return ""
+}
+
+func setExternalComponent(world: World!, entity: Entity, name: String, text: String): Bool {
+    if !world.isAlive(entity) || name == "" then return false
+    if text != "" {
+        fin decoded = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+        when decoded {
+            SerialValue.Object(fields) -> {}
+            else -> return false
+        }
+    }
+    fin components = ensureStorage<ExternalSceneComponents>(world)
+    var saved = storageGetOrDefault<ExternalSceneComponents>(components, entity, ExternalSceneComponents())
+    var index = 0
+    while index < saved.values.size && saved.values[index].name != name { index += 1 }
+    if index < saved.values.size {
+        if text == "" then saved.values.removeAt(index) else saved.values[index].text = text
+    } else if text != "" {
+        saved.values.add(ExternalSceneComponent(name, text))
+    }
+    storageInsert<ExternalSceneComponents>(ensureStorage<ExternalSceneComponents>(world), entity, take saved)
+    return true
+}
 
 // ── Writing ─────────────────────────────────────────────────────────────
 
@@ -98,8 +141,15 @@ func componentsAzon(world: World!, entity: Entity): String {
                     fields = azonMember(fields, f.name, "[${formatDecimal(value.${f.name}.r, 4)}, ${formatDecimal(value.${f.name}.g, 4)}, ${formatDecimal(value.${f.name}.b, 4)}, ${formatDecimal(value.${f.name}.a, 4)}]")
                 }
             }
-            members = azonMember(members, reflect<C>.declName, "{${fields}}")
+            fin serialized = reflect<C>.annotMeta<Inspectable>.serializedName
+            fin name = if serialized != "" then serialized else reflect<C>.declName
+            members = azonMember(members, name, "{${fields}}")
         }
+    }
+    fin external = ensureStorage<ExternalSceneComponents>(world)
+    if storageHas<ExternalSceneComponents>(external, entity) {
+        fin saved = storageGet<ExternalSceneComponents>(external, entity)
+        for field in saved.values { members = azonMember(members, field.name, field.text) }
     }
     return "{${members}}"
 }
@@ -171,9 +221,13 @@ func serialElementOr(value: SerialValue&, index: Int, fallback: Double): Double 
  * as it would on a freshly added component.
  */
 func readComponents(world: World!, entity: Entity, components: List<SerialField>&) {
+    var recognized: Array<String> = []
     inline for C in reflect<*>.withAnnot<Inspectable> {
-        fin at = memberIndex(components, reflect<C>.declName)
+        fin serialized = reflect<C>.annotMeta<Inspectable>.serializedName
+        fin declared = if serialized != "" then memberIndex(components, serialized) else -1
+        fin at = if declared >= 0 then declared else memberIndex(components, reflect<C>.declName)
         if at >= 0 {
+            recognized.add(components[at].name)
             var value = C()
             when components[at].value {
                 SerialValue.Object(fields) -> {
@@ -209,6 +263,12 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
                 else -> { }
             }
             storageInsert<C>(ensureStorage<C>(world), entity, take value)
+        }
+    }
+    for component in components {
+        if !recognized.contains(component.name) {
+            fin encoded = encodeSerialValue(component.value, serializerOptions()) catch ""
+            if encoded != "" then setExternalComponent(world, entity, component.name, encoded)
         }
     }
 }

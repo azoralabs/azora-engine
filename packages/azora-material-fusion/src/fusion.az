@@ -1,0 +1,334 @@
+module engine.material.fusion
+
+import std.traits
+import std.string
+import std.serializer
+import std.container.list
+import engine.core
+import engine.math
+
+fin fusionNodeLimit: Int = 64
+
+/** Inputs reference node IDs. Zero is an unconnected pin. Positions are editor metadata. */
+pack FusionNode derives Clone {
+    var id: Int = 0
+    var kind: String = ""
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var a: Int = 0
+    var b: Int = 0
+    var mask: Int = 0
+    var red: Double = 0.38
+    var green: Double = 0.55
+    var blue: Double = 0.72
+    var roughness: Double = 0.48
+    var metallic: Double = 0.0
+    var emission: Double = 0.0
+    var value: Double = 0.5
+    var scale: Double = 4.0
+    var thickness: Double = 0.18
+    var textureSet: String = ""
+    var label: String = ""
+    var offset: Double = 1.0
+    var contrast: Double = 0.61
+    var macroScale: Double = 22.0
+    var rotation: Double = 1.0
+    var low: Double = 0.0
+    var high: Double = 1.0
+    var variation: Double = 0.0
+}
+
+pack FusionGraph derives Clone {
+    var nodes: Array<FusionNode> = []
+    var output: Int = 0
+    var diagnostic: String = ""
+}
+
+func fusionNodeLabel(kind: String): String = when kind {
+    "slab" -> "Surface Slab"
+    "texture" -> "Texture Bombing"
+    "altitude" -> "Altitude Mask"
+    "slope" -> "Slope Mask"
+    "scalar" -> "Scalar"
+    "checker" -> "Checker Mask"
+    "noise" -> "Noise Mask"
+    "mix" -> "Mix Surfaces"
+    "layer" -> "Stack Layers"
+    "output" -> "Material Output"
+    else -> "Unknown"
+}
+
+/** 1 is a surface, 2 is a scalar mask. Output has no output pin. */
+func fusionNodeTitle(node: FusionNode&): String = if node.label == "" then fusionNodeLabel(node.kind) else node.label
+
+func fusionType(kind: String): Int = when kind {
+    "slab", "texture", "mix", "layer" -> 1
+    "scalar", "checker", "noise", "altitude", "slope" -> 2
+    else -> 0
+}
+
+func fusionPinCount(kind: String): Int = when kind {
+    "mix", "layer" -> 3
+    "output" -> 1
+    else -> 0
+}
+
+func fusionPinLabel(kind: String, pin: Int): String = when {
+    kind == "output" -> "Surface"
+    kind == "layer" && pin == 0 -> "Bottom"
+    kind == "layer" && pin == 1 -> "Top"
+    kind == "layer" -> "Coverage"
+    pin == 0 -> "A"
+    pin == 1 -> "B"
+    else -> "Mask"
+}
+
+func fusionInput(node: FusionNode&, pin: Int): Int = when pin {
+    0 -> node.a
+    1 -> node.b
+    else -> node.mask
+}
+
+func fusionSetInput(node: FusionNode!, pin: Int, id: Int) {
+    when pin {
+        0 -> { node.a = id }
+        1 -> { node.b = id }
+        else -> { node.mask = id }
+    }
+}
+
+func fusionClamp(value: Double, low: Double, high: Double): Double = when {
+    value < low -> low
+    value > high -> high
+    value >= low -> value
+    else -> low
+}
+
+impl FusionGraph {
+    func &.indexOfNode(id: Int): Int {
+        var index = 0
+        while index < self.nodes.size {
+            if self.nodes[index].id == id then return index
+            index = index + 1
+        }
+        return -1
+    }
+
+    func !.addNode(kind: String, x: Double, y: Double): Int {
+        if self.nodes.size >= fusionNodeLimit || (fusionType(kind) == 0 && kind != "output") then return 0
+        if kind == "output" && self.output > 0 then return 0
+        var id = 1
+        while self.indexOfNode(id) >= 0 { id = id + 1 }
+        var node = FusionNode()
+        node.id = id
+        node.kind = kind
+        node.x = x
+        node.y = y
+        self.nodes.add(take node)
+        if kind == "output" then self.output = id
+        return id
+    }
+
+    func !.removeNode(id: Int): Bool {
+        fin index = self.indexOfNode(id)
+        if index < 0 || id == self.output then return false
+        self.nodes.removeAt(index)
+        var at = 0
+        while at < self.nodes.size {
+            if self.nodes[at].a == id then self.nodes[at].a = 0
+            if self.nodes[at].b == id then self.nodes[at].b = 0
+            if self.nodes[at].mask == id then self.nodes[at].mask = 0
+            at = at + 1
+        }
+        return true
+    }
+
+    /** Connects types and rejects cycles even in a disconnected part of the document. */
+    func !.connect(from: Int, to: Int, pin: Int): Bool {
+        fin source = self.indexOfNode(from)
+        fin target = self.indexOfNode(to)
+        if source < 0 || target < 0 || pin < 0 || pin >= fusionPinCount(self.nodes[target].kind) then return false
+        if fusionType(self.nodes[source].kind) != (if pin == 2 then 2 else 1) then return false
+        var pending: Array<Int> = [from]
+        var visited: Array<Int> = []
+        while pending.size > 0 {
+            fin id = pending.removeLast()
+            if id == to then return false
+            if !visited.contains(id) {
+                visited.add(id)
+                fin index = self.indexOfNode(id)
+                if index >= 0 {
+                    var input = 0
+                    while input < fusionPinCount(self.nodes[index].kind) {
+                        fin dependency = fusionInput(self.nodes[index], input)
+                        if dependency > 0 then pending.add(dependency)
+                        input = input + 1
+                    }
+                }
+            }
+        }
+        fusionSetInput(self.nodes[target], pin, from)
+        return true
+    }
+}
+
+func newFusionGraph(): FusionGraph {
+    var document = FusionGraph()
+    fin base = document.addNode("slab", 34.0, 58.0)
+    fin output = document.addNode("output", 280.0, 70.0)
+    document.connect(base, output, 0)
+    return take document
+}
+
+func fusionMember(fields: List<SerialField>&, key: String): Int {
+    var index = 0
+    while index < fields.size {
+        if fields[index].name == key then return index
+        index = index + 1
+    }
+    return -1
+}
+
+func fusionText(fields: List<SerialField>&, key: String): String {
+    fin index = fusionMember(fields, key)
+    if index < 0 then return ""
+    return serialAsText(fields[index].value) catch ""
+}
+
+func fusionInt(fields: List<SerialField>&, key: String): Int {
+    fin index = fusionMember(fields, key)
+    if index < 0 then return 0
+    return serialAsInt(fields[index].value) catch 0
+}
+
+func fusionReal(fields: List<SerialField>&, key: String, default: Double): Double {
+    fin index = fusionMember(fields, key)
+    if index < 0 then return default
+    return serialAsReal(fields[index].value) catch default
+}
+
+func readFusionNode(fields: List<SerialField>&): FusionNode {
+    var n = FusionNode()
+    n.id = fusionInt(fields, "id")
+    n.kind = fusionText(fields, "kind")
+    n.x = fusionClamp(fusionReal(fields, "x", 0.0), -10000.0, 10000.0)
+    n.y = fusionClamp(fusionReal(fields, "y", 0.0), -10000.0, 10000.0)
+    n.a = fusionInt(fields, "a")
+    n.b = fusionInt(fields, "b")
+    n.mask = fusionInt(fields, "mask")
+    n.red = fusionClamp(fusionReal(fields, "r", n.red), 0.0, 1.0)
+    n.green = fusionClamp(fusionReal(fields, "g", n.green), 0.0, 1.0)
+    n.blue = fusionClamp(fusionReal(fields, "bColor", n.blue), 0.0, 1.0)
+    n.roughness = fusionClamp(fusionReal(fields, "roughness", n.roughness), 0.02, 1.0)
+    n.metallic = fusionClamp(fusionReal(fields, "metallic", n.metallic), 0.0, 1.0)
+    n.emission = fusionClamp(fusionReal(fields, "emission", n.emission), 0.0, 16.0)
+    n.value = fusionClamp(fusionReal(fields, "value", n.value), 0.0, 1.0)
+    n.scale = fusionClamp(fusionReal(fields, "scale", n.scale), 0.01, 100.0)
+    n.thickness = fusionClamp(fusionReal(fields, "thickness", n.thickness), 0.0, 8.0)
+    n.textureSet = fusionText(fields, "texture")
+    n.label = fusionText(fields, "label")
+    n.offset = fusionClamp(fusionReal(fields, "offset", n.offset), 0.0, 8.0)
+    n.contrast = fusionClamp(fusionReal(fields, "contrast", n.contrast), 0.0, 1.0)
+    n.macroScale = fusionClamp(fusionReal(fields, "macroScale", n.macroScale), 0.0, 1000.0)
+    n.rotation = fusionClamp(fusionReal(fields, "rotation", n.rotation), 0.0, 1.0)
+    n.low = fusionClamp(fusionReal(fields, "low", n.low), -100000.0, 100000.0)
+    n.high = fusionClamp(fusionReal(fields, "high", n.high), -100000.0, 100000.0)
+    n.variation = fusionClamp(fusionReal(fields, "variation", n.variation), 0.0, 10000.0)
+    return take n
+}
+
+func readFusionGraph(text: String): FusionGraph {
+    var document = FusionGraph()
+    document.diagnostic = "Expected a Material Fusion document"
+    fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+    when root {
+        SerialValue.Object(fields) -> {
+            if fusionText(fields, "format") != "azora-material-fusion" then return take document
+            if fusionInt(fields, "version") != 1 {
+                document.diagnostic = "Unsupported Material Fusion file version"
+                return take document
+            }
+            fin list = fusionMember(fields, "nodes")
+            if list < 0 then return take document
+            when fields[list].value {
+                SerialValue.Array(nodes) -> {
+                    if nodes.size == 0 || nodes.size > fusionNodeLimit {
+                        document.diagnostic = "A document must have 1–${fusionNodeLimit} nodes"
+                        return take document
+                    }
+                    var index = 0
+                    while index < nodes.size {
+                        when nodes[index] {
+                            SerialValue.Object(members) -> {
+                                var node = readFusionNode(members)
+                                if node.id <= 0 || document.indexOfNode(node.id) >= 0 || fusionNodeLabel(node.kind) == "Unknown" {
+                                    document.diagnostic = "Invalid or duplicate node ID at entry ${index + 1}"
+                                    return take document
+                                }
+                                if node.kind == "output" {
+                                    if document.output != 0 {
+                                        document.diagnostic = "Only one Material Output node is allowed"
+                                        return take document
+                                    }
+                                    document.output = node.id
+                                }
+                                document.nodes.add(take node)
+                            }
+                            else -> return take document
+                        }
+                        index = index + 1
+                    }
+                    document.diagnostic = if document.output == 0 then "The document has no Material Output" else ""
+                }
+                else -> { }
+            }
+        }
+        else -> { }
+    }
+    return take document
+}
+
+/** Canonical AZON, including positions, with no platform-specific shader data. */
+func writeFusionGraph(document: FusionGraph&): String {
+    var text = StringBuilder()
+    text.append("{\"format\": \"azora-material-fusion\", \"version\": 1, \"nodes\": [")
+    var index = 0
+    while index < document.nodes.size {
+        fin n = document.nodes[index].clone()
+        if index > 0 then text.append(",")
+        text.append("\n    {\"id\": ${n.id}, \"kind\": \"${n.kind}\", \"x\": ${formatDecimal(n.x, 3)}, \"y\": ${formatDecimal(n.y, 3)}")
+        text.append(", \"a\": ${n.a}, \"b\": ${n.b}, \"mask\": ${n.mask}")
+        text.append(", \"r\": ${formatDecimal(n.red, 6)}, \"g\": ${formatDecimal(n.green, 6)}, \"bColor\": ${formatDecimal(n.blue, 6)}")
+        text.append(", \"roughness\": ${formatDecimal(n.roughness, 6)}, \"metallic\": ${formatDecimal(n.metallic, 6)}, \"emission\": ${formatDecimal(n.emission, 6)}")
+        text.append(", \"value\": ${formatDecimal(n.value, 6)}, \"scale\": ${formatDecimal(n.scale, 6)}, \"thickness\": ${formatDecimal(n.thickness, 6)}")
+        fin texture = if fusionTexturePath(n.textureSet) then n.textureSet else ""
+        fin label = encodeSerialValue(SerialValue.Text(n.label), serializerOptions()) catch "\"\""
+        text.append(", \"label\": ${label}, \"offset\": ${formatDecimal(n.offset,6)}, \"contrast\": ${formatDecimal(n.contrast,6)}, \"macroScale\": ${formatDecimal(n.macroScale,6)}, \"rotation\": ${formatDecimal(n.rotation,6)}")
+        text.append(", \"texture\": \"${texture}\", \"low\": ${formatDecimal(n.low,6)}, \"high\": ${formatDecimal(n.high,6)}, \"variation\": ${formatDecimal(n.variation,6)}}")
+        index = index + 1
+    }
+    text.append("\n]}\n")
+    return text.build()
+}
+
+/** Scene references are relative assets, never absolute paths or traversal. */
+func fusionAssetPath(path: String): Bool =
+    (endsWith(path, ".azfusion") || endsWith(path, ".azmaterial")) && fusionRelativePath(path)
+
+func fusionTexturePath(path: String): Bool = endsWith(path, ".aztex") && fusionRelativePath(path)
+
+func fusionRelativePath(path: String): Bool {
+    if startsWith(path, "/") || indexOf(path, "\\") >= 0 || indexOf(path, "\"") >= 0 ||
+        indexOf(path, "\n") >= 0 || indexOf(path, "\r") >= 0 then return false
+    var start = 0
+    var index = 0
+    while index <= stringLength(path) {
+        if index == stringLength(path) || charAt(path, index) == '/' {
+            fin part = substring(path, start, index)
+            if part == "" || part == "." || part == ".." then return false
+            start = index + 1
+        }
+        index = index + 1
+    }
+    return true
+}
