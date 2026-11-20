@@ -27,164 +27,162 @@ pack AudioScene {
     var running: Bool
 }
 
-scope engine::audio {
-    fin sampleRate = 22050
-    fin SOUNDTRACK = 0
-    fin engineLoop = 1
-    fin crashEffect = 2
+fin sampleRate = 22050
+fin SOUNDTRACK = 0
+fin engineLoop = 1
+fin crashEffect = 2
 
-    func clamp(value: Double, lo: Double, hi: Double): Double {
-        if value < lo { return lo }
-        if value > hi { return hi }
-        return value
+func clamp(value: Double, lo: Double, hi: Double): Double {
+    if value < lo { return lo }
+    if value > hi { return hi }
+    return value
+}
+
+func pokeWaveHeader(bytes: Long, dataSize: Int) {
+    azPoke8(bytes, Long(0), 82)
+    azPoke8(bytes, Long(1), 73)
+    azPoke8(bytes, Long(2), 70)
+    azPoke8(bytes, Long(3), 70)
+    azPoke32(bytes, Long(4), dataSize + 36)
+    azPoke8(bytes, Long(8), 87)
+    azPoke8(bytes, Long(9), 65)
+    azPoke8(bytes, Long(10), 86)
+    azPoke8(bytes, Long(11), 69)
+    azPoke8(bytes, Long(12), 102)
+    azPoke8(bytes, Long(13), 109)
+    azPoke8(bytes, Long(14), 116)
+    azPoke8(bytes, Long(15), 32)
+    azPoke32(bytes, Long(16), 16)
+    azPoke8(bytes, Long(20), 1)
+    azPoke8(bytes, Long(21), 0)
+    azPoke8(bytes, Long(22), 1)
+    azPoke8(bytes, Long(23), 0)
+    azPoke32(bytes, Long(24), sampleRate)
+    azPoke32(bytes, Long(28), sampleRate * 2)
+    azPoke8(bytes, Long(32), 2)
+    azPoke8(bytes, Long(33), 0)
+    azPoke8(bytes, Long(34), 16)
+    azPoke8(bytes, Long(35), 0)
+    azPoke8(bytes, Long(36), 100)
+    azPoke8(bytes, Long(37), 97)
+    azPoke8(bytes, Long(38), 116)
+    azPoke8(bytes, Long(39), 97)
+    azPoke32(bytes, Long(40), dataSize)
+}
+
+func pokeSample(bytes: Long, frame: Int, value: Double) {
+    var sample = (clamp(value, -1.0, 1.0) * 28000.0) as Int
+    if sample < 0 { sample = sample + 65536 }
+    fin offset = Long(44) + (frame * 2) as Long
+    azPoke8(bytes, offset, sample % 256)
+    azPoke8(bytes, offset + Long(1), (sample / 256) % 256)
+}
+
+func soundtrackSample(frame: Int): Double {
+    fin t = (frame as Double) / (sampleRate as Double)
+    fin section = (frame / (sampleRate * 2)) % 4
+    var root = 55.0
+    if section == 1 { root = 65.41 }
+    if section == 2 { root = 73.42 }
+    if section == 3 { root = 49.0 }
+    var chord = sin(t * PI * 2.0 * root) * 0.34
+    chord = chord + sin(t * PI * 2.0 * root * 1.5) * 0.18
+    chord = chord + sin(t * PI * 2.0 * root * 2.0) * 0.11
+    fin beatFrame = frame % (sampleRate / 2)
+    var beat = 0.0
+    if beatFrame < 1500 {
+        fin envelope = 1.0 - (beatFrame as Double) / 1500.0
+        beat = sin(t * PI * 2.0 * 44.0) * envelope * 0.30
+    }
+    return (chord + beat) * 0.62
+}
+
+func engineSample(frame: Int): Double {
+    fin t = (frame as Double) / (sampleRate as Double)
+    fin fundamental = sin(t * PI * 2.0 * 78.0) * 0.48
+    fin combustion = sin(t * PI * 2.0 * 156.0) * 0.24
+    fin mechanical = sin(t * PI * 2.0 * 312.0) * 0.10
+    return fundamental + combustion + mechanical
+}
+
+func crashSample(frame: Int, frameCount: Int): Double {
+    fin t = (frame as Double) / (frameCount as Double)
+    fin noise = ((((frame * 97) % 200) - 100) as Double) / 100.0
+    fin metal = sin((frame as Double) * 0.37) * 0.35
+    fin envelope = (1.0 - t) * (1.0 - t)
+    return (noise * 0.72 + metal) * envelope
+}
+
+func wavePlayer(kind: Int): Long {
+    var frameCount = sampleRate
+    if kind == SOUNDTRACK { frameCount = sampleRate * 8 }
+    if kind == crashEffect { frameCount = (sampleRate * 45) / 100 }
+    fin dataSize = frameCount * 2
+    fin totalSize = dataSize + 44
+    fin bytes = azAlloc(totalSize as Long)
+    pokeWaveHeader(bytes, dataSize)
+
+    var frame = 0
+    while frame < frameCount {
+        var sample = 0.0
+        if kind == SOUNDTRACK { sample = soundtrackSample(frame) }
+        if kind == engineLoop { sample = engineSample(frame) }
+        if kind == crashEffect { sample = crashSample(frame, frameCount) }
+        pokeSample(bytes, frame, sample)
+        frame = frame + 1
     }
 
-    func pokeWaveHeader(bytes: Long, dataSize: Int) {
-        azPoke8(bytes, Long(0), 82)
-        azPoke8(bytes, Long(1), 73)
-        azPoke8(bytes, Long(2), 70)
-        azPoke8(bytes, Long(3), 70)
-        azPoke32(bytes, Long(4), dataSize + 36)
-        azPoke8(bytes, Long(8), 87)
-        azPoke8(bytes, Long(9), 65)
-        azPoke8(bytes, Long(10), 86)
-        azPoke8(bytes, Long(11), 69)
-        azPoke8(bytes, Long(12), 102)
-        azPoke8(bytes, Long(13), 109)
-        azPoke8(bytes, Long(14), 116)
-        azPoke8(bytes, Long(15), 32)
-        azPoke32(bytes, Long(16), 16)
-        azPoke8(bytes, Long(20), 1)
-        azPoke8(bytes, Long(21), 0)
-        azPoke8(bytes, Long(22), 1)
-        azPoke8(bytes, Long(23), 0)
-        azPoke32(bytes, Long(24), sampleRate)
-        azPoke32(bytes, Long(28), sampleRate * 2)
-        azPoke8(bytes, Long(32), 2)
-        azPoke8(bytes, Long(33), 0)
-        azPoke8(bytes, Long(34), 16)
-        azPoke8(bytes, Long(35), 0)
-        azPoke8(bytes, Long(36), 100)
-        azPoke8(bytes, Long(37), 97)
-        azPoke8(bytes, Long(38), 116)
-        azPoke8(bytes, Long(39), 97)
-        azPoke32(bytes, Long(40), dataSize)
+    fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as Long)
+    fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, Long(0))
+    azFree(bytes)
+    if player != Long(0) {
+        send1(player, sel("setEnableRate:"), Long(1))
+        send0(player, sel("prepareToPlay"))
     }
+    return player
+}
 
-    func pokeSample(bytes: Long, frame: Int, value: Double) {
-        var sample = (clamp(value, -1.0, 1.0) * 28000.0) as Int
-        if sample < 0 { sample = sample + 65536 }
-        fin offset = Long(44) + (frame * 2) as Long
-        azPoke8(bytes, offset, sample % 256)
-        azPoke8(bytes, offset + Long(1), (sample / 256) % 256)
+func scene(): AudioScene {
+    return AudioScene(wavePlayer(SOUNDTRACK), wavePlayer(engineLoop), wavePlayer(crashEffect), false)
+}
+
+func start(scene: AudioScene) {
+    if scene.soundtrack != Long(0) {
+        send1(scene.soundtrack, sel("setNumberOfLoops:"), Long(1000000))
+        fin volume = azSendFloat1(scene.soundtrack, sel("setVolume:"), 0.20)
+        send0(scene.soundtrack, sel("play"))
     }
-
-    func soundtrackSample(frame: Int): Double {
-        fin t = (frame as Double) / (sampleRate as Double)
-        fin section = (frame / (sampleRate * 2)) % 4
-        var root = 55.0
-        if section == 1 { root = 65.41 }
-        if section == 2 { root = 73.42 }
-        if section == 3 { root = 49.0 }
-        var chord = sin(t * PI * 2.0 * root) * 0.34
-        chord = chord + sin(t * PI * 2.0 * root * 1.5) * 0.18
-        chord = chord + sin(t * PI * 2.0 * root * 2.0) * 0.11
-        fin beatFrame = frame % (sampleRate / 2)
-        var beat = 0.0
-        if beatFrame < 1500 {
-            fin envelope = 1.0 - (beatFrame as Double) / 1500.0
-            beat = sin(t * PI * 2.0 * 44.0) * envelope * 0.30
-        }
-        return (chord + beat) * 0.62
+    if scene.engineLoop != Long(0) {
+        send1(scene.engineLoop, sel("setNumberOfLoops:"), Long(1000000))
+        fin volume = azSendFloat1(scene.engineLoop, sel("setVolume:"), 0.0)
+        fin rate = azSendFloat1(scene.engineLoop, sel("setRate:"), 0.72)
+        send0(scene.engineLoop, sel("play"))
     }
+    scene.running = true
+}
 
-    func engineSample(frame: Int): Double {
-        fin t = (frame as Double) / (sampleRate as Double)
-        fin fundamental = sin(t * PI * 2.0 * 78.0) * 0.48
-        fin combustion = sin(t * PI * 2.0 * 156.0) * 0.24
-        fin mechanical = sin(t * PI * 2.0 * 312.0) * 0.10
-        return fundamental + combustion + mechanical
-    }
+func updateEngine(scene: AudioScene, speed: Double, throttle: Double, maxSpeed: Double) {
+    if !scene.running || scene.engineLoop == Long(0) { return }
+    fin speedRatio = clamp(speed / maxSpeed, 0.0, 1.0)
+    fin load = clamp(throttle, 0.0, 1.0)
+    fin volume = clamp(0.035 + speedRatio * 0.34 + load * 0.22, 0.0, 0.58)
+    fin rate = 0.72 + speedRatio * 1.20 + load * 0.16
+    fin unusedVolume = azSendFloat1(scene.engineLoop, sel("setVolume:"), volume)
+    fin unusedRate = azSendFloat1(scene.engineLoop, sel("setRate:"), rate)
+}
 
-    func crashSample(frame: Int, frameCount: Int): Double {
-        fin t = (frame as Double) / (frameCount as Double)
-        fin noise = ((((frame * 97) % 200) - 100) as Double) / 100.0
-        fin metal = sin((frame as Double) * 0.37) * 0.35
-        fin envelope = (1.0 - t) * (1.0 - t)
-        return (noise * 0.72 + metal) * envelope
-    }
+func playCrash(scene: AudioScene, strength: Double) {
+    if scene.crashEffect == Long(0) { return }
+    fin restart = azSendF1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
+    fin volume = azSendFloat1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
+    send0(scene.crashEffect, sel("play"))
+}
 
-    func wavePlayer(kind: Int): Long {
-        var frameCount = sampleRate
-        if kind == SOUNDTRACK { frameCount = sampleRate * 8 }
-        if kind == crashEffect { frameCount = (sampleRate * 45) / 100 }
-        fin dataSize = frameCount * 2
-        fin totalSize = dataSize + 44
-        fin bytes = azAlloc(totalSize as Long)
-        pokeWaveHeader(bytes, dataSize)
-
-        var frame = 0
-        while frame < frameCount {
-            var sample = 0.0
-            if kind == SOUNDTRACK { sample = soundtrackSample(frame) }
-            if kind == engineLoop { sample = engineSample(frame) }
-            if kind == crashEffect { sample = crashSample(frame, frameCount) }
-            pokeSample(bytes, frame, sample)
-            frame = frame + 1
-        }
-
-        fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, totalSize as Long)
-        fin player = send2(send0(cls("AVAudioPlayer"), sel("alloc")), sel("initWithData:error:"), data, Long(0))
-        azFree(bytes)
-        if player != Long(0) {
-            send1(player, sel("setEnableRate:"), Long(1))
-            send0(player, sel("prepareToPlay"))
-        }
-        return player
-    }
-
-    func scene(): AudioScene {
-        return AudioScene(wavePlayer(SOUNDTRACK), wavePlayer(engineLoop), wavePlayer(crashEffect), false)
-    }
-
-    func start(scene: AudioScene) {
-        if scene.soundtrack != Long(0) {
-            send1(scene.soundtrack, sel("setNumberOfLoops:"), Long(1000000))
-            fin volume = azSendFloat1(scene.soundtrack, sel("setVolume:"), 0.20)
-            send0(scene.soundtrack, sel("play"))
-        }
-        if scene.engineLoop != Long(0) {
-            send1(scene.engineLoop, sel("setNumberOfLoops:"), Long(1000000))
-            fin volume = azSendFloat1(scene.engineLoop, sel("setVolume:"), 0.0)
-            fin rate = azSendFloat1(scene.engineLoop, sel("setRate:"), 0.72)
-            send0(scene.engineLoop, sel("play"))
-        }
-        scene.running = true
-    }
-
-    func updateEngine(scene: AudioScene, speed: Double, throttle: Double, maxSpeed: Double) {
-        if !scene.running || scene.engineLoop == Long(0) { return }
-        fin speedRatio = clamp(speed / maxSpeed, 0.0, 1.0)
-        fin load = clamp(throttle, 0.0, 1.0)
-        fin volume = clamp(0.035 + speedRatio * 0.34 + load * 0.22, 0.0, 0.58)
-        fin rate = 0.72 + speedRatio * 1.20 + load * 0.16
-        fin unusedVolume = azSendFloat1(scene.engineLoop, sel("setVolume:"), volume)
-        fin unusedRate = azSendFloat1(scene.engineLoop, sel("setRate:"), rate)
-    }
-
-    func playCrash(scene: AudioScene, strength: Double) {
-        if scene.crashEffect == Long(0) { return }
-        fin restart = azSendF1(scene.crashEffect, sel("setCurrentTime:"), 0.0)
-        fin volume = azSendFloat1(scene.crashEffect, sel("setVolume:"), clamp(strength, 0.18, 1.0))
-        send0(scene.crashEffect, sel("play"))
-    }
-
-    func stop(scene: AudioScene) {
-        if scene.soundtrack != Long(0) { send0(scene.soundtrack, sel("stop")) }
-        if scene.engineLoop != Long(0) { send0(scene.engineLoop, sel("stop")) }
-        if scene.crashEffect != Long(0) { send0(scene.crashEffect, sel("stop")) }
-        scene.running = false
-    }
+func stop(scene: AudioScene) {
+    if scene.soundtrack != Long(0) { send0(scene.soundtrack, sel("stop")) }
+    if scene.engineLoop != Long(0) { send0(scene.engineLoop, sel("stop")) }
+    if scene.crashEffect != Long(0) { send0(scene.crashEffect, sel("stop")) }
+    scene.running = false
 }
 
 // ── Sample playback ──────────────────────────────────────────────────────

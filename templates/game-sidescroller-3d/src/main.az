@@ -240,14 +240,14 @@ func resetSession(
 
 func readMoveInput(app: App): Double {
     var movement: Double = 0.0
-    if app.keyDown(keyA) || app.keyDown(keyArrowLeft) {
+    if app.keyDown(.A) || app.keyDown(.Left) {
         movement = movement - 1.0
     }
-    if app.keyDown(keyD) || app.keyDown(keyArrowRight) {
+    if app.keyDown(.D) || app.keyDown(.Right) {
         movement = movement + 1.0
     }
     if app.controllerConnected(0) {
-        fin axis = app.controllerAxis(0, GamepadAxis.LeftX as Int)
+        fin axis = app.controllerAxis(0, .LeftX)
         if absReal(axis) > 0.18 {
             movement = axis
         }
@@ -256,10 +256,10 @@ func readMoveInput(app: App): Double {
 }
 
 func jumpPressed(app: App): Bool {
-    if app.keyPressed(keySpace) || app.keyPressed(keyArrowUp) {
+    if app.keyPressed(.Space) || app.keyPressed(.Up) {
         return true
     }
-    return app.controllerConnected(0) && app.controllerButtonValue(0, GamepadButton.South as Int) > 0.5
+    return app.controllerConnected(0) && app.controllerButtonValue(0, .South) > 0.5
 }
 
 func updateWalkers(walkers: Storage<Walker>, dt: Double) {
@@ -289,7 +289,7 @@ func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>
         fin entity = storageEntityAt<Platform>(platforms, i)
         if entity.isValid {
             fin platform: Platform = storageValueAt<Platform>(platforms, i)
-            fin contact = engine::physics::aabbContact(position, playerHalf(), platform.center, platform.halfSize)
+            fin contact = aabbContact(position, playerHalf(), platform.center, platform.halfSize)
             if contact.hit {
                 if contact.normal.y > 0.5 && velocity.y <= 0.0 {
                     position.y = position.y + contact.penetration
@@ -323,7 +323,7 @@ func collectCoins(
         if entity.isValid {
             fin coin: Coin = storageValueAt<Coin>(coins, i)
             if !coin.collected {
-                fin hit = engine::physics::aabbOverlaps(
+                fin hit = aabbOverlaps(
                     position,
                     playerHalf(),
                     coin.center,
@@ -346,7 +346,7 @@ func hitWalker(position: Vec3, walkers: Storage<Walker>): Bool {
         fin entity = storageEntityAt<Walker>(walkers, i)
         if entity.isValid {
             fin walker: Walker = storageValueAt<Walker>(walkers, i)
-            if engine::physics::aabbOverlaps(
+            if aabbOverlaps(
                 position,
                 playerHalf(),
                 walker.center,
@@ -431,10 +431,10 @@ func updatePlayer(
         player.invulnerableFor = 1.1
         player.velocity.x = 0.0 - player.facing * 7.5
         player.velocity.y = 6.5
-        engine::audio::playCrash(audio, 0.45)
+        playCrash(audio, 0.45)
     }
 
-    engine::audio::updateEngine(audio, absReal(player.velocity.x), absReal(movement), moveSpeed)
+    updateEngine(audio, absReal(player.velocity.x), absReal(movement), moveSpeed)
     return transform.translation.y > -10.0 && player.health > 0
 }
 
@@ -627,8 +627,8 @@ async func main() {
         return
     }
 
-    var audio = engine::audio::scene()
-    engine::audio::start(audio)
+    var audio = scene()
+    start(audio)
 
     app.setClearColor(0.48, 0.68, 0.90)
     app.setLightDirection(-0.55, 0.82, 0.28)
@@ -674,14 +674,14 @@ async func main() {
 
             fin current: GameRoute = route.current
             if current == GameRoute.Menu {
-                engine::audio::updateEngine(audio, 0.0, 0.0, moveSpeed)
+                updateEngine(audio, 0.0, 0.0, moveSpeed)
                 drawMenuScene(app, cube, session.elapsed)
                 fin action = drawMenu(app, session.bestScore)
-                if action == 1 || app.keyPressed(keyEnter) {
+                if action == 1 || app.keyPressed(.Enter) {
                     resetSession(playerEntity, players, transforms, coins, walkers, score, session)
                     route.replace(GameRoute.Playing)
                 }
-                if action == 2 || app.keyPressed(keyEscape) {
+                if action == 2 || app.keyPressed(.Escape) {
                     app.quit()
                 }
             }
@@ -708,14 +708,14 @@ async func main() {
                 renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
                 drawHud(app, player, score)
 
-                if app.keyPressed(keyEscape) {
+                if app.keyPressed(.Escape) {
                     route.push(GameRoute.Paused)
                 }
                 if !alive {
                     if player.score > session.bestScore {
                         session.bestScore = player.score
                     }
-                    engine::audio::playCrash(audio, 0.8)
+                    playCrash(audio, 0.8)
                     route.replace(GameRoute.GameOver)
                 }
             }
@@ -727,9 +727,9 @@ async func main() {
                 app.applyCamera(camera)
                 renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
                 drawHud(app, player, score)
-                engine::audio::updateEngine(audio, 0.0, 0.0, moveSpeed)
+                updateEngine(audio, 0.0, 0.0, moveSpeed)
                 fin action = drawPause(app)
-                if action == 1 || app.keyPressed(keyEscape) {
+                if action == 1 || app.keyPressed(.Escape) {
                     route.pop()
                 }
                 if action == 2 {
@@ -742,13 +742,13 @@ async func main() {
                 camera.pos = Vec3(session.cameraX, 3.6, 12.0)
                 app.applyCamera(camera)
                 renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
-                engine::audio::updateEngine(audio, 0.0, 0.0, moveSpeed)
+                updateEngine(audio, 0.0, 0.0, moveSpeed)
                 fin action = drawGameOver(app, player.score, session.bestScore)
-                if action == 1 || app.keyPressed(keyEnter) {
+                if action == 1 || app.keyPressed(.Enter) {
                     resetSession(playerEntity, players, transforms, coins, walkers, score, session)
                     route.replace(GameRoute.Playing)
                 }
-                if action == 2 || app.keyPressed(keyEscape) {
+                if action == 2 || app.keyPressed(.Escape) {
                     route.popToRoot()
                 }
             }
@@ -757,7 +757,7 @@ async func main() {
         }
     }
 
-    engine::audio::stop(audio)
+    stop(audio)
     navigationDisplay.destroy()
     app.shutdown()
 }

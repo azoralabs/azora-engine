@@ -306,13 +306,13 @@ func touchPhase(index: Int): Int = engineInputTouchPhase(index)
 /** Number of connected standard-mapped controllers. */
 func controllerCount(): Int = engineInputControllerCount()
 func controllerConnected(index: Int): Bool = engineInputControllerConnected(index)
-func controllerButtonDown(index: Int, button: MouseButton): Bool =
+func controllerButtonDown(index: Int, button: GamepadButton): Bool =
     engineInputControllerButtonDown(index, button.value)
-func controllerButtonPressed(index: Int, button: MouseButton): Bool =
+func controllerButtonPressed(index: Int, button: GamepadButton): Bool =
     engineInputControllerButtonPressed(index, button.value)
-func controllerButtonReleased(index: Int, button: MouseButton): Bool =
+func controllerButtonReleased(index: Int, button: GamepadButton): Bool =
     engineInputControllerButtonReleased(index, button.value)
-func controllerButtonValue(index: Int, button: MouseButton): Double =
+func controllerButtonValue(index: Int, button: GamepadButton): Double =
     engineInputControllerButtonValue(index, button.value)
 func controllerAxis(index: Int, axis: GamepadAxis): Double = engineInputControllerAxis(index, axis.value)
 
@@ -373,7 +373,7 @@ impl MouseInput {
 }
 
 impl PointerInput {
-    prop &.kind: PointerKind = pointerKindFromValue(engineInputPointerKind())
+    prop &.kind: PointerKind = engineInputPointerKind() as? PointerKind ?? .Mouse
     prop &.id: Int = engineInputPointerId()
     prop &.x: Double = engineInputPointerX()
     prop &.y: Double = engineInputPointerY()
@@ -389,9 +389,8 @@ impl TouchInput {
     prop &.size: Int = engineInputTouchCount()
 
     func &.at(index: Int): TouchPoint
-    in {
-        assert index >= 0 && index < self.size panic "Touch index out of bounds"
-    } = .(
+    in assert index >= 0 && index < self.size panic "Touch index out of bounds"
+    scope = .(
         engineInputTouchId(index),
         engineInputTouchX(index),
         engineInputTouchY(index),
@@ -400,7 +399,7 @@ impl TouchInput {
         engineInputTouchPressure(index),
         engineInputTouchRadiusX(index),
         engineInputTouchRadiusY(index),
-        touchPhaseFromValue(engineInputTouchPhase(index))
+        engineInputTouchPhase(index) as? TouchPhase ?? .None
     )
 }
 
@@ -408,23 +407,23 @@ impl GamepadInput {
     prop &.connected: Bool = engineInputControllerConnected(self._index)
 
     func &.pressed(button: GamepadButton): Bool {
-        return engineInputControllerButtonDown(self._index, gamepadButtonValue(button))
+        return engineInputControllerButtonDown(self._index, button.value)
     }
 
     func &.justPressed(button: GamepadButton): Bool {
-        return engineInputControllerButtonPressed(self._index, gamepadButtonValue(button))
+        return engineInputControllerButtonPressed(self._index, button.value)
     }
 
     func &.justReleased(button: GamepadButton): Bool {
-        return engineInputControllerButtonReleased(self._index, gamepadButtonValue(button))
+        return engineInputControllerButtonReleased(self._index, button.value)
     }
 
     func &.value(button: GamepadButton): Double {
-        return engineInputControllerButtonValue(self._index, gamepadButtonValue(button))
+        return engineInputControllerButtonValue(self._index, button.value)
     }
 
     func &.axis(axis: GamepadAxis): Double {
-        return engineInputControllerAxis(self._index, gamepadAxisValue(axis))
+        return engineInputControllerAxis(self._index, axis.value)
     }
 
     func &.rumble(low: Double, high: Double, durationMs: Int = 180): Bool {

@@ -109,14 +109,10 @@ impl Ui {
     }
 
     /** Whether [key] is held this frame. */
-    func &.keyDown(key: Int): Bool {
-        return self.app.keyDown(key)
-    }
+    func &.keyDown(key: KeyCode): Bool = self.app.keyDown(key)
 
     /** Whether [key] went down this frame. */
-    func &.keyPressed(key: Int): Bool {
-        return self.app.keyPressed(key)
-    }
+    func &.keyPressed(key: KeyCode): Bool = self.app.keyPressed(key)
 
     /**
      * Whether the system in [slot] is due this frame, per [interval].
@@ -455,21 +451,19 @@ react func dispatch(phase: SystemPhase, ui: Ui!) {
  * keeps `remember` state across frames, which is where an application's own
  * state lives when it is small enough not to want a resource.
  */
-scope engine {
-    /**
-     * Opens a window and runs the application until it closes.
-     *
-     * The whole of an application's `main`:
-     *
-     * ```azora
-     * func main() {
-     *     engine::run("My App", 1000, 680)
-     * }
-     * ```
-     */
-    react func run(title: String, width: Int, height: Int) {
-        runUiColored(title, width, height, 0.07, 0.08, 0.10)
-    }
+/**
+ * Opens a window and runs the application until it closes.
+ *
+ * The whole of an application's `main`:
+ *
+ * ```azora
+ * func main() {
+ *     run("My App", 1000, 680)
+ * }
+ * ```
+ */
+react func run(title: String, width: Int, height: Int) {
+    runUiColored(title, width, height, 0.07, 0.08, 0.10)
 }
 
 /** [runUi] with an explicit background colour. */
@@ -553,7 +547,7 @@ react func runUiColored(
         // Hit-testing before the systems run, so a system sees this frame's
         // click rather than the previous one's.
         ui.action = 0
-        if ui.app.mouseClicked(mouseLeft) {
+        if ui.app.mouseClicked(.Left) {
             ui.action = pass.hit(ui.app.mouseX(), ui.app.mouseY())
         }
 
@@ -564,10 +558,10 @@ react func runUiColored(
         // that exists yet - and is what the user was looking at when they
         // scrolled.
         var keyScroll: Double = 0.0
-        if ui.keyDown(keyArrowDown) {
+        if ui.keyDown(.Down) {
             keyScroll = 12.0
         }
-        if ui.keyDown(keyArrowUp) {
+        if ui.keyDown(.Up) {
             keyScroll = 0.0 - 12.0
         }
         pass.applyScroll(ui.app.mouseX(),

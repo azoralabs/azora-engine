@@ -28,112 +28,110 @@ import engine.shaders
  * @since 0.0.4
  */
 
-scope engine {
-    /** Rendering device selected for the current compilation target. */
-    @Experimental(since: "0.1")
-    enum RenderBackend {
-        Metal,
-        Vulkan,
-        WebGL
-    }
+/** Rendering device selected for the current compilation target. */
+@Experimental(since: "0.1")
+enum RenderBackend {
+    Metal,
+    Vulkan,
+    WebGL
+}
 
-    /** Dimensionality of the active rendering surface. */
-    @Experimental(since: "0.1")
-    enum RenderMode {
-        TwoD,
-        ThreeD
-    }
+/** Dimensionality of the active rendering surface. */
+@Experimental(since: "0.1")
+enum RenderMode {
+    TwoD,
+    ThreeD
+}
 
-    /*
-     * Internal WebAssembly device ABI. The WebGL backend implements these as
-     * typed WASM imports; public engine behavior remains in Azora below.
-     */
-    bridge [.WebAssembly] {
-        func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
-        func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
-        func engineWebNextFrame(): Double
-        func engineWebPresent(): Unit
-        func engineWebClear(r: Double, g: Double, b: Double): Unit
-        func engineWebRect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double): Unit
-        func engineWebCircle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double): Unit
-        func engineWebCubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double): Unit
-        func engineWebCamera(distance: Double, fov: Double): Unit
-        func engineWebLog(message: String): Unit
-    }
+/*
+ * Internal WebAssembly device ABI. The WebGL backend implements these as
+ * typed WASM imports; public engine behavior remains in Azora below.
+ */
+bridge .WebAssembly {
+    func engineWebOpen2d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+    func engineWebOpen3d(width: Int, height: Int, vertexShader: String, fragmentShader: String): Unit
+    func engineWebNextFrame(): Double
+    func engineWebPresent(): Unit
+    func engineWebClear(r: Double, g: Double, b: Double): Unit
+    func engineWebRect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double): Unit
+    func engineWebCircle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double): Unit
+    func engineWebCubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double): Unit
+    func engineWebCamera(distance: Double, fov: Double): Unit
+    func engineWebLog(message: String): Unit
+}
 
-    /** Returns the rendering backend used by a WebAssembly build. */
-    @Experimental(since: "0.1")
-    prop renderBackend: RenderBackend = RenderBackend.WebGL
+/** Returns the rendering backend used by a WebAssembly build. */
+@Experimental(since: "0.1")
+prop renderBackend: RenderBackend = RenderBackend.WebGL
 
-    /** Opens a resolution-independent 2D surface. Call once from `main`. */
-    @Experimental(since: "0.1")
-    func run2d(width: Int, height: Int) {
-        engineWebOpen2d(width, height, webgl2dVertexShaderSource(), webgl2dFragmentShaderSource())
-    }
+/** Opens a resolution-independent 2D surface. Call once from `main`. */
+@Experimental(since: "0.1")
+func run2d(width: Int, height: Int) {
+    engineWebOpen2d(width, height, webgl2dVertexShaderSource(), webgl2dFragmentShaderSource())
+}
 
-    /** Opens a hardware-accelerated 3D surface. Call once from `main`. */
-    @Experimental(since: "0.1")
-    func run3d(width: Int, height: Int) {
-        engineWebOpen3d(width, height, webgl3dVertexShaderSource(), webgl3dFragmentShaderSource())
-    }
+/** Opens a hardware-accelerated 3D surface. Call once from `main`. */
+@Experimental(since: "0.1")
+func run3d(width: Int, height: Int) {
+    engineWebOpen3d(width, height, webgl3dVertexShaderSource(), webgl3dFragmentShaderSource())
+}
 
-    /** Suspends the current task until the display is ready for another frame. */
-    @Experimental(since: "0.1")
-    async func nextFrame(): Double {
-        return engineWebNextFrame()
-    }
+/** Suspends the current task until the display is ready for another frame. */
+@Experimental(since: "0.1")
+async func nextFrame(): Double {
+    return engineWebNextFrame()
+}
 
-    /** Submits the commands recorded since [nextFrame] to the active device. */
-    @Experimental(since: "0.1")
-    func present() {
-        engineWebPresent()
-    }
+/** Submits the commands recorded since [nextFrame] to the active device. */
+@Experimental(since: "0.1")
+func present() {
+    engineWebPresent()
+}
 
-    /** Clears the active frame with a linear RGB color. */
-    @Experimental(since: "0.1")
-    func clear(r: Double, g: Double, b: Double) {
-        engineWebClear(r, g, b)
-    }
+/** Clears the active frame with a linear RGB color. */
+@Experimental(since: "0.1")
+func clear(r: Double, g: Double, b: Double) {
+    engineWebClear(r, g, b)
+}
 
-    /** Draws a filled rectangle in logical 2D coordinates. */
-    @Experimental(since: "0.1")
-    func rect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
-        engineWebRect(x, y, width, height, r, g, b, a)
-    }
+/** Draws a filled rectangle in logical 2D coordinates. */
+@Experimental(since: "0.1")
+func rect(x: Double, y: Double, width: Double, height: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
+    engineWebRect(x, y, width, height, r, g, b, a)
+}
 
-    /** Draws a filled circle in logical 2D coordinates. */
-    @Experimental(since: "0.1")
-    func circle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
-        engineWebCircle(x, y, radius, r, g, b, a)
-    }
+/** Draws a filled circle in logical 2D coordinates. */
+@Experimental(since: "0.1")
+func circle(x: Double, y: Double, radius: Double, r: Double, g: Double, b: Double, a: Double = 1.0) {
+    engineWebCircle(x, y, radius, r, g, b, a)
+}
 
-    /** Draws or updates a lit cube. Rotation angles are radians. */
-    @Experimental(since: "0.1")
-    func cube(size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
-        engineWebCubeAt(0.0, 0.0, 0.0, size, rotateX, rotateY, rotateZ, r, g, b)
-    }
+/** Draws or updates a lit cube. Rotation angles are radians. */
+@Experimental(since: "0.1")
+func cube(size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
+    engineWebCubeAt(0.0, 0.0, 0.0, size, rotateX, rotateY, rotateZ, r, g, b)
+}
 
-    /** Draws or updates a lit cube at the given world-space position. */
-    @Experimental(since: "0.1")
-    func cubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
-        engineWebCubeAt(x, y, z, size, rotateX, rotateY, rotateZ, r, g, b)
-    }
+/** Draws or updates a lit cube at the given world-space position. */
+@Experimental(since: "0.1")
+func cubeAt(x: Double, y: Double, z: Double, size: Double, rotateX: Double, rotateY: Double, rotateZ: Double, r: Double, g: Double, b: Double) {
+    engineWebCubeAt(x, y, z, size, rotateX, rotateY, rotateZ, r, g, b)
+}
 
-    /** Configures the perspective camera for the active 3D surface. */
-    @Experimental(since: "0.1")
-    func camera(distance: Double, fov: Double = 48.0) {
-        engineWebCamera(distance, fov)
-    }
+/** Configures the perspective camera for the active 3D surface. */
+@Experimental(since: "0.1")
+func camera(distance: Double, fov: Double = 48.0) {
+    engineWebCamera(distance, fov)
+}
 
-    /** Returns a smooth sine wave for procedural animation. */
-    @Experimental(since: "0.1")
-    func wave(time: Double, amplitude: Double = 1.0, speed: Double = 1.0): Double {
-        return sin(time * speed) * amplitude
-    }
+/** Returns a smooth sine wave for procedural animation. */
+@Experimental(since: "0.1")
+func wave(time: Double, amplitude: Double = 1.0, speed: Double = 1.0): Double {
+    return sin(time * speed) * amplitude
+}
 
-    /** Writes a message to the engine console. */
-    @Experimental(since: "0.1")
-    func log(message: String) {
-        engineWebLog(message)
-    }
+/** Writes a message to the engine console. */
+@Experimental(since: "0.1")
+func log(message: String) {
+    engineWebLog(message)
 }

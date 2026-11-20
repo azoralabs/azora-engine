@@ -124,7 +124,7 @@ func defaultCar(): Car {
         0.0,
         colorRgb(0.90, 0.22, 0.26),
         false,
-        engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+        box(Vec3(0.95, 0.65, 1.8)),
         -1,
         0,
         0.0,
@@ -194,7 +194,7 @@ impl Car {
 // ── City construction ─────────────────────────────────────────────────────
 
 func addCityPiece(world: World, props: Storage<Prop>, pos: Vec3, scale: Vec3, color: Color, solid: Bool) {
-    spawnWith<Prop>(world, props, Prop(pos, scale, color, solid, engine::physics::box(scale.scale(0.5))))
+    spawnWith<Prop>(world, props, Prop(pos, scale, color, solid, box(scale.scale(0.5))))
 }
 
 func addTree(world: World, props: Storage<Prop>, x: Double, z: Double, height: Double) {
@@ -502,7 +502,7 @@ pack DriveInput {
 // True while the pointer is held down inside the rectangle (unlike `button`,
 // which fires once per click) — the basis for hold-to-drive touch pedals.
 func padHeld(app: App, x: Double, y: Double, w: Double, h: Double): Bool {
-    return app.hovered(x, y, w, h) && app.mouseDown(mouseLeft)
+    return app.hovered(x, y, w, h) && app.mouseDown(.Left)
 }
 
 func drawPad(app: App, label: String, x: Double, y: Double, w: Double, h: Double, r: Double, g: Double, b: Double): Bool {
@@ -537,15 +537,15 @@ func gatherInput(app: App): DriveInput {
     var throttle: Double = 0.0
     var steer: Double = 0.0
 
-    if app.keyDown(keyArrowUp) || app.keyDown(keyW) { throttle = throttle + 1.0 }
-    if app.keyDown(keyArrowDown) || app.keyDown(keyS) { throttle = throttle - 1.0 }
-    if app.keyDown(keyArrowLeft) || app.keyDown(keyA) { steer = steer + 1.0 }
-    if app.keyDown(keyArrowRight) || app.keyDown(keyD) { steer = steer - 1.0 }
+    if app.keyDown(.Up) || app.keyDown(.W) { throttle = throttle + 1.0 }
+    if app.keyDown(.Down) || app.keyDown(.S) { throttle = throttle - 1.0 }
+    if app.keyDown(.Left) || app.keyDown(.A) { steer = steer + 1.0 }
+    if app.keyDown(.Right) || app.keyDown(.D) { steer = steer - 1.0 }
 
     if app.controllerConnected(0) {
-        throttle = throttle + app.controllerButtonValue(0, gamepadRightTrigger)
-        throttle = throttle - app.controllerButtonValue(0, gamepadLeftTrigger)
-        steer = steer - app.controllerAxis(0, gamepadLeftX)
+        throttle = throttle + app.controllerButtonValue(0, .RightTrigger)
+        throttle = throttle - app.controllerButtonValue(0, .LeftTrigger)
+        steer = steer - app.controllerAxis(0, .LeftX)
     }
 
     fin bottom = (app.height() as Double) - 96.0
@@ -728,9 +728,9 @@ func driveTrafficCar(car: Car, cars: Storage<Car>, routes: Array<TrafficRoute>, 
 func streamedBuildingContact(car: Car): Contact {
     fin gx = nearestBlockCoord(car.pos.x)
     fin gz = nearestBlockCoord(car.pos.z)
-    if gx <= (0 - cityHalfBlocks) || gx >= cityHalfBlocks { return engine::physics::noContact() }
-    if gz <= (0 - cityHalfBlocks) || gz >= cityHalfBlocks { return engine::physics::noContact() }
-    if isLandmarkBlock(gx, gz) { return engine::physics::noContact() }
+    if gx <= (0 - cityHalfBlocks) || gx >= cityHalfBlocks { return noContact() }
+    if gz <= (0 - cityHalfBlocks) || gz >= cityHalfBlocks { return noContact() }
+    if isLandmarkBlock(gx, gz) { return noContact() }
 
     fin cx = (gx as Double) * blockStep
     fin cz = (gz as Double) * blockStep
@@ -738,18 +738,18 @@ func streamedBuildingContact(car: Car): Contact {
     fin h2 = streamedBuildingHeight(gx, gz, true)
     fin scale1 = Vec3(6.25, h1, 11.8)
     fin scale2 = Vec3(6.25, h2, 11.8)
-    fin first = engine::physics::colliderContact(
+    fin first = colliderContact(
         car.pos,
         car.collider,
         Vec3(cx - 3.55, h1 * 0.5 + 0.20, cz),
-        engine::physics::box(scale1.scale(0.5)),
+        box(scale1.scale(0.5)),
     )
     if first.hit { return first }
-    return engine::physics::colliderContact(
+    return colliderContact(
         car.pos,
         car.collider,
         Vec3(cx + 3.55, h2 * 0.5 + 0.20, cz),
-        engine::physics::box(scale2.scale(0.5)),
+        box(scale2.scale(0.5)),
     )
 }
 
@@ -761,13 +761,13 @@ func buildingContact(car: Car, props: Storage<Prop>): Contact {
         if storageEntityAt<Prop>(props, i).isValid {
             fin piece: Prop = storageValueAt<Prop>(props, i)
             if piece.solid {
-                fin contact = engine::physics::colliderContact(car.pos, car.collider, piece.pos, piece.collider)
+                fin contact = colliderContact(car.pos, car.collider, piece.pos, piece.collider)
                 if contact.hit { return contact }
             }
         }
         i = i + 1
     }
-    return engine::physics::noContact()
+    return noContact()
 }
 
 func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
@@ -775,7 +775,7 @@ func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
     while i < storageLength<Car>(cars) {
         if i != selfIndex && storageEntityAt<Car>(cars, i).isValid {
             fin other: Car = storageValueAt<Car>(cars, i)
-            fin contact = engine::physics::colliderContact(car.pos, car.collider, other.pos, other.collider)
+            fin contact = colliderContact(car.pos, car.collider, other.pos, other.collider)
             if contact.hit {
                 contact.bodyB = i
                 return contact
@@ -783,7 +783,7 @@ func trafficContact(car: Car, cars: Storage<Car>, selfIndex: Int): Contact {
         }
         i = i + 1
     }
-    return engine::physics::noContact()
+    return noContact()
 }
 
 func resolveCarContacts(car: Car, cars: Storage<Car>, props: Storage<Prop>, selfIndex: Int): Bool {
@@ -1074,10 +1074,10 @@ async func main() {
     if !app.ok {
         return
     }
-    var audio = engine::audio::scene()
-    engine::audio::start(audio)
+    var audio = scene()
+    start(audio)
     defer {
-        engine::audio::stop(audio)
+        stop(audio)
         app.shutdown()
     }
 
@@ -1096,7 +1096,7 @@ async func main() {
         Vec3(1.0, 1.0, 1.0),
         colorRgb(0.0, 0.0, 0.0),
         false,
-        engine::physics::box(Vec3(0.5, 0.5, 0.5)),
+        box(Vec3(0.5, 0.5, 0.5)),
     ))
     var cars = storageInit<Car>(defaultCar())
     var staticQueue = renderQueueInit()
@@ -1117,7 +1117,7 @@ async func main() {
         0.0,
         colorRgb(0.92, 0.24, 0.28),
         true,
-        engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+        box(Vec3(0.95, 0.65, 1.8)),
         -1,
         0,
         0.0,
@@ -1143,7 +1143,7 @@ async func main() {
             0.0,
             col,
             false,
-            engine::physics::box(Vec3(0.95, 0.65, 1.8)),
+            box(Vec3(0.95, 0.65, 1.8)),
             routeIndex,
             nextIndex,
             8.0 + ((a % 4) as Double) * 0.65,
@@ -1164,9 +1164,9 @@ async func main() {
             fin crashed = simulateCars(cars, props, routes, traffic, input, dt)
 
             fin player = playerCarOf(cars)
-            engine::audio::updateEngine(audio, absReal(player.speed), input.throttle, maxSpeed)
+            updateEngine(audio, absReal(player.speed), input.throttle, maxSpeed)
             if crashed {
-                engine::audio::playCrash(audio, clampReal(absReal(player.speed) / 12.0, 0.25, 1.0))
+                playCrash(audio, clampReal(absReal(player.speed) / 12.0, 0.25, 1.0))
             }
             chaseCamera(cam, player)
             app.applyCamera(cam)
@@ -1185,7 +1185,7 @@ async func main() {
             app.uiText(districtName(player.pos), 20.0, 52.0, 15.0)
             app.uiText("WASD / arrows / gamepad / touch - ESC to quit", 20.0, 76.0, 13.0)
 
-            if app.keyPressed(keyEscape) {
+            if app.keyPressed(.Escape) {
                 app.quit()
             }
             app.present()

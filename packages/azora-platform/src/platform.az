@@ -180,7 +180,7 @@ impl App {
         // Two ways to stop: this window's own quit(), and the application-wide
         // request any code can make - including a reactive effect, which has no
         // window to call quit() on.
-        if self.closing || azora::engine::exitRequested() {
+        if self.closing || exitRequested() {
             return false
         }
         // The window server may map the window a few frames late; only treat
@@ -281,21 +281,11 @@ impl App {
 
     // ── Input ───────────────────────────────────────────────────────────
 
-    /// True while the key is held down (uppercase ASCII or KEY_* constants).
-    func &.keyDown(key: Int): Bool {
-        if key < 0 || key >= 2048 {
-            return false
-        }
-        return azPeek8(self.inp.state, key as Long) != 0
-    }
+    /// True while [key] is held down.
+    func &.keyDown(key: KeyCode): Bool = azPeek8(self.inp.state, key.value as Long) != 0
 
-    /// True only on the frame the key went down.
-    func &.keyPressed(key: Int): Bool {
-        if key < 0 || key >= 2048 {
-            return false
-        }
-        return azPeek8(self.inp.state, Long(2048) + key as Long) != 0
-    }
+    /// True only on the frame [key] went down.
+    func &.keyPressed(key: KeyCode): Bool = azPeek8(self.inp.state, Long(2048) + key.value as Long) != 0
 
     /// Mouse position in window points, origin top-left.
     func &.mouseX(): Double {
@@ -309,21 +299,13 @@ impl App {
         return self.boundsSize(Long(3)) - y
     }
 
-    /// True while the mouse button is held (0 = left, 1 = right).
-    func &.mouseDown(button: Int): Bool {
-        if button < 0 || button > 2 {
-            return false
-        }
-        return azPeek8(self.inp.state, Long(4096) + button as Long) != 0
-    }
+    /// True while [button] is held; only left, right and middle are tracked.
+    func &.mouseDown(button: MouseButton): Bool =
+        button.value <= 2 && azPeek8(self.inp.state, Long(4096) + button.value as Long) != 0
 
-    /// True only on the frame the button went down.
-    func &.mouseClicked(button: Int): Bool {
-        if button < 0 || button > 2 {
-            return false
-        }
-        return azPeek8(self.inp.state, Long(4100) + button as Long) != 0
-    }
+    /// True only on the frame [button] went down.
+    func &.mouseClicked(button: MouseButton): Bool =
+        button.value <= 2 && azPeek8(self.inp.state, Long(4100) + button.value as Long) != 0
 
     /// True when a standard extended game controller exists at [index].
     func controllerConnected(index: Int): Bool {
@@ -331,7 +313,7 @@ impl App {
     }
 
     /// Analog value in the range 0..1 for a standard gamepad button.
-    func controllerButtonValue(index: Int, button: Int): Double {
+    func controllerButtonValue(index: Int, button: GamepadButton): Double {
         fin gamepad = gamepadAt(index)
         if gamepad == Long(0) {
             return 0.0
@@ -344,7 +326,7 @@ impl App {
     }
 
     /// Standard gamepad axis value in the range -1..1.
-    func controllerAxis(index: Int, axis: Int): Double {
+    func controllerAxis(index: Int, axis: GamepadAxis): Double {
         fin gamepad = gamepadAt(index)
         if gamepad == Long(0) {
             return 0.0
@@ -409,7 +391,7 @@ impl App {
                 continue
             }
             if evType == Long(11) {
-                // keyArrowUp — swallowed
+                // keyUp — swallowed
                 self.setKey(self.mapKey(ev), 0)
                 continue
             }
@@ -417,10 +399,10 @@ impl App {
                 // flagsChanged: Shift 1 << 17, Control 1 << 18, Option 1 << 19,
                 // Command 1 << 20 (NSEventModifierFlag*).
                 fin flags = send0(ev, sel("modifierFlags"))
-                self.setKey(keyShift, if (flags & Long(131072)) != Long(0) { 1 } else { 0 })
-                self.setKey(keyControl, if (flags & Long(262144)) != Long(0) { 1 } else { 0 })
-                self.setKey(keyAlt, if (flags & Long(524288)) != Long(0) { 1 } else { 0 })
-                self.setKey(keyMeta, if (flags & Long(1048576)) != Long(0) { 1 } else { 0 })
+                self.setKey(KeyCode.Shift.value, if (flags & Long(131072)) != Long(0) then 1 else 0)
+                self.setKey(KeyCode.Control.value, if (flags & Long(262144)) != Long(0) then 1 else 0)
+                self.setKey(KeyCode.Alt.value, if (flags & Long(524288)) != Long(0) then 1 else 0)
+                self.setKey(KeyCode.Meta.value, if (flags & Long(1048576)) != Long(0) then 1 else 0)
             }
             if evType == Long(22) {
                 // Trackpads report precise deltas through the same event, so
@@ -580,23 +562,27 @@ impl App {
         }
     }
 
-    /// Maps an NSEvent to the engine key code (uppercase ASCII / KEY_*).
+    /// Maps an NSEvent to the engine key code: a named key's `KeyCode` value, else the typed character's uppercase ASCII.
     func &.mapKey(ev: Long): Int {
-        fin code = send0(ev, sel("keyCode"))
-        if code == Long(53) { return keyEscape }
-        if code == Long(36) { return keyEnter }
-        if code == Long(48) { return keyTab }
-        if code == Long(49) { return keySpace }
-        if code == Long(51) { return keyBackspace }
-        if code == Long(123) { return keyArrowLeft }
-        if code == Long(124) { return keyArrowRight }
-        if code == Long(126) { return keyArrowUp }
-        if code == Long(125) { return keyArrowDown }
-        if code == Long(117) { return keyDelete }
-        if code == Long(115) { return keyHome }
-        if code == Long(119) { return keyEnd }
-        if code == Long(116) { return keyPageUp }
-        if code == Long(121) { return keyPageDown }
+        // macOS virtual key codes (kVK_*) of the keys that type no character.
+        fin named = when send0(ev, sel("keyCode")) {
+            53 -> KeyCode.Escape.value
+            36 -> KeyCode.Enter.value
+            48 -> KeyCode.Tab.value
+            49 -> KeyCode.Space.value
+            51 -> KeyCode.Backspace.value
+            123 -> KeyCode.Left.value
+            124 -> KeyCode.Right.value
+            126 -> KeyCode.Up.value
+            125 -> KeyCode.Down.value
+            117 -> KeyCode.Delete.value
+            115 -> KeyCode.Home.value
+            119 -> KeyCode.End.value
+            116 -> KeyCode.PageUp.value
+            121 -> KeyCode.PageDown.value
+            else -> -1
+        }
+        if named >= 0 { return named }
 
         fin chars = send0(ev, sel("charactersIgnoringModifiers"))
         if chars == Long(0) {
@@ -637,44 +623,37 @@ func gamepadAt(index: Int): Long {
     return send0(controller, sel("extendedGamepad"))
 }
 
-func gamepadButton(gamepad: Long, button: Int): Long {
-    if button == gamepadSouth { return send0(gamepad, sel("buttonA")) }
-    if button == gamepadEast { return send0(gamepad, sel("buttonB")) }
-    if button == gamepadWest { return send0(gamepad, sel("buttonX")) }
-    if button == gamepadNorth { return send0(gamepad, sel("buttonY")) }
-    if button == gamepadLeftBumper { return send0(gamepad, sel("leftShoulder")) }
-    if button == gamepadRightBumper { return send0(gamepad, sel("rightShoulder")) }
-    if button == gamepadLeftTrigger { return send0(gamepad, sel("leftTrigger")) }
-    if button == gamepadRightTrigger { return send0(gamepad, sel("rightTrigger")) }
-    if button == gamepadBack { return send0(gamepad, sel("buttonOptions")) }
-    if button == gamepadStart { return send0(gamepad, sel("buttonMenu")) }
-    if button == gamepadLeftStick { return send0(gamepad, sel("leftThumbstickButton")) }
-    if button == gamepadRightStick { return send0(gamepad, sel("rightThumbstickButton")) }
-    if button == gamepadHome { return send0(gamepad, sel("buttonHome")) }
-
-    fin dpad = send0(gamepad, sel("dpad"))
-    if dpad == Long(0) { return Long(0) }
-    if button == gamepadDpadUp { return send0(dpad, sel("up")) }
-    if button == gamepadDpadDown { return send0(dpad, sel("down")) }
-    if button == gamepadDpadLeft { return send0(dpad, sel("left")) }
-    if button == gamepadDpadRight { return send0(dpad, sel("right")) }
-    return Long(0)
+/** The GCExtendedGamepad element for [button], or 0. */
+func gamepadButton(gamepad: Long, button: GamepadButton): Long = when button {
+    .South -> send0(gamepad, sel("buttonA"))
+    .East -> send0(gamepad, sel("buttonB"))
+    .West -> send0(gamepad, sel("buttonX"))
+    .North -> send0(gamepad, sel("buttonY"))
+    .LeftBumper -> send0(gamepad, sel("leftShoulder"))
+    .RightBumper -> send0(gamepad, sel("rightShoulder"))
+    .LeftTrigger -> send0(gamepad, sel("leftTrigger"))
+    .RightTrigger -> send0(gamepad, sel("rightTrigger"))
+    .Back -> send0(gamepad, sel("buttonOptions"))
+    .Start -> send0(gamepad, sel("buttonMenu"))
+    .LeftStick -> send0(gamepad, sel("leftThumbstickButton"))
+    .RightStick -> send0(gamepad, sel("rightThumbstickButton"))
+    .Home -> send0(gamepad, sel("buttonHome"))
+    .DpadUp -> dpadButton(gamepad, "up")
+    .DpadDown -> dpadButton(gamepad, "down")
+    .DpadLeft -> dpadButton(gamepad, "left")
+    .DpadRight -> dpadButton(gamepad, "right")
 }
 
-func gamepadAxis(gamepad: Long, axis: Int): Long {
-    var stick = Long(0)
-    if axis == gamepadLeftX || axis == gamepadLeftY {
-        stick = send0(gamepad, sel("leftThumbstick"))
-    } else {
-        if axis == gamepadRightX || axis == gamepadRightY {
-            stick = send0(gamepad, sel("rightThumbstick"))
-        }
-    }
-    if stick == Long(0) { return Long(0) }
-    if axis == gamepadLeftX || axis == gamepadRightX {
-        return send0(stick, sel("xAxis"))
-    }
-    return send0(stick, sel("yAxis"))
+/** One direction of the gamepad's d-pad, or 0 when it has none. */
+func dpadButton(gamepad: Long, direction: String): Long {
+    fin dpad = send0(gamepad, sel("dpad"))
+    return if dpad == Long(0) then Long(0) else send0(dpad, sel(direction))
+}
+
+/** The thumbstick axis element for [axis], or 0. */
+func gamepadAxis(gamepad: Long, axis: GamepadAxis): Long {
+    fin stick = send0(gamepad, sel(if axis == .LeftX || axis == .LeftY then "leftThumbstick" else "rightThumbstick"))
+    return if stick == Long(0) then Long(0) else send0(stick, sel(if axis == .LeftX || axis == .RightX then "xAxis" else "yAxis"))
 }
 
 // ── Frame ───────────────────────────────────────────────────────────────
