@@ -1,0 +1,59 @@
+module dolomites.driving
+
+import engine.core
+import engine.ecs
+import engine.game
+import engine.input
+import engine.platform
+import engine.vehicles
+import dolomites.components
+
+func axis(positive: Bool, negative: Bool): Double {
+    return (if positive then 1.0 else 0.0) - (if negative then 1.0 else 0.0)
+}
+
+@System(phase: .PreUpdate, runAfter: "menuInput")
+func readControls(frame: Game!, drivers: @query [Driver!, Vehicle&]) {
+    let window: App! = frame.window
+    // DIAGNOSTIC (temporary): the car that sometimes will not drive.
+    if window.framesRun % 30 == 1 && frame.paused then window.diagnose("drive paused")
+    if frame.paused then return
+    drivers.unpack { player, driver, vehicle ->
+        if window.keyJustPressed(.Space) {
+            setVehicleKind(frame.world, player, if vehicle.motorcycle then .Car else .Motorcycle)
+        }
+        // G switches the headlights, H sounds the horn while held.
+        if window.keyJustPressed(.G) then setHeadlights(frame.world, player, !headlightsOn(frame.world, player))
+        soundHorn(frame.world, player, window.keyDown(.H))
+        driver.input = DriveInput(
+            axis(window.keyDown(.W) || window.keyDown(.Up), window.keyDown(.S) || window.keyDown(.Down)),
+            axis(window.keyDown(.D) || window.keyDown(.Right), window.keyDown(.A) || window.keyDown(.Left)),
+            window.keyDown(.Shift)
+        )
+        if window.framesRun % 30 == 1 {
+            window.diagnose("drive throttle=${driver.input.throttle} steer=${driver.input.steer} speed=${vehicle.speed} gear=${vehicle.gear} rpm=${vehicle.rpm} grounded=${vehicle.grounded} motorcycle=${vehicle.motorcycle} dt=${frame.time.deltaSecs}")
+        }
+    }
+}
+
+@System(phase: .FixedUpdate)
+func driveVehicle(world: World!, time: Time&, drivers: @query [Driver&, Course&]) {
+    drivers.unpack { player, driver, course ->
+        simulateVehicle(world, player, course.terrain, driver.input, course.gravity, time.fixedDeltaSecs)
+    }
+}
+
+@System(phase: .Update)
+func interpolateVehicle(frame: Game!, drivers: @query [Driver&]) {
+    while drivers.hasNext() {
+        presentVehicle(frame.world, drivers.nextEntity(), frame.interpolation)
+    }
+}
+
+/** Each driven vehicle's engine, tyres, wind and horn, heard from the camera; paused, they fade out. */
+@System(phase: .Audio)
+func vehicleAudio(frame: Game!, drivers: @query [Driver&]) {
+    while drivers.hasNext() {
+        mixVehicleSound(frame.audio, frame.world, drivers.nextEntity(), frame.paused)
+    }
+}

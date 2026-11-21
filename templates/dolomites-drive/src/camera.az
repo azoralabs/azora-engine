@@ -1,0 +1,80 @@
+module dolomites.camera
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.game
+import engine.gizmos
+import engine.math
+import engine.scene
+import engine.vehicles
+import engine.landscape
+import dolomites.components
+
+@Component
+pack ChaseCamera {
+    var heading: Double
+    var focus: Vec3
+    fin pitch: Double
+    /** Degrees the camera looks further down to keep its eye off the ground, eased toward what the slope asks. */
+    var lift: Double = 0.0
+}
+
+func attachChaseCamera(frame: Game!, player: Entity) {
+    fin controller = storageGet<PlayerController>(ensureStorage<PlayerController>(frame.world), player)
+    fin vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(frame.world), player)
+    fin position = presentedPosition(frame.world, player)
+    fin pitch = -atan2(controller.cameraHeight, controller.cameraDistance) / degreesToRadians
+    frame.camera = EditorCamera(target: position.clone(), yaw: vehicle.yaw / degreesToRadians,
+        pitch: pitch, distance: controller.cameraDistance, fov: 58.0, far: 17000.0)
+    storageInsert<ChaseCamera>(ensureStorage<ChaseCamera>(frame.world), player,
+        ChaseCamera(vehicle.yaw, take position, pitch))
+}
+
+@System(phase: .PostUpdate)
+func followVehicle(frame: Game!, cameras: @query [ChaseCamera!, Vehicle&, Course&]) {
+    cameras.unpack { player, chase, vehicle, course ->
+        fin dt = frame.time.deltaSecs
+        fin turn = vehicle.yaw - chase.heading
+        chase.heading += atan2(sin(turn), cos(turn)) * vehicleClamp(dt * 4.5, 0.0, 1.0)
+        fin position = presentedPosition(frame.world, player)
+        chase.focus = chase.focus.add(position.subtract(chase.focus).scale(vehicleClamp(dt * 12.0, 0.0, 1.0)))
+        frame.camera.yaw = chase.heading / degreesToRadians
+        frame.camera.target = chase.focus.add(Vec3(0.0, 0.55, 0.0)).add(vehicleForward(chase.heading).scale(1.6))
+        // Rising quickly enough never to sink into the slope, settling back slowly enough never to bob.
+        fin needed = liftOverGround(frame.camera, chase.pitch, course.terrain)
+        fin rate = if needed > chase.lift then 14.0 else 2.5
+        chase.lift += (needed - chase.lift) * vehicleClamp(dt * rate, 0.0, 1.0)
+        frame.camera.pitch = chase.pitch - chase.lift
+    }
+}
+
+/** Metres between the eye and the ground straight below it; far when there is none. */
+func clearance(camera: EditorCamera&, terrain: Array<CollisionSurface>&): Double {
+    fin eye = camera.position()
+    fin below = castLandscape(terrain, Vec3(eye.x, eye.y + 30.0, eye.z), Vec3(0.0, -1.0, 0.0), 60.0)
+    return if below.hit then eye.y - below.py else 1000.0
+}
+
+/**
+ * The least extra downward pitch, in degrees (up to 45), that keeps the eye
+ * [groundGap] metres over the ground below it: found by halving, so it moves
+ * continuously with the slope instead of in steps.
+ */
+fin groundGap: Double = 0.9
+
+func liftOverGround(camera: EditorCamera!, pitch: Double, terrain: Array<CollisionSurface>&): Double {
+    camera.pitch = pitch
+    if clearance(camera, terrain) >= groundGap then return 0.0
+    var low: Double = 0.0
+    var high: Double = 45.0
+    var step = 0
+    while step < 9 {
+        fin middle = (low + high) * 0.5
+        camera.pitch = pitch - middle
+        if clearance(camera, terrain) >= groundGap then high = middle else low = middle
+        step += 1
+    }
+    camera.pitch = pitch
+    return high
+}

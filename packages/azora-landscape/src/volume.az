@@ -1,0 +1,208 @@
+module engine.landscape.volume
+
+import std.traits
+import std.math
+import std.string
+import std.serializer
+import std.container.list
+import engine.landscape.field
+import engine.io
+
+func landscapeFile(id: Int): String = "Landscapes/landscape-${id}.azon"
+
+/** A landscape: its id, its name and its field. */
+pack Landscape derives Clone {
+    var id: Int = 0
+    var name: String = ""
+    var field: Field = .()
+}
+
+func quoted(text: String): String = "\"${replace(replace(text, "\\", "\\\\"), "\"", "\\\"")}\""
+
+/** [landscape] as an AZON document. */
+func landscapeText(landscape: Landscape&): String {
+    fin field = landscape.field.&
+    var text = StringBuilder()
+    text.append("{\"format\": \"flex-landscape\", \"version\": 1, \"id\": ${landscape.id}, \"name\": ${quoted(landscape.name)}, ")
+    text.append("\"cells\": [${field.cellsX}, ${field.cellsY}, ${field.cellsZ}], \"cell\": ${field.cell}, ")
+    text.append("\"closed\": ${if field.closed then "true" else "false"}, ")
+    text.append("\"origin\": [${field.originX}, ${field.originY}, ${field.originZ}], ")
+    text.append("\"runs\": [")
+    var at = 0
+    var first = true
+    while at < field.values.size {
+        fin value = round(field.values[at] * 100.0)
+        var run = 1
+        while at + run < field.values.size && round(field.values[at + run] * 100.0) == value { run = run + 1 }
+        text.append(if first then "${value}, ${run}" else ", ${value}, ${run}")
+        first = false
+        at = at + run
+    }
+    text.append("]}")
+    return text.build()
+}
+
+/**
+ * The landscape [text] holds; its id is 0 when it holds none. The header is
+ * read as AZON; the run list - hundreds of thousands of numbers - is read
+ * straight from its characters, decoded once.
+ */
+func readLandscape(text: String): Landscape {
+    var landscape: Landscape = .()
+    fin marker = "\"runs\": ["
+    fin runsAt = indexOf(text, marker)
+    if runsAt < 0 then return landscape
+    fin root = decodeSerialValue("${substring(text, 0, runsAt)}\"runs\": []}", serializerOptions()) catch SerialValue.Null
+    when root {
+        SerialValue.Object(fields) -> {
+            if textAt(fields, "format", "") != "flex-landscape" then return landscape
+            fin cells = intsAt(fields, "cells")
+            fin origin = realsAt(fields, "origin")
+            if cells.size != 3 || origin.size != 3 then return landscape
+            var field: Field = .()
+            field.cellsX = cells[0]
+            field.cellsY = cells[1]
+            field.cellsZ = cells[2]
+            field.cell = realAt(fields, "cell", 1.0)
+            field.originX = origin[0]
+            field.originY = origin[1]
+            field.originZ = origin[2]
+            fin closed = memberAt(fields, "closed")
+            if closed >= 0 then field.closed = serialAsBool(fields[closed].value) catch false
+            if field.cellsX < 2 || field.cellsY < 2 || field.cellsZ < 2 ||
+                field.cellsX > 640 || field.cellsY > 640 || field.cellsZ > 640 ||
+                field.cell < 0.01 || pointCount(field.cellsX, field.cellsY, field.cellsZ) > maxPoints then return landscape
+            fin count = field.pointsX() * field.pointsY() * field.pointsZ()
+            field.values = .() * count
+            fin runs = scanIntegers(substring(text, runsAt + stringLength(marker), stringLength(text)))
+            var at = 0
+            var run = 0
+            while run + 1 < runs.size && at < count {
+                fin value = (runs[run] as Double) * 0.01
+                var left = runs[run + 1]
+                while left > 0 && at < count {
+                    field.values[at] = value
+                    at = at + 1
+                    left = left - 1
+                }
+                run = run + 2
+            }
+            if at != count then return landscape
+            landscape.id = intAt(fields, "id", 0)
+            landscape.name = textAt(fields, "name", "Flex Landscape")
+            landscape.field = take field
+        }
+        else -> { }
+    }
+    return landscape
+}
+
+/** The integers in [text] up to its first `]`, in order: digits with an optional `-`. */
+func scanIntegers(text: String): Array<Int> {
+    var numbers: Array<Int> = []
+    fin chars = toChars(text)
+    var at = 0
+    while at < chars.size && chars[at] != ']' {
+        fin negative = chars[at] == '-'
+        if negative then at = at + 1
+        if at < chars.size && ord(chars[at]) >= 48 && ord(chars[at]) <= 57 {
+            var value = 0
+            while at < chars.size && ord(chars[at]) >= 48 && ord(chars[at]) <= 57 {
+                value = value * 10 + ord(chars[at]) - 48
+                at = at + 1
+            }
+            numbers.add(if negative then 0 - value else value)
+        } else {
+            at = at + 1
+        }
+    }
+    return numbers
+}
+
+// ── Reading AZON ────────────────────────────────────────────────────────
+
+func memberAt(fields: List<SerialField>&, name: String): Int {
+    var index = 0
+    while index < fields.size {
+        if fields[index].name == name then return index
+        index = index + 1
+    }
+    return -1
+}
+
+func textAt(fields: List<SerialField>&, name: String, fallback: String): String {
+    fin at = memberAt(fields, name)
+    return if at < 0 then fallback else serialAsText(fields[at].value) catch fallback
+}
+
+func realAt(fields: List<SerialField>&, name: String, fallback: Double): Double {
+    fin at = memberAt(fields, name)
+    return if at < 0 then fallback else serialAsReal(fields[at].value) catch fallback
+}
+
+func intAt(fields: List<SerialField>&, name: String, fallback: Int): Int {
+    fin at = memberAt(fields, name)
+    return if at < 0 then fallback else serialAsInt(fields[at].value) catch fallback
+}
+
+func intsAt(fields: List<SerialField>&, name: String): Array<Int> {
+    var numbers: Array<Int> = []
+    fin at = memberAt(fields, name)
+    if at < 0 then return numbers
+    when fields[at].value {
+        SerialValue.Array(items) -> {
+            var index = 0
+            while index < items.size {
+                numbers.add(serialAsInt(items[index]) catch 0)
+                index = index + 1
+            }
+        }
+        else -> { }
+    }
+    return numbers
+}
+
+func realsAt(fields: List<SerialField>&, name: String): Array<Double> {
+    var numbers: Array<Double> = []
+    fin at = memberAt(fields, name)
+    if at < 0 then return numbers
+    when fields[at].value {
+        SerialValue.Array(items) -> {
+            var index = 0
+            while index < items.size {
+                numbers.add(serialAsReal(items[index]) catch 0.0)
+                index = index + 1
+            }
+        }
+        else -> { }
+    }
+    return numbers
+}
+
+/** The point object [name] (`{"x": …, "y": …, "z": …}`), or the origin. */
+func pointAt(fields: List<SerialField>&, name: String): Point {
+    fin at = memberAt(fields, name)
+    if at < 0 then return .()
+    return when fields[at].value {
+        SerialValue.Object(xyz) -> Point(realAt(xyz, "x", 0.0), realAt(xyz, "y", 0.0), realAt(xyz, "z", 0.0))
+        else -> Point()
+    }
+}
+
+/** The number [name] inside the object [object] of [fields], or [fallback]. */
+func settingAt(fields: List<SerialField>&, object: String, name: String, fallback: Double): Double {
+    fin at = memberAt(fields, object)
+    if at < 0 then return fallback
+    return when fields[at].value {
+        SerialValue.Object(inner) -> realAt(inner, name, fallback)
+        else -> fallback
+    }
+}
+
+
+func loadLandscapeVolume(root: String, id: Int): Landscape {
+    var data = readFile("${root}/${landscapeFile(id)}")
+    defer { data.release() }
+    if !data.ok() then return Landscape()
+    return readLandscape(data.text(0,data.size))
+}

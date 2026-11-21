@@ -1,0 +1,50 @@
+module dolomites.hud
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.game
+import engine.gizmos
+import engine.platform
+import engine.ui.compose
+import engine.ui.node
+import engine.vehicles
+import dolomites.components
+import dolomites.pauseMenu
+import dolomites.weatherKeys
+
+impl pack DrivingHud {
+    react ctor (anchor: Anchor!).(vehicle: Vehicle&, stats: FrameStats&, triangles: Int, weather: String): Entity {
+        fin name = if vehicle.motorcycle then "Motorcycle" else "Car"
+        fin speed = round(absValue(vehicle.speed) * 3.6)
+        fin gear = if vehicle.gear < 0 then "R" else if vehicle.gear == 0 then "N" else "${vehicle.gear}"
+        fin rpm = round(vehicle.rpm / 50.0) * 50
+        fin panel = Modifier::rounded(9.0).background(0.045, 0.07, 0.075, 0.88).padding(all: 10.0)
+        return Row(modifier: ::fillMaxSize().padding(all: 16.0),
+            horizontalArrangement: .SpaceBetween, key: "hud") {
+            Column(modifier: panel.width(450.0).height(76.0), key: "driver") {
+                Text("${name}   ${speed} km/h   ${gear}   ${rpm} rpm", modifier: ::height(22.0).fontSize(16.0).semibold().textAlign(.Start))
+                Text(weather, modifier: ::height(18.0).fontSize(12.0).textColor(0.86, 0.9, 0.95).textAlign(.Start))
+                Text("Esc Pause · F Full screen · G Lights · H Horn · N Weather · T Hour · L Lightning", modifier: ::height(16.0).fontSize(10.5).textColor(0.74, 0.81, 0.80).textAlign(.Start))
+            }
+            Column(modifier: panel.width(148.0).height(76.0), key: "performance") {
+                fin rate = if stats.fps > 0.0 then "${round(stats.fps)} FPS   ${fixedDecimal(stats.milliseconds, 2)} ms" else "— FPS"
+                Text(rate, modifier: ::height(22.0).fontSize(12.0).monospace().textAlign(.End))
+                Text("${fixedDecimal((triangles as Double) / 1000.0, 1)}k terrain tris",
+                    modifier: ::height(16.0).fontSize(11.0).textColor(0.74, 0.81, 0.80).textAlign(.End))
+            }
+        }
+    }
+}
+
+@System(phase: .Render)
+react func drivingOverlay(frame: Game!, ui: Anchor, drivers: @query [Driver&, Vehicle&]) {
+    using ui {
+        if frame.paused {
+            PauseMenu()
+        } else if drivers.hasNext() {
+            let row = drivers.next()
+            DrivingHud(row.2, frame.stats, frame.window.gpu.terrainTriangles, weatherLabel(frame))
+        }
+    }
+}

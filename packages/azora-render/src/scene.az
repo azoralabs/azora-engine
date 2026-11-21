@@ -30,12 +30,20 @@ import engine.math
 import engine.platform
 import engine.gpu
 import engine.gpu.draw
+exposed import engine.render.geometry
 import engine.scene
-import engine.scene.terrain
+exposed import engine.scene.transforms
+exposed import engine.scene.terrain
+import engine.roads
+import engine.roads.grading
+import engine.landscape.surface
+import engine.landscape.volume
+import engine.foliage
+import engine.foliage.gpu
 import engine.gpu.terrain
 import engine.material.fusion.metal
 import engine.lighting.photon
-import engine.sky
+import engine.atmosphere
 import engine.objc
 import engine.io
 
@@ -59,45 +67,6 @@ impl App {
         self.releaseMesh(meshes.cylinder)
         self.releaseMesh(meshes.plane)
     }
-}
-
-/** [entity]'s own transform as a matrix (identity when it has none). */
-func localMatrix(world: World!, entity: Entity): Mat4 {
-    if !storageHas<Transform>(ensureStorage<Transform>(world), entity) { return mat4Identity() }
-    fin t = storageGet<Transform>(ensureStorage<Transform>(world), entity).clone()
-    return trsMatrix(t.translation, t.rotation, t.scale)
-}
-
-/** [entity]'s transform in the world: its own, inside each parent's. */
-func worldMatrix(world: World!, entity: Entity): Mat4 {
-    var matrix = localMatrix(world, entity)
-    var parent = world.getParent(entity)
-    var depth = 0
-    while world.isAlive(parent) && depth < 64 {
-        matrix = mat4Mul(localMatrix(world, parent), matrix)
-        parent = world.getParent(parent)
-        depth = depth + 1
-    }
-    return matrix
-}
-
-/** [entity]'s position in the world. */
-func worldPosition(world: World!, entity: Entity): Vec3 {
-    fin m = worldMatrix(world, entity)
-    return Vec3(m.m03, m.m13, m.m23)
-}
-
-/** Whether [entity] and every parent are visible. */
-func visibleInWorld(world: World!, entity: Entity): Bool {
-    var current = entity
-    var depth = 0
-    while world.isAlive(current) && depth < 64 {
-        if storageHas<Visibility>(ensureStorage<Visibility>(world), current) &&
-            !storageGet<Visibility>(ensureStorage<Visibility>(world), current).visible { return false }
-        current = world.getParent(current)
-        depth = depth + 1
-    }
-    return true
 }
 
 /** The most point and spot lights a frame shades with; the nearest to the eye win. */
@@ -296,6 +265,9 @@ func packSceneEnvironment(environment: SceneEnvironment&, into: Long) {
  * else a default sun.
  */
 func sceneLightFrom(world: World!, elapsed: Double): SceneLight {
+    if hasResourceNamed(world, "AtmosphereLight") && world.isAlive(atmosphereEntity(world)) {
+        return resourceNamed<SceneLight>(world, "AtmosphereLight")
+    }
     if hasResourceNamed(world, sceneLightName) then return resourceNamed<SceneLight>(world, sceneLightName)
     fin sky = sceneSkyLight(world)
     if world.isAlive(sky) {
@@ -411,14 +383,15 @@ impl App {
             fin entity = storageEntityAt<HeightfieldTerrain>(items, index)
             if visibleInWorld(world, entity) && world.isAlive(entity) {
                 fin surface = items.values[index].clone()
-                fin asset = self.gpu.terrainIndex(surface.image)
                 fin model = heightfieldMatrix(world, entity, surface)
+                fin asset = self.sceneTerrainIndex(entity,surface,model)
                 fin color = sceneAlbedo(world, entity)
                 fin pipeline = self.scenePipeline(world, entity)
                 // World metres per unit of the image's own height.
                 fin rise = sqrt(model.m01*model.m01+model.m11*model.m11+model.m21*model.m21)
                 drawn += self.drawTerrainChunks(asset, mat4Mul(copyMat4(view), copyMat4(model)), model, rise*spread,
                     terrainClamp(surface.detailError, 0.0, 64.0), color, pipeline)
+                if !self.gpu.casting then drawSceneFoliage(self.gpu,world,entity,asset,model,spread)
             }
             index += 1
         }
@@ -537,7 +510,10 @@ impl App {
                 fin slot = level*16+mask
                 fin indexCount = self.gpu.terrainIndices.counts[slot]
                 // The sun's view picks its own levels; only the camera's are remembered.
-                if !self.gpu.casting then self.gpu.terrains[asset].chunks[c].level = level
+                if !self.gpu.casting {
+                    self.gpu.terrains[asset].chunks[c].level = level
+                    self.gpu.terrains[asset].chunks[c].edgeMask = mask
+                }
                 fin mesh = Mesh(self.gpu.terrains[asset].chunks[c].buffer, terrainChunkSide*terrainChunkSide)
                 self.drawMeshPipeline(mesh, model, color.r, color.g, color.b, pipeline,
                     indices: self.gpu.terrainIndices.buffers[slot], indexCount: indexCount)
@@ -548,15 +524,18 @@ impl App {
     }
 
     /** Draws every visible mesh in [world] under the view already begun. */
-    func !.drawScene(world: World!, meshes: PrimitiveMeshes&) {
+    func !.drawScene(world: World!, meshes: PrimitiveMeshes&, sculpted: Bool = true) {
         if self.gpu.localLights != 0 {
             // The eye setMaterialEye left in the uniforms picks the nearest lights.
             fin eye = Vec3(peekFloat32(self.gpu.viewProj, 64), peekFloat32(self.gpu.viewProj, 68), peekFloat32(self.gpu.viewProj, 72))
             fin unused = gatherLocalLights(world, eye, self.gpu.localLights)
         }
+        self.prepareRoads(world)
         self.drawDetailShadows(world, meshes)
         self.drawSceneMeshes(world, meshes)
         self.drawHeightfields(world)
+        self.drawRoads()
+        if sculpted then self.drawSculptedLandscapes(world)
     }
 
     /**
@@ -638,8 +617,13 @@ impl App {
                 var model = sceneMeshMatrix(world, entity, mesh.size)
                 if mesh.shape == 2 then model = mat4Mul(model, mat4RotationZ(1.5707963267948966))
                 fin pipeline = self.scenePipeline(world, entity)
-                self.drawMeshPipeline(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b, pipeline,
-                    emission: sceneEmission(world, entity))
+                fin sources = ensureStorage<MeshGeometry>(world)
+                if storageHas<MeshGeometry>(sources,entity) {
+                    fin geometry = sceneGeometry(world,self.gpu.device,storageGet<MeshGeometry>(sources,entity).name)
+                    self.drawMeshPipeline(geometry,model,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
+                } else {
+                    self.drawMeshPipeline(primitiveFor(meshes,mesh.shape),model,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
+                }
             }
             index = index + 1
         }
@@ -648,10 +632,6 @@ impl App {
 
 func terrainMinInt(a: Int, b: Int): Int = if a < b then a else b
 
-func heightfieldMatrix(world: World!, entity: Entity, surface: HeightfieldTerrain&): Mat4 =
-    mat4Mul(worldMatrix(world, entity), mat4Scale(
-        terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0),
-        terrainClamp(surface.length, 1.0, 100000.0)))
 
 /** The light [entity]'s StandardMaterial gives off itself; 0 without one. */
 func sceneEmission(world: World!, entity: Entity): Double {
@@ -802,6 +782,7 @@ impl App {
 
     /** Rebuilds demanded pages when light, geometry, or the focus page changes. */
     func !.updateScenePhotons(world: World!, focus: Vec3&, elapsed: Double = 0.0) {
+        self.prepareRoads(world)
         self.gpu.photonUpdates += 1
         self.gpu.focusX = focus.x
         self.gpu.focusY = focus.y
@@ -825,9 +806,11 @@ impl App {
         fin source = storageGet<Light3d>(ensureStorage<Light3d>(world), entity).clone()
         fin pose = worldMatrix(world, entity)
         var light = PhotonLight(Vec3(pose.m02, pose.m12, pose.m22), source.color, source.intensity, source.shadows)
-        fin published = hasResourceNamed(world, sceneLightName)
+        fin physical = hasResourceNamed(world, "AtmosphereLight") && world.isAlive(atmosphereEntity(world))
+        fin lightName = if physical then "AtmosphereLight" else sceneLightName
+        fin published = hasResourceNamed(world, lightName)
         if published {
-            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            fin scene = resourceNamed<SceneLight>(world, lightName)
             light = PhotonLight(scene.fieldDirection.clone(), scene.fieldColor.clone(), scene.fieldIntensity, source.shadows)
         } else if storageHas<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity) {
             fin sky = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity).clone()
@@ -845,7 +828,7 @@ impl App {
         self.gpu.detailStrength = photonClamp(settings.shadowStrength, 0.0, 1.0)
         if published {
             // Shading follows the published light smoothly; only the field waits for its steps.
-            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            fin scene = resourceNamed<SceneLight>(world, lightName)
             self.setDirectColor(scene.color, scene.intensity)
         } else {
             self.setDirectColor(light.color, light.intensity)
@@ -854,7 +837,7 @@ impl App {
         fin needStatic = !self.gpu.virtualShadows && source.shadows && !self.gpu.staticShadowReady
         fin basis = photonBasis(light.direction)
         if published {
-            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            fin scene = resourceNamed<SceneLight>(world, lightName)
             self.setLightDirection(scene.direction.x, scene.direction.y, scene.direction.z)
         } else {
             self.setLightDirection(basis.z.x, basis.z.y, basis.z.z)
@@ -883,7 +866,7 @@ impl App {
             fin terrainEntity = storageEntityAt<HeightfieldTerrain>(surfaces, index)
             if world.isAlive(terrainEntity) && visibleInWorld(world, terrainEntity) {
                 fin surface = surfaces.values[index].clone()
-                fin asset = self.gpu.terrainIndex(surface.image)
+                fin asset = self.sceneTerrainIndex(terrainEntity,surface,heightfieldMatrix(world,terrainEntity,surface))
                 fin terrain = self.gpu.terrains[asset].&
                 if terrain.image.samples != 0 {
                     var caster = photonCaster(4, heightfieldMatrix(world, terrainEntity, surface),
@@ -934,4 +917,216 @@ func clampAmbient(value: Double): Double {
         value > 0.9 -> 0.9
         else -> value
     }
+}
+
+func roadPositionKey(point: Vec3&): String =
+    "${formatDecimal(point.x,4)},${formatDecimal(point.y,4)},${formatDecimal(point.z,4)}"
+
+func roadMaterialAsset(world: World!, entity: Entity): String {
+    fin materials = ensureStorage<FusionMaterial>(world)
+    if !storageHas<FusionMaterial>(materials,entity) then return ""
+    return storageGet<FusionMaterial>(materials,entity).asset
+}
+
+func roadLayout(world: World!): String {
+    var layout = ""
+    fin roads = ensureStorage<SplineRoad>(world)
+    var i = 0
+    while i < storageLength<SplineRoad>(roads) {
+        fin entity = storageEntityAt<SplineRoad>(roads,i)
+        fin s = roads.values[i].&
+        if s.enabled && world.isAlive(entity) && visibleInWorld(world,entity) {
+            layout = "${layout};${entity.id}:${s.closed},${s.forwardLanes},${s.reverseLanes},${s.laneWidth},${s.shoulder},${s.crossfall},${s.gradingWidth},${s.friction},${s.markings},${s.isBridge},${s.pierDepth},${s.pierSpacing}:${roadMaterialAsset(world,entity)}"
+            fin points = roadKnots(world,entity)
+            for knot in points { layout = "${layout}:${knot.order},${roadPositionKey(knot.point)}" }
+        }
+        i += 1
+    }
+    fin sites = ensureStorage<RoadJunction>(world)
+    i = 0
+    while i < storageLength<RoadJunction>(sites) {
+        fin entity = storageEntityAt<RoadJunction>(sites,i)
+        fin site = sites.values[i].&
+        if site.enabled && world.isAlive(entity) && visibleInWorld(world,entity) {
+            fin pose = worldMatrix(world,entity)
+            layout = "${layout};j${entity.id}:${site.kind},${site.radius},${site.carriageway},${pose.m02},${pose.m22},${roadPositionKey(worldPosition(world,entity))}:${roadMaterialAsset(world,entity)}"
+        }
+        i += 1
+    }
+    return layout
+}
+
+func uploadRoadMesh(device: Long, network: RoadNetwork&, asset: String, material: Int, first: Int, limit: Int): RoadSurfaceMesh {
+    var count = 0
+    var i = first
+    while i < limit {
+        if network.triangles[i].material == material then count += 3
+        i += 1
+    }
+    fin bytes = if count == 0 then 0 else azAlloc((count as Long)*24)
+    if bytes == 0 then return RoadSurfaceMesh(asset,0,0)
+    defer { azFree(bytes) }
+    var cursor: Long = 0
+    i = first
+    while i < limit {
+        fin tri = network.triangles[i].&
+        if tri.material == material {
+            fin n = roadNormal(tri)
+            cursor = writeMeshVertex(bytes,cursor,tri.a.x,tri.a.y,tri.a.z,n.x,n.y,n.z)
+            cursor = writeMeshVertex(bytes,cursor,tri.b.x,tri.b.y,tri.b.z,n.x,n.y,n.z)
+            cursor = writeMeshVertex(bytes,cursor,tri.c.x,tri.c.y,tri.c.z,n.x,n.y,n.z)
+        }
+        i += 1
+    }
+    fin buffer = send3(device,sel("newBufferWithBytes:length:options:"),bytes,cursor,0)
+    return RoadSurfaceMesh(asset,buffer,count)
+}
+
+impl App {
+    func !.prepareRoads(world: World!) {
+        fin layout = roadLayout(world)
+        if layout == self.gpu.roads.layout then return
+        releaseRoadBuffers(self.gpu.roads)
+        self.gpu.roads.network = buildRoadNetwork(world)
+        self.gpu.roads.layout = layout
+        for part in self.gpu.roads.network.surfaceRanges {
+            fin asset = roadMaterialAsset(world,part.owner)
+            self.gpu.roads.surfaces.add(uploadRoadMesh(self.gpu.device,self.gpu.roads.network,asset,0,part.first,part.limit))
+        }
+        var material = 1
+        while material < 5 {
+            fin mesh = uploadRoadMesh(self.gpu.device,self.gpu.roads.network,"",material,0,self.gpu.roads.network.triangles.size)
+            self.gpu.roads.buffers.add(mesh.buffer)
+            self.gpu.roads.counts.add(mesh.count)
+            material += 1
+        }
+    }
+
+    func !.drawRoads() {
+        if self.gpu.roads.layout == "" || self.gpu.roads.buffers.size == 0 then return
+        fin model = mat4Identity()
+        for surface in self.gpu.roads.surfaces {
+            fin pipeline = self.gpu.fusion.resolve(self.gpu.device,surface.asset)
+            self.drawMeshPipeline(Mesh(surface.buffer,surface.count),model,0.115,0.122,0.13,pipeline)
+        }
+        self.drawMesh(Mesh(self.gpu.roads.buffers[0],self.gpu.roads.counts[0]),model,0.83,0.81,0.73)
+        self.drawMesh(Mesh(self.gpu.roads.buffers[1],self.gpu.roads.counts[1]),model,0.93,0.73,0.25)
+        self.drawMesh(Mesh(self.gpu.roads.buffers[2],self.gpu.roads.counts[2]),model,0.37,0.39,0.4)
+        self.drawMesh(Mesh(self.gpu.roads.buffers[3],self.gpu.roads.counts[3]),model,0.53,0.56,0.57)
+    }
+
+    /** Shares the exact cut and fill algorithm used by vehicle contact. */
+    func !.sceneTerrainIndex(entity: Entity, surface: HeightfieldTerrain&, model: Mat4&): Int {
+        if self.gpu.roads.layout == "" || self.gpu.roads.network.grid.size == 0 || !terrainFile(surface.image) then return self.gpu.terrainIndex(surface.image)
+        fin cacheKey = "road terrain ${entity.id}"
+        fin key = "${self.gpu.roads.layout};${model.m00},${model.m01},${model.m02},${model.m03},${model.m10},${model.m11},${model.m12},${model.m13},${model.m20},${model.m21},${model.m22},${model.m23}"
+        var found = 0
+        while found < self.gpu.terrains.size && self.gpu.terrains[found].cacheKey != cacheKey { found += 1 }
+        if found < self.gpu.terrains.size && self.gpu.terrains[found].path == surface.image && self.gpu.terrains[found].layout == key then return found
+        if self.gpu.terrainIndices.buffers.size == 0 then self.gpu.terrainIndices = buildTerrainIndices(self.gpu.device)
+        fin image = readTerrainImage("${self.gpu.fusion.root}/${surface.image}")
+        gradeRoadTerrain(image,model,self.gpu.roads.network)
+        var mesh = if image.samples == 0 then TerrainMesh(surface.image) else buildTerrainMesh(self.gpu.device,surface.image,image)
+        mesh.cacheKey = cacheKey
+        mesh.layout = key
+        if found < self.gpu.terrains.size {
+            releaseTerrainMesh(self.gpu.terrains[found])
+            self.gpu.terrains[found] = take mesh
+        } else {
+            self.gpu.terrains.add(take mesh)
+        }
+        return found
+    }
+}
+
+
+pack VolumeGpuChunk derives Clone {
+    var buffer: Long
+    var count: Int
+    var center: Vec3
+    var radius: Double
+}
+
+@Component
+pack VolumeGpuCache {
+    var source: String = ""
+    var chunks: Array<VolumeGpuChunk> = []
+}
+
+impl VolumeGpuCache {
+    dtor .() {
+        for chunk in self.chunks { send0(chunk.buffer,sel("release")) }
+    }
+}
+
+func uploadLandscapeVolume(device: Long, root: String, id: Int, source: String): VolumeGpuCache {
+    var cache = VolumeGpuCache(source)
+    fin landscape = loadLandscapeVolume(root,id)
+    fin field = landscape.field.&
+    if field.values.size == 0 then return take cache
+    var z = 0
+    while z < chunkCount(field.cellsZ) {
+        var y = 0
+        while y < chunkCount(field.cellsY) {
+            var x = 0
+            while x < chunkCount(field.cellsX) {
+                fin chunk = meshChunk(field,x,y,z,false)
+                if chunk.levels.size > 0 {
+                    fin level = chunk.levels[0].&
+                    fin buffer = send3(device,sel("newBufferWithBytes:length:options:"),level.vertices,(level.count as Long)*24,0)
+                    if buffer != 0 {
+                        cache.chunks.add(VolumeGpuChunk(buffer,level.count,Vec3(chunk.center.x,chunk.center.y,chunk.center.z),chunk.radius))
+                    }
+                }
+                x += 1
+            }
+            y += 1
+        }
+        z += 1
+    }
+    return take cache
+}
+
+impl App {
+    func !.drawSculptedLandscapes(world: World!) {
+        fin sources = ensureStorage<PluginObject>(world)
+        var i = 0
+        while i < storageLength<PluginObject>(sources) {
+            fin entity = storageEntityAt<PluginObject>(sources,i)
+            fin ref = sources.values[i].&
+            if ref.plugin == "azora.flex-landscape" && ref.id > 0 && world.isAlive(entity) && visibleInWorld(world,entity) {
+                fin source = "${self.gpu.fusion.root}/${ref.id}"
+                let caches = ensureStorage<VolumeGpuCache>(world)
+                if !storageHas<VolumeGpuCache>(caches,entity) || storageGet<VolumeGpuCache>(caches,entity).source != source {
+                    storageInsert<VolumeGpuCache>(caches,entity,uploadLandscapeVolume(self.gpu.device,self.gpu.fusion.root,ref.id,source))
+                }
+                fin cache = storageGet<VolumeGpuCache>(ensureStorage<VolumeGpuCache>(world),entity)
+                fin model = worldMatrix(world,entity)
+                fin color = sceneAlbedo(world,entity)
+                fin material = self.scenePipeline(world,entity)
+                fin clip = mat4Mul(copyMat4(self.gpu.view),copyMat4(model))
+                for chunk in cache.chunks {
+                    if landscapeChunkVisible(clip,chunk) {
+                        self.drawMeshPipeline(Mesh(chunk.buffer,chunk.count),model,color.r,color.g,color.b,material)
+                        self.gpu.terrainTriangles += chunk.count/3
+                    }
+                }
+            }
+            i += 1
+        }
+    }
+}
+
+func landscapeChunkVisible(clip: Mat4&, chunk: VolumeGpuChunk&): Bool {
+    fin x = chunk.center.x
+    fin y = chunk.center.y
+    fin z = chunk.center.z
+    fin r = chunk.radius
+    fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
+    fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+    fin w = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
+    fin rw = r*sqrt(clip.m30*clip.m30+clip.m31*clip.m31+clip.m32*clip.m32)
+    fin rx = r*sqrt(clip.m00*clip.m00+clip.m01*clip.m01+clip.m02*clip.m02)
+    fin ry = r*sqrt(clip.m10*clip.m10+clip.m11*clip.m11+clip.m12*clip.m12)
+    return w+rw > 0.0 && absValue(cx) <= w+rw+rx && absValue(cy) <= w+rw+ry
 }

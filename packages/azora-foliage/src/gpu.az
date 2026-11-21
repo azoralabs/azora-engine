@@ -1,0 +1,498 @@
+module engine.foliage.gpu
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.foliage
+import engine.foliage.shader
+import engine.gpu
+import engine.gpu.terrain
+import engine.io
+import engine.math
+import engine.math.mat
+import engine.objc
+import engine.roads
+import engine.scene.terrain
+import engine.scene.transforms
+
+fin foliageGrassRange: Double = 84.0
+fin foliageFirRange: Double = 2800.0
+fin foliageGrassBudget: Int = 42000
+fin foliageFirBudget: Int = 12000
+
+pack FoliageGrid {
+    var columns: Int
+    var rows: Int
+    var splitX: Int
+    var splitZ: Int
+    var stepX: Double
+    var stepZ: Double
+    var width: Double
+    var length: Double
+}
+
+pack FoliageBounds derives Clone {
+    var x0: Double
+    var z0: Double
+    var x1: Double
+    var z1: Double
+}
+
+pack FoliageTile {
+    var id: Int
+    var revision: Int = -1
+    var surface: String = ""
+    var buffer: Long = 0
+    var count: Int = 0
+    var touched: Int = 0
+}
+
+impl FoliageTile {
+    dtor .() { if self.buffer != 0 then send0(self.buffer,sel("release")) }
+}
+
+@Component
+pack FoliageGpu {
+    var pipeline: Long = 0
+    var worldLayout: String = ""
+    var groveLayout: String = ""
+    var stampText: String = ""
+    var seed: Int = 0
+    var grassDensity: Double = 0.0
+    var grassHeight: Double = 0.0
+    var revision: Int = 0
+    var frame: Int = 0
+    var stamps: Array<FoliageStamp> = []
+    var groves: Array<FoliageStamp> = []
+    var firTiles: Array<Int> = []
+    var tiles: Array<FoliageTile> = []
+}
+
+impl FoliageGpu {
+    dtor .() { if self.pipeline != 0 then send0(self.pipeline,sel("release")) }
+}
+
+func foliagePipeline(device: Long): Long {
+    fin diagnostic = azAlloc(8)
+    if diagnostic == 0 then return 0
+    defer { azFree(diagnostic) }
+    azPoke64(diagnostic,0,0)
+    fin library = send3(device,sel("newLibraryWithSource:options:error:"),nsString(foliageMetalSource()),0,diagnostic)
+    if library == 0 {
+        fin issue = azPeek64(diagnostic,0)
+        if issue != 0 then println("Azora Foliage: ${nsStringText(send0(issue,sel("localizedDescription")))}")
+        return 0
+    }
+    defer { send0(library,sel("release")) }
+    fin vertex = send1(library,sel("newFunctionWithName:"),nsString("foliage_vertex"))
+    fin fragment = send1(library,sel("newFunctionWithName:"),nsString("foliage_fragment"))
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer {
+        if vertex != 0 then send0(vertex,sel("release"))
+        if fragment != 0 then send0(fragment,sel("release"))
+        send0(descriptor,sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    send1(descriptor,sel("setVertexFunction:"),vertex)
+    send1(descriptor,sel("setFragmentFunction:"),fragment)
+    fin color = send1(send0(descriptor,sel("colorAttachments")),sel("objectAtIndexedSubscript:"),0)
+    send1(color,sel("setPixelFormat:"),80)
+    send1(descriptor,sel("setDepthAttachmentPixelFormat:"),252)
+    return send2(device,sel("newRenderPipelineStateWithDescriptor:error:"),descriptor,diagnostic)
+}
+
+func foliageTransform(m: Mat4&, x: Double, y: Double, z: Double): Vec3 =
+    Vec3(m.m00*x+m.m01*y+m.m02*z+m.m03,m.m10*x+m.m11*y+m.m12*z+m.m13,m.m20*x+m.m21*y+m.m22*z+m.m23)
+
+func foliageGrid(mesh: TerrainMesh&, model: Mat4&, spacing: Double): FoliageGrid {
+    fin width = sqrt(model.m00*model.m00+model.m10*model.m10+model.m20*model.m20)
+    fin length = sqrt(model.m02*model.m02+model.m12*model.m12+model.m22*model.m22)
+    fin sizeX = 32.0/((mesh.image.columns-1) as Double)
+    fin sizeZ = 32.0/((mesh.image.rows-1) as Double)
+    fin splitX = foliageClamp(ceil(sizeX*width/spacing) as Double,1.0,64.0) as Int
+    fin splitZ = foliageClamp(ceil(sizeZ*length/spacing) as Double,1.0,64.0) as Int
+    return FoliageGrid(mesh.chunksX*splitX,mesh.chunksZ*splitZ,splitX,splitZ,
+        sizeX/(splitX as Double),sizeZ/(splitZ as Double),width,length)
+}
+
+func foliageCell(index: Double, step: Double, count: Int): Int =
+    foliageClamp(floor((index+0.5)/step) as Double,0.0,(count-1) as Double) as Int
+
+func foliageBounds(grid: FoliageGrid&, x: Int, z: Int): FoliageBounds {
+    fin x0 = (x as Double)*grid.stepX-0.5
+    fin z0 = (z as Double)*grid.stepZ-0.5
+    return FoliageBounds(x0,z0,foliageMinimum(x0+grid.stepX,0.5),foliageMinimum(z0+grid.stepZ,0.5))
+}
+
+func foliageOverlaps(mark: FoliageStamp&, tile: FoliageBounds&, grid: FoliageGrid&): Bool {
+    fin x = foliageClamp(mark.x,tile.x0,tile.x1)
+    fin z = foliageClamp(mark.z,tile.z0,tile.z1)
+    fin dx = (x-mark.x)*grid.width
+    fin dz = (z-mark.z)*grid.length
+    return dx*dx+dz*dz <= mark.radius*mark.radius
+}
+
+func foliageGrovesKey(world: World!, inv: Mat4&): String {
+    var text = ""
+    fin groves = ensureStorage<ForestGrove>(world)
+    var i = 0
+    while i < storageLength<ForestGrove>(groves) {
+        fin entity = storageEntityAt<ForestGrove>(groves,i)
+        fin grove = groves.values[i].&
+        if grove.enabled && world.isAlive(entity) && visibleInWorld(world,entity) {
+            fin p = worldPosition(world,entity)
+            fin at = foliageTransform(inv,p.x,p.y,p.z)
+            if absValue(at.x) <= 0.5 && absValue(at.z) <= 0.5 {
+                // The same on-disk stamp format also carries procedural groves.
+                fin radius = foliageClamp(grove.radius,8.0,1000.0)
+                fin density = foliageClamp((grove.trees as Double)/(radius*radius*2.0),0.0,0.36)
+                text += foliageStampText(FoliageStamp(firFoliage,at.x,at.z,radius,density,foliageClamp(grove.height,1.0,40.0)))
+                text += "seed${grove.seed};"
+            }
+        }
+        i += 1
+    }
+    return text
+}
+
+func addFirTiles(keys: Array<Int>!, seen: Array<Bool>!, grid: FoliageGrid&, stamp: FoliageStamp&) {
+    if stamp.species != firFoliage || stamp.density == 0.0 then return
+    fin rx = stamp.radius/grid.width
+    fin rz = stamp.radius/grid.length
+    var z = foliageCell(stamp.z-rz,grid.stepZ,grid.rows)
+    fin lastZ = foliageCell(stamp.z+rz,grid.stepZ,grid.rows)
+    while z <= lastZ {
+        var x = foliageCell(stamp.x-rx,grid.stepX,grid.columns)
+        fin lastX = foliageCell(stamp.x+rx,grid.stepX,grid.columns)
+        while x <= lastX {
+            fin id = z*grid.columns+x
+            if !seen[id] {
+                seen[id] = true
+                keys.add(id)
+            }
+            x += 1
+        }
+        z += 1
+    }
+}
+
+func refreshFoliage(cache: FoliageGpu!, world: World!, landscape: Entity, paint: FoliagePaint&, terrain: TerrainMesh&,
+                    model: Mat4&, inv: Mat4&, grid: FoliageGrid&) {
+    fin layout = "${terrain.path}:${terrain.layout}:${model.m00},${model.m01},${model.m02},${model.m03},${model.m10},${model.m11},${model.m12},${model.m13},${model.m20},${model.m21},${model.m22},${model.m23}"
+    fin groveKey = foliageGrovesKey(world,inv)
+    fin moved = cache.worldLayout != layout
+    if moved {
+        cache.tiles.clear()
+        cache.worldLayout = layout
+    }
+    if !moved && cache.groveLayout == groveKey && cache.stampText == paint.strokes && cache.seed == paint.seed &&
+       cache.grassDensity == paint.grassDensity && cache.grassHeight == paint.grassHeight then return
+
+    cache.revision += 1
+    cache.seed = paint.seed
+    cache.grassDensity = paint.grassDensity
+    cache.grassHeight = paint.grassHeight
+    if cache.groveLayout != groveKey {
+        cache.groves = foliageStamps(groveKey)
+        cache.groveLayout = groveKey
+    }
+    if cache.stampText != paint.strokes {
+        cache.stamps = foliageStamps(paint.strokes)
+        cache.stampText = paint.strokes
+    }
+    cache.firTiles.clear()
+    var seen: Array<Bool> = .() * (grid.columns*grid.rows)
+    for grove in cache.groves { addFirTiles(cache.firTiles,seen,grid,grove) }
+    for stamp in cache.stamps { addFirTiles(cache.firTiles,seen,grid,stamp) }
+}
+
+func treeCover(result: FoliageCoverage!, groves: Array<FoliageStamp>&, x: Double, z: Double, grid: FoliageGrid&) {
+    result.density = 0.0
+    result.height = 12.0
+    for grove in groves {
+        fin dx = (x-grove.x)*grid.width
+        fin dz = (z-grove.z)*grid.length
+        fin reach = sqrt(dx*dx+dz*dz)
+        if reach < grove.radius*1.1 {
+            // Irregular edges, with a gradually thinning perimeter.
+            fin azimuth = atan2(dz,dx)
+            fin rim = grove.radius*(0.83+0.13*cos(3.0*azimuth)+0.09*sin(7.0*azimuth))
+            fin density = grove.density*foliageClamp((rim-reach)/(grove.radius*0.18),0.0,1.0)
+            if density > result.density {
+                result.density = density
+                result.height = grove.height
+            }
+        }
+    }
+}
+
+func foliagePaved(network: RoadNetwork&, x: Double, y: Double, z: Double, margin: Double): Bool {
+    if network.grid.size == 0 then return false
+    fin bucket = network.grid[roadBucketAt(roadBucketCoordinate(x),roadBucketCoordinate(z))].&
+    for index in bucket.spans {
+        fin span = network.spans[index].&
+        fin a = span.start.center.&
+        fin b = span.end.center.&
+        fin dx = b.x-a.x
+        fin dz = b.z-a.z
+        fin len2 = dx*dx+dz*dz
+        if len2 <= 0.000001 then continue
+        fin t = foliageClamp(((x-a.x)*dx+(z-a.z)*dz)/len2,0.0,1.0)
+        fin px = x-a.x-t*dx
+        fin pz = z-a.z-t*dz
+        fin reach = (if px*span.start.right.x+pz*span.start.right.z > 0.0 then roadRight(span.style) else roadLeft(span.style))+margin
+        if px*px+pz*pz < reach*reach && absValue(y-a.y-t*(b.y-a.y)) < 2.0 then return true
+    }
+    for site in network.junctions {
+        fin dx = x-site.center.x
+        fin dz = z-site.center.z
+        fin reach = site.config.radius+margin
+        if dx*dx+dz*dz < reach*reach && absValue(y-site.center.y) < 2.0 then return true
+    }
+    return false
+}
+
+func foliageSlope(terrain: TerrainImage&, grid: FoliageGrid&, model: Mat4&, x: Double, z: Double): Double {
+    fin du = 0.5/((terrain.columns-1) as Double)
+    fin dv = 0.5/((terrain.rows-1) as Double)
+    fin gx = (sampleTerrain(terrain,x+du,z)-sampleTerrain(terrain,x-du,z))*model.m11/(2.0*du*grid.width)
+    fin gz = (sampleTerrain(terrain,x,z+dv)-sampleTerrain(terrain,x,z-dv))*model.m11/(2.0*dv*grid.length)
+    return gx*gx+gz*gz
+}
+
+func populateFoliage(tile: FoliageTile!, device: Long, id: Int, species: Int, grid: FoliageGrid&, bounds: FoliageBounds&,
+                      terrain: TerrainImage&, model: Mat4&, roads: RoadNetwork&, hasRoads: Bool,
+                      marks: Array<FoliageStamp>&, groves: Array<FoliageStamp>&, seed: Int,
+                      baseDensity: Double, defaultHeight: Double) {
+    var upper = if species == grassFoliage then baseDensity else 0.0
+    for mark in marks { upper = foliageMaximum(upper,mark.density) }
+    for grove in groves { upper = foliageMaximum(upper,grove.density) }
+    if upper <= 0.0 || bounds.x1 <= bounds.x0 || bounds.z1 <= bounds.z0 then return
+
+    fin area = (bounds.x1-bounds.x0)*grid.width*(bounds.z1-bounds.z0)*grid.length
+    fin tries = foliageClamp(ceil(upper*area) as Double,1.0,5000.0) as Int
+    fin bytes = azAlloc((tries as Long)*16)
+    if bytes == 0 then return
+    defer { azFree(bytes) }
+    var random = FoliageRandom(foliageSeed(seed as Long,id,species))
+    var result = FoliageCoverage()
+    var count = 0
+    var i = 0
+    while i < tries {
+        fin x = bounds.x0+(bounds.x1-bounds.x0)*foliageRandom(random)
+        fin z = bounds.z0+(bounds.z1-bounds.z0)*foliageRandom(random)
+        fin choice = foliageRandom(random)
+        fin variance = foliageRandom(random)
+        fin turn = foliageRandom(random)
+        i += 1
+        if species == firFoliage {
+            treeCover(result,groves,x,z,grid)
+            fin coveredDensity = result.density
+            fin coveredHeight = result.height
+            foliageCover(result,marks,x,z,grid.width,grid.length,coveredDensity,coveredHeight)
+        } else {
+            foliageCover(result,marks,x,z,grid.width,grid.length,baseDensity,defaultHeight)
+        }
+        if choice*upper >= result.density then continue
+        fin y = sampleTerrain(terrain,x,z)
+        fin world = foliageTransform(model,x,y,z)
+        fin margin: Double = if species == firFoliage then 4.0 else 0.55
+        if hasRoads && foliagePaved(roads,world.x,world.y,world.z,margin) then continue
+        if foliageSlope(terrain,grid,model,x,z) > (if species == firFoliage then 1.1 else 0.68) then continue
+        fin scale = result.height*(0.68+variance*0.64)
+        fin offset = (count as Long)*16
+        azPokeF32(bytes,offset,x)
+        azPokeF32(bytes,offset+4,z)
+        azPokeF32(bytes,offset+8,scale)
+        azPokeF32(bytes,offset+12,turn)
+        count += 1
+    }
+    if count > 0 {
+        tile.buffer = send3(device,sel("newBufferWithBytes:length:options:"),bytes,(count as Long)*16,0)
+        if tile.buffer != 0 then tile.count = count
+    }
+}
+
+func cachedFoliageTile(cache: FoliageGpu!, gpu: AzGpu&, terrain: TerrainImage&, model: Mat4&, grid: FoliageGrid&,
+                       bounds: FoliageBounds&, id: Int, species: Int): Int {
+    fin key = if species == grassFoliage then id+1 else -id-1
+    var at = 0
+    while at < cache.tiles.size && cache.tiles[at].id != key { at += 1 }
+    if at == cache.tiles.size then cache.tiles.add(FoliageTile(key))
+    cache.tiles[at].touched = cache.frame
+    if cache.tiles[at].revision == cache.revision then return at
+
+    var zones: Array<FoliageStamp> = []
+    var marks: Array<FoliageStamp> = []
+    var layout = "${cache.seed}"
+    if species == firFoliage {
+        for grove in cache.groves {
+            if foliageOverlaps(grove,bounds,grid) {
+                zones.add(grove.clone())
+                layout += foliageStampText(grove)
+            }
+        }
+    } else {
+        layout += ":${cache.grassDensity}:${cache.grassHeight}"
+    }
+    for stamp in cache.stamps {
+        if stamp.species == species && foliageOverlaps(stamp,bounds,grid) {
+            marks.add(stamp.clone())
+            layout += foliageStampText(stamp)
+        }
+    }
+    if layout == cache.tiles[at].surface {
+        cache.tiles[at].revision = cache.revision
+        return at
+    }
+    var tile = FoliageTile(key,cache.revision,layout,touched: cache.frame)
+    populateFoliage(tile,gpu.device,id,species,grid,bounds,terrain,model,gpu.roads.network,gpu.roads.layout != "",
+        marks,zones,cache.seed,foliageClamp(cache.grassDensity,0.0,4.0),cache.grassHeight)
+    cache.tiles[at] = take tile
+    return at
+}
+
+/** Conservative sphere test against the view's side planes. */
+func foliageVisible(clip: Mat4&, center: Vec3&, radius: Double): Bool {
+    fin x = center.x
+    fin y = center.y
+    fin z = center.z
+    fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
+    fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+    fin w = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
+    fin rw = radius*sqrt(clip.m30*clip.m30+clip.m31*clip.m31+clip.m32*clip.m32)
+    fin rx = radius*sqrt(clip.m00*clip.m00+clip.m01*clip.m01+clip.m02*clip.m02)
+    fin ry = radius*sqrt(clip.m10*clip.m10+clip.m11*clip.m11+clip.m12*clip.m12)
+    return w+rw > 0.0 && absValue(cx) <= w+rw+rx && absValue(cy) <= w+rw+ry
+}
+
+func foliageUniforms(gpu: AzGpu&, model: Mat4&) {
+    fin data = gpu.scratch
+    azCopy(data,gpu.viewProj,64)
+    pokeMat4(data,64,model)
+    azCopy(data+128,gpu.viewProj+64,12)
+    azPokeF32(data,140,if gpu.flatMaterials then 1.0 else 0.0)
+    azPokeF32(data,144,gpu.lightX)
+    azPokeF32(data,148,gpu.lightY)
+    azPokeF32(data,152,gpu.lightZ)
+    azPokeF32(data,156,gpu.ambient)
+    azCopy(data+160,gpu.viewProj+96,12)
+    azPokeF32(data,172,peekFloat32(gpu.viewProj,92))
+    azCopy(data+176,gpu.viewProj+80,16)
+    azCopy(data+192,gpu.viewProj+112,16)
+    azPokeF32(data,208,if gpu.environment == 0 then 0.0 else peekFloat32(gpu.environment,48))
+    azPokeF32(data,212,if gpu.environment == 0 then 0.0 else peekFloat32(gpu.environment,52))
+    azPokeF32(data,216,if gpu.environment == 0 then 0.0 else peekFloat32(gpu.environment,12))
+    azPokeF32(data,220,0.0)
+}
+
+func drawFoliageTile(gpu: AzGpu!, cache: FoliageGpu!, terrain: TerrainMesh&, model: Mat4&, eye: Vec3&,
+                    grid: FoliageGrid&, id: Int, species: Int, spread: Double, remaining: Int): Int {
+    fin x = id % grid.columns
+    fin z = id / grid.columns
+    fin cell = foliageBounds(grid,x,z)
+    if cell.x0 >= cell.x1 || cell.z0 >= cell.z1 then return 0
+    fin chunk = terrain.chunks[x/grid.splitX+(z/grid.splitZ)*terrain.chunksX].&
+    if chunk.buffer == 0 then return 0
+    fin u = (cell.x0+cell.x1)*0.5
+    fin v = (cell.z0+cell.z1)*0.5
+    fin center = foliageTransform(model,u,sampleTerrain(terrain.image,u,v),v)
+    fin dx = eye.x-center.x
+    fin dz = eye.z-center.z
+    fin range = if species == grassFoliage then foliageGrassRange else foliageFirRange
+    fin horizontal = (cell.x1-cell.x0)*grid.width+(cell.z1-cell.z0)*grid.length
+    fin distance = sqrt(dx*dx+dz*dz)
+    if distance >= range+horizontal*0.5 then return 0
+    fin height = foliageMaximum(absValue(chunk.high-chunk.low)*absValue(model.m11),1.0)
+    if !foliageVisible(gpu.view,center,horizontal*0.55+height+(if species == firFoliage then 42.0 else 2.0)) then return 0
+    fin at = cachedFoliageTile(cache,gpu,terrain.image,model,grid,cell,id,species)
+    fin tile = cache.tiles[at].&
+    if tile.count == 0 then return 0
+
+    fin size = spread*12.0/(distance+1.0)
+    fin lod = if species == grassFoliage then (if distance < 33.0 then 0 else 1)
+        else (if size > 44.0 then 0 else if size > 13.0 then 1 else 2)
+    fin vertices = if species == grassFoliage then (if lod == 0 then 9 else 6)
+        else (if lod == 0 then 108 else if lod == 1 then 69 else 48)
+    fin maxCount = if species == grassFoliage && lod > 0 then (tile.count*2+2)/3 else tile.count
+    fin count = if maxCount < remaining then maxCount else remaining
+    if gpu.mode != -4 {
+        foliageUniforms(gpu,model)
+        send1(gpu.enc,sel("setRenderPipelineState:"),cache.pipeline)
+        send1(gpu.enc,sel("setDepthStencilState:"),gpu.depthOn)
+        gpu.mode = -4
+        gpu.meshPipeline = 0
+    }
+    fin sx = 1.0/((terrain.image.columns-1) as Double)
+    fin sz = 1.0/((terrain.image.rows-1) as Double)
+    azPokeF32(gpu.scratch,224,(chunk.column as Double)*sx-0.5)
+    azPokeF32(gpu.scratch,228,(chunk.row as Double)*sz-0.5)
+    azPokeF32(gpu.scratch,232,sx)
+    azPokeF32(gpu.scratch,236,sz)
+    azPokeF32(gpu.scratch,240,chunk.level as Double)
+    azPokeF32(gpu.scratch,244,chunk.edgeMask as Double)
+    azPokeF32(gpu.scratch,248,species as Double)
+    azPokeF32(gpu.scratch,252,lod as Double)
+    send3(gpu.enc,sel("setVertexBuffer:offset:atIndex:"),tile.buffer,0,0)
+    send3(gpu.enc,sel("setVertexBytes:length:atIndex:"),gpu.scratch,256,1)
+    send3(gpu.enc,sel("setFragmentBytes:length:atIndex:"),gpu.scratch,256,1)
+    send3(gpu.enc,sel("setVertexBuffer:offset:atIndex:"),chunk.buffer,0,2)
+    send4(gpu.enc,sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),3,0,vertices as Long,count as Long)
+    return count
+}
+
+func drawFoliageGrids(gpu: AzGpu!, cache: FoliageGpu!, terrain: TerrainMesh&, model: Mat4&, eye: Vec3&, local: Vec3&,
+                      grass: FoliageGrid&, firs: FoliageGrid&, spread: Double) {
+    var trees = foliageFirBudget
+    for id in cache.firTiles {
+        if trees <= 0 then break
+        trees -= drawFoliageTile(gpu,cache,terrain,model,eye,firs,id,firFoliage,spread,trees)
+    }
+    if cache.grassDensity <= 0.0 && cache.stamps.size == 0 then return
+    fin rx = foliageGrassRange/grass.width
+    fin rz = foliageGrassRange/grass.length
+    fin x0 = foliageCell(local.x-rx,grass.stepX,grass.columns)
+    fin z0 = foliageCell(local.z-rz,grass.stepZ,grass.rows)
+    fin x1 = foliageCell(local.x+rx,grass.stepX,grass.columns)
+    fin z1 = foliageCell(local.z+rz,grass.stepZ,grass.rows)
+    var left = foliageGrassBudget
+    var z = z0
+    while z <= z1 && left > 0 {
+        var x = x0
+        while x <= x1 && left > 0 {
+            left -= drawFoliageTile(gpu,cache,terrain,model,eye,grass,z*grass.columns+x,grassFoliage,spread,left)
+            x += 1
+        }
+        z += 1
+    }
+}
+
+func drawSceneFoliage(gpu: AzGpu!, world: World!, landscape: Entity, asset: Int, model: Mat4&, spread: Double) {
+    if !gpu.hasEncoder || gpu.terrains[asset].image.samples == 0 then return
+    fin groveCount = storageLength<ForestGrove>(ensureStorage<ForestGrove>(world))
+    fin paint = storageGetOrDefault<FoliagePaint>(ensureStorage<FoliagePaint>(world),landscape,FoliagePaint())
+    if !paint.enabled || (paint.grassDensity <= 0.0 && paint.strokes == "" && groveCount == 0) then return
+
+    let stores = ensureStorage<FoliageGpu>(world)
+    if !storageHas<FoliageGpu>(stores,landscape) {
+        storageInsert<FoliageGpu>(stores,landscape,FoliageGpu(pipeline: foliagePipeline(gpu.device)))
+    }
+    let cache: FoliageGpu! = stores.values[storageIndexOf<FoliageGpu>(stores,landscape)]
+    if cache.pipeline == 0 then return
+    cache.frame += 1
+    var i = 0
+    while i < cache.tiles.size {
+        if cache.tiles[i].touched < cache.frame-9 then cache.tiles.removeAt(i) else i += 1
+    }
+    fin terrain = gpu.terrains[asset].&
+    fin firs = foliageGrid(terrain,model,140.0)
+    fin grass = foliageGrid(terrain,model,18.0)
+    if grass.width < 0.1 || grass.length < 0.1 then return
+    fin inv = mat4Inverse(model)
+    refreshFoliage(cache,world,landscape,paint,terrain,model,inv,firs)
+    fin eye = Vec3(peekFloat32(gpu.viewProj,64),peekFloat32(gpu.viewProj,68),peekFloat32(gpu.viewProj,72))
+    fin local = foliageTransform(inv,eye.x,eye.y,eye.z)
+    drawFoliageGrids(gpu,cache,terrain,model,eye,local,grass,firs,spread)
+    if gpu.mode == -4 then gpu.mode = -1
+}

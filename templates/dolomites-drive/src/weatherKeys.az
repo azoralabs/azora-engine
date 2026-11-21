@@ -1,0 +1,49 @@
+module dolomites.weatherKeys
+
+import engine.core
+import engine.ecs
+import engine.game
+import engine.input
+import engine.platform
+import engine.atmosphere
+import engine.weather
+
+/** N moves the weather on to the next preset; T sets the clock an hour on, Shift+T an hour back; L strikes lightning ahead. */
+@System(phase: .PreUpdate)
+func changeWeather(frame: Game!) {
+    if frame.paused then return
+    let window: App! = frame.window
+    fin next = window.keyJustPressed(.N)
+    fin later = window.keyJustPressed(.T)
+    if window.keyJustPressed(.L) then lightningNow(frame.world, frame.time.elapsedSecs, frame.camera.position(), frame.camera.forward())
+    if !next && !later then return
+    if next {
+        let weathers = ensureStorage<AetherWeather>(frame.world)
+        var i = 0
+        while i < storageLength<AetherWeather>(weathers) {
+            weathers.values[i].preset = presetName(nextPreset(presetNamed(weathers.values[i].preset)))
+            i += 1
+        }
+    }
+    if later {
+        fin step: Double = if window.keyDown(.Shift) then -1.0 else 1.0
+        let skies = ensureStorage<AetherSky>(frame.world)
+        var i = 0
+        while i < storageLength<AetherSky>(skies) {
+            fin moved = skies.values[i].hour + step
+            skies.values[i].hour = if moved >= 24.0 then moved - 24.0 else if moved < 0.0 then moved + 24.0 else moved
+            i += 1
+        }
+    }
+}
+
+/** The weather and the clock, for the HUD. */
+func weatherLabel(frame: Game!): String {
+    fin weathers = ensureStorage<AetherWeather>(frame.world)
+    fin skies = ensureStorage<AetherSky>(frame.world)
+    if storageLength<AetherWeather>(weathers) == 0 || storageLength<AetherSky>(skies) == 0 then return ""
+    fin hour = skies.values[0].hour
+    fin whole = hour as Int
+    fin minutes = ((hour - (whole as Double)) * 60.0) as Int
+    return "${weathers.values[0].preset}  ${whole}:${if minutes < 10 then "0" else ""}${minutes}"
+}

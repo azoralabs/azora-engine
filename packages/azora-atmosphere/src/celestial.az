@@ -1,0 +1,109 @@
+module engine.atmosphere.celestial
+
+import std.math
+import engine.core
+import engine.math
+import engine.atmosphere.components
+
+/** Radians in one degree. */
+fin perDegree: Double = 0.017453292519943295
+
+/**
+ * Where the sun and moon stand in the sky over the scene, as unit vectors in
+ * the world: x east, y up, z south (the Engine's -Z is north).
+ */
+pack Celestial derives Clone {
+    var sun: Vec3 = .(0.0, 1.0, 0.0)
+    var moon: Vec3 = .(0.0, -1.0, 0.0)
+    /** 0 new, 0.25 first quarter, 0.5 full, 0.75 last quarter. */
+    var moonPhase: Double = 0.0
+    /** Share of the moon's disc the sun lights, 0..1. */
+    var moonLit: Double = 0.0
+    /** Local clock time, 0..24. */
+    var hour: Double = 12.0
+    /** The observer's sidereal angle and latitude, in radians: how the celestial sphere is turned over the scene. */
+    var sidereal: Double = 0.0
+    var latitude: Double = 0.0
+}
+
+func celestialClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+/** [angle] in degrees, brought into 0..<360. */
+func wrapDegrees(angle: Double): Double = angle - (floor(angle / 360.0) as Double) * 360.0
+
+func sinDegrees(angle: Double): Double = sin(wrapDegrees(angle) * perDegree)
+
+/** Julian day at 0h UT of a Gregorian calendar date (Meeus, Astronomical Algorithms 7.1). */
+func julianDay(year: Int, month: Int, day: Int): Double {
+    var y = year
+    var m = month
+    if m <= 2 {
+        y -= 1
+        m += 12
+    }
+    fin century = y / 100
+    fin leap = 2 - century + century / 4
+    return (floor(365.25 * ((y + 4716) as Double)) as Double) + (floor(30.6001 * ((m + 1) as Double)) as Double) +
+        (day as Double) + (leap as Double) - 1524.5
+}
+
+/** Local clock hours since the scene's date began: the set hour plus the running day. */
+func runningHour(sky: AetherSky&, elapsed: Double): Double =
+    sky.hour + (if sky.dayMinutes > 0.0 then elapsed * 24.0 / (sky.dayMinutes * 60.0) else 0.0)
+
+/** [runningHour] rounded down to a whole minute: what the Photon Field traces with, so it moves in steps. */
+func steppedHour(sky: AetherSky&, elapsed: Double): Double = (floor(runningHour(sky, elapsed) * 60.0) as Double) / 60.0
+
+/**
+ * The world direction of a body at [ascension] and [declination] (radians)
+ * for an observer at [latitude] whose local sidereal angle is [sidereal].
+ */
+func horizonVector(ascension: Double, declination: Double, sidereal: Double, latitude: Double): Vec3 {
+    fin hourAngle = sidereal - ascension
+    fin east = -cos(declination) * sin(hourAngle)
+    fin north = cos(latitude) * sin(declination) - sin(latitude) * cos(declination) * cos(hourAngle)
+    fin up = sin(latitude) * sin(declination) + cos(latitude) * cos(declination) * cos(hourAngle)
+    return Vec3(east, up, -north)
+}
+
+func celestialAt(sky: AetherSky&, elapsed: Double): Celestial = celestialAtHour(sky, runningHour(sky, elapsed))
+
+/**
+ * The sun by the NOAA solar position equations (after Meeus ch. 25); the moon
+ * by the low-precision series of the Astronomical Almanac (about 0.3 degrees),
+ * its phase from its elongation. [hour] is the local clock time on the sky's
+ * date and may run past 24 into the following days.
+ */
+func celestialAtHour(sky: AetherSky&, hour: Double): Celestial {
+    fin jd = julianDay(sky.year, sky.month, sky.day) + (hour - sky.timeZone) / 24.0
+    fin t = (jd - 2451545.0) / 36525.0
+    fin meanLongitude = wrapDegrees(280.46646 + t * (36000.76983 + t * 0.0003032))
+    fin anomaly = wrapDegrees(357.52911 + t * (35999.05029 - 0.0001537 * t)) * perDegree
+    fin centre = sin(anomaly) * (1.914602 - t * (0.004817 + 0.000014 * t)) + sin(2.0 * anomaly) * (0.019993 - 0.000101 * t) +
+        sin(3.0 * anomaly) * 0.000289
+    fin node = wrapDegrees(125.04 - 1934.136 * t) * perDegree
+    fin sunLongitude = (meanLongitude + centre - 0.00569 - 0.00478 * sin(node)) * perDegree
+    fin obliquity = (23.0 + (26.0 + (21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60.0) / 60.0 + 0.00256 * cos(node)) * perDegree
+    fin sunAscension = atan2(cos(obliquity) * sin(sunLongitude), cos(sunLongitude))
+    fin sunDeclination = asin(sin(obliquity) * sin(sunLongitude))
+    fin days = jd - 2451545.0
+    fin sidereal = wrapDegrees(280.46061837 + 360.98564736629 * days + 0.000387933 * t * t - t * t * t / 38710000.0 + sky.longitude) * perDegree
+    fin latitude = celestialClamp(sky.latitude, -90.0, 90.0) * perDegree
+
+    fin moonLongitude = (218.32 + 481267.881 * t + 6.29 * sinDegrees(135.0 + 477198.87 * t) - 1.27 * sinDegrees(259.3 - 413335.36 * t) +
+        0.66 * sinDegrees(235.7 + 890534.22 * t) + 0.21 * sinDegrees(269.9 + 954397.74 * t) - 0.19 * sinDegrees(357.5 + 35999.05 * t) -
+        0.11 * sinDegrees(186.5 + 966404.03 * t)) * perDegree
+    fin moonLatitude = (5.13 * sinDegrees(93.3 + 483202.02 * t) + 0.28 * sinDegrees(228.2 + 960400.89 * t) -
+        0.28 * sinDegrees(318.3 + 6003.15 * t) - 0.17 * sinDegrees(217.6 - 407332.21 * t)) * perDegree
+    fin moonAscension = atan2(sin(moonLongitude) * cos(obliquity) - tan(moonLatitude) * sin(obliquity), cos(moonLongitude))
+    fin moonDeclination = asin(celestialClamp(sin(moonLatitude) * cos(obliquity) + cos(moonLatitude) * sin(obliquity) * sin(moonLongitude), -1.0, 1.0))
+    fin elongation = acos(celestialClamp(cos(moonLatitude) * cos(moonLongitude - sunLongitude), -1.0, 1.0))
+
+    return Celestial(
+        horizonVector(sunAscension, sunDeclination, sidereal, latitude),
+        horizonVector(moonAscension, moonDeclination, sidereal, latitude),
+        wrapDegrees((moonLongitude - sunLongitude) / perDegree) / 360.0,
+        (1.0 - cos(elongation)) * 0.5,
+        wrapDegrees(hour * 15.0) / 15.0,
+        sidereal, latitude)
+}

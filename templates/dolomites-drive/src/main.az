@@ -1,0 +1,34 @@
+module dolomites
+
+import std.io
+import engine.core
+import engine.ecs
+import engine.game
+import engine.platform
+import engine.physics.core
+import engine.physics.d3
+import engine.scene
+import engine.vehicles
+import engine.landscape
+import engine.atmosphere
+import engine.weather
+import dolomites::{components, driving, camera, pauseMenu, hud, weatherKeys}
+
+fin game = GameConfig(title: "Dolomites Drive", fixedHz: 120)
+
+@System(phase: .Startup)
+func spawnDriver(frame: Game!, starts: @query [PlayerStart&]) {
+    while starts.hasNext() {
+        let row = starts.next()
+        let marker: PlayerStart& = row.1
+        if !marker.enabled || marker.slot != 0 then continue
+        var terrain = loadLandscapeColliders(frame.world, ".")
+        fin player = spawnVehicle(frame.world, row.0, terrain)
+        storageInsert<Driver>(ensureStorage<Driver>(frame.world), player, Driver())
+        attachChaseCamera(frame, player)
+        storageInsert<Course>(ensureStorage<Course>(frame.world),player,Course(take terrain,gravity3d(sceneGravity(frame.world))))
+        return
+    }
+    println("Place an enabled Player Start for player 0 in the scene.")
+    frame.window.quit()
+}

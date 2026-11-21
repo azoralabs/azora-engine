@@ -1,0 +1,55 @@
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.scene.io
+import engine.physics.d3
+import engine.landscape
+import engine.vehicles
+import engine.roads
+
+func main() {
+    fin root = "../../templates/dolomites-drive"
+    var world = World()
+    var file = readFile("${root}/scene.azscene")
+    assert file.ok() && readScene(world,file.text(0,file.size)) > 0 panic "read the template scene"
+    file.release()
+    fin item = storageValueAt<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world),0)
+    fin source = readTerrainImage("${root}/${item.image}")
+    assert source.columns == 1025 && source.rows == 1025 panic "load the full 16-bit heightmap"
+    assert absValue(item.width/1167.49258-10.0) < 0.001 && absValue(item.length/1076.83579-10.0) < 0.001 panic "scale both landscape axes"
+    azFree(source.samples)
+    fin roads = buildRoadNetwork(world)
+    assert roadSurfaceAt(roads,0.0,313.0).found panic "crossroads has a north approach"
+    assert !roadSurfaceAt(roads,1650.0,286.0).found panic "T-junction has no fourth approach"
+    assert roadSurfaceAt(roads,3350.0,327.0).found && !roadSurfaceAt(roads,3350.0,300.0).found panic "roundabout has a paved ring and open island"
+    assert roadSurfaceAt(roads,-1000.0,307.8).found panic "second lane is paved"
+    fin asphalt = readFile("${root}/Textures/Asphalt/surface.aztex")
+    assert asphalt.matches(0,"AZTX") && asphalt.size > 1000000 panic "the asphalt material has its packed texture"
+    println("heightmap and road junctions ok")
+    var ground = loadLandscapeColliders(world,root)
+    defer { releaseLandscapeColliders(ground) }
+    fin paving = roadSurfaceAt(roads,-1000.0,305.4)
+    fin ray = castLandscape(ground,Vec3(-999.0,65.0,305.4),Vec3(-0.1,-0.995,0.0),20.0)
+    assert ray.hit && absValue(ray.py-paving.height) < 0.08 && ray.grip > 1.15 panic "tilted ray contacts the visible asphalt"
+    fin deck = castLandscape(ground,Vec3(-561.0,75.0,470.0),Vec3(0.0,-1.0,0.0),80.0)
+    assert deck.hit && deck.py > 50.0 && deck.grip > 1.15 panic "the deck deck carries vehicles above the ravine"
+    fin under = castLandscape(ground,Vec3(-561.0,40.0,470.0),Vec3(0.0,-1.0,0.0),45.0)
+    assert under.hit && deck.py-under.py >= 20.0 panic "the ravine stays below the deck"
+    fin summit = roadSurfaceAt(roads,1720.0,-3900.0)
+    assert summit.found && summit.height > 580.0 panic "the pass reaches the high ridge"
+    fin start = storageEntityAt<PlayerStart>(ensureStorage<PlayerStart>(world),0)
+    fin driver = spawnVehicle(world,start,ground)
+    var frame = 0
+    while frame < 504 {
+        simulateVehicle(world,driver,ground,DriveInput(1.0,0.0,false),gravity3d(),1.0/120.0)
+        frame += 1
+    }
+    fin driven = storageGet<Vehicle>(ensureStorage<Vehicle>(world),driver)
+    assert driven.speed > 10.0 && driven.grounded >= 2 && worldPosition(world,driver).x > -963.0 panic "car accelerates on the highway"
+    println("asphalt contact and car driving ok")
+}

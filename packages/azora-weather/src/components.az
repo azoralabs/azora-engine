@@ -1,0 +1,66 @@
+module engine.weather.components
+
+import std.traits
+import engine.core
+import engine.ecs
+import engine.scene
+
+/**
+ * The weather: a preset the sky moves to over [transitionSeconds], or a
+ * random sequence of them, and overrides for each of its parts (negative:
+ * the preset's own). Presets: Clear, Cloudy, Overcast, Fog, LightRain, Rain,
+ * Thunderstorm, LightSnow, Snow, Blizzard.
+ */
+@Component
+@Inspectable(title: "Weather", serializedName: "AetherWeather", icon: "cloud-rain", category: "Weather", order: 32)
+pack AetherWeather derives Clone {
+    var enabled: Bool = true
+    var preset: String = "Clear"
+    @Range(min: 0.0, max: 600.0, step: 1.0)
+    var transitionSeconds: Double = 20.0
+    /** Moves through presets on its own, each held for about [randomMinutes]. */
+    var random: Bool = false
+    @Range(min: 0.5, max: 120.0, step: 0.5)
+    var randomMinutes: Double = 6.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var rain: Double = -1.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var snow: Double = -1.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var fog: Double = -1.0
+    /** Metres per second, and the compass bearing it blows from. */
+    @Range(min: -1.0, max: 40.0, step: 0.5)
+    var windSpeed: Double = -1.0
+    @Range(min: 0.0, max: 360.0, step: 1.0)
+    var windDirection: Double = 225.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var gusts: Double = -1.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var wetness: Double = -1.0
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var snowCover: Double = -1.0
+    /** Strikes per minute. */
+    @Range(min: -1.0, max: 30.0, step: 0.5)
+    var lightning: Double = -1.0
+    /** How far around the camera landing drops are seen to splash, in metres. */
+    @Range(min: 5.0, max: 80.0, step: 1.0)
+    var splashDistance: Double = 35.0
+    /** How much a landing drop throws up: 0 only rings on wet ground, 1 a full crown of droplets. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var splashes: Double = 0.35
+}
+
+/** How loud the weather is: rain, wind and thunder, under a master level. */
+@Component
+@Inspectable(title: "Weather Audio", serializedName: "AetherAudio", icon: "volume-2", category: "Weather", order: 33)
+pack AetherAudio derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var master: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var rain: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var wind: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var thunder: Double = 1.0
+}

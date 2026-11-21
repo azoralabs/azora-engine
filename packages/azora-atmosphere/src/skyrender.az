@@ -1,0 +1,401 @@
+module engine.atmosphere.skyrender
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.atmosphere.view
+import engine.io
+import engine.math
+import engine.objc
+import engine.atmosphere.components
+import engine.atmosphere.celestial
+import engine.atmosphere.scattering
+import engine.atmosphere.cloudshader
+
+/** Bytes of the block every sky pass reads (`AetherU` in the Metal source). */
+fin aetherUniformBytes: Long = 448
+
+/** Pixel formats and usages the passes use. */
+fin halfFloatRgba: Long = 115
+fin displayBgra: Long = 80
+fin depthFloat: Long = 252
+
+/**
+ * The GPU half of an Aether Sphere: its pipelines, the atmosphere's tables
+ * and the block of values its passes read. Put on the entity at start-up; not
+ * saved with the scene.
+ */
+@Component
+pack AetherRenderer {
+    var ready: Bool = false
+    var transmittancePipeline: Long = 0
+    var multiplePipeline: Long = 0
+    var skyViewPipeline: Long = 0
+    var skyPipeline: Long = 0
+    var applyPipeline: Long = 0
+    var aerialPipeline: Long = 0
+    var transmittance: Long = 0
+    var multiple: Long = 0
+    var skyView: Long = 0
+    var aerial: Long = 0
+    var uniforms: Long = 0
+    /** Scratch for the compute grid sizes, passed by address. */
+    var sizes: Long = 0
+    /** The air the tables were made for: they are made again when it changes. */
+    var airKey: Double = -1.0
+    /** Clouds: the noise they are carved from (made once), their passes and two targets read and written in turn. */
+    var shapeKernel: Long = 0
+    var detailKernel: Long = 0
+    var weatherKernel: Long = 0
+    var shadowKernel: Long = 0
+    var cloudPipeline: Long = 0
+    var shapeNoise: Long = 0
+    var detailNoise: Long = 0
+    var weatherMap: Long = 0
+    var noiseReady: Bool = false
+    var cloudA: Long = 0
+    var cloudB: Long = 0
+    var cloudWidth: Long = 0
+    var cloudHeight: Long = 0
+    var cloudReadA: Bool = true
+    var cloudFrames: Int = 0
+    var cloudShadow: Long = 0
+}
+
+impl AetherRenderer {
+    dtor .() {
+        if self.transmittancePipeline != 0 then send0(self.transmittancePipeline, sel("release"))
+        if self.multiplePipeline != 0 then send0(self.multiplePipeline, sel("release"))
+        if self.skyViewPipeline != 0 then send0(self.skyViewPipeline, sel("release"))
+        if self.skyPipeline != 0 then send0(self.skyPipeline, sel("release"))
+        if self.applyPipeline != 0 then send0(self.applyPipeline, sel("release"))
+        if self.aerialPipeline != 0 then send0(self.aerialPipeline, sel("release"))
+        if self.transmittance != 0 then send0(self.transmittance, sel("release"))
+        if self.multiple != 0 then send0(self.multiple, sel("release"))
+        if self.skyView != 0 then send0(self.skyView, sel("release"))
+        if self.aerial != 0 then send0(self.aerial, sel("release"))
+        if self.shapeKernel != 0 then send0(self.shapeKernel, sel("release"))
+        if self.detailKernel != 0 then send0(self.detailKernel, sel("release"))
+        if self.weatherKernel != 0 then send0(self.weatherKernel, sel("release"))
+        if self.shadowKernel != 0 then send0(self.shadowKernel, sel("release"))
+        if self.cloudPipeline != 0 then send0(self.cloudPipeline, sel("release"))
+        if self.shapeNoise != 0 then send0(self.shapeNoise, sel("release"))
+        if self.detailNoise != 0 then send0(self.detailNoise, sel("release"))
+        if self.weatherMap != 0 then send0(self.weatherMap, sel("release"))
+        if self.cloudA != 0 then send0(self.cloudA, sel("release"))
+        if self.cloudB != 0 then send0(self.cloudB, sel("release"))
+        if self.cloudShadow != 0 then send0(self.cloudShadow, sel("release"))
+        if self.uniforms != 0 then azFree(self.uniforms)
+        if self.sizes != 0 then azFree(self.sizes)
+    }
+}
+
+/** What Metal said went wrong, from the NSError it left at [diagnostic]. */
+func metalReason(diagnostic: Long): String {
+    fin failure = azPeek64(diagnostic, 0)
+    if failure == 0 then return "no reason given"
+    return azCstring(send0(send0(failure, sel("localizedDescription")), sel("UTF8String")), 0)
+}
+
+func aetherFunction(library: Long, name: String): Long = send1(library, sel("newFunctionWithName:"), nsString(name))
+
+/** A full-screen pass of the sky library: [fragment] into [format], with a depth attachment when [depth]. */
+func aetherPipeline(device: Long, library: Long, fragment: String, format: Long, depth: Bool): Long {
+    fin vertexStage = aetherFunction(library, if depth then "aether_sky_quad" else "aether_full")
+    fin fragmentStage = aetherFunction(library, fragment)
+    defer {
+        if vertexStage != 0 then send0(vertexStage, sel("release"))
+        if fragmentStage != 0 then send0(fragmentStage, sel("release"))
+    }
+    if vertexStage == 0 || fragmentStage == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertexStage)
+    send1(descriptor, sel("setFragmentFunction:"), fragmentStage)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), format)
+    if depth then send1(descriptor, sel("setDepthAttachmentPixelFormat:"), depthFloat)
+    fin diagnostic = azAlloc(8)
+    azPoke64(diagnostic, 0, 0)
+    fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, diagnostic)
+    if pipeline == 0 {
+        fin reason = metalReason(diagnostic)
+        println("Aether Sphere: ${fragment}: ${reason}")
+    }
+    azFree(diagnostic)
+    return pipeline
+}
+
+func aetherTexture(device: Long, width: Long, height: Long, depth: Long, format: Long = halfFloatRgba, written: Bool = false, levels: Long = 1): Long {
+    fin descriptor = newObject("MTLTextureDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    // 2 = MTLTextureType2D, 7 = MTLTextureType3D.
+    send1(descriptor, sel("setTextureType:"), if depth > 1 then 7 else 2)
+    send1(descriptor, sel("setPixelFormat:"), format)
+    send1(descriptor, sel("setWidth:"), width)
+    send1(descriptor, sel("setHeight:"), height)
+    send1(descriptor, sel("setDepth:"), depth)
+    send1(descriptor, sel("setMipmapLevelCount:"), levels)
+    // Read by shaders; written by a kernel (1 | 2) or drawn into (1 | 4).
+    send1(descriptor, sel("setUsage:"), if written || depth > 1 then 3 else 5)
+    send1(descriptor, sel("setStorageMode:"), 2)
+    return send1(device, sel("newTextureWithDescriptor:"), descriptor)
+}
+
+func aetherKernel(device: Long, library: Long, name: String): Long {
+    fin function = aetherFunction(library, name)
+    if function == 0 then return 0
+    fin pipeline = send2(device, sel("newComputePipelineStateWithFunction:error:"), function, 0)
+    send0(function, sel("release"))
+    return pipeline
+}
+
+/** Compiles the sky's passes and makes its tables. A failure prints why and leaves the renderer not ready. */
+func makeAetherRenderer(device: Long): AetherRenderer {
+    var renderer = AetherRenderer()
+    renderer.uniforms = azAlloc(aetherUniformBytes)
+    renderer.sizes = azAlloc(64)
+    var index: Long = 0
+    while index < aetherUniformBytes {
+        azPokeF32(renderer.uniforms, index, 0.0)
+        index += 4
+    }
+    fin diagnostic = azAlloc(8)
+    azPoke64(diagnostic, 0, 0)
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(atmosphereMetalSource() + cloudMetalSource()), 0, diagnostic)
+    if library == 0 {
+        println("Azora Atmosphere: the sky shaders did not compile:")
+        println(metalReason(diagnostic))
+        azFree(diagnostic)
+        return renderer
+    }
+    azFree(diagnostic)
+    renderer.transmittancePipeline = aetherPipeline(device, library, "aether_transmittance", halfFloatRgba, false)
+    renderer.multiplePipeline = aetherPipeline(device, library, "aether_multiple", halfFloatRgba, false)
+    renderer.skyViewPipeline = aetherPipeline(device, library, "aether_sky_view", halfFloatRgba, false)
+    renderer.skyPipeline = aetherPipeline(device, library, "aether_sky", displayBgra, true)
+    renderer.applyPipeline = aetherPipeline(device, library, "aether_apply", displayBgra, false)
+    renderer.aerialPipeline = aetherKernel(device, library, "aether_aerial")
+    renderer.shapeKernel = aetherKernel(device, library, "cloud_shape_noise")
+    renderer.detailKernel = aetherKernel(device, library, "cloud_detail_noise")
+    renderer.weatherKernel = aetherKernel(device, library, "cloud_weather_map")
+    renderer.shadowKernel = aetherKernel(device, library, "cloud_shadow")
+    renderer.cloudPipeline = aetherPipeline(device, library, "cloud_march", halfFloatRgba, false)
+    send0(library, sel("release"))
+    // 70 RGBA8, 30 RG8, 25 R16 float.
+    renderer.shapeNoise = aetherTexture(device, 128, 128, 128, 70, true, 8)
+    renderer.detailNoise = aetherTexture(device, 32, 32, 32, 70, true, 6)
+    renderer.weatherMap = aetherTexture(device, 256, 256, 1, 30, true)
+    renderer.cloudShadow = aetherTexture(device, 512, 512, 1, 25, true)
+    renderer.transmittance = aetherTexture(device, 256, 64, 1)
+    renderer.multiple = aetherTexture(device, 32, 32, 1)
+    renderer.skyView = aetherTexture(device, 192, 108, 1)
+    renderer.aerial = aetherTexture(device, 32, 32, 32)
+    renderer.ready = renderer.transmittancePipeline != 0 && renderer.multiplePipeline != 0 && renderer.skyViewPipeline != 0 &&
+        renderer.skyPipeline != 0 && renderer.applyPipeline != 0 && renderer.aerialPipeline != 0 &&
+        renderer.transmittance != 0 && renderer.multiple != 0 && renderer.skyView != 0 && renderer.aerial != 0 &&
+        renderer.shapeKernel != 0 && renderer.detailKernel != 0 && renderer.weatherKernel != 0 && renderer.shadowKernel != 0 &&
+        renderer.cloudPipeline != 0 && renderer.shapeNoise != 0 && renderer.detailNoise != 0 && renderer.weatherMap != 0 &&
+        renderer.cloudShadow != 0
+    return renderer
+}
+
+func pokeVector(block: Long, offset: Long, x: Double, y: Double, z: Double, w: Double) {
+    azPokeF32(block, offset, x)
+    azPokeF32(block, offset + 4, y)
+    azPokeF32(block, offset + 8, z)
+    azPokeF32(block, offset + 12, w)
+}
+
+/** Writes the camera's part of the block: where it is, how it looks, and the scene's size. */
+func writeAetherView(block: Long, view: SceneView&, sky: AetherSky&) {
+    fin radius = groundRadius + atmosphereClamp(sky.altitude + view.eyeY, 0.0, 90000.0) / 1000.0
+    pokeVector(block, 32, view.eyeX, view.eyeY, view.eyeZ, radius)
+    pokeVector(block, 64, view.tangent * view.aspect, view.tangent, skyExposure * sky.exposure, sky.stars)
+    pokeVector(block, 80, view.forwardX, view.forwardY, view.forwardZ, 0.0)
+    pokeVector(block, 96, view.rightX, view.rightY, view.rightZ, 0.0)
+    pokeVector(block, 112, view.upX, view.upY, view.upZ, 0.0)
+    pokeVector(block, 160, view.time, aerialReach, view.width as Double, view.height as Double)
+    if view.matrices != 0 {
+        azCopy(block + 176, view.matrices + 64, 64)
+        azCopy(block + 352, view.matrices + 128, 64)
+    }
+}
+
+/** Runs [kernel] over a grid of [groups] threadgroups of [threads] threads each way (z 1 when [flat]). */
+func dispatchKernel(commands: Long, renderer: AetherRenderer&, kernel: Long, target: Long, groups: Long, threads: Long, flat: Bool,
+                    first: Long = 0, second: Long = 0, third: Long = 0) {
+    fin encoder = send0(commands, sel("computeCommandEncoder"))
+    send1(encoder, sel("setComputePipelineState:"), kernel)
+    send2(encoder, sel("setTexture:atIndex:"), target, 0)
+    if first != 0 then send2(encoder, sel("setTexture:atIndex:"), first, 1)
+    if second != 0 then send2(encoder, sel("setTexture:atIndex:"), second, 2)
+    if third != 0 then send2(encoder, sel("setTexture:atIndex:"), third, 3)
+    send3(encoder, sel("setBytes:length:atIndex:"), renderer.uniforms, aetherUniformBytes, 0)
+    // Two MTLSize values, passed by address (arm64 passes structs this large through memory).
+    azPoke64(renderer.sizes, 0, groups)
+    azPoke64(renderer.sizes, 8, groups)
+    azPoke64(renderer.sizes, 16, if flat then 1 else groups)
+    azPoke64(renderer.sizes, 24, threads)
+    azPoke64(renderer.sizes, 32, threads)
+    azPoke64(renderer.sizes, 40, if flat then 1 else threads)
+    send2(encoder, sel("dispatchThreadgroups:threadsPerThreadgroup:"), renderer.sizes, renderer.sizes + 24)
+    send0(encoder, sel("endEncoding"))
+}
+
+/** The noise the clouds are carved from, made once on the GPU, with its mipmaps for far clouds. */
+func makeCloudNoise(commands: Long, renderer: AetherRenderer!) {
+    dispatchKernel(commands, renderer, renderer.shapeKernel, renderer.shapeNoise, 16, 8, false)
+    dispatchKernel(commands, renderer, renderer.detailKernel, renderer.detailNoise, 4, 8, false)
+    dispatchKernel(commands, renderer, renderer.weatherKernel, renderer.weatherMap, 32, 8, true)
+    fin blit = send0(commands, sel("blitCommandEncoder"))
+    send1(blit, sel("generateMipmapsForTexture:"), renderer.shapeNoise)
+    send1(blit, sel("generateMipmapsForTexture:"), renderer.detailNoise)
+    send0(blit, sel("endEncoding"))
+    renderer.noiseReady = true
+}
+
+/** The two cloud targets, an eighth of the drawable each way; a new size starts without history. */
+func ensureCloudTargets(device: Long, renderer: AetherRenderer!, fullWidth: Int, fullHeight: Int) {
+    fin width = ((fullWidth + 7) / 8) as Long
+    fin height = ((fullHeight + 7) / 8) as Long
+    if width == renderer.cloudWidth && height == renderer.cloudHeight && renderer.cloudA != 0 then return
+    if renderer.cloudA != 0 then send0(renderer.cloudA, sel("release"))
+    if renderer.cloudB != 0 then send0(renderer.cloudB, sel("release"))
+    renderer.cloudA = aetherTexture(device, width, height, 1)
+    renderer.cloudB = aetherTexture(device, width, height, 1)
+    renderer.cloudWidth = width
+    renderer.cloudHeight = height
+    renderer.cloudFrames = 0
+}
+
+/** The cloud target this frame wrote (after [marchClouds]). */
+func cloudsNow(renderer: AetherRenderer&): Long = if renderer.cloudReadA then renderer.cloudA else renderer.cloudB
+
+/** One full-screen pass into a table: [pipeline] draws [target], reading [first] and [second] (0: none). */
+func drawTable(commands: Long, renderer: AetherRenderer&, pipeline: Long, target: Long, first: Long, second: Long) {
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), target)
+    send1(color, sel("setLoadAction:"), 0)
+    send1(color, sel("setStoreAction:"), 1)
+    fin encoder = send1(commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+    send1(encoder, sel("setRenderPipelineState:"), pipeline)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), renderer.uniforms, aetherUniformBytes, 0)
+    if first != 0 then send2(encoder, sel("setFragmentTexture:atIndex:"), first, 0)
+    if second != 0 then send2(encoder, sel("setFragmentTexture:atIndex:"), second, 1)
+    send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
+    send0(encoder, sel("endEncoding"))
+}
+
+/** A number that changes when the air does: the tables made from it are made again. */
+func airKey(sky: AetherSky&): Double = sky.rayleigh * 1000003.0 + sky.mie * 1009.0 + sky.ozone * 17.0 + sky.groundAlbedo
+
+/**
+ * This frame's tables, in a command buffer of their own committed before the
+ * frame's: the sky as seen from the camera, the air in front of it, and when
+ * the air changed, its transmittance and multiple scattering.
+ */
+func updateAetherTables(queue: Long, renderer: AetherRenderer!, sky: AetherSky&): Long {
+    fin commands = send0(queue, sel("commandBuffer"))
+    fin key = airKey(sky)
+    if key != renderer.airKey {
+        drawTable(commands, renderer, renderer.transmittancePipeline, renderer.transmittance, 0, 0)
+        drawTable(commands, renderer, renderer.multiplePipeline, renderer.multiple, renderer.transmittance, 0)
+        renderer.airKey = key
+    }
+    drawTable(commands, renderer, renderer.skyViewPipeline, renderer.skyView, renderer.transmittance, renderer.multiple)
+    dispatchKernel(commands, renderer, renderer.aerialPipeline, renderer.aerial, 4, 8, true, renderer.transmittance, renderer.multiple,
+        renderer.skyView)
+    marchClouds(commands, renderer)
+    send0(commands, sel("commit"))
+    return commands
+}
+
+/**
+ * This frame's clouds into one target, blended with last frame's in the other,
+ * and the shadow they cast over the ground around the camera.
+ */
+func marchClouds(commands: Long, renderer: AetherRenderer!) {
+    if !renderer.noiseReady then makeCloudNoise(commands, renderer)
+    fin read = if renderer.cloudReadA then renderer.cloudA else renderer.cloudB
+    fin write = if renderer.cloudReadA then renderer.cloudB else renderer.cloudA
+    azPokeF32(renderer.uniforms, 340, renderer.cloudFrames as Double)
+    azPokeF32(renderer.uniforms, 344, renderer.cloudWidth as Double)
+    azPokeF32(renderer.uniforms, 348, renderer.cloudHeight as Double)
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), write)
+    send1(color, sel("setLoadAction:"), 0)
+    send1(color, sel("setStoreAction:"), 1)
+    fin encoder = send1(commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+    send1(encoder, sel("setRenderPipelineState:"), renderer.cloudPipeline)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), renderer.uniforms, aetherUniformBytes, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.shapeNoise, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.detailNoise, 1)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.weatherMap, 2)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.transmittance, 3)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.skyView, 4)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), read, 5)
+    send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
+    send0(encoder, sel("endEncoding"))
+    renderer.cloudReadA = !renderer.cloudReadA
+    renderer.cloudFrames += 1
+    dispatchKernel(commands, renderer, renderer.shadowKernel, renderer.cloudShadow, 64, 8, true,
+        renderer.shapeNoise, renderer.detailNoise, renderer.weatherMap)
+}
+
+func simulationSmooth(low: Double, high: Double, x: Double): Double {
+    fin t = atmosphereClamp((x - low) / (high - low), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+}
+
+/** Writes the sky's part of the block: sun, moon, air, the turn of the stars. */
+func writeAetherSky(block: Long, sky: AetherSky&, at: Celestial&, day: Double) {
+    pokeVector(block, 0, at.sun.x, at.sun.y, at.sun.z, sky.sunIntensity)
+    pokeVector(block, 16, at.moon.x, at.moon.y, at.moon.z, sky.moonIntensity * at.moonLit * 0.5)
+    pokeVector(block, 48, sky.rayleigh, sky.mie, sky.ozone, sky.groundAlbedo)
+    pokeVector(block, 128, at.moonLit, at.moonPhase, 0.7 * sky.moonIntensity, day)
+    pokeVector(block, 144, 0.0, 0.0, 0.0, 1.0)
+    // The celestial sphere's axes in the world: right ascension 0 and 6 h on the equator, and the pole.
+    fin first = horizonVector(0.0, 0.0, at.sidereal, at.latitude)
+    fin second = horizonVector(1.5707963267948966, 0.0, at.sidereal, at.latitude)
+    fin pole = horizonVector(0.0, 1.5707963267948966, at.sidereal, at.latitude)
+    pokeVector(block, 240, first.x, first.y, first.z, 0.0)
+    pokeVector(block, 256, second.x, second.y, second.z, 0.0)
+    pokeVector(block, 272, pole.x, pole.y, pole.z, 0.0)
+    pokeVector(block, 288, 0.0, 1.0, 0.0, 0.0)
+}
+
+/** Draws the physical sky into a BGRA8 / Depth32F encoder. */
+func drawAtmosphereSky(encoder: Long, depthOff: Long, renderer: AetherRenderer&,
+                       scaleX: Double = 1.0, scaleY: Double = 1.0, centerX: Double = 0.0, centerY: Double = 0.0) {
+    if encoder == 0 then return
+    pokeVector(renderer.sizes, 0, scaleX, scaleY, centerX, centerY)
+    send1(encoder, sel("setRenderPipelineState:"), renderer.skyPipeline)
+    send3(encoder, sel("setVertexBytes:length:atIndex:"), renderer.sizes, 16, 0)
+    send1(encoder, sel("setDepthStencilState:"), depthOff)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), renderer.uniforms, aetherUniformBytes, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.skyView, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.transmittance, 1)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), cloudsNow(renderer), 2)
+    send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
+}
+
+/** Applies atmospheric scattering to a completed scene color and depth. */
+func drawAtmosphereAir(view: SceneView&, renderer: AetherRenderer&) {
+    if view.color == 0 || view.depth == 0 then return
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), view.color)
+    send1(color, sel("setLoadAction:"), 1)
+    send1(color, sel("setStoreAction:"), 1)
+    fin encoder = send1(view.commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+    send1(encoder, sel("setRenderPipelineState:"), renderer.applyPipeline)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), renderer.uniforms, aetherUniformBytes, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), view.depth, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), renderer.aerial, 1)
+    send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
+    send0(encoder, sel("endEncoding"))
+}

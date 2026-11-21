@@ -7,6 +7,7 @@ import engine.io
 import engine.math
 import engine.objc
 import engine.scene.terrain
+import engine.roads
 
 // A heightfield is drawn as square chunks of 32 x 32 cells, each with its own
 // vertex buffer of 33 x 33 full-resolution vertices. A chunk draws at one of six
@@ -33,6 +34,7 @@ pack TerrainChunk derives Clone {
     var errors: Array<Double> = []
     /** The level drawn last frame, kept so a chunk near a threshold does not flicker. */
     var level: Int = 0
+    var edgeMask: Int = 0
 }
 
 pack TerrainMesh derives Clone {
@@ -41,6 +43,8 @@ pack TerrainMesh derives Clone {
     var chunks: Array<TerrainChunk> = []
     var chunksX: Int = 0
     var chunksZ: Int = 0
+    var cacheKey: String = ""
+    var layout: String = ""
 }
 
 /** The 32-bit index buffers every chunk shares, by level * 16 + coarser-neighbour mask. */
@@ -102,6 +106,10 @@ func loadTerrainMesh(device: Long, root: String, path: String): TerrainMesh {
     if !terrainFile(path) then return TerrainMesh(path)
     fin image = readTerrainImage("${root}/${path}")
     if image.samples == 0 then return TerrainMesh(path)
+    return buildTerrainMesh(device, path, image)
+}
+
+func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainMesh {
     var mesh = TerrainMesh(path, image)
     mesh.chunksX = (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells
     mesh.chunksZ = (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells
@@ -236,4 +244,32 @@ func releaseTerrainIndices(indices: TerrainIndices!) {
     }
     indices.buffers.clear()
     indices.counts.clear()
+}
+
+
+pack RoadSurfaceMesh {
+    var asset: String
+    var buffer: Long
+    var count: Int
+}
+
+/** The road mesh buffers and shared CPU network for one rendered scene. */
+pack RoadRenderCache {
+    var layout: String = ""
+    var network: RoadNetwork = .()
+    var buffers: Array<Long> = []
+    var counts: Array<Int> = []
+    var surfaces: Array<RoadSurfaceMesh> = []
+}
+
+func releaseRoadBuffers(cache: RoadRenderCache!) {
+    for buffer in cache.buffers {
+        if buffer != 0 then send0(buffer, sel("release"))
+    }
+    for surface in cache.surfaces {
+        if surface.buffer != 0 then send0(surface.buffer,sel("release"))
+    }
+    cache.surfaces.clear()
+    cache.buffers.clear()
+    cache.counts.clear()
 }

@@ -1,0 +1,59 @@
+module engine.render.geometry
+
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.io
+import engine.objc
+
+/** Extra geometry for a Mesh3d, sharing one vertex buffer across all its instances. */
+@Component
+pack MeshGeometry derives Clone { var name: String = "" }
+
+@Component
+pack GeometryAsset {
+    var name: String
+    var vertices: Array<Double>
+    var buffer: Long = 0
+    var count: Int = 0
+}
+
+impl GeometryAsset {
+    dtor .() { if self.buffer != 0 then send0(self.buffer,sel("release")) }
+}
+
+func geometryIndex(world: World!, name: String): Int {
+    fin assets = ensureStorage<GeometryAsset>(world)
+    var i = 0
+    while i < storageLength<GeometryAsset>(assets) {
+        if assets.values[i].name == name then return i
+        i += 1
+    }
+    return -1
+}
+
+func registerGeometry(world: World!, name: String, vertices: Array<Double>) {
+    if vertices.size == 0 || vertices.size % 18 != 0 || geometryIndex(world,name) >= 0 then return
+    fin entity = world.spawnResource(name)
+    storageInsert<GeometryAsset>(ensureStorage<GeometryAsset>(world),entity,GeometryAsset(name,take vertices))
+}
+
+func sceneGeometry(world: World!, device: Long, name: String): Mesh {
+    fin i = geometryIndex(world,name)
+    if i < 0 then return Mesh(0,0)
+    let assets = ensureStorage<GeometryAsset>(world)
+    let asset: GeometryAsset! = assets.values[i]
+    if asset.buffer == 0 {
+        fin bytes = azAlloc((asset.vertices.size as Long)*4)
+        if bytes == 0 then return Mesh(0,0)
+        defer { azFree(bytes) }
+        var v = 0
+        while v < asset.vertices.size {
+            azPokeF32(bytes,(v as Long)*4,asset.vertices[v])
+            v += 1
+        }
+        asset.buffer = send3(device,sel("newBufferWithBytes:length:options:"),bytes,(asset.vertices.size as Long)*4,0)
+        asset.count = asset.vertices.size/6
+    }
+    return Mesh(asset.buffer,asset.count)
+}

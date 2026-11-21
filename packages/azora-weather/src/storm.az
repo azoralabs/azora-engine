@@ -1,0 +1,473 @@
+module engine.weather.storm
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.io
+import engine.math
+import engine.objc
+import engine.audio.dsp
+import engine.render.scene
+import engine.atmosphere.components
+import engine.weather.components
+import engine.weather.presets
+import engine.atmosphere.skyrender
+
+/** Strikes alive at once (their flash, then their thunder), segments a bolt may have, and the thunder's arrival bins. */
+fin strikeSlots: Int = 3
+fin boltSegments: Int = 192
+fin thunderBins: Int = 700
+fin thunderBin: Double = 0.02
+/** Doubles kept per strike (see [AetherStorm.strikes]). */
+fin strikeFields: Int = 24
+/** Bytes of one segment for drawing: two float4, its ends with its width and glow. */
+fin segmentBytes: Long = 32
+fin speedOfSound: Double = 343.0
+
+/**
+ * A thunderstorm's lightning and thunder. Strikes come as a Poisson process
+ * under thick cloud, at the weather's rate. A ground strike is a stepped,
+ * branching channel from the cloud base to the ground; a cloud flash is a
+ * channel inside the cloud that only lights it. Each has two to four return
+ * strokes - the flicker - lighting the scene and the clouds around it. Its
+ * thunder is every segment's shock wave arriving at its own distance: the
+ * crack of the nearest, then the roll of the rest, dulled by the air and
+ * echoed by the valley.
+ */
+@Component
+pack AetherStorm {
+    var random: Noise = noise(97)
+    /**
+     * Per slot, [strikeFields] doubles: 0 active, 1 born, 2-4 where it strikes
+     * (x, cloud base, z), 5 ground strike, 6 distance, 7 strokes, 8-11 stroke
+     * times, 12 segments, 13 thunder starts, 14 thunder playing, 15 pan,
+     * 16 thunder time, 17 thunder length, 18 nearest segment, 19 crack.
+     */
+    var strikes: Long = 0
+    /** The bolts' segments, shared with the GPU, and their pipeline. */
+    var segments: Long = 0
+    var boltPipeline: Long = 0
+    var block: Long = 0
+    /** Per slot, the thunder's loudness over time, [thunderBins] doubles. */
+    var envelopes: Long = 0
+    var rumbleLeft: PinkNoise = pinkNoise(61)
+    var rumbleRight: PinkNoise = pinkNoise(67)
+    var crackNoise: Noise = noise(71)
+    var low0: Biquad = .()
+    var low1: Biquad = .()
+    var low2: Biquad = .()
+    var crackFilter: Biquad = .()
+    var echo: Reverb = .()
+    var bus: Long = 0
+    var ready: Bool = false
+}
+
+impl AetherStorm {
+    dtor .() {
+        if self.strikes != 0 then azFree(self.strikes)
+        if self.envelopes != 0 then azFree(self.envelopes)
+        if self.bus != 0 then azFree(self.bus)
+        if self.block != 0 then azFree(self.block)
+        if self.segments != 0 then send0(self.segments, sel("release"))
+        if self.boltPipeline != 0 then send0(self.boltPipeline, sel("release"))
+        self.echo.release()
+    }
+}
+
+func boltMetalSource(): String = "#include <metal_stdlib>
+using namespace metal;
+struct BoltU { float4x4 viewProj; float4 screen; float4 params; };
+struct BoltOut { float4 pos [[position]]; float across; float glow; float depth; };
+
+/** One segment of a bolt as a ribbon facing the eye, at least a pixel and a half wide. */
+vertex BoltOut bolt_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], device const float4* s [[buffer(0)]], constant BoltU& u [[buffer(1)]]) {
+    float4 a = s[iid * 2u], b = s[iid * 2u + 1u];
+    float4 ca = u.viewProj * float4(a.xyz, 1.0), cb = u.viewProj * float4(b.xyz, 1.0);
+    BoltOut o;
+    if (ca.w < 1.0 || cb.w < 1.0) { o.pos = float4(0.0, 0.0, -1.0, 1.0); o.across = 0.0; o.glow = 0.0; o.depth = 0.0; return o; }
+    float2 halfScreen = u.screen.xy * 0.5;
+    float2 sa = ca.xy / ca.w * halfScreen, sb = cb.xy / cb.w * halfScreen;
+    float2 d = sb - sa;
+    float2 axis = length(d) > 1e-3 ? normalize(d) : float2(0.0, 1.0);
+    float2 normal = float2(-axis.y, axis.x);
+    bool tail = vid >= 2u;
+    float side = (vid & 1u) == 0u ? -1.0 : 1.0;
+    float4 clip = tail ? cb : ca;
+    // The glow reaches several times the channel's width.
+    float width = max(a.w * u.params.x / clip.w, 1.5) * 6.0;
+    float2 at = (tail ? sb : sa) + normal * side * width * 0.5 + axis * (tail ? 1.0 : -1.0);
+    o.pos = float4(at / halfScreen * clip.w, 0.0, clip.w);
+    o.across = side;
+    o.glow = b.w * u.params.y;
+    o.depth = clip.w;
+    return o;
+}
+
+fragment float4 bolt_fragment(BoltOut in [[stage_in]], constant BoltU& u [[buffer(1)]], depth2d<float> scene [[texture(0)]]) {
+    if (in.glow <= 0.001) discard_fragment();
+    float2 px = in.pos.xy * (u.screen.zw / u.screen.xy);
+    float z = scene.read(uint2(clamp(px, float2(0.0), u.screen.zw - 1.0)));
+    float sceneDistance = u.params.z * u.params.w / max(u.params.w - z * (u.params.w - u.params.z), 1e-4);
+    // Behind a mountain, hidden.
+    if (z < 1.0 && sceneDistance < in.depth) discard_fragment();
+    float x = in.across;
+    float light = exp(-x * x * 40.0) * 2.4 + exp(-x * x * 4.0) * 0.45;
+    return float4(float3(0.82, 0.86, 1.0) * light * in.glow, 0.0);
+}
+"
+
+func stormPipeline(device: Long): Long {
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(boltMetalSource()), 0, 0)
+    if library == 0 then return 0
+    defer { send0(library, sel("release")) }
+    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("bolt_vertex"))
+    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("bolt_fragment"))
+    defer {
+        if vertexStage != 0 then send0(vertexStage, sel("release"))
+        if fragmentStage != 0 then send0(fragmentStage, sel("release"))
+    }
+    if vertexStage == 0 || fragmentStage == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertexStage)
+    send1(descriptor, sel("setFragmentFunction:"), fragmentStage)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), 80)
+    send1(color, sel("setBlendingEnabled:"), 1)
+    // Light added to what is there.
+    send1(color, sel("setSourceRGBBlendFactor:"), 1)
+    send1(color, sel("setDestinationRGBBlendFactor:"), 1)
+    send1(color, sel("setSourceAlphaBlendFactor:"), 0)
+    send1(color, sel("setDestinationAlphaBlendFactor:"), 1)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+func aetherStorm(device: Long, rate: Double): AetherStorm {
+    var storm = AetherStorm()
+    storm.strikes = sampleBuffer(strikeSlots * strikeFields)
+    var i = 0
+    while i < strikeSlots * strikeFields {
+        setSample(storm.strikes, i, 0.0)
+        i += 1
+    }
+    storm.envelopes = sampleBuffer(strikeSlots * thunderBins)
+    storm.bus = sampleBuffer(24000 * 2)
+    storm.block = azAlloc(128)
+    storm.segments = send2(device, sel("newBufferWithLength:options:"), (strikeSlots as Long) * (boltSegments as Long) * segmentBytes, 0)
+    storm.boltPipeline = stormPipeline(device)
+    storm.echo = reverb(rate)
+    storm.ready = storm.segments != 0 && storm.boltPipeline != 0
+    return take storm
+}
+
+func field(storm: AetherStorm&, slot: Int, index: Int): Double = sample(storm.strikes, slot * strikeFields + index)
+func setField(storm: AetherStorm!, slot: Int, index: Int, value: Double) { setSample(storm.strikes, slot * strikeFields + index, value) }
+
+func stormRandom(storm: AetherStorm!): Double = (storm.random.white() + 1.0) * 0.5
+
+/** Writes segment [index] of [slot]: from (ax, ay, az) to (bx, by, bz), [width] metres wide, [glow] bright. */
+func writeSegment(storm: AetherStorm&, slot: Int, index: Int, ax: Double, ay: Double, az: Double, bx: Double, yb: Double, bz: Double,
+                  width: Double, glow: Double) {
+    fin at = send0(storm.segments, sel("contents")) + ((slot * boltSegments + index) as Long) * segmentBytes
+    azPokeF32(at, 0, ax)
+    azPokeF32(at, 4, ay)
+    azPokeF32(at, 8, az)
+    azPokeF32(at, 12, width)
+    azPokeF32(at, 16, bx)
+    azPokeF32(at, 20, yb)
+    azPokeF32(at, 24, bz)
+    azPokeF32(at, 28, glow)
+}
+
+/**
+ * Lays out a strike's channel in [slot]: a stepped leader from (x, top, z)
+ * down to the ground at [bottom] (or, for a cloud flash, along inside the
+ * cloud), kinking at every step, with branches that end in the air.
+ */
+func makeChannel(storm: AetherStorm!, slot: Int, x: Double, top: Double, z: Double, bottom: Double, ground: Bool): Int {
+    var count = 0
+    var px = x
+    var py = top
+    var pz = z
+    fin steps = 44
+    fin drop = (top - bottom) / (steps as Double)
+    fin heading = stormRandom(storm) * 6.283185307179586
+    var step = 0
+    while step < steps && count < boltSegments {
+        var nx = px + (stormRandom(storm) - 0.5) * drop * 1.3
+        var ny = if ground then py - drop * (0.6 + 0.8 * stormRandom(storm)) else py + (stormRandom(storm) - 0.5) * 60.0
+        var nz = pz + (stormRandom(storm) - 0.5) * drop * 1.3
+        if !ground {
+            // Inside the cloud: a channel that wanders sideways for kilometres.
+            nx += cos(heading) * 95.0
+            nz += sin(heading) * 95.0
+        }
+        if ground && (step == steps - 1 || ny < bottom) then ny = bottom
+        writeSegment(storm, slot, count, px, py, pz, nx, ny, nz, 2.2, 1.0)
+        count += 1
+        // A branch now and then, fainter, reaching out and down and stopping in the air.
+        if stormRandom(storm) < 0.16 && count < boltSegments - 14 {
+            var bx = nx
+            var yb = ny
+            var bz = nz
+            fin outward = stormRandom(storm) * 6.283185307179586
+            fin length = 4 + ((stormRandom(storm) * 9.0) as Int)
+            var b = 0
+            while b < length && count < boltSegments {
+                fin cx = bx + cos(outward) * drop * 0.55 + (stormRandom(storm) - 0.5) * drop
+                fin cy = yb - drop * (0.3 + 0.6 * stormRandom(storm))
+                fin cz = bz + sin(outward) * drop * 0.55 + (stormRandom(storm) - 0.5) * drop
+                if cy < bottom + 20.0 then break
+                writeSegment(storm, slot, count, bx, yb, bz, cx, cy, cz, 1.0, 0.45 * (1.0 - (b as Double) / (length as Double)))
+                count += 1
+                bx = cx
+                yb = cy
+                bz = cz
+                b += 1
+            }
+        }
+        px = nx
+        py = ny
+        pz = nz
+        if ground && py <= bottom then break
+        step += 1
+    }
+    return count
+}
+
+/** How bright a strike in [slot] is [age] seconds after it began: its return strokes, and a ground strike's lingering current. */
+func flashOf(storm: AetherStorm&, slot: Int, age: Double): Double {
+    if age < 0.0 || age > 1.5 then return 0.0
+    var total: Double = 0.0
+    fin strokes = field(storm, slot, 7) as Int
+    var k = 0
+    while k < strokes {
+        fin since = age - field(storm, slot, 8 + k)
+        if since >= 0.0 then total += (if k == 0 then 1.0 else 0.7) * exp(-since / 0.045)
+        k += 1
+    }
+    if field(storm, slot, 5) > 0.5 then total += 0.25 * exp(-age / 0.25)
+    return total
+}
+
+/**
+ * Starts a strike in a free slot, somewhere around the eye at ([ex], [ez]):
+ * mostly kilometres away, a ground strike about half the time. [aimed] puts
+ * a ground strike 1.2-2.4 km away along ([towardX], [towardZ]).
+ */
+func strike(storm: AetherStorm!, now: Double, ex: Double, ez: Double, base: Double, eyeY: Double, aimed: Bool = false,
+            towardX: Double = 0.0, towardZ: Double = 1.0) {
+    var slot = -1
+    var s = 0
+    while s < strikeSlots {
+        if field(storm, s, 0) < 0.5 && slot < 0 then slot = s
+        s += 1
+    }
+    if slot < 0 then return
+    fin r = stormRandom(storm)
+    fin distance = if aimed then 1200.0 + 1200.0 * r else 600.0 + 7400.0 * r * r
+    fin bearing = if aimed then atan2(towardZ, towardX) + (stormRandom(storm) - 0.5) * 0.6 else stormRandom(storm) * 6.283185307179586
+    fin x = ex + cos(bearing) * distance
+    fin z = ez + sin(bearing) * distance
+    fin ground = aimed || stormRandom(storm) < 0.45
+    setField(storm, slot, 0, 1.0)
+    setField(storm, slot, 1, now)
+    setField(storm, slot, 2, x)
+    setField(storm, slot, 3, base)
+    setField(storm, slot, 4, z)
+    setField(storm, slot, 5, if ground then 1.0 else 0.0)
+    setField(storm, slot, 6, distance)
+    fin strokes = 2 + ((stormRandom(storm) * 2.99) as Int)
+    setField(storm, slot, 7, strokes as Double)
+    var t: Double = 0.0
+    var k = 0
+    while k < 4 {
+        setField(storm, slot, 8 + k, t)
+        t += 0.05 + 0.09 * stormRandom(storm)
+        k += 1
+    }
+    fin count = makeChannel(storm, slot, x, base, z, if ground then 0.0 else base, ground)
+    setField(storm, slot, 12, count as Double)
+    // The thunder: every segment's shock wave arriving at its own distance.
+    var nearest: Double = 1000000000.0
+    var i = 0
+    while i < count {
+        fin at = send0(storm.segments, sel("contents")) + ((slot * boltSegments + i) as Long) * segmentBytes
+        fin mx = (peekFloat32(at, 0) + peekFloat32(at, 16)) * 0.5 - ex
+        fin my = (peekFloat32(at, 4) + peekFloat32(at, 20)) * 0.5 - eyeY
+        fin mz = (peekFloat32(at, 8) + peekFloat32(at, 24)) * 0.5 - ez
+        fin d = sqrt(mx * mx + my * my + mz * mz)
+        if d < nearest then nearest = d
+        i += 1
+    }
+    fin bins = storm.envelopes + ((slot * thunderBins) as Long) * 8
+    var b = 0
+    while b < thunderBins {
+        azPokeF64(bins, (b as Long) * 8, 0.0)
+        b += 1
+    }
+    i = 0
+    while i < count {
+        fin at = send0(storm.segments, sel("contents")) + ((slot * boltSegments + i) as Long) * segmentBytes
+        fin ax = peekFloat32(at, 0)
+        fin ay = peekFloat32(at, 4)
+        fin az = peekFloat32(at, 8)
+        fin bx = peekFloat32(at, 16)
+        fin yb = peekFloat32(at, 20)
+        fin bz = peekFloat32(at, 24)
+        fin mx = (ax + bx) * 0.5 - ex
+        fin my = (ay + yb) * 0.5 - eyeY
+        fin mz = (az + bz) * 0.5 - ez
+        fin d = sqrt(mx * mx + my * my + mz * mz)
+        fin span = sqrt((bx - ax) * (bx - ax) + (yb - ay) * (yb - ay) + (bz - az) * (bz - az))
+        fin arrival = ((d - nearest) / speedOfSound + 0.01 * stormRandom(storm)) / thunderBin
+        fin bin = arrival as Int
+        if bin < thunderBins {
+            fin at2 = bins + (bin as Long) * 8
+            azPokeF64(at2, 0, azPeekF64(at2, 0) + span * peekFloat32(at, 28) / d)
+        }
+        i += 1
+    }
+    // Each arrival rolls on: smeared forward by the air and the valley.
+    var held: Double = 0.0
+    var peakValue: Double = 0.0
+    b = 0
+    while b < thunderBins {
+        held = held * 0.9 + azPeekF64(bins, (b as Long) * 8)
+        azPokeF64(bins, (b as Long) * 8, held)
+        if held > peakValue then peakValue = held
+        b += 1
+    }
+    b = 0
+    while b < thunderBins {
+        azPokeF64(bins, (b as Long) * 8, if peakValue > 0.0 then azPeekF64(bins, (b as Long) * 8) / peakValue else 0.0)
+        b += 1
+    }
+    setField(storm, slot, 13, now + nearest / speedOfSound)
+    setField(storm, slot, 14, 0.0)
+    setField(storm, slot, 16, 0.0)
+    setField(storm, slot, 17, (thunderBins as Double) * thunderBin)
+    setField(storm, slot, 18, nearest)
+    setField(storm, slot, 19, if nearest < 1800.0 then 1.0 - nearest / 1800.0 else 0.0)
+}
+
+/**
+ * Moves the storm on to [now]: new strikes at [perMinute] under [cover]; the
+ * flash they cast over the scene and into the clouds; thunder that has
+ * arrived starts playing.
+ */
+func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, cover: Double, base: Double,
+               ex: Double, ey: Double, ez: Double, rightX: Double, rightZ: Double): Vec3 {
+    if cover > 0.7 && perMinute > 0.0 && stormRandom(storm) < perMinute / 60.0 * dt then strike(storm, now, ex, ez, base, ey)
+    var flash: Double = 0.0
+    var brightest: Double = 0.0
+    var bx: Double = 0.0
+    var bz: Double = 0.0
+    var s = 0
+    while s < strikeSlots {
+        if field(storm, s, 0) > 0.5 {
+            fin age = now - field(storm, s, 1)
+            fin d = field(storm, s, 6)
+            fin seen = flashOf(storm, s, age) * (if field(storm, s, 5) > 0.5 then 1.0 else 0.6) / (1.0 + (d / 1600.0) * (d / 1600.0))
+            flash += seen
+            if seen > brightest {
+                brightest = seen
+                bx = field(storm, s, 2)
+                bz = field(storm, s, 4)
+            }
+            if field(storm, s, 14) < 0.5 && now >= field(storm, s, 13) {
+                setField(storm, s, 14, 1.0)
+                setField(storm, s, 16, 0.0)
+                // Where it is heard from: its direction against the eye's right.
+                fin dx = field(storm, s, 2) - ex
+                fin dz = field(storm, s, 4) - ez
+                fin length = sqrt(dx * dx + dz * dz)
+                setField(storm, s, 15, if length > 1.0 then (dx * rightX + dz * rightZ) / length else 0.0)
+            }
+            // Over once its flash has faded and its thunder has rolled away.
+            if age > 1.5 && field(storm, s, 14) > 0.5 && field(storm, s, 16) > field(storm, s, 17) then setField(storm, s, 0, 0.0)
+        }
+        s += 1
+    }
+    return Vec3(bx, flash, bz)
+}
+
+/** Adds the thunder of every strike that has arrived into [mix] (stereo, interleaved), [frames] long, echoed by the valley. */
+func mixThunder(storm: AetherStorm!, mix: Long, frames: Int, rate: Double, volume: Double) {
+    if frames <= 0 || frames > 24000 then return
+    var i = 0
+    while i < frames * 2 {
+        setSample(storm.bus, i, 0.0)
+        i += 1
+    }
+    var any = false
+    var s = 0
+    while s < strikeSlots {
+        if field(storm, s, 0) > 0.5 && field(storm, s, 14) > 0.5 && field(storm, s, 16) <= field(storm, s, 17) {
+            any = true
+            fin d = field(storm, s, 18)
+            // Far thunder is low: the air takes its highs.
+            fin cutoff = 90.0 + 2600.0 * exp(-d / 900.0)
+            when s {
+                0 -> storm.low0.lowpass(cutoff, 0.6, rate)
+                1 -> storm.low1.lowpass(cutoff, 0.6, rate)
+                else -> storm.low2.lowpass(cutoff, 0.6, rate)
+            }
+            storm.crackFilter.highpass(700.0, 0.7, rate)
+            fin level = volume * 1.7 / (1.0 + d / 900.0)
+            fin pan = field(storm, s, 15)
+            fin left = equalPowerLeft(pan)
+            fin right = equalPowerRight(pan)
+            fin crack = field(storm, s, 19)
+            var t = field(storm, s, 16)
+            fin bins = storm.envelopes + ((s * thunderBins) as Long) * 8
+            var f = 0
+            while f < frames {
+                fin position = t / thunderBin
+                fin bin = position as Int
+                var envelope: Double = 0.0
+                if bin < thunderBins - 1 {
+                    fin frac = position - (bin as Double)
+                    envelope = azPeekF64(bins, (bin as Long) * 8) * (1.0 - frac) + azPeekF64(bins, ((bin + 1) as Long) * 8) * frac
+                }
+                fin noiseSample = storm.rumbleLeft.next() * 0.6 + storm.rumbleRight.next() * 0.4
+                fin rumble = when s {
+                    0 -> storm.low0.process(noiseSample)
+                    1 -> storm.low1.process(noiseSample)
+                    else -> storm.low2.process(noiseSample)
+                }
+                // The crack: the nearest segments' sharp front, only for a close strike, in its first moments.
+                fin sharp = if crack > 0.0 && t < 0.5 then storm.crackFilter.process(storm.crackNoise.white()) * crack * envelope * (1.0 - t * 2.0) else 0.0
+                fin x = (rumble * 2.2 * envelope + sharp * 0.8) * level
+                addSample(storm.bus, f * 2, x * left)
+                addSample(storm.bus, f * 2 + 1, x * right)
+                t += 1.0 / rate
+                f += 1
+            }
+            setField(storm, s, 16, t)
+        }
+        s += 1
+    }
+    if !any then return
+    storm.echo.process(storm.bus, frames, 0.35)
+    i = 0
+    while i < frames * 2 {
+        addSample(mix, i, sample(storm.bus, i))
+        i += 1
+    }
+}
+
+/** A ground strike now, a kilometre or two ahead of the eye: for trying the storm (the demo's L key). */
+func lightningNow(world: World!, now: Double, eye: Vec3&, forward: Vec3&) {
+    let storms = ensureStorage<AetherStorm>(world)
+    var i = 0
+    while i < storageLength<AetherStorm>(storms) {
+        fin owner = storageEntityAt<AetherStorm>(storms, i)
+        fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage<AetherClouds>(world), owner, AetherClouds())
+        strike(storms.values[i], now, eye.x, eye.z, clouds.baseAltitude, eye.y, true, forward.x, forward.z)
+        i += 1
+    }
+}

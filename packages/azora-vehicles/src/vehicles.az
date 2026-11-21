@@ -1,0 +1,1223 @@
+module engine.vehicles
+
+import std.traits
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.physics.core
+import engine.physics.d3
+import engine.render.scene
+import engine.render.geometry
+import engine.vehicles.bodywork
+import engine.landscape.collision
+exposed import engine.vehicles.drivetrain
+exposed import engine.vehicles.enginesound
+import engine.io
+import engine.audio.dsp
+import engine.audio.output
+
+// A vehicle is one rigid body on sprung wheels. Every wheel is a disk cast
+// along its suspension against the landscape; its spring and damper push the
+// body at the wheel centre, and its tyre turns the slip between the wheel's
+// spin and the ground into forces through a friction curve. The body turns
+// with an inertia tensor, so pitch under braking, roll in corners and landing
+// on two wheels come out of the forces rather than being animated.
+//
+// Axes: +X right, +Y up, -Z forward, as in the rest of the Engine.
+
+enum VehicleKind { Car, Motorcycle }
+
+/** Vehicle tuning authored on a Player Start and copied to the spawned vehicle. */
+@Component
+@Inspectable(title: "Vehicle Setup", serializedName: "VehicleSetup", icon: "gamepad-2", category: "Vehicles", order: 39)
+pack VehicleSetup derives Clone {
+    var motorcycle: Bool = false
+    var sport: Bool = false
+    @Range(min: 0.25, max: 3.0, step: 0.05)
+    var powerScale: Double = 1.0
+    @Range(min: 0.25, max: 2.0, step: 0.05)
+    var gripScale: Double = 1.0
+    @Range(min: 0.25, max: 2.0, step: 0.05)
+    var brakeScale: Double = 1.0
+}
+
+/** Geometry, mass, suspension, tyres and drivetrain. Metres, kilograms, newtons, seconds. */
+pack VehicleSpec {
+    var wheelCount: Int = 4
+    var halfTrack: Double = 0.82
+    /** Axle positions along Z: forward is -Z. */
+    var frontAxle: Double = -1.32
+    var rearAxle: Double = 1.28
+    /** Top of the suspension, above the centre of mass. */
+    var mountHeight: Double = 0.10
+    var wheelRadius: Double = 0.36
+    var tireWidth: Double = 0.26
+    var mass: Double = 1350.0
+    /** Principal moments: pitch about X, yaw about Y, roll about Z. */
+    var inertia: Vec3 = .(2300.0, 2500.0, 650.0)
+    /** Spring free length (full droop), mount to wheel centre, and the shortest before the bump stop. */
+    var restLength: Double = 0.54
+    var bumpLength: Double = 0.17
+    var spring: Double = 24000.0
+    var bump: Double = 1700.0
+    var rebound: Double = 2500.0
+    var antiRollFront: Double = 14000.0
+    var antiRollRear: Double = 7000.0
+    /**
+     * Anti-dive and anti-squat: the share of braking and driving pitch the
+     * suspension links carry instead of the springs, so the nose does not dive
+     * onto the road under hard braking.
+     */
+    var antiPitch: Double = 0.5
+    var tireGrip: Double = 1.0
+    var wheelInertia: Double = 1.1
+    /** Engine power and the most torque the driven wheels share. */
+    var engineGain: Double = 1.0
+    var sport: Bool = false
+    var downforce: Double = 0.0
+    var power: Double = 110000.0
+    var maxTorque: Double = 3100.0
+    var frontDrive: Double = 0.4
+    var maxSpeed: Double = 58.0
+    var reverseSpeed: Double = 12.0
+    var brakeFront: Double = 2300.0
+    var brakeRear: Double = 1500.0
+    var handbrake: Double = 3600.0
+    var maxSteer: Double = 0.58
+    /** The speed at which the steering lock has halved. */
+    var steerFalloff: Double = 17.0
+    var steerRate: Double = 2.6
+    /** Drag area (Cd times frontal area) and rolling resistance coefficient. */
+    var drag: Double = 0.70
+    var rolling: Double = 0.013
+    /** Two-wheelers keep their body upright and lean only where they are drawn. */
+    var lean: Bool = false
+    /**
+     * The body as the ground can meet it: the underbody, the bumper corners
+     * (raised, so the car climbs onto a slope instead of digging in) and the
+     * roof. Heights are above the centre of mass.
+     */
+    var bodyHalfWidth: Double = 0.86
+    var bodyHalfLength: Double = 2.02
+    var bodyLow: Double = -0.32
+    var cornerLow: Double = -0.18
+    var bodyHigh: Double = 0.62
+}
+
+func vehicleSpec(kind: VehicleKind): VehicleSpec {
+    if kind == .Car then return VehicleSpec()
+    return VehicleSpec(wheelCount: 2, halfTrack: 0.0, frontAxle: -0.71, rearAxle: 0.71, mountHeight: 0.06,
+        wheelRadius: 0.31, tireWidth: 0.16, mass: 245.0, inertia: .(115.0, 98.0, 30.0),
+        restLength: 0.46, bumpLength: 0.16, spring: 11000.0, bump: 700.0, rebound: 1050.0,
+        antiRollFront: 0.0, antiRollRear: 0.0, antiPitch: 0.35, tireGrip: 1.05, wheelInertia: 0.55,
+        power: 72000.0, maxTorque: 1150.0, frontDrive: 0.0, maxSpeed: 62.0, reverseSpeed: 4.0,
+        brakeFront: 900.0, brakeRear: 320.0, handbrake: 700.0, maxSteer: 0.52, steerFalloff: 8.0, steerRate: 3.2,
+        drag: 0.42, rolling: 0.015, lean: true, bodyHalfWidth: 0.22, bodyHalfLength: 1.02,
+        bodyLow: -0.34, cornerLow: -0.30, bodyHigh: 1.25)
+}
+
+/** The live state of one wheel. */
+pack WheelState derives Clone {
+    /** Mount to wheel centre along the suspension. */
+    var length: Double = 0.0
+    var spin: Double = 0.0
+    var omega: Double = 0.0
+    var steer: Double = 0.0
+    var contact: Bool = false
+    var load: Double = 0.0
+    /** Longitudinal slip ratio, and the larger of it and the slip angle for skid effects. */
+    var ratio: Double = 0.0
+    var slip: Double = 0.0
+}
+
+@Component
+pack Vehicle derives Clone {
+    var motorcycle: Bool = false
+    /** Orientation as a unit quaternion. */
+    var qx: Double = 0.0
+    var qy: Double = 0.0
+    var qz: Double = 0.0
+    var qw: Double = 1.0
+    /** Heading, pitch and roll in radians, for cameras and displays. */
+    var yaw: Double = 0.0
+    var pitch: Double = 0.0
+    var roll: Double = 0.0
+    /** Steering after its rate limit, -1 (left) to 1 (right). */
+    var steer: Double = 0.0
+    /** Signed speed along the body's forward axis, in m/s. */
+    var speed: Double = 0.0
+    var wheels: Array<WheelState> = []
+    /** Pivots, tyres, then every other drawn part. */
+    var parts: Array<Entity> = []
+    /** The motorcycle's steering head among [parts], -1 for none. */
+    var head: Int = -1
+    var grounded: Int = 0
+    var upsideDown: Double = 0.0
+    /** Steps taken; the tyres are solved in alternating order so neither side leads. */
+    var steps: Int = 0
+    /** The drawn pose after the last step and before it, so a frame between steps can be drawn in between. */
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var z: Double = 0.0
+    var dx: Double = 0.0
+    var dy: Double = 0.0
+    var dz: Double = 0.0
+    var dw: Double = 1.0
+    var lastX: Double = 0.0
+    var lastY: Double = 0.0
+    var lastZ: Double = 0.0
+    var lastDx: Double = 0.0
+    var lastDy: Double = 0.0
+    var lastDz: Double = 0.0
+    var lastDw: Double = 1.0
+    var slot: Int = 0
+    /** The engine: its speed, gear (-1 reverse), seconds left in a shift and since the last, load 0..1, fuel cut at the limiter. */
+    var rpm: Double = 0.0
+    var gear: Int = 1
+    var shifting: Double = 0.0
+    var gearAge: Double = 0.0
+    var load: Double = 0.0
+    var limiter: Bool = false
+    /** The pedal in the gear's direction, 0..1. */
+    var throttle: Double = 0.0
+}
+
+/** The lamps a vehicle lights the road with, and the lamp and tail parts that glow while they are on. */
+@Component
+pack Headlights {
+    var on: Bool = false
+    var lamps: Array<Entity> = []
+    var glows: Array<Entity> = []
+    var tails: Array<Entity> = []
+}
+
+/**
+ * What a vehicle sounds like: its engine and horn voices, the road and the
+ * wind, and the block they were last mixed into. Made new with the vehicle
+ * (see [setVehicleKind]); [carry] eases out the voice it replaced.
+ */
+@Component
+pack VehicleSound {
+    var voice: EngineVoice = .()
+    var horn: HornVoice = .()
+    var hornHeld: Bool = false
+    var buffer: Long = 0
+    var fade: Double = 0.0
+    var carry: Double = 0.0
+    var last: Double = 0.0
+    var road: PinkNoise = .()
+    var roadFilter: Biquad = .()
+    var windFilter: Biquad = .()
+    var air: OnePole = .()
+    var whine: Double = 0.0
+}
+
+impl VehicleSound {
+    dtor .() {
+        self.voice.release()
+        if self.buffer != 0 then azFree(self.buffer)
+    }
+}
+
+/** A vehicle's sound at 48 kHz, starting where the voice it replaces ([carry]) left off. */
+func vehicleSound(motorcycle: Bool, carry: Double): VehicleSound {
+    var sound = VehicleSound(voice: engineVoice(motorcycle, 48000.0), horn: hornVoice(motorcycle, 48000.0),
+        buffer: sampleBuffer(audioCapacity), carry: carry, road: pinkNoise(if motorcycle then 61 else 59))
+    sound.windFilter.bandpass(1300.0, 0.6, 48000.0)
+    sound.air.tune(20000.0, 48000.0)
+    return take sound
+}
+
+/** Throttle (forward positive, backward brakes then reverses), steering (right positive) and handbrake. */
+pack DriveInput {
+    var throttle: Double = 0.0
+    var steer: Double = 0.0
+    var brake: Bool = false
+}
+
+func vehicleClamp(n: Double, lo: Double, hi: Double): Double = realMinOf(realMaxOf(n,lo),hi)
+func vehicleForward(yaw: Double): Vec3 = Vec3(-sin(yaw),0.0,-cos(yaw))
+
+func wheelX(config: VehicleSpec&, index: Int): Double = if index % 2 == 0 then -config.halfTrack else config.halfTrack
+func wheelZ(config: VehicleSpec&, index: Int): Double = if index < config.wheelCount / 2 then config.frontAxle else config.rearAxle
+func frontWheel(config: VehicleSpec&, index: Int): Bool = index < config.wheelCount / 2
+
+/** The suspension length at which the springs carry the body's weight. */
+func restingLength(config: VehicleSpec&): Double =
+    config.restLength - config.mass*9.81/((config.wheelCount as Double)*config.spring)
+
+/** How high the centre of mass rides above flat ground. */
+func rideHeight(config: VehicleSpec&): Double = restingLength(config) + config.wheelRadius - config.mountHeight
+
+// ── Orientation ─────────────────────────────────────────────────────────
+
+func vehicleQuat(vehicle: Vehicle&): Quat = Quat(vehicle.qx, vehicle.qy, vehicle.qz, vehicle.qw)
+
+func storeQuat(vehicle: Vehicle!, q: Quat&) {
+    fin size = sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w)
+    fin inverse = if size > 0.000001 then 1.0/size else 1.0
+    vehicle.qx = q.x*inverse
+    vehicle.qy = q.y*inverse
+    vehicle.qz = q.z*inverse
+    vehicle.qw = if size > 0.000001 then q.w*inverse else 1.0
+}
+
+/** The Euler triple, X then Y then Z, that the scene's transforms use. */
+func quatEulerRadians(q: Quat&): Vec3 {
+    fin m00 = 1.0-2.0*(q.y*q.y+q.z*q.z)
+    fin m10 = 2.0*(q.x*q.y+q.w*q.z)
+    fin m20 = 2.0*(q.x*q.z-q.w*q.y)
+    fin m21 = 2.0*(q.y*q.z+q.w*q.x)
+    fin m22 = 1.0-2.0*(q.x*q.x+q.y*q.y)
+    return Vec3(atan2(m21,m22),asin(vehicleClamp(-m20,-1.0,1.0)),atan2(m10,m00))
+}
+
+/** [q] advanced by the world angular velocity [w] over [dt]. */
+func integrateQuat(q: Quat&, w: Vec3&, dt: Double): Quat {
+    fin spin = Quat(w.x,w.y,w.z,0.0).times(Quat(q.x,q.y,q.z,q.w))
+    return Quat(q.x+spin.x*0.5*dt,q.y+spin.y*0.5*dt,q.z+spin.z*0.5*dt,q.w+spin.w*0.5*dt)
+}
+
+/** World inverse inertia applied to [v]. */
+func inverseInertia(q: Quat&, config: VehicleSpec&, v: Vec3&): Vec3 {
+    fin local = q.conjugate().rotate(v.clone())
+    return q.rotate(Vec3(local.x/config.inertia.x,local.y/config.inertia.y,local.z/config.inertia.z))
+}
+
+/** The mass a push along unit [d] at arm [r] meets. */
+func effectiveMass(q: Quat&, config: VehicleSpec&, r: Vec3&, d: Vec3&): Double {
+    fin rd = r.cross(d)
+    return 1.0/(1.0/config.mass+rd.dot(inverseInertia(q,config,rd)))
+}
+
+/** The body's linear and angular velocity while one step's impulses land on it. */
+pack BodyMotion {
+    var velocity: Vec3 = .(0.0,0.0,0.0)
+    var angular: Vec3 = .(0.0,0.0,0.0)
+}
+
+func pointVelocity(motion: BodyMotion&, r: Vec3&): Vec3 = motion.velocity.add(motion.angular.cross(r))
+
+func pushBody(motion: BodyMotion!, q: Quat&, config: VehicleSpec&, r: Vec3&, impulse: Vec3&) {
+    motion.velocity = motion.velocity.add(impulse.scale(1.0/config.mass))
+    motion.angular = motion.angular.add(inverseInertia(q,config,r.cross(impulse)))
+}
+
+// ── Tyres ───────────────────────────────────────────────────────────────
+
+/** Longitudinal friction against slip ratio: peaks near 10 % slip and falls off when spinning or locked. */
+func tireLongitudinal(slip: Double): Double = sin(1.65*atan(11.0*slip-0.6*(11.0*slip-atan(11.0*slip))))
+
+/** Lateral friction against slip angle: peaks near 9 degrees. */
+func tireLateral(angle: Double): Double = sin(1.4*atan(9.5*angle-0.5*(9.5*angle-atan(9.5*angle))))
+
+
+/**
+ * The tyre force a wheel settles at within one step: it solves
+ * `force = limit * curve((slip - give * force) / reference)`, the force taking slip
+ * out of the wheel as it acts, so a stiff tyre never overshoots past zero slip.
+ */
+func settleTire(slip: Double, limit: Double, give: Double, reference: Double): Double {
+    if slip == 0.0 || limit <= 0.0 then return 0.0
+    fin direction = if slip > 0.0 then 1.0 else -1.0
+    var low: Double = 0.0
+    var high = slip/give
+    var step = 0
+    while step < 28 {
+        fin middle = (low+high)*0.5
+        if (middle-limit*tireLongitudinal((slip-give*middle)/reference))*direction > 0.0 then high = middle else low = middle
+        step += 1
+    }
+    return (low+high)*0.5
+}
+
+
+/**
+ * Traction control: of the [available] drive torque, only what lands the
+ * wheel on 12 % slip in its direction, where the tyre pushes hardest. Like
+ * [antiLockTorque] it is solved for the step, so it never toggles on and off.
+ * [perSlip] is the torque one metre per second of slip takes in a step.
+ */
+func tractionTorque(available: Double, rolled: Double, reference: Double, give: Double, limit: Double, perSlip: Double): Double {
+    if available == 0.0 then return 0.0
+    fin direction = if available > 0.0 then 1.0 else -1.0
+    fin target = 0.12*reference*direction
+    fin needed = (target+give*limit*tireLongitudinal(target/reference)-rolled)*perSlip
+    return if direction > 0.0 then realMaxOf(realMinOf(needed,available),0.0) else realMinOf(realMaxOf(needed,available),0.0)
+}
+
+/**
+ * Traction control for a wheel off the ground or carrying no load: the drive
+ * torque that spins it toward the body's speed plus the target slip and no
+ * further, so it does not run away in the air and slam the body on landing.
+ */
+func liftedTorque(available: Double, omega: Double, speed: Double, radius: Double, inertia: Double, dt: Double): Double {
+    if available == 0.0 then return 0.0
+    fin direction = if available > 0.0 then 1.0 else -1.0
+    fin target = (speed*1.12+0.2*direction)/radius
+    fin needed = (target-omega)*inertia/dt
+    return if direction > 0.0 then realMaxOf(realMinOf(needed,available),0.0) else realMinOf(realMaxOf(needed,available),0.0)
+}
+
+/**
+ * ABS: of the [available] brake torque, only what lands the wheel on 12 % slip,
+ * where the tyre grips best. [rolled] is the slip speed before braking and
+ * [perSlip] the torque one metre per second of slip takes in a step.
+ */
+func antiLockTorque(available: Double, active: Bool, rolled: Double, vLong: Double, reference: Double,
+                    give: Double, limit: Double, perSlip: Double): Double {
+    if !active || available <= 0.0 then return available
+    fin target = -0.12*reference*(if vLong > 0.0 then 1.0 else -1.0)
+    fin needed = (rolled-(target+give*limit*tireLongitudinal(target/reference)))*perSlip
+    return realMinOf(realMaxOf(needed,0.0),available)
+}
+
+// ── Parts ───────────────────────────────────────────────────────────────
+
+func vehiclePart(world: World!, parent: Entity, position: Vec3, scale: Vec3, color: Rgba, shape: Int = 0,
+                 rotation: Vec3 = .(0.0,0.0,0.0)): Entity {
+    fin entity = world.spawn()
+    world.setParent(entity, parent)
+    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(position, rotation, scale))
+    storageInsert<Mesh3d>(ensureStorage<Mesh3d>(world), entity, Mesh3d(shape: shape))
+    storageInsert<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity, StandardMaterial(color: color))
+    return entity
+}
+
+func riderPart(world: World!, parent: Entity, position: Vec3, scale: Vec3, color: Rgba,
+               rotation: Vec3 = .(0.0,0.0,0.0)): Entity {
+    fin part = vehiclePart(world,parent,take position,take scale,take color,rotation: take rotation)
+    storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),part,MeshGeometry(riderShape))
+    return part
+}
+
+func vehicleSurface(world: World!, parent: Entity, geometry: String, color: Rgba,
+                    material: String = "", emission: Double = 0.0): Entity {
+    fin part = vehiclePart(world,parent,Vec3(0.0,0.0,0.0),Vec3(1.0,1.0,1.0),color.clone())
+    storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),part,MeshGeometry(geometry))
+    storageInsert<StandardMaterial>(ensureStorage<StandardMaterial>(world),part,StandardMaterial(color: color.clone(),emission: emission))
+    if material != "" then storageInsert<FusionMaterial>(ensureStorage<FusionMaterial>(world),part,FusionMaterial(asset: material))
+    return part
+}
+
+/** A transform with nothing drawn: a steering knuckle or a steering head. */
+func vehiclePivot(world: World!, parent: Entity, position: Vec3): Entity {
+    fin entity = world.spawn()
+    world.setParent(entity, parent)
+    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: position))
+    return entity
+}
+
+/** A headlamp: a spot light pointing ahead and a little down, [angle] degrees wide each side. */
+func vehicleLamp(world: World!, parent: Entity, position: Vec3, angle: Double, range: Double, intensity: Double, on: Bool): Entity {
+    fin entity = world.spawn()
+    world.setParent(entity, parent)
+    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: position, rotation: Vec3(-4.0,0.0,0.0)))
+    storageInsert<Light3d>(ensureStorage<Light3d>(world), entity, Light3d(kind: 2, color: Rgba(1.0,0.95,0.86,1.0),
+        intensity: intensity, range: range, shadows: false, spotAngle: angle, spotSoftness: 0.35))
+    storageInsert<Visibility>(ensureStorage<Visibility>(world), entity, Visibility(visible: on))
+    return entity
+}
+
+func despawnTree(world: World!, entity: Entity) {
+    if world.isAlive(entity) then world.despawn(entity)
+}
+
+func addVehicleVisuals(world: World!, entity: Entity, state: Vehicle!, config: VehicleSpec&, lights: Headlights!) {
+    var previous = state.parts.size
+    while previous > 0 {
+        previous -= 1
+        despawnTree(world, state.parts[previous])
+    }
+    state.parts.clear()
+    state.head = -1
+    wheelGeometry(world)
+    if state.motorcycle then bikeGeometry(world) else gtGeometry(world)
+    fin paint = Rgba(0.67,0.025,0.035,1.0)
+    fin dark = Rgba(0.045,0.052,0.063,1.0)
+    fin glass = Rgba(0.08,0.16,0.23,1.0)
+    fin metal = Rgba(0.52,0.55,0.61,1.0)
+    fin ivory = Rgba(0.93,0.92,0.86,1.0)
+    fin tail = Rgba(0.86,0.035,0.025,1.0)
+
+    fin rest = restingLength(config)
+    var i = 0
+    while i < config.wheelCount {
+        state.parts.add(vehiclePivot(world,entity,Vec3(wheelX(config,i),config.mountHeight-rest,wheelZ(config,i))))
+        i += 1
+    }
+    i = 0
+    while i < config.wheelCount {
+        fin tire = vehiclePart(world,state.parts[i],Vec3(0.0,0.0,0.0),
+            Vec3(config.wheelRadius*2.0,config.tireWidth,config.wheelRadius*2.0),Rgba(0.038,0.039,0.043,1.0),
+            rotation: Vec3(0.0,0.0,90.0))
+        storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),tire,MeshGeometry(wheelRubber))
+        state.parts.add(tire)
+        i += 1
+    }
+    i = 0
+    while i < config.wheelCount {
+        fin tire = state.parts[config.wheelCount+i]
+        state.parts.add(vehicleSurface(world,tire,wheelAlloy,metal,"Materials/vehicle-alloy.azmaterial"))
+        state.parts.add(vehicleSurface(world,tire,wheelHubs,dark))
+        i += 1
+    }
+    state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikePaint else gtPaint,paint,"Materials/vehicle-paint.azmaterial"))
+    state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikeGlass else gtGlass,glass,"Materials/vehicle-glass.azmaterial"))
+    state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikeCarbon else gtCarbon,dark))
+    state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikeStripe else gtStripe,ivory))
+    fin fronts = vehicleSurface(world,entity,if state.motorcycle then bikeFrontLED else gtFrontLED,ivory,emission: 0.72)
+    fin rears = vehicleSurface(world,entity,if state.motorcycle then bikeRearLED else gtRearLED,tail,emission: 0.55)
+    state.parts.add(fronts)
+    state.parts.add(rears)
+    lights.glows.add(fronts)
+    lights.tails.add(rears)
+    if state.motorcycle {
+        fin head = vehiclePivot(world,entity,Vec3(0.0,0.48,config.frontAxle+0.06))
+        state.head = state.parts.size
+        state.parts.add(head)
+        state.parts.add(vehiclePart(world,head,Vec3(0.0,0.12,0.14),Vec3(0.58,0.033,0.035),dark))
+        state.parts.add(vehicleLamp(world,head,Vec3(0.0,0.08,-0.38),16.0,65.0,120.0,lights.on))
+        lights.lamps.add(state.parts[state.parts.size-1])
+        fin fork = Rgba(0.75,0.52,0.24,1.0)
+        state.parts.add(vehiclePart(world,head,Vec3(-0.102,-0.11,0.02),Vec3(0.048,0.50,0.048),fork,2))
+        state.parts.add(vehiclePart(world,head,Vec3(0.102,-0.11,0.02),Vec3(0.048,0.50,0.048),fork,2))
+        state.parts.add(vehiclePart(world,state.parts[0],Vec3(-0.10,0.22,0.0),Vec3(0.046,0.41,0.046),metal,2))
+        state.parts.add(vehiclePart(world,state.parts[0],Vec3(0.10,0.22,0.0),Vec3(0.046,0.41,0.046),metal,2))
+        state.parts.add(riderPart(world,state.parts[0],Vec3(0.0,0.28,0.015),Vec3(0.20,0.09,0.36),paint))
+        state.parts.add(vehiclePart(world,state.parts[1],Vec3(0.11,0.07,-0.36),Vec3(0.11,0.07,0.70),dark))
+        state.parts.add(vehiclePart(world,entity,Vec3(0.16,-0.18,0.36),Vec3(0.16,0.14,0.48),metal,0,Vec3(-12.0,0.0,0.0)))
+        // Tucked riding position follows the bike's interpolated lean.
+        fin jacket = Rgba(0.107,0.128,0.163,1.0)
+        state.parts.add(riderPart(world,entity,Vec3(0.0,0.60,0.06),Vec3(0.36,0.42,0.27),jacket,Vec3(34.0,0.0,0.0)))
+        state.parts.add(riderPart(world,entity,Vec3(0.0,0.92,-0.22),Vec3(0.255,0.27,0.28),ivory))
+        state.parts.add(riderPart(world,entity,Vec3(0.0,0.926,-0.31),Vec3(0.205,0.115,0.111),glass))
+        var side: Double = -1.0
+        while side <= 1.0 {
+            state.parts.add(riderPart(world,entity,Vec3(side*0.185,0.22,0.16),Vec3(0.11,0.115,0.46),dark,Vec3(-27.0,0.0,0.0)))
+            state.parts.add(riderPart(world,entity,Vec3(side*0.205,0.61,-0.30),Vec3(0.094,0.092,0.45),jacket,Vec3(-9.0,0.0,0.0)))
+            side += 2.0
+        }
+    } else {
+        state.parts.add(vehicleLamp(world,entity,Vec3(-0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
+        lights.lamps.add(state.parts[state.parts.size-1])
+        state.parts.add(vehicleLamp(world,entity,Vec3(0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
+        lights.lamps.add(state.parts[state.parts.size-1])
+    }
+}
+
+/** Wheels at the resting length, spinning with nothing. */
+func freshWheels(config: VehicleSpec&): Array<WheelState> {
+    var wheels: Array<WheelState> = []
+    var i = 0
+    while i < config.wheelCount {
+        wheels.add(WheelState(length: restingLength(config)))
+        i += 1
+    }
+    return take wheels
+}
+
+/** The heading-only rotation for [yaw]. */
+func headingQuat(yaw: Double): Quat = Quat(0.0,sin(yaw*0.5),0.0,cos(yaw*0.5))
+
+func configuredVehicle(world: World!, entity: Entity, kind: VehicleKind): VehicleSpec {
+    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage<VehicleSetup>(world),entity,VehicleSetup())
+    var tuning = vehicleSpec(kind)
+    fin power = vehicleClamp(setup.powerScale,0.25,3.0)
+    fin brakes = vehicleClamp(setup.brakeScale,0.25,2.0)
+    tuning.sport = setup.sport
+    tuning.engineGain = power
+    if setup.sport {
+        if kind == .Car {
+            tuning.engineGain *= 1.70
+            tuning.mass = 1285.0
+            tuning.bodyHalfWidth = 0.96
+            tuning.bodyHalfLength = 2.11
+            tuning.drag = 0.65
+            tuning.downforce = 0.78
+            tuning.tireGrip = 1.24
+            tuning.steerRate = 3.45
+            tuning.maxSteer = 0.64
+            tuning.steerFalloff = 13.8
+            tuning.antiRollFront = 18100.0
+            tuning.antiRollRear = 10300.0
+            tuning.spring = 28000.0
+            tuning.brakeFront *= 1.22
+            tuning.brakeRear *= 1.15
+        } else {
+            tuning.engineGain *= 1.58
+            tuning.mass = 224.0
+            tuning.drag = 0.27
+            tuning.downforce = 0.33
+            tuning.tireGrip = 1.21
+            tuning.steerRate = 4.05
+            tuning.steerFalloff = 7.6
+            tuning.spring = 12300.0
+            tuning.rebound = 1170.0
+            tuning.brakeFront *= 1.18
+        }
+    }
+    tuning.tireGrip *= vehicleClamp(setup.gripScale,0.25,2.0)
+    tuning.brakeFront *= brakes
+    tuning.brakeRear *= brakes
+    return take tuning
+}
+
+func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
+    if !world.isAlive(entity) then return
+    var vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity).clone()
+    fin previous = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
+    fin config = configuredVehicle(world,entity,kind)
+    vehicle.motorcycle = kind == .Motorcycle
+    fin collider = boxCollider3d(Vec3(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
+    storageInsert<RigidBody3D>(ensureStorage<RigidBody3D>(world),entity,rigidBody3d(.Dynamic,collider,config.mass,false))
+    storageInsert<Collider3D>(ensureStorage<Collider3D>(world),entity,take collider)
+    storageInsert<Name>(ensureStorage<Name>(world),entity,Name(if vehicle.motorcycle then "Motorcycle" else "Car"))
+    vehicle.wheels = freshWheels(config)
+    vehicle.steer = 0.0
+    // A new engine, idling in first.
+    vehicle.rpm = drivetrainSpec(vehicle.motorcycle,config.sport).idleRpm
+    vehicle.gear = 1
+    vehicle.shifting = 0.0
+    vehicle.gearAge = 0.0
+    vehicle.load = 0.0
+    vehicle.limiter = false
+    // Swap upright on the same heading, at the new ride height.
+    fin heading = headingQuat(vehicle.yaw)
+    storeQuat(vehicle,heading)
+    vehicle.roll = 0.0
+    vehicle.pitch = 0.0
+    // Lights stay as they were; the new engine's sound takes over from the old one's last sample.
+    var lights = Headlights(on: headlightsOn(world,entity))
+    addVehicleVisuals(world,entity,vehicle,config,lights)
+    storageInsert<Headlights>(ensureStorage<Headlights>(world),entity,take lights)
+    fin carry = if storageHas<VehicleSound>(ensureStorage<VehicleSound>(world),entity) then storageGet<VehicleSound>(ensureStorage<VehicleSound>(world),entity).last else 0.0
+    storageInsert<VehicleSound>(ensureStorage<VehicleSound>(world),entity,vehicleSound(vehicle.motorcycle,carry))
+    fin body = storageGet<Transform3D>(ensureStorage<Transform3D>(world),entity)
+    fin lift = rideHeight(config)-rideHeight(previous)+0.05
+    fin position = body.position.add(Vec3(0.0,lift,0.0))
+    rememberPose(vehicle,position,heading,true)
+    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,Transform3D(position.clone(),Vec3(0.0,vehicle.yaw,0.0),Vec3(1.0,1.0,1.0)))
+    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),Vec3(0.0,vehicle.yaw/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
+    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
+}
+
+func spawnVehicle(world: World!, start: Entity, ground: Array<CollisionSurface>&): Entity {
+    fin marker = storageGet<PlayerStart>(ensureStorage<PlayerStart>(world),start)
+    fin controller = storageGetOrDefault<PlayerController>(ensureStorage<PlayerController>(world),start,PlayerController(slot: marker.slot))
+    fin worldPose = worldMatrix(world,start)
+    var pos = Vec3(worldPose.m03,worldPose.m13,worldPose.m23)
+    // The marker's forward axis is its -Z column.
+    fin yaw = atan2(worldPose.m02,worldPose.m22)
+    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage<VehicleSetup>(world),start,VehicleSetup())
+    fin kind: VehicleKind = if setup.motorcycle then .Motorcycle else .Car
+    fin config = configuredVehicle(world,start,kind)
+    fin hit = castLandscape(ground,pos.add(Vec3(0.0,40.0,0.0)),Vec3(0.0,-1.0,0.0),120.0)
+    if hit.hit then pos.y = hit.py + rideHeight(config) + 0.05
+    fin entity = world.spawn()
+    var vehicle = Vehicle(yaw: yaw,slot: controller.slot,motorcycle: setup.motorcycle)
+    storeQuat(vehicle,headingQuat(yaw))
+    vehicle.wheels = freshWheels(config)
+    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
+    storageInsert<PlayerController>(ensureStorage<PlayerController>(world),entity,take controller)
+    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,transform3d(pos.clone()))
+    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(translation: pos.clone()))
+    storageInsert<Velocity3D>(ensureStorage<Velocity3D>(world),entity,velocity3d(Vec3(0.0,0.0,0.0)))
+    storageInsert<VehicleSetup>(ensureStorage<VehicleSetup>(world),entity,take setup)
+    setVehicleKind(world,entity,kind)
+    return entity
+}
+
+
+/** Records [position] and [drawn] as the pose after this step, keeping the previous one. */
+func rememberPose(vehicle: Vehicle!, position: Vec3&, drawn: Quat&, settle: Bool) {
+    vehicle.lastX = if settle then position.x else vehicle.x
+    vehicle.lastY = if settle then position.y else vehicle.y
+    vehicle.lastZ = if settle then position.z else vehicle.z
+    vehicle.lastDx = if settle then drawn.x else vehicle.dx
+    vehicle.lastDy = if settle then drawn.y else vehicle.dy
+    vehicle.lastDz = if settle then drawn.z else vehicle.dz
+    vehicle.lastDw = if settle then drawn.w else vehicle.dw
+    vehicle.x = position.x
+    vehicle.y = position.y
+    vehicle.z = position.z
+    vehicle.dx = drawn.x
+    vehicle.dy = drawn.y
+    vehicle.dz = drawn.z
+    vehicle.dw = drawn.w
+}
+
+/**
+ * Draws the vehicle [blend] of the way from its pose before the last physics
+ * step to its pose after it. A game that steps physics at a fixed rate calls
+ * this once per frame with the unspent fraction of a step, so the body moves
+ * evenly on screen whatever the frame rate.
+ */
+func presentVehicle(world: World!, entity: Entity, blend: Double) {
+    if !world.isAlive(entity) then return
+    fin vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity)
+    fin t = vehicleClamp(blend,0.0,1.0)
+    fin position = Vec3(vehicle.lastX+(vehicle.x-vehicle.lastX)*t,vehicle.lastY+(vehicle.y-vehicle.lastY)*t,vehicle.lastZ+(vehicle.z-vehicle.lastZ)*t)
+    // The shorter way between the two orientations, normalised.
+    fin side = if vehicle.lastDx*vehicle.dx+vehicle.lastDy*vehicle.dy+vehicle.lastDz*vehicle.dz+vehicle.lastDw*vehicle.dw < 0.0 then -1.0 else 1.0
+    fin qx = vehicle.lastDx+(vehicle.dx*side-vehicle.lastDx)*t
+    fin qy = vehicle.lastDy+(vehicle.dy*side-vehicle.lastDy)*t
+    fin qz = vehicle.lastDz+(vehicle.dz*side-vehicle.lastDz)*t
+    fin qw = vehicle.lastDw+(vehicle.dw*side-vehicle.lastDw)*t
+    fin size = sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
+    fin q = if size > 0.000001 then Quat(qx/size,qy/size,qz/size,qw/size) else Quat(0.0,0.0,0.0,1.0)
+    fin euler = quatEulerRadians(q)
+    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),euler.scale(1.0/degreesToRadians),Vec3(1.0,1.0,1.0)))
+}
+
+/** Where [presentVehicle] last drew the body. */
+func presentedPosition(world: World!, entity: Entity): Vec3 = storageGet<Transform>(ensureStorage<Transform>(world),entity).translation.clone()
+
+// ── Simulation ──────────────────────────────────────────────────────────
+
+/** Where a wheel's cast found the ground this step. */
+pack WheelContact {
+    var hit: LandscapeGroundHit = .()
+    var mount: Vec3 = .(0.0,0.0,0.0)
+    var centre: Vec3 = .(0.0,0.0,0.0)
+    var heading: Vec3 = .(0.0,0.0,-1.0)
+    var force: Double = 0.0
+}
+
+/** Body points tested against the ground: the corners and edges a crash or a crest touches. */
+func bodyPoint(config: VehicleSpec&, index: Int): Vec3 {
+    fin w = config.bodyHalfWidth
+    fin l = config.bodyHalfLength
+    fin low = config.bodyLow
+    fin corner = config.cornerLow
+    fin high = config.bodyHigh
+    fin mid = (corner+high)*0.5
+    return when index {
+        0 -> Vec3(-w,corner,-l)
+        1 -> Vec3(w,corner,-l)
+        2 -> Vec3(-w,corner,l)
+        3 -> Vec3(w,corner,l)
+        4 -> Vec3(-w,mid,-l)
+        5 -> Vec3(w,mid,-l)
+        6 -> Vec3(-w,mid,l)
+        7 -> Vec3(w,mid,l)
+        8 -> Vec3(-w*0.85,high,-l*0.42)
+        9 -> Vec3(w*0.85,high,-l*0.42)
+        10 -> Vec3(-w*0.85,high,l*0.42)
+        11 -> Vec3(w*0.85,high,l*0.42)
+        12 -> Vec3(0.0,low,-l*0.6)
+        13 -> Vec3(0.0,low,l*0.6)
+        14 -> Vec3(-w,low,0.0)
+        else -> Vec3(w,low,0.0)
+    }
+}
+
+fin bodyPointCount: Int = 16
+
+func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurface>&, input: DriveInput&, gravity: Gravity3D&, dt: Double) {
+    if !world.isAlive(entity) then return
+    var vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity).clone()
+    fin config = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
+    if vehicle.wheels.size != config.wheelCount then vehicle.wheels = freshWheels(config)
+    fin body = storageGet<Transform3D>(ensureStorage<Transform3D>(world),entity)
+    var position = body.position.clone()
+    fin velocity = storageGet<Velocity3D>(ensureStorage<Velocity3D>(world),entity)
+    var motion = BodyMotion(velocity.linear.clone(),velocity.angular.clone())
+    var q = vehicleQuat(vehicle)
+    fin forward = q.rotate(Vec3(0.0,0.0,-1.0))
+    fin up = q.rotate(Vec3(0.0,1.0,0.0))
+    fin right = q.rotate(Vec3(1.0,0.0,0.0))
+    // Two-wheelers hang their suspension from the vertical through the wheels, not the leaning body.
+    var axisUp = up.clone()
+    var axisRight = right.clone()
+    if config.lean {
+        axisUp = (Vec3(0.0,1.0,0.0).subtract(forward.scale(forward.y))).normalized catch up.clone()
+        axisRight = forward.cross(axisUp)
+    }
+    fin down = axisUp.scale(-1.0)
+    fin forwardSpeed = motion.velocity.dot(forward)
+
+    // ── Driver ──
+    fin steerTarget = vehicleClamp(input.steer,-1.0,1.0)
+    fin steerStep = config.steerRate*dt*(if steerTarget*vehicle.steer < 0.0 || absReal(steerTarget) < 0.01 then 1.6 else 1.0)
+    vehicle.steer += vehicleClamp(steerTarget-vehicle.steer,-steerStep,steerStep)
+    fin steerAngle = vehicle.steer*config.maxSteer/(1.0+absReal(forwardSpeed)/config.steerFalloff)
+    var drive: Double = 0.0
+    var brake: Double = 0.0
+    if input.throttle > 0.0 {
+        if forwardSpeed < -1.0 then brake = input.throttle else drive = input.throttle
+    } else if input.throttle < 0.0 {
+        if forwardSpeed > 1.0 then brake = -input.throttle else drive = input.throttle
+    }
+    if drive < 0.0 && forwardSpeed < -config.reverseSpeed then drive = 0.0
+    // Standing still with no throttle holds the car on its brakes.
+    fin holding = input.throttle == 0.0 && absReal(forwardSpeed) < 0.35
+    if holding then brake = 1.0
+
+    // ── Suspension ──
+    var contacts: Array<WheelContact> = []
+    var i = 0
+    vehicle.grounded = 0
+    while i < config.wheelCount {
+        fin x = wheelX(config,i)
+        fin z = wheelZ(config,i)
+        var angle: Double = 0.0
+        if frontWheel(config,i) && absReal(steerAngle) > 0.0001 {
+            // Ackermann: each front wheel points at the same turning centre.
+            fin base = config.rearAxle-config.frontAxle
+            fin radius = base/tan(steerAngle)
+            angle = atan(base/(radius-x))
+        }
+        fin mount = position.add(q.rotate(Vec3(x,config.mountHeight,z)))
+        var heading = forward.scale(cos(angle)).add(axisRight.scale(sin(angle)))
+        if config.lean && frontWheel(config,i) {
+            // Trail: a bike's front wheel trails behind its steering axis and swings to follow
+            // its own path, so in a slide it points where it travels plus what the rider steers.
+            fin travel = pointVelocity(motion,mount.subtract(position))
+            fin flat = travel.subtract(axisUp.scale(travel.dot(axisUp)))
+            if flat.length > 1.0 {
+                var path = flat.scale(1.0/flat.length)
+                if path.dot(forward) < 0.0 then path = path.scale(-1.0)
+                fin trail = vehicleClamp(atan2(path.dot(axisRight),path.dot(forward)),-0.6,0.6)
+                angle = vehicleClamp(trail+angle,-0.75,0.75)
+                heading = forward.scale(cos(angle)).add(axisRight.scale(sin(angle)))
+            }
+        }
+        vehicle.wheels[i].steer = angle
+        fin hit = landscapeWheel(ground,mount,down,heading,config.wheelRadius,config.restLength)
+        fin length = if hit.hit then hit.t else config.restLength
+        vehicle.wheels[i].contact = hit.hit
+        vehicle.wheels[i].length = length
+        if hit.hit then vehicle.grounded += 1
+        contacts.add(WheelContact(hit.clone(),mount.clone(),mount.add(down.scale(length)),heading.clone(),0.0))
+        i += 1
+    }
+    i = 0
+    while i < config.wheelCount {
+        if contacts[i].hit.hit {
+            fin length = vehicle.wheels[i].length
+            fin arm = contacts[i].mount.subtract(position)
+            fin closing = pointVelocity(motion,arm).dot(down)
+            var force = config.spring*(config.restLength-length) + closing*(if closing > 0.0 then config.bump else config.rebound)
+            if length < config.bumpLength then force += config.spring*8.0*(config.bumpLength-length)
+            // An anti-roll bar pushes the more compressed side up and the other down.
+            if config.halfTrack > 0.0 {
+                fin other = if i % 2 == 0 then i+1 else i-1
+                fin bar = if frontWheel(config,i) then config.antiRollFront else config.antiRollRear
+                force += bar*(vehicle.wheels[other].length-length)
+            }
+            force = realMaxOf(force,0.0)
+            contacts[i].force = force
+            fin normal = Vec3(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
+            vehicle.wheels[i].load = force*realMaxOf(normal.dot(axisUp),0.0)
+        } else {
+            contacts[i].force = 0.0
+            vehicle.wheels[i].load = 0.0
+        }
+        i += 1
+    }
+
+    // ── Gravity, air and suspension push the body ──
+    motion.velocity = motion.velocity.add(gravity.value.scale(dt))
+    fin airSpeed = motion.velocity.length
+    motion.velocity = motion.velocity.subtract(motion.velocity.scale(0.5*1.225*config.drag*airSpeed*dt/config.mass))
+    if vehicle.grounded > 0 && config.downforce > 0.0 {
+        motion.velocity = motion.velocity.add(down.scale(0.5*1.225*config.downforce*airSpeed*airSpeed*dt/config.mass))
+    }
+    i = 0
+    while i < config.wheelCount {
+        if contacts[i].force > 0.0 {
+            pushBody(motion,q,config,contacts[i].centre.subtract(position),axisUp.scale(contacts[i].force*dt))
+        }
+        i += 1
+    }
+
+    // ── Stability control ──
+    // A car turning faster than its steering asks for brakes its outer front
+    // wheel and eases the engine, as an ESP does, so throttle and full lock on
+    // a keyboard do not swing the tail round.
+    var stabilityWheel = -1
+    var stabilityTorque: Double = 0.0
+    if config.wheelCount == 4 && forwardSpeed > 4.0 && vehicle.grounded >= 3 {
+        fin yawRate = motion.angular.dot(axisUp)
+        fin reach = 0.9*9.81*config.tireGrip/forwardSpeed
+        fin wanted = vehicleClamp(-forwardSpeed*tan(steerAngle)/(config.rearAxle-config.frontAxle),-reach,reach)
+        fin excess = yawRate-wanted
+        if absReal(yawRate) > absReal(wanted)+0.06 && yawRate*excess > 0.0 {
+            stabilityWheel = if yawRate > 0.0 then 1 else 0
+            stabilityTorque = realMinOf(absReal(excess)*5000.0,config.brakeFront)
+            if drive > 0.0 then drive *= vehicleClamp(1.0-absReal(excess)*2.5,0.25,1.0)
+        }
+    }
+
+    // ── Drivetrain ──
+    var drivenSpin: Double = 0.0
+    var drivenCount: Double = 0.0
+    i = 0
+    while i < config.wheelCount {
+        fin share = if frontWheel(config,i) then config.frontDrive else 1.0-config.frontDrive
+        if share > 0.0 {
+            drivenSpin += absReal(vehicle.wheels[i].omega)
+            drivenCount += 1.0
+        }
+        i += 1
+    }
+    fin wheelSpeed = if drivenCount > 0.0 then drivenSpin/drivenCount else 0.0
+
+    // ── Engine and gearbox ──
+    fin train = drivetrainSpec(vehicle.motorcycle,config.sport)
+    vehicle.gearAge += dt
+    vehicle.shifting = realMaxOf(vehicle.shifting-dt,0.0)
+    fin wanted = nextGear(train,vehicle.gear,vehicle.rpm,input.throttle,forwardSpeed,vehicle.gearAge)
+    if wanted != vehicle.gear {
+        vehicle.shifting = train.shiftTime
+        vehicle.gear = wanted
+        vehicle.gearAge = 0.0
+    }
+    fin overall = overallRatio(train,vehicle.gear)
+    // Throttle counts only in the gear's direction: held back in first it brakes, not drives.
+    fin pedal = if drive*overall > 0.0 then absReal(drive) else 0.0
+    fin coupled = wheelSpeed*absReal(overall)*9.549296585513721
+    // Below the launch speed the clutch slips and the engine runs where the throttle puts it.
+    fin launch = train.idleRpm+train.launchRpm*pedal
+    fin engaged = vehicle.shifting <= 0.0 && overall != 0.0 && coupled >= launch
+    fin target = if vehicle.shifting > 0.0 || engaged then realMaxOf(coupled,train.idleRpm) else launch
+    vehicle.rpm += (target-vehicle.rpm)*realMinOf(dt*25.0,1.0)
+    if vehicle.rpm >= train.limitRpm then vehicle.limiter = true
+    if vehicle.rpm < train.limitRpm-250.0 then vehicle.limiter = false
+    fin making = if vehicle.shifting > 0.0 || vehicle.limiter || pedal <= 0.0 then 0.0 else engineTorque(train,vehicle.rpm,pedal)
+    vehicle.load = if making > 0.0 then making/realMaxOf(curveTorque(train,vehicle.rpm),1.0) else 0.0
+    vehicle.throttle = pedal
+    var totalTorque = making*overall*train.efficiency*config.engineGain
+    // A closed throttle in gear drags the driven wheels through the gearbox.
+    fin engineDrag = if engaged && pedal <= 0.0 then -engineTorque(train,vehicle.rpm,0.0)*absReal(overall) else 0.0
+    // With the clutch closed the wheels turn the engine too.
+    fin engineInertia = if engaged then train.inertia*overall*overall else 0.0
+    // Wheelie control: a two-wheeler whose front tyre goes light gets less torque.
+    if config.wheelCount == 2 && drive > 0.0 {
+        fin frontShare = vehicle.wheels[0].load/(config.mass*9.81*0.5)
+        if frontShare < 0.18 then totalTorque *= realMaxOf(frontShare/0.18,0.25)
+    }
+
+    // ── Tyres, one wheel at a time so each sees the others' pushes ──
+    vehicle.steps += 1
+    var order = 0
+    while order < config.wheelCount {
+        i = if vehicle.steps % 2 == 0 then order else config.wheelCount-1-order
+        fin front = frontWheel(config,i)
+        fin axleShare = if front then config.frontDrive else 1.0-config.frontDrive
+        fin perAxle = (config.wheelCount/2) as Double
+        fin driveTorque = totalTorque*axleShare/perAxle
+        fin handbraked = input.brake && !front
+        var brakeTorque = brake*(if front then config.brakeFront else config.brakeRear)
+        if handbraked then brakeTorque += config.handbrake
+        if i == stabilityWheel then brakeTorque += stabilityTorque
+        // Engine braking on driven wheels when the throttle is off, through the gear.
+        if axleShare > 0.0 then brakeTorque += engineDrag*axleShare/perAxle
+        fin radius = config.wheelRadius
+        fin inertia = config.wheelInertia+engineInertia*axleShare/perAxle
+        var omega = vehicle.wheels[i].omega
+        fin load = vehicle.wheels[i].load
+        var ratio: Double = 0.0
+        var skid: Double = 0.0
+        if contacts[i].hit.hit && load > 0.0 {
+            fin normal = Vec3(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
+            fin point = Vec3(contacts[i].hit.px,contacts[i].hit.py,contacts[i].hit.pz)
+            fin along = (contacts[i].heading.subtract(normal.scale(contacts[i].heading.dot(normal)))).normalized catch forward.clone()
+            fin side = along.cross(normal)
+            fin arm = point.subtract(position)
+            fin limit = config.tireGrip*contacts[i].hit.grip*load
+            fin massAlong = effectiveMass(q,config,arm,along)
+            fin massSide = effectiveMass(q,config,arm,side)
+            fin contactVelocity = pointVelocity(motion,arm)
+            fin vLong = contactVelocity.dot(along)
+            fin vSide = contactVelocity.dot(side)
+            // The wheel, its brake and its tyre settle together within the step: the slip
+            // speed after the step is the slip before it, less what the tyre's own force
+            // takes out of the wheel and adds to the body ([give] metres per second per newton).
+            fin give = dt*(radius*radius/inertia+1.0/massAlong)
+            fin reference = realMaxOf(absReal(vLong),1.5)
+            fin pushed = tractionTorque(driveTorque,omega*radius-vLong,reference,give,limit,inertia/(dt*radius))
+            omega += pushed*dt/inertia
+            fin turning = if omega > 0.0 then 1.0 else if omega < 0.0 then -1.0 else if vLong >= 0.0 then 1.0 else -1.0
+            fin rolled = omega*radius-vLong
+            fin applied = antiLockTorque(brakeTorque,!handbraked && absReal(vLong) > 2.0,rolled,vLong,reference,give,limit,inertia*turning/(dt*radius))
+            fin held = applied > 0.0 && (omega-applied*dt/inertia*turning)*turning <= 0.0
+            var fx: Double = 0.0
+            if held {
+                // A held wheel moves with the body, so only the body's motion bounds the force.
+                omega = 0.0
+                ratio = -vLong/reference
+                fx = if absReal(vLong) < 0.6 then vehicleClamp(-vLong*massAlong/dt,-limit,limit) else limit*tireLongitudinal(ratio)
+                fx = vehicleClamp(fx,-absReal(vLong)*massAlong/dt,absReal(vLong)*massAlong/dt)
+            } else {
+                omega -= applied*dt/inertia*turning
+                fx = settleTire(omega*radius-vLong,limit,give,reference)
+                ratio = (omega*radius-vLong-give*fx)/reference
+            }
+            // Rolling resistance drags at the contact.
+            fin rollingForce = vehicleClamp(-vLong*massAlong/dt,-config.rolling*load,config.rolling*load)
+            // Lateral: slip angle through the friction curve, held still when crawling.
+            fin angle = atan2(vSide,realMaxOf(absReal(vLong),0.5))
+            var fy = -limit*tireLateral(absReal(angle))*(if vSide > 0.0 then 1.0 else -1.0)
+            fin stop = absReal(vSide)*massSide/dt
+            fy = vehicleClamp(fy,-stop,stop)
+            fin crawl = vehicleClamp(1.0-absReal(vLong)/2.5,0.0,1.0)
+            fy = fy*(1.0-crawl) + vehicleClamp(-vSide*massSide/dt,-limit,limit)*crawl
+            // The friction circle: both together cannot exceed the grip.
+            fin total = sqrt(fx*fx+fy*fy)
+            if total > limit && total > 0.0 {
+                fx *= limit/total
+                fy *= limit/total
+            }
+            // Links carry part of the pitch: the longitudinal push acts that share of the way up to the centre of mass.
+            fin lifted = arm.add(axisUp.scale(-arm.dot(axisUp)*config.antiPitch))
+            pushBody(motion,q,config,lifted,along.scale((fx+rollingForce)*dt))
+            pushBody(motion,q,config,arm,side.scale(fy*dt))
+            if held {
+                // The brake keeps the wheel still until the tyre's torque beats it.
+                if absReal(fx)*radius > applied {
+                    omega = (-fx*radius+applied*(if fx > 0.0 then 1.0 else -1.0))*dt/inertia
+                }
+            } else {
+                omega -= fx*radius*dt/inertia
+            }
+            skid = realMaxOf(absReal(ratio),absReal(angle))
+        } else {
+            omega += liftedTorque(driveTorque,omega,forwardSpeed,radius,inertia,dt)*dt/inertia
+            fin brakeStep = (brakeTorque+4.0)*dt/inertia
+            omega = if absReal(omega) <= brakeStep then 0.0 else omega-brakeStep*(if omega > 0.0 then 1.0 else -1.0)
+        }
+        vehicle.wheels[i].omega = omega
+        vehicle.wheels[i].ratio = ratio
+        vehicle.wheels[i].slip = skid
+        var spin = vehicle.wheels[i].spin + omega*dt
+        if spin > 6.283185307179586 then spin -= 6.283185307179586
+        if spin < 0.0 then spin += 6.283185307179586
+        vehicle.wheels[i].spin = spin
+        order += 1
+    }
+
+    // ── A two-wheeler stays upright: its lean is drawn, not simulated ──
+    if config.lean {
+        motion.angular = motion.angular.subtract(forward.scale(motion.angular.dot(forward)))
+        // Trail steers a real bike's front wheel along its path; here the yaw follows the
+        // rate its steering and speed ask for, which keeps a light rear tyre from swinging out.
+        if vehicle.grounded > 0 {
+            fin reach = 0.95*9.81*config.tireGrip/realMaxOf(absReal(forwardSpeed),1.0)
+            fin wanted = vehicleClamp(forwardSpeed*tan(steerAngle)/(config.rearAxle-config.frontAxle),-reach,reach)
+            fin current = -motion.angular.dot(axisUp)
+            fin correction = (wanted-current)*realMinOf(dt*14.0,1.0)
+            motion.angular = motion.angular.subtract(axisUp.scale(correction))
+        }
+    }
+
+    // ── The body against the ground ──
+    var push = Vec3(0.0,0.0,0.0)
+    var pass = 0
+    while pass < 2 {
+        var point = 0
+        while point < bodyPointCount {
+            fin arm = q.rotate(bodyPoint(config,point))
+            fin contact = landscapePenetration(ground,position.add(arm))
+            if contact.depth > 0.0 {
+                fin normal = Vec3(contact.nx,contact.ny,contact.nz)
+                fin approach = pointVelocity(motion,arm).dot(normal)
+                if approach < 0.0 {
+                    fin normalMass = effectiveMass(q,config,arm,normal)
+                    fin impulse = -approach*normalMass
+                    pushBody(motion,q,config,arm,normal.scale(impulse))
+                    fin slide = pointVelocity(motion,arm)
+                    fin tangent = slide.subtract(normal.scale(slide.dot(normal)))
+                    fin speed = tangent.length
+                    if speed > 0.0001 {
+                        fin direction = tangent.scale(1.0/speed)
+                        fin friction = realMinOf(speed*effectiveMass(q,config,arm,direction),0.7*contact.grip*impulse)
+                        pushBody(motion,q,config,arm,direction.scale(-friction))
+                    }
+                }
+                if pass == 0 && contact.depth > 0.004 {
+                    fin needed = normal.scale(contact.depth-0.004)
+                    if needed.dot(normal) > push.dot(normal) then push = needed.clone()
+                }
+            }
+            point += 1
+        }
+        pass += 1
+    }
+
+    // ── Integrate ──
+    position = position.add(motion.velocity.scale(dt)).add(push.scale(0.5))
+    q = integrateQuat(q,motion.angular,dt)
+    storeQuat(vehicle,q)
+    q = vehicleQuat(vehicle)
+    if config.lean {
+        // Remove any roll the step left, about the forward axis.
+        fin f = q.rotate(Vec3(0.0,0.0,-1.0))
+        fin u = q.rotate(Vec3(0.0,1.0,0.0))
+        fin vertical = (Vec3(0.0,1.0,0.0).subtract(f.scale(f.y))).normalized catch u.clone()
+        fin lean = atan2(u.dot(f.cross(vertical)),u.dot(vertical))
+        storeQuat(vehicle,quatAxisAngle(f,-lean).times(Quat(q.x,q.y,q.z,q.w)))
+        q = vehicleQuat(vehicle)
+    }
+
+    // A car on its roof for a while is set back on its wheels.
+    fin nowUp = q.rotate(Vec3(0.0,1.0,0.0))
+    vehicle.upsideDown = if nowUp.y < 0.25 && motion.velocity.length < 3.0 then vehicle.upsideDown+dt else 0.0
+    if vehicle.upsideDown > 2.5 {
+        fin f = q.rotate(Vec3(0.0,0.0,-1.0))
+        storeQuat(vehicle,headingQuat(atan2(-f.x,-f.z)))
+        q = vehicleQuat(vehicle)
+        position = position.add(Vec3(0.0,1.6,0.0))
+        motion.velocity = Vec3(0.0,0.0,0.0)
+        motion.angular = Vec3(0.0,0.0,0.0)
+        vehicle.upsideDown = 0.0
+    }
+
+    // ── What the rest of the scene reads ──
+    fin heading = q.rotate(Vec3(0.0,0.0,-1.0))
+    vehicle.yaw = atan2(-heading.x,-heading.z)
+    vehicle.pitch = asin(vehicleClamp(heading.y,-1.0,1.0))
+    vehicle.speed = motion.velocity.dot(heading)
+    var drawn = Quat(q.x,q.y,q.z,q.w)
+    if config.lean {
+        // Lean into the turn as a rider balances: tan(lean) = v * yaw rate / g.
+        fin turn = -motion.angular.dot(axisUp)
+        fin target = vehicleClamp(atan(vehicle.speed*turn/9.81),-0.8,0.8)*(if vehicle.grounded > 0 then 1.0 else 0.0)
+        vehicle.roll += (target-vehicle.roll)*realMinOf(dt*7.0,1.0)
+        drawn = q.times(quatAxisAngle(Vec3(0.0,0.0,-1.0),vehicle.roll))
+    } else {
+        vehicle.roll = asin(vehicleClamp(q.rotate(Vec3(1.0,0.0,0.0)).y,-1.0,1.0))
+    }
+    fin euler = quatEulerRadians(drawn)
+    i = 0
+    while i < config.wheelCount {
+        fin centre = position.add(q.rotate(Vec3(wheelX(config,i),config.mountHeight,wheelZ(config,i)))).add(down.scale(vehicle.wheels[i].length))
+        fin local = drawn.conjugate().rotate(centre.subtract(position))
+        storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[i],
+            Transform(local.clone(),Vec3(0.0,-vehicle.wheels[i].steer/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
+        storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[config.wheelCount+i],
+            Transform(Vec3(0.0,0.0,0.0),Vec3(0.0,vehicle.wheels[i].spin/degreesToRadians,90.0),
+                Vec3(config.wheelRadius*2.0,config.tireWidth,config.wheelRadius*2.0)))
+        i += 1
+    }
+    if vehicle.head >= 0 {
+        storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[vehicle.head],
+            Transform(Vec3(0.0,0.48,config.frontAxle+0.06),Vec3(0.0,-vehicle.wheels[0].steer/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
+    }
+    rememberPose(vehicle,position,drawn,false)
+    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,Transform3D(position.clone(),euler.clone(),Vec3(1.0,1.0,1.0)))
+    storageInsert<Velocity3D>(ensureStorage<Velocity3D>(world),entity,Velocity3D(motion.velocity.clone(),motion.angular.clone()))
+    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),euler.scale(1.0/degreesToRadians),Vec3(1.0,1.0,1.0)))
+    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
+}
+
+
+// ── Lights and sound, as a game drives them ─────────────────────────────
+
+func headlightsOn(world: World!, vehicle: Entity): Bool =
+    storageHas<Headlights>(ensureStorage<Headlights>(world), vehicle) && storageGet<Headlights>(ensureStorage<Headlights>(world), vehicle).on
+
+/** Switches [vehicle]'s headlamps on or off; the lamp glass and the tail lights glow with them. */
+func setHeadlights(world: World!, vehicle: Entity, on: Bool) {
+    let store = ensureStorage<Headlights>(world)
+    fin index = storageIndexOf<Headlights>(store, vehicle)
+    if index < 0 then return
+    store.values[index].on = on
+    fin lamps = store.values[index].lamps.clone()
+    fin glows = store.values[index].glows.clone()
+    fin tails = store.values[index].tails.clone()
+    for lamp in lamps { storageInsert<Visibility>(ensureStorage<Visibility>(world), lamp, Visibility(visible: on)) }
+    let materials = ensureStorage<StandardMaterial>(world)
+    for part in glows {
+        fin at = storageIndexOf<StandardMaterial>(materials, part)
+        if at >= 0 then materials.values[at].emission = if on then 3.0 else 0.0
+    }
+    for part in tails {
+        fin at = storageIndexOf<StandardMaterial>(materials, part)
+        if at >= 0 then materials.values[at].emission = if on then 1.4 else 0.0
+    }
+}
+
+/** Sounds [vehicle]'s horn while [held]. */
+func soundHorn(world: World!, vehicle: Entity, held: Bool) {
+    let sounds = ensureStorage<VehicleSound>(world)
+    fin index = storageIndexOf<VehicleSound>(sounds, vehicle)
+    if index >= 0 then sounds.values[index].hornHeld = held
+}
+
+/**
+ * Renders [frames] samples of [vehicle] - engine (its pitch times [doppler]),
+ * tyres on the road, wind, gear whine, horn - into its own buffer, heard
+ * through [cutoff] hertz of air, and answers the buffer. While [paused] it
+ * fades to silence in 50 ms, and back when play resumes.
+ */
+func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Bool, doppler: Double, cutoff: Double = 20000.0): Long {
+    if !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage<Vehicle>(world), vehicle) then return 0
+    fin state = storageGet<Vehicle>(ensureStorage<Vehicle>(world), vehicle)
+    fin motorcycle = state.motorcycle
+    fin rpm = state.rpm
+    fin load = state.load
+    fin throttle = state.throttle
+    fin limiter = state.limiter
+    fin speed = absReal(state.speed)
+    let sounds = ensureStorage<VehicleSound>(world)
+    fin index = storageIndexOf<VehicleSound>(sounds, vehicle)
+    if index < 0 then return 0
+    let sound: VehicleSound! = sounds.values[index]
+    fin count = if frames < audioCapacity then frames else audioCapacity
+    fin rate: Double = 48000.0
+    var i = 0
+    while i < count {
+        setSample(sound.buffer, i, 0.0)
+        i += 1
+    }
+    sound.voice.render(sound.buffer, count, rpm * doppler, load, throttle, limiter)
+    sound.horn.render(sound.buffer, count, sound.hornHeld)
+    fin config = vehicleSpec(if motorcycle then .Motorcycle else .Car)
+    fin train = drivetrainSpec(motorcycle)
+    // Tyres roll a rumble that brightens with speed; the wind joins past 15 m/s.
+    sound.roadFilter.lowpass(180.0 + speed * 28.0, 0.7, rate)
+    fin roadGain = vehicleClamp(speed / 40.0, 0.0, 1.0) * 0.10
+    fin windGain = vehicleClamp((speed - 15.0) * (speed - 15.0) / 1600.0, 0.0, 1.0) * (if speed > 15.0 then 0.07 else 0.0)
+    // The gearbox output shaft's teeth (about twenty) whine under load.
+    fin whinePitch = speed / (2.0 * PI * config.wheelRadius) * train.finalDrive * 20.0 * doppler
+    sound.air.tune(cutoff, rate)
+    fin fadeStep = 1.0 / (0.05 * rate)
+    i = 0
+    while i < count {
+        fin rumble = sound.road.next()
+        var x = sample(sound.buffer, i) + sound.roadFilter.process(rumble) * roadGain + sound.windFilter.process(rumble) * windGain
+        sound.whine += 2.0 * PI * whinePitch / rate
+        if sound.whine > 2.0 * PI then sound.whine -= 2.0 * PI
+        x += sin(sound.whine) * 0.004 * load
+        sound.fade = if paused then realMaxOf(sound.fade - fadeStep, 0.0) else realMinOf(sound.fade + fadeStep, 1.0)
+        x = sound.air.lowpass(x * sound.fade + sound.carry)
+        sound.carry *= 0.99
+        if absReal(sound.carry) < 0.00001 then sound.carry = 0.0
+        setSample(sound.buffer, i, x)
+        i += 1
+    }
+    sound.last = if count > 0 then sample(sound.buffer, count - 1) else sound.last
+    return sound.buffer
+}
+
+/**
+ * Mixes [vehicle]'s sound into [output]'s block as the listener hears it:
+ * from the exhaust at the back, quieter with distance, panned, pitched by
+ * the Doppler shift and dulled by the air between.
+ */
+func mixVehicleSound(output: AudioOutput!, world: World!, vehicle: Entity, paused: Bool) {
+    if output.frames <= 0 || !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage<Vehicle>(world), vehicle) then return
+    fin state = storageGet<Vehicle>(ensureStorage<Vehicle>(world), vehicle)
+    fin config = vehicleSpec(if state.motorcycle then .Motorcycle else .Car)
+    fin rear = vehicleQuat(state).rotate(Vec3(0.0, 0.0, config.bodyHalfLength))
+    fin body = storageGet<Transform>(ensureStorage<Transform>(world), vehicle).translation.add(rear)
+    fin motion = storageGet<Velocity3D>(ensureStorage<Velocity3D>(world), vehicle).linear.clone()
+    fin distance = output.distanceTo(body.x, body.y, body.z)
+    fin doppler = output.dopplerRatio(body.x, body.y, body.z, motion.x, motion.y, motion.z)
+    fin sound = renderVehicleSound(world, vehicle, output.frames, paused, doppler, airCutoff(distance))
+    if sound != 0 then output.mixMono(sound, output.frames, distanceGain(distance, 4.0), output.panOf(body.x, body.y, body.z))
+}

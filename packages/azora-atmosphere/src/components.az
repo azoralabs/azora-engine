@@ -1,0 +1,116 @@
+module engine.atmosphere.components
+
+import std.traits
+import engine.core
+import engine.ecs
+import engine.scene
+import engine.scene.transforms
+
+/**
+ * The sky over the scene: where and when it is, how fast the day runs, and
+ * the atmosphere the sun and moon shine through. One "Aether Sphere" entity
+ * carries it, with its `Light3d` (the sun and moon's shadows) and `PhotonField`.
+ */
+@Component
+@Inspectable(title: "Atmosphere", serializedName: "AetherSky", icon: "sun", category: "Atmosphere", order: 30)
+pack AetherSky derives Clone {
+    var enabled: Bool = true
+    /** Local clock time, in hours. */
+    @Range(min: 0.0, max: 24.0, step: 0.05)
+    var hour: Double = 14.0
+    @Range(min: 1.0, max: 31.0, step: 1.0)
+    var day: Int = 21
+    @Range(min: 1.0, max: 12.0, step: 1.0)
+    var month: Int = 7
+    @Range(min: 1900.0, max: 2200.0, step: 1.0)
+    var year: Int = 2026
+    @Range(min: -90.0, max: 90.0, step: 0.01)
+    var latitude: Double = 46.54
+    /** Degrees east of Greenwich. */
+    @Range(min: -180.0, max: 180.0, step: 0.01)
+    var longitude: Double = 11.85
+    /** Hours the local clock runs ahead of UTC. */
+    @Range(min: -12.0, max: 14.0, step: 0.25)
+    var timeZone: Double = 2.0
+    /** Real minutes one day of 24 hours takes; 0 holds the clock still. */
+    @Range(min: 0.0, max: 1440.0, step: 1.0)
+    var dayMinutes: Double = 0.0
+    /** The ground under the world origin, in metres above the sea: where the camera breathes the air from. */
+    @Range(min: 0.0, max: 8000.0, step: 10.0)
+    var altitude: Double = 1500.0
+    @Range(min: 0.0, max: 8.0, step: 0.05)
+    var sunIntensity: Double = 1.45
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var moonIntensity: Double = 0.24
+    /** Multipliers of the air's molecules, its haze and its ozone (1 = Earth's). */
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var rayleigh: Double = 1.0
+    @Range(min: 0.0, max: 10.0, step: 0.05)
+    var mie: Double = 1.0
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var ozone: Double = 1.0
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var groundAlbedo: Double = 0.3
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var stars: Double = 1.0
+    @Range(min: 0.1, max: 8.0, step: 0.05)
+    var exposure: Double = 1.0
+}
+
+/** The cloud layer: how much of the sky it covers, what kind of cloud, where and how dense. */
+@Component
+@Inspectable(title: "Volumetric Clouds", serializedName: "AetherClouds", icon: "cloud", category: "Atmosphere", order: 31)
+pack AetherClouds derives Clone {
+    var enabled: Bool = true
+    /** Share of the sky under cloud; the weather's own value is used while this is negative. */
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var coverage: Double = -1.0
+    /** 0 flat stratus, 0.5 cumulus, 1 towering cumulonimbus; negative follows the weather. */
+    @Range(min: -1.0, max: 1.0, step: 0.01)
+    var cloudType: Double = -1.0
+    /** Bottom of the layer above the world origin, and its depth, in metres. */
+    @Range(min: 200.0, max: 8000.0, step: 10.0)
+    var baseAltitude: Double = 1400.0
+    @Range(min: 200.0, max: 8000.0, step: 10.0)
+    var thickness: Double = 2600.0
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var density: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.05)
+    var detail: Double = 1.0
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var shadowStrength: Double = 0.85
+    /** 0 low, 1 medium, 2 high: ray-march steps. */
+    @Range(min: 0.0, max: 2.0, step: 1.0)
+    var quality: Int = 1
+}
+
+
+/** Simulation inputs for the rendered atmosphere. Defaults describe a fair sky. */
+@Component
+pack AtmosphereConditions derives Clone {
+    var coverage: Double = 0.32
+    var cloudType: Double = 0.35
+    var density: Double = 1.0
+    var driftX: Double = 0.0
+    var driftZ: Double = 0.0
+    var fogDensity: Double = 0.0
+    var fogFalloff: Double = 0.0
+    var flash: Double = 0.0
+    var flashX: Double = 0.0
+    var flashZ: Double = 0.0
+    var wetness: Double = 0.0
+    var snow: Double = 0.0
+    var windX: Double = 0.0
+    var windZ: Double = 0.0
+}
+
+func atmosphereEntity(world: World!): Entity {
+    fin skies = ensureStorage<AetherSky>(world)
+    var i = 0
+    while i < storageLength<AetherSky>(skies) {
+        fin owner = storageEntityAt<AetherSky>(skies, i)
+        if world.isAlive(owner) && skies.values[i].enabled && visibleInWorld(world, owner) then return owner
+        i += 1
+    }
+    return Entity(-1, 0)
+}

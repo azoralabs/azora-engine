@@ -1,0 +1,80 @@
+module engine.render.atmosphere
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.io
+import engine.scene
+import engine.atmosphere
+import engine.atmosphere.skyrender
+import engine.render.scene
+
+/**
+ * The light of the sky at [at] for an eye [altitude] metres above the sea:
+ * the sun through the air while it is up or just set, else the moon by its
+ * phase; the sky's own light as the ambient. The field values equal the rest.
+ */
+func skyLight(sky: AetherSky&, at: Celestial&, altitude: Double): SceneLight {
+    fin zenith = sunTransmittance(sky, altitude, Vec3(0.0, 1.0, 0.0))
+    fin day = simulationSmooth(-0.18, 0.11, at.sun.y)
+    fin moonUp = simulationSmooth(-0.01, 0.06, at.moon.y)
+    fin ambient = 0.052 + 0.27 * day + 0.05 * moonUp * at.moonLit * (1.0 - day)
+    fin haze = Rgba(0.05 + 0.57 * day, 0.07 + 0.65 * day, 0.12 + 0.72 * day, 1.0)
+    if at.sun.y > -0.04 || moonUp <= 0.0 {
+        fin through = sunTransmittance(sky, altitude, at.sun)
+        // The light's colour against the sun overhead, so noon is white and a setting sun red.
+        fin color = Rgba(atmosphereClamp(through.x / zenith.x, 0.0, 1.0), atmosphereClamp(through.y / zenith.y, 0.0, 1.0),
+            atmosphereClamp(through.z / zenith.z, 0.0, 1.0), 1.0)
+        fin strength = sky.sunIntensity * simulationSmooth(-0.012, 0.012, at.sun.y)
+        return SceneLight(at.sun.clone(), color.clone(), strength, ambient, at.sun.clone(), color.clone(), strength, haze.clone(), 0.0, day)
+    }
+    fin through = sunTransmittance(sky, altitude, at.moon)
+    fin color = Rgba(0.67 * atmosphereClamp(through.x / zenith.x, 0.0, 1.0), 0.78 * atmosphereClamp(through.y / zenith.y, 0.0, 1.0),
+        atmosphereClamp(through.z / zenith.z, 0.0, 1.0), 1.0)
+    fin strength = sky.moonIntensity * powr(atmosphereClamp(at.moonLit, 0.0, 1.0), 0.6) * moonUp
+    return SceneLight(at.moon.clone(), color.clone(), strength, ambient, at.moon.clone(), color.clone(), strength, haze.clone(), 0.0, day)
+}
+
+/** Updates the sky and publishes its lighting and the weather inputs for opaque materials. */
+func prepareAtmosphere(world: World!, owner: Entity, renderer: AetherRenderer&, elapsed: Double, eye: Vec3&) {
+    fin sky = storageGet<AetherSky>(ensureStorage<AetherSky>(world), owner)
+    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage<AetherClouds>(world), owner, AetherClouds(enabled: false))
+    fin air = storageGetOrDefault<AtmosphereConditions>(ensureStorage<AtmosphereConditions>(world), owner, AtmosphereConditions())
+    fin cover = if !clouds.enabled then 0.0 else atmosphereClamp(if clouds.coverage >= 0.0 then clouds.coverage else air.coverage, 0.0, 1.0)
+    fin now = celestialAt(sky, elapsed)
+    fin smooth = skyLight(sky, now, sky.altitude + eye.y)
+    fin field = skyLight(sky, celestialAtHour(sky, steppedHour(sky, elapsed)), sky.altitude)
+    fin steppedCover = (floor(cover * 16.0) as Double) / 16.0
+    fin grey = 0.06 + 0.5 * smooth.daylight
+    fin haze = Rgba(smooth.haze.r + (grey - smooth.haze.r) * cover, smooth.haze.g + (grey - smooth.haze.g) * cover,
+        smooth.haze.b + (grey * 1.05 - smooth.haze.b) * cover, 1.0)
+    fin previous = insertResourceNamed<SceneLight>(world, "AtmosphereLight", SceneLight(smooth.direction.clone(), smooth.color.clone(), smooth.intensity, smooth.ambient * (1.0 + 0.35 * cover),
+        field.direction.clone(), field.color.clone(), field.intensity * (1.0 - 0.85 * steppedCover), haze, 0.0, smooth.daylight))
+    fin side: Double = 8000.0
+    fin texel = side / 512.0
+    fin shadowX = (floor(eye.x / texel) as Double) * texel
+    fin shadowZ = (floor(eye.z / texel) as Double) * texel
+    if renderer.ready {
+        fin block = renderer.uniforms
+        fin kind = atmosphereClamp(if clouds.cloudType >= 0.0 then clouds.cloudType else air.cloudType, 0.0, 1.0)
+        fin top = clouds.baseAltitude + clouds.thickness * (0.55 + 0.45 * kind)
+        writeAetherSky(block, sky, now, smooth.daylight)
+        pokeVector(block, 304, clouds.baseAltitude, top, cover, kind)
+        pokeVector(block, 320, clouds.density * air.density, clouds.detail, air.driftX, air.driftZ)
+        fin steps: Double = when clouds.quality {
+            0 -> 40.0
+            2 -> 96.0
+            else -> 64.0
+        }
+        azPokeF32(block, 336, steps)
+        azPokeF32(block, 292, 1.0 - 0.9 * cover)
+        pokeVector(block, 144, air.fogDensity, 0.02, air.fogFalloff, 1.0)
+        pokeVector(block, 416, air.flashX, clouds.baseAltitude + 700.0, air.flashZ, air.flash * 3.0)
+        pokeVector(block, 432, shadowX, shadowZ, side, clouds.shadowStrength)
+    }
+    publishSceneEnvironment(world, SceneEnvironment(wetness: air.wetness, snow: air.snow, flash: air.flash,
+        flashColor: Rgba(0.72, 0.78, 1.0, 1.0), time: elapsed, windX: air.windX, windZ: air.windZ,
+        shadowStrength: if cover > 0.0 then clouds.shadowStrength else 0.0,
+        shadowTexture: if renderer.ready then renderer.cloudShadow else 0, shadowX: shadowX, shadowZ: shadowZ, shadowSize: side))
+}

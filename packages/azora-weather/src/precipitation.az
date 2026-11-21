@@ -1,0 +1,126 @@
+module engine.weather.precipitation
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.math
+import engine.objc
+import engine.particles
+import engine.atmosphere.components
+import engine.weather.components
+import engine.weather.presets
+
+/**
+ * Rain and snow as the Engine's GPU particles: drops and flakes in two camera
+ * boxes (a dense near one, a wide far one) that are drawn; a pool of drops
+ * that is never drawn and only lands, over the box the weather's
+ * `splashDistance` sets, so splashes reach as far as asked without drawing
+ * every drop that makes them; and what their hits spawn - rings on wet
+ * ground, droplets thrown out of each crown, puffs of snow. Each pool is
+ * fixed; the weather's intensity says how much of it is alive.
+ */
+@Component
+pack AetherPrecipitation {
+    /** Landing drops: dense right around the eye, sparser out to the splash distance. */
+    var impactsNear: ParticleSystem = .()
+    var impacts: ParticleSystem = .()
+    /** The splash distance the impact, ring and droplet pools were sized for. */
+    var reach: Double = 0.0
+    var dropsNear: ParticleSystem = .()
+    var dropsFar: ParticleSystem = .()
+    var rings: ParticleSystem = .()
+    var droplets: ParticleSystem = .()
+    var flakesNear: ParticleSystem = .()
+    var flakesFar: ParticleSystem = .()
+    var puffs: ParticleSystem = .()
+    var ready: Bool = false
+}
+
+/** Pool sizes of the drawn drops and flakes; the impact pools follow the splash distance. */
+fin nearDropCount: Int = 32768
+fin farDropCount: Int = 26624
+fin nearFlakeCount: Int = 14336
+fin farFlakeCount: Int = 22528
+fin hitsPerStep: Int = 8192
+
+/** Landings per square metre and second in a downpour: out to the splash distance, and within [nearReach] of the eye. */
+fin landingsPerSquareMetre: Double = 12.0
+fin nearLandings: Double = 70.0
+fin nearReach: Double = 10.0
+
+/** How high the impact box reaches above and below the eye at splash distance [reach]: enough for the ground on a slope. */
+func impactHeight(reach: Double): Double = 3.0 + 0.25 * reach
+
+/** Drops an impact pool needs so [landings] land per square metre each second over a box [reach] metres out, falling 9 m/s. */
+func impactCount(reach: Double, landings: Double): Int {
+    fin wanted = landings * (2.0 * reach) * (2.0 * reach) * 2.0 * impactHeight(reach) / 9.0
+    return if wanted > 400000.0 then 400000 else if wanted < 4096.0 then 4096 else wanted as Int
+}
+
+/** Rings and droplets alive at once at most: the landings of half a second over both boxes. */
+func splashCount(reach: Double): Int {
+    fin wanted = (landingsPerSquareMetre * (2.0 * reach) * (2.0 * reach) + nearLandings * (2.0 * nearReach) * (2.0 * nearReach)) * 0.5
+    return if wanted > 131072.0 then 131072 else if wanted < 8192.0 then 8192 else wanted as Int
+}
+
+/** (Re)makes the impact, ring and droplet pools for splash distance [reach]. */
+func sizeImpacts(rain: AetherPrecipitation!, device: Long, queue: Long, reach: Double) {
+    rain.impacts.release()
+    rain.rings.release()
+    rain.droplets.release()
+    rain.impacts = particleSystem(device, queue, impactCount(reach, landingsPerSquareMetre), true, hitsPerStep)
+    rain.rings = particleSystem(device, queue, splashCount(reach), true)
+    rain.droplets = particleSystem(device, queue, splashCount(reach) * 2, true)
+    rain.reach = reach
+}
+
+func aetherPrecipitation(device: Long, queue: Long): AetherPrecipitation {
+    var rain = AetherPrecipitation()
+    rain.dropsNear = particleSystem(device, queue, nearDropCount, true)
+    rain.impactsNear = particleSystem(device, queue, impactCount(nearReach, nearLandings), true, hitsPerStep)
+    rain.dropsFar = particleSystem(device, queue, farDropCount, true)
+    rain.flakesNear = particleSystem(device, queue, nearFlakeCount, true, hitsPerStep)
+    rain.flakesFar = particleSystem(device, queue, farFlakeCount, true)
+    rain.puffs = particleSystem(device, queue, 8192, true)
+    sizeImpacts(rain, device, queue, 35.0)
+    rain.ready = true
+    return take rain
+}
+
+/** Drops that are never drawn and only land: over a box [reach] metres out, their hits are the splashes. */
+func impactEmitter(reach: Double, intensity: Double): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
+    extent: Vec3(reach, impactHeight(reach), reach), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0,
+    terminalSpeed: 5.0 + 4.0 * intensity, wind: 1.0, collision: 1, thickness: 0.6)
+
+/**
+ * Drops in a camera box [half] metres across each way and [tall] up and down:
+ * settling to their terminal fall (5-9 m/s by intensity), carried by the wind,
+ * drawn as streaks. The near box is low, so more of its drops reach the ground.
+ */
+func dropEmitter(half: Double, tall: Double, intensity: Double, collide: Bool): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
+    extent: Vec3(half, tall, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0, terminalSpeed: 5.0 + 4.0 * intensity,
+    wind: 1.0, sizeStart: 0.0016, sizeEnd: 0.0016, colorStart: Rgba(1.0, 1.0, 1.0, 0.62), colorEnd: Rgba(1.0, 1.0, 1.0, 0.62),
+    shape: 1, streak: 1.0 / 60.0, lit: 1.0, softness: 0.35, nearFade: 0.6, collision: if collide then 1 else 0, thickness: 0.6)
+
+/** Flakes: slow, wandering, round. */
+func flakeEmitter(half: Double, collide: Bool): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
+    extent: Vec3(half, half, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 3.0, terminalSpeed: 1.1, wind: 0.9,
+    turbulence: 0.6, sizeStart: 0.011, sizeEnd: 0.011, colorStart: Rgba(1.0, 1.0, 1.0, 0.85), colorEnd: Rgba(1.0, 1.0, 1.0, 0.85),
+    shape: 0, streak: 1.0 / 120.0, lit: 1.0, softness: 0.3, nearFade: 0.5, collision: if collide then 1 else 0, thickness: 0.6)
+
+/** Rings widening on wet ground where a drop lands; brighter the wetter the ground and the stronger the [splashes]. */
+func ringEmitter(wetness: Double, splashes: Double): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.3, lifeMax: 0.45,
+    gravity: 0.0, drag: 0.0, wind: 0.0, sizeStart: 0.015, sizeEnd: 0.085,
+    colorStart: Rgba(1.0, 1.0, 1.0, (0.25 + 0.25 * wetness) * (0.6 + 0.4 * splashes)), colorEnd: Rgba(1.0, 1.0, 1.0, 0.0),
+    lit: 1.0, softness: 0.05, nearFade: 0.3)
+
+/** The droplets of a drop's crown: thrown up and out as hard as [splashes] says, falling back. */
+func dropletEmitter(splashes: Double): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.16, lifeMax: 0.28, spread: 0.25 + 0.6 * splashes,
+    gravity: 9.81, drag: 0.4, wind: 0.0, sizeStart: 0.003 + 0.003 * splashes, sizeEnd: 0.002 + 0.002 * splashes,
+    colorStart: Rgba(1.0, 1.0, 1.0, 0.25 + 0.5 * splashes), colorEnd: Rgba(1.0, 1.0, 1.0, 0.05),
+    shape: 1, streak: 1.0 / 60.0, lit: 1.0, softness: 0.05, nearFade: 0.3)
+
+/** A burst of snow where a flake lands. */
+func puffEmitter(): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.4, lifeMax: 0.6, gravity: 0.0, drag: 2.0, wind: 0.3,
+    sizeStart: 0.025, sizeEnd: 0.08, colorStart: Rgba(1.0, 1.0, 1.0, 0.5), colorEnd: Rgba(1.0, 1.0, 1.0, 0.0), lit: 1.0, softness: 0.1)

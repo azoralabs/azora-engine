@@ -4,9 +4,11 @@ import std.traits
 import engine.ecs
 import engine.io
 import engine.math
+import engine.math.mat
 import engine.scene
+import engine.scene.transforms
 
-/** Terrain generated from a 16-bit grayscale P2 PGM image. */
+/** Terrain generated from a grayscale PGM image (P2 or P5, up to 16 bits). */
 @Component
 @Inspectable(title: "Heightfield", serializedName: "HeightfieldTerrain", icon: "mountain", category: "Rendering", order: 15)
 pack HeightfieldTerrain derives Clone {
@@ -66,17 +68,36 @@ func terrainToken(blob: Blob&, reader: TerrainCursor!): Int {
 func readTerrainImage(path: String): TerrainImage {
     var blob = readFile(path)
     defer { blob.release() }
-    if blob.size > 3000000 || !blob.matches(0, "P2") then return TerrainImage()
+    fin binary = blob.matches(0, "P5")
+    if blob.size > 8400000 || (!binary && !blob.matches(0, "P2")) then return TerrainImage()
     var reader = TerrainCursor()
     fin columns = terrainToken(blob, reader)
     fin rows = terrainToken(blob, reader)
     fin peak = terrainToken(blob, reader)
-    if columns < 2 || rows < 2 || columns > 513 || rows > 513 || peak <= 0 then return TerrainImage()
+    fin limit = if binary then 2049 else 513
+    if columns < 2 || rows < 2 || columns > limit || rows > limit || peak <= 0 then return TerrainImage()
+    fin narrow = peak < 256
+    fin stride = if narrow then 1 else 2
+    if binary {
+        if reader.cursor >= blob.size || blob.u8(reader.cursor) > 32 then return TerrainImage()
+        fin carriageReturn = blob.u8(reader.cursor) == 13
+        reader.cursor += 1
+        if carriageReturn && reader.cursor < blob.size && blob.u8(reader.cursor) == 10 && blob.size-reader.cursor == columns*rows*stride+1 {
+            reader.cursor += 1
+        }
+        if blob.size-reader.cursor != columns*rows*stride then return TerrainImage()
+    }
     fin bytes = azAlloc((columns as Long) * (rows as Long) * 8)
     if bytes == 0 then return TerrainImage()
     var index = 0
     while index < columns * rows {
-        fin value = terrainToken(blob, reader)
+        var value = 0
+        if binary {
+            fin at = reader.cursor + index*stride
+            value = if narrow then blob.u8(at) else blob.u8(at)*256 + blob.u8(at+1)
+        } else {
+            value = terrainToken(blob, reader)
+        }
         if value < 0 || value > peak {
             azFree(bytes)
             return TerrainImage()
@@ -98,13 +119,21 @@ func sampleTerrain(image: TerrainImage&, x: Double, z: Double): Double {
     fin j = if (v as Int) < image.rows - 1 then v as Int else image.rows - 2
     fin s = u - (i as Double)
     fin t = v - (j as Double)
-    // The same split as the two triangles in the mesh cache.
+    // Match the alternating diagonal of the full-resolution render mesh.
     fin a = terrainHeight(image,i,j)
     fin b = terrainHeight(image,i+1,j)
     fin c = terrainHeight(image,i,j+1)
     fin d = terrainHeight(image,i+1,j+1)
+    if (i+j)%2 == 0 {
+        return if s >= t then a + s*(b-a) + t*(d-b) else a + t*(c-a) + s*(d-c)
+    }
     if s + t <= 1.0 then return a + s*(b-a) + t*(c-a)
     return d + (1.0-s)*(c-d) + (1.0-t)*(b-d)
 }
 
 func terrainClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+func heightfieldMatrix(world: World!, entity: Entity, surface: HeightfieldTerrain&): Mat4 =
+    mat4Mul(worldMatrix(world, entity), mat4Scale(
+        terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0),
+        terrainClamp(surface.length, 1.0, 100000.0)))

@@ -1,0 +1,60 @@
+module engine.atmosphere.view
+
+/**
+ * The 3D view as the render stages see it: the camera, the scene's targets and
+ * the encoder of the pass being drawn. Filled before `RenderSky` each frame.
+ *
+ * [encoder] is the scene pass in `RenderSky`, 0 in `RenderVolumes` (the scene
+ * pass is suspended: systems open passes of their own on [commands]) and the
+ * reconstructed full-resolution view in `RenderTransparent`. [color] and
+ * [depth] are the scene's targets, [width] x [height] pixels (half the
+ * drawable's with temporal upscaling); their pixel `i` holds the point at
+ * `i + 0.5 - jitter`.
+ */
+pack SceneView {
+    var encoder: Long = 0
+    var commands: Long = 0
+    var device: Long = 0
+    var color: Long = 0
+    var depth: Long = 0
+    var width: Int = 0
+    var height: Int = 0
+    var fullWidth: Int = 0
+    var fullHeight: Int = 0
+    var jitterX: Double = 0.0
+    var jitterY: Double = 0.0
+    var upscaled: Bool = false
+    /**
+     * Four column-major float4x4, as shaders read them: this frame's clip
+     * transform (without jitter), its inverse, last frame's and its inverse.
+     */
+    var matrices: Long = 0
+    var eyeX: Double = 0.0
+    var eyeY: Double = 0.0
+    var eyeZ: Double = 0.0
+    var forwardX: Double = 0.0
+    var forwardY: Double = 0.0
+    var forwardZ: Double = -1.0
+    var rightX: Double = 1.0
+    var rightY: Double = 0.0
+    var rightZ: Double = 0.0
+    var upX: Double = 0.0
+    var upY: Double = 1.0
+    var upZ: Double = 0.0
+    /** tan(fov / 2) and width / height: a pixel's ray is forward + x·tangent·aspect·right + y·tangent·up. */
+    var tangent: Double = 0.5
+    var aspect: Double = 1.0
+    var near: Double = 0.1
+    var far: Double = 1000.0
+    var time: Double = 0.0
+    var delta: Double = 0.0
+    var frame: Int = 0
+    /** How fast the eye moved since the last frame, m/s (0 while paused). */
+    var motionX: Double = 0.0
+    var motionY: Double = 0.0
+    var motionZ: Double = 0.0
+}
+
+/** Bytes of [SceneView.matrices]. */
+fin sceneViewMatrixBytes: Long = 256
+

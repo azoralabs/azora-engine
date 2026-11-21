@@ -1,0 +1,40 @@
+module engine.weather.simulation
+
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.atmosphere
+import engine.weather.components
+import engine.weather.presets
+import engine.weather.storm
+
+/** Supplies the atmospheric renderer with the current weather. */
+func previewWeather(world: World!, owner: Entity, state: AetherState!, elapsed: Double, dt: Double, eye: Vec3&, right: Vec3&) {
+    fin weather = storageGetOrDefault<AetherWeather>(ensureStorage<AetherWeather>(world), owner, AetherWeather(enabled: false))
+    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage<AetherClouds>(world), owner, AetherClouds(enabled: false))
+    fin windy = world.isAlive(sceneWindEntity(world))
+    fin blowing = sceneWind(world, elapsed)
+    stepWeather(state, if weather.enabled then weather else AetherWeather(), dt, windy, blowing.x, blowing.z)
+    var air = AtmosphereConditions(coverage: state.current.coverage, cloudType: state.current.cloudType,
+        density: state.current.density, driftX: state.driftX, driftZ: state.driftZ)
+    fin fog = state.current.fog * state.current.fog
+    fin wet = state.current.rain + state.current.snow
+    air.fogDensity = fog * 22.0 + state.current.rain * 0.9 + state.current.snow * 1.6
+    air.fogFalloff = (3.5 * fog + 1.2 * wet) / (if fog + wet > 0.001 then fog + wet else 0.001)
+    let storms = ensureStorage<AetherStorm>(world)
+    fin stormAt = storageIndexOf<AetherStorm>(storms, owner)
+    if stormAt >= 0 {
+        fin cover = if !clouds.enabled then 0.0 else if clouds.coverage >= 0.0 then clouds.coverage else air.coverage
+        fin lit = stepStorm(storms.values[stormAt], elapsed, dt, state.current.lightning, cover,
+            clouds.baseAltitude, eye.x, eye.y, eye.z, right.x, right.z)
+        air.flash = lit.y
+        air.flashX = lit.x
+        air.flashZ = lit.z
+    }
+    air.wetness = state.wetness
+    air.snow = state.snowCover
+    air.windX = state.windX
+    air.windZ = state.windZ
+    storageInsert<AtmosphereConditions>(ensureStorage<AtmosphereConditions>(world), owner, take air)
+}

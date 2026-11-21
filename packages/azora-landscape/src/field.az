@@ -1,0 +1,355 @@
+module engine.landscape.field
+import std.traits
+import std.math
+
+// A Flex Landscape is a signed distance field sampled on a regular grid, not
+// a height map: each grid point stores how far it is from the surface,
+// negative inside the ground and positive in the air. Any shape a solid can
+// take - an arch, an overhang, a cave - is a field like any other, and every
+// tool edits the field, never triangles.
+
+/** How far from the surface a value is kept, in cells; farther is all ground or all air. */
+fin band: Double = 6.0
+fin maxPoints: Long = 6500000
+
+pack Field derives Clone {
+    /** Cells along each axis; the grid has one more point than cells on each. */
+    var cellsX: Int = 0
+    var cellsY: Int = 0
+    var cellsZ: Int = 0
+    /** The edge of one cell, in metres. */
+    var cell: Double = 1.0
+    /** Where grid point (0, 0, 0) is in the world. */
+    var originX: Double = 0.0
+    var originY: Double = 0.0
+    var originZ: Double = 0.0
+    var values: Array<Double> = []
+    var closed: Bool = false
+}
+
+/** A point, a direction or a gradient. */
+pack Point derives Clone {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var z: Double = 0.0
+}
+
+func clampReal(value: Double, low: Double, high: Double): Double = when {
+    value < low -> low
+    value > high -> high
+    else -> value
+}
+
+func clampInt(value: Int, low: Int, high: Int): Int = when {
+    value < low -> low
+    value > high -> high
+    else -> value
+}
+
+func length(x: Double, y: Double, z: Double): Double = sqrt(x * x + y * y + z * z)
+
+func magnitude(value: Double): Double = if value < 0.0 then -value else value
+
+func lower(a: Double, b: Double): Double = if a < b then a else b
+func higher(a: Double, b: Double): Double = if a > b then a else b
+
+/** The rounded version of max used where a cut meets the original surface. */
+func blendCut(solid: Double, cutter: Double, width: Double): Double {
+    fin joined = higher(solid, cutter)
+    if width <= 0.0 then return joined
+    fin overlap = higher(0.0, width - magnitude(solid - cutter))
+    return joined + (overlap * overlap) / (4.0 * width)
+}
+
+func pointCount(x: Int, y: Int, z: Int): Long = ((x + 1) as Long) * ((y + 1) as Long) * ((z + 1) as Long)
+
+impl Field {
+    func &.pointsX(): Int = self.cellsX + 1
+    func &.pointsY(): Int = self.cellsY + 1
+    func &.pointsZ(): Int = self.cellsZ + 1
+
+    func &.at(i: Int, j: Int, k: Int): Int = i + self.pointsX() * (j + self.pointsY() * k)
+
+    func &.value(i: Int, j: Int, k: Int): Double = self.values[self.at(i, j, k)]
+
+    /** Grid point (i, j, k) in the world. */
+    func &.worldX(i: Int): Double = self.originX + (i as Double) * self.cell
+    func &.worldY(j: Int): Double = self.originY + (j as Double) * self.cell
+    func &.worldZ(k: Int): Double = self.originZ + (k as Double) * self.cell
+
+    /** The field at a world point, blended from the eight grid points around it. */
+    func &.sample(x: Double, y: Double, z: Double): Double {
+        fin gx = clampReal((x - self.originX) / self.cell, 0.0, self.cellsX as Double)
+        fin gy = clampReal((y - self.originY) / self.cell, 0.0, self.cellsY as Double)
+        fin gz = clampReal((z - self.originZ) / self.cell, 0.0, self.cellsZ as Double)
+        fin i = clampInt(floor(gx), 0, self.cellsX - 1)
+        fin j = clampInt(floor(gy), 0, self.cellsY - 1)
+        fin k = clampInt(floor(gz), 0, self.cellsZ - 1)
+        fin fx = gx - (i as Double)
+        fin fy = gy - (j as Double)
+        fin fz = gz - (k as Double)
+        fin c00 = lerp(self.value(i, j, k), self.value(i + 1, j, k), fx)
+        fin c10 = lerp(self.value(i, j + 1, k), self.value(i + 1, j + 1, k), fx)
+        fin c01 = lerp(self.value(i, j, k + 1), self.value(i + 1, j, k + 1), fx)
+        fin c11 = lerp(self.value(i, j + 1, k + 1), self.value(i + 1, j + 1, k + 1), fx)
+        return lerp(lerp(c00, c10, fy), lerp(c01, c11, fy), fz)
+    }
+
+    /** Which way the field grows at a world point: out of the ground, toward the air. */
+    func &.gradient(x: Double, y: Double, z: Double): Point {
+        fin h = self.cell * 0.75
+        fin gx = self.sample(x + h, y, z) - self.sample(x - h, y, z)
+        fin gy = self.sample(x, y + h, z) - self.sample(x, y - h, z)
+        fin gz = self.sample(x, y, z + h) - self.sample(x, y, z - h)
+        fin size = length(gx, gy, gz)
+        return if size < 0.000001 then Point(0.0, 1.0, 0.0) else Point(gx / size, gy / size, gz / size)
+    }
+
+    /** Whether a world point is inside the grid. */
+    func &.contains(x: Double, y: Double, z: Double): Bool =
+        x >= self.originX && y >= self.originY && z >= self.originZ &&
+            x <= self.worldX(self.cellsX) && y <= self.worldY(self.cellsY) && z <= self.worldZ(self.cellsZ)
+}
+
+// ── Shapes ──────────────────────────────────────────────────────────────
+
+/** A new landscape: flat ground, its surface at height 0, ready to sculpt. */
+func startingField(cellsX: Int, cellsY: Int, cellsZ: Int, cell: Double): Field {
+    var field: Field = .()
+    field.cellsX = cellsX
+    field.cellsY = cellsY
+    field.cellsZ = cellsZ
+    field.cell = cell
+    field.originX = 0.0 - (cellsX as Double) * cell * 0.5
+    field.originY = 0.0 - (cellsY as Double) * cell * 0.6
+    field.originZ = 0.0 - (cellsZ as Double) * cell * 0.5
+    field.closed = true
+    fin count = field.pointsX() * field.pointsY() * field.pointsZ()
+    field.values = .() * count
+    var k = 0
+    while k < field.pointsZ() {
+        var j = 0
+        while j < field.pointsY() {
+            var i = 0
+            while i < field.pointsX() {
+                // Six planes bound the solid, with an air sample beyond each face.
+                fin side = higher(magnitude(field.worldX(i)) - (cellsX as Double) * cell * 0.5 + cell * 0.5,
+                    magnitude(field.worldZ(k)) - (cellsZ as Double) * cell * 0.5 + cell * 0.5)
+                fin solid = higher(higher(field.worldY(j), field.originY + cell * 0.5 - field.worldY(j)), side)
+                field.values[field.at(i, j, k)] = clampReal(solid, 0.0 - band * cell, band * cell)
+                i = i + 1
+            }
+            j = j + 1
+        }
+        k = k + 1
+    }
+    return field
+}
+
+// ── Rays ────────────────────────────────────────────────────────────────
+
+/** Where a ray meets a surface, and which way the surface faces there. */
+pack Hit derives Clone {
+    var found: Bool = false
+    var point: Point = .()
+    var normal: Point = .(0.0, 1.0, 0.0)
+    var distance: Double = 0.0
+}
+
+/** The interval where a ray can sample the field. */
+pack RaySpan {
+    var start: Double = 0.0
+    var end: Double = 0.0
+}
+
+func clipRay(span: RaySpan!, origin: Double, direction: Double, low: Double, high: Double): Bool {
+    if magnitude(direction) < 0.0000001 then return origin >= low && origin <= high
+    fin a = (low - origin) / direction
+    fin b = (high - origin) / direction
+    span.start = higher(span.start, lower(a, b))
+    span.end = lower(span.end, higher(a, b))
+    return span.start <= span.end
+}
+
+impl Field {
+    /** Finds the first sign change inside the grid, including an exit from solid. */
+    func &.raycast(ox: Double, oy: Double, oz: Double, dx: Double, dy: Double, dz: Double, reach: Double): Hit {
+        var hit: Hit = .()
+        fin speed = length(dx, dy, dz)
+        if speed < 0.000001 then return hit
+        var span = RaySpan(0.0, reach)
+        if !clipRay(span, ox, dx, self.originX, self.worldX(self.cellsX)) ||
+            !clipRay(span, oy, dy, self.originY, self.worldY(self.cellsY)) ||
+            !clipRay(span, oz, dz, self.originZ, self.worldZ(self.cellsZ)) then return hit
+        fin step = self.cell * 0.5 / speed
+        var previous = span.start
+        var inside = self.sample(ox + dx * previous, oy + dy * previous, oz + dz * previous) <= 0.0
+        while previous < span.end {
+            fin t = lower(previous + step, span.end)
+            fin nextInside = self.sample(ox + dx * t, oy + dy * t, oz + dz * t) <= 0.0
+            if nextInside != inside {
+                var low = previous
+                var high = t
+                var iteration = 0
+                while iteration < 10 {
+                    fin middle = (low + high) * 0.5
+                    if (self.sample(ox + dx * middle, oy + dy * middle, oz + dz * middle) <= 0.0) == inside then low = middle else high = middle
+                    iteration = iteration + 1
+                }
+                fin distance = (low + high) * 0.5
+                hit.found = true
+                hit.distance = distance
+                hit.point = .(ox + dx * distance, oy + dy * distance, oz + dz * distance)
+                hit.normal = self.gradient(hit.point.x, hit.point.y, hit.point.z)
+                return hit
+            }
+            previous = t
+            inside = nextInside
+        }
+        return hit
+    }
+}
+
+// ── Brushes ─────────────────────────────────────────────────────────────
+
+/** The grid points a brush reaches: the box around its sphere. */
+pack Reach derives Clone {
+    var lowI: Int = 0
+    var lowJ: Int = 0
+    var lowK: Int = 0
+    var highI: Int = 0
+    var highJ: Int = 0
+    var highK: Int = 0
+    var changed: Bool = false
+}
+
+impl Reach {
+    func !.include(box: Reach&) {
+        if !box.changed then return
+        if !self.changed {
+            self.lowI = box.lowI
+            self.lowJ = box.lowJ
+            self.lowK = box.lowK
+            self.highI = box.highI
+            self.highJ = box.highJ
+            self.highK = box.highK
+            self.changed = true
+        } else {
+            if box.lowI < self.lowI then self.lowI = box.lowI
+            if box.lowJ < self.lowJ then self.lowJ = box.lowJ
+            if box.lowK < self.lowK then self.lowK = box.lowK
+            if box.highI > self.highI then self.highI = box.highI
+            if box.highJ > self.highJ then self.highJ = box.highJ
+            if box.highK > self.highK then self.highK = box.highK
+        }
+    }
+}
+
+impl Field {
+    func &.reach(cx: Double, cy: Double, cz: Double, radius: Double): Reach = .(
+        clampInt(floor((cx - radius - self.originX) / self.cell), 0, self.cellsX),
+        clampInt(floor((cy - radius - self.originY) / self.cell), 0, self.cellsY),
+        clampInt(floor((cz - radius - self.originZ) / self.cell), 0, self.cellsZ),
+        clampInt(floor((cx + radius - self.originX) / self.cell) + 1, 0, self.cellsX),
+        clampInt(floor((cy + radius - self.originY) / self.cell) + 1, 0, self.cellsY),
+        clampInt(floor((cz + radius - self.originZ) / self.cell) + 1, 0, self.cellsZ),
+    )
+
+    /**
+     * Edits a spherical brush footprint. Smoothing reads original neighbours
+     * and stages only this footprint, even on a high-resolution landscape.
+     */
+    func !.brush(tool: String, centre: Point&, radius: Double, amount: Double, falloff: Double, edgeBlend: Double,
+        plane: Point&, normal: Point&): Reach {
+        fin cave = tool == "cave"
+        // Keep the signed distance on both sides of the cutter's surface.
+        // A cutoff at the radius would join to a different field within one cell.
+        fin halo = if cave then edgeBlend + self.cell * 2.0 else 0.0
+        fin footprint = radius + halo
+        var box = self.reach(centre.x, centre.y, centre.z, footprint)
+        if amount <= 0.0 then return box
+        var smoothed: Array<Double> = []
+        fin smooth = tool == "smooth"
+        fin limit = band * self.cell
+        fin fade = if cave then halo else higher(radius * falloff, self.cell * 0.25)
+        var k = box.lowK
+        while k <= box.highK {
+            var j = box.lowJ
+            while j <= box.highJ {
+                var i = box.lowI
+                while i <= box.highI {
+                    fin x = self.worldX(i)
+                    fin y = self.worldY(j)
+                    fin z = self.worldZ(k)
+                    fin distance = length(x - centre.x, y - centre.y, z - centre.z)
+                    fin at = self.at(i, j, k)
+                    fin old = self.values[at]
+                    var value = old
+                    fin boundary = i == 0 || j == 0 || k == 0 || i == self.cellsX || j == self.cellsY || k == self.cellsZ
+                    if distance < footprint && (!self.closed || !boundary) {
+                        fin edge = clampReal((footprint - distance) / fade, 0.0, 1.0)
+                        fin weight = edge * edge * (3.0 - 2.0 * edge)
+                        fin changed = when tool {
+                            "raise" -> old - weight * amount
+                            "dig" -> old + weight * amount
+                            "smooth" -> lerp(old, self.neighbourAverage(i, j, k), 1.0 - exp(-weight * amount * 5.0))
+                            "flatten" -> lerp(old, clampReal((x - plane.x) * normal.x + (y - plane.y) * normal.y +
+                                (z - plane.z) * normal.z, -limit, limit), 1.0 - exp(-weight * amount * 3.0))
+                            "cave" -> lerp(old, blendCut(old, radius - distance, edgeBlend), 1.0 - exp(-weight * amount * 5.0))
+                            else -> old
+                        }
+                        value = clampReal(changed, -limit, limit)
+                        if value != old then box.changed = true
+                    }
+                    if smooth then smoothed.add(value) else if value != old then self.values[at] = value
+                    i = i + 1
+                }
+                j = j + 1
+            }
+            k = k + 1
+        }
+        if smooth && box.changed {
+            var index = 0
+            k = box.lowK
+            while k <= box.highK {
+                var j = box.lowJ
+                while j <= box.highJ {
+                    var i = box.lowI
+                    while i <= box.highI {
+                        self.values[self.at(i, j, k)] = smoothed[index]
+                        index = index + 1
+                        i = i + 1
+                    }
+                    j = j + 1
+                }
+                k = k + 1
+            }
+        }
+        return box
+    }
+
+    /** A weighted mean using two rings, so smoothing reaches larger surface changes. */
+    func &.neighbourAverage(i: Int, j: Int, k: Int): Double {
+        var sum = self.value(i, j, k) * 4.0
+        var count = 4.0
+        var ring = 1
+        while ring <= 2 {
+            fin weight = if ring == 1 then 2.0 else 1.0
+            var side = 0
+            while side < 6 {
+                fin axis = side / 2
+                fin step = if side % 2 == 0 then -ring else ring
+                fin x = i + (if axis == 0 then step else 0)
+                fin y = j + (if axis == 1 then step else 0)
+                fin z = k + (if axis == 2 then step else 0)
+                if x >= 0 && y >= 0 && z >= 0 && x <= self.cellsX && y <= self.cellsY && z <= self.cellsZ {
+                    sum = sum + self.value(x, y, z) * weight
+                    count = count + weight
+                }
+                side = side + 1
+            }
+            ring = ring + 1
+        }
+        return sum / count
+    }
+}

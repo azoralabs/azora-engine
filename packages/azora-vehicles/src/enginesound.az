@@ -1,0 +1,250 @@
+module engine.vehicles.enginesound
+
+import std.math
+import engine.io
+import engine.audio.dsp
+
+// The sound of an engine, made the way an engine makes it: each cylinder's
+// exhaust valve opens on the firing order and lets out a pressure pulse
+// whose length is a fixed stretch of crank angle, so it shortens as the
+// engine spins faster; the pulses run down the headers into one pipe, ring
+// in it, and leave through the silencer's chambers. The intake breathes
+// between them, the valve train ticks, and a closed throttle lets the
+// exhaust pop. Nothing here is recorded and nothing loops.
+//
+// Per sample only Doubles: the voice keeps its state in place.
+
+/** Crank degrees a cylinder's exhaust pulse lasts. */
+fin pulseDegrees: Double = 160.0
+
+pack EngineVoice {
+    var rate: Double = 48000.0
+    var motorcycle: Bool = false
+    /** Firing angles within the 720° cycle, one per cylinder. */
+    var firing: Array<Double> = []
+    /** Per cylinder: crank degrees since its valve opened (negative when closed), this pulse's strength, its header delay in samples. */
+    var age: Array<Double> = []
+    var strength: Array<Double> = []
+    var header: Array<Double> = []
+    var crank: Double = 0.0
+    var cycles: Int = 0
+    var rpm: Double = 0.0
+    var load: Double = 0.0
+    var throttle: Double = 0.0
+    var limiter: Bool = false
+    var noise: Noise = .()
+    var hiss: Noise = .()
+    /** Each cylinder's header, then the shared pipe that rings at its length. */
+    var headers: DelayLine = .()
+    var pipe: DelayLine = .()
+    var pipeDelay: Double = 0.0
+    var chamberLow: Biquad = .()
+    var chamberHigh: Biquad = .()
+    var silencer: Biquad = .()
+    var tailpipe: Biquad = .()
+    var intakeBand: Biquad = .()
+    var tickBand: Biquad = .()
+    var popBand: Biquad = .()
+    var popLevel: Double = 0.0
+    /** A turbocharger's spool (the car) and its whistle's phase. */
+    var boost: Double = 0.0
+    var whistle: Double = 0.0
+    var gain: Double = 1.0
+}
+
+/**
+ * The car's 2.0 litre inline-4 (firing order 1-3-4-2, a cylinder every
+ * 180°) or the motorcycle's 270° parallel twin (fires at 0° and 270°, then
+ * waits 450°: its loping beat).
+ */
+func engineVoice(motorcycle: Bool, rate: Double): EngineVoice {
+    var voice = EngineVoice(rate: rate, motorcycle: motorcycle, noise: noise(if motorcycle then 271 else 113), hiss: noise(997))
+    voice.firing = if motorcycle then [0.0, 270.0] else [0.0, 180.0, 360.0, 540.0]
+    // Header lengths differ a little, so pulses meet the collector unevenly.
+    fin headers: Array<Double> = if motorcycle then [0.0011, 0.00135] else [0.0016, 0.0019, 0.0017, 0.00205]
+    for seconds in headers { voice.header.add(seconds * rate) }
+    for angle in voice.firing {
+        voice.age.add(-1.0)
+        voice.strength.add(0.0)
+    }
+    voice.headers = delayLine((0.004 * rate) as Int)
+    // A 2.4 m car exhaust and a 1.1 m bike pipe: a pressure wave there and back.
+    voice.pipeDelay = (if motorcycle then 2.2 else 4.8) / 343.0 * rate
+    voice.pipe = delayLine((voice.pipeDelay as Int) + 4)
+    if motorcycle {
+        voice.chamberLow.peak(120.0, 1.2, 7.0, rate)
+        voice.chamberHigh.peak(420.0, 1.6, 4.0, rate)
+        voice.silencer.lowpass(4800.0, 0.7, rate)
+        voice.gain = 0.55
+    } else {
+        voice.chamberLow.peak(90.0, 1.1, 8.0, rate)
+        voice.chamberHigh.peak(260.0, 1.4, 3.0, rate)
+        voice.silencer.lowpass(2600.0, 0.7, rate)
+        voice.gain = 0.42
+    }
+    voice.tailpipe.highpass(35.0, 0.7, rate)
+    voice.intakeBand.bandpass(if motorcycle then 1600.0 else 1100.0, 1.4, rate)
+    voice.tickBand.bandpass(4200.0, 3.0, rate)
+    voice.popBand.bandpass(if motorcycle then 900.0 else 650.0, 1.1, rate)
+    return take voice
+}
+
+/** The pressure a pulse [age] degrees after its valve opened pushes: a steep rise, a longer fall. */
+func pulseShape(age: Double): Double {
+    if age < 0.0 || age >= pulseDegrees then return 0.0
+    fin x = age / pulseDegrees
+    fin rise = if x < 0.18 then x / 0.18 else 1.0
+    fin hump = sin(PI * x)
+    return rise * hump * hump * (1.0 - 0.45 * x)
+}
+
+/**
+ * Adds [frames] samples of the engine into [into], gliding from where the
+ * last block left off to [rpm], [load] and [throttle], so a block boundary
+ * never steps. [limiter]: the fuel is cut on alternate cycles.
+ */
+func EngineVoice!.render(into: Long, frames: Int, rpm: Double, load: Double, throttle: Double, limiter: Bool) {
+    fin startRpm = if self.rpm > 0.0 then self.rpm else rpm
+    fin startLoad = self.load
+    fin startThrottle = self.throttle
+    self.limiter = limiter
+    fin cylinders = self.firing.size
+    var i = 0
+    while i < frames {
+        fin t = ((i + 1) as Double) / (frames as Double)
+        fin speed = startRpm + (rpm - startRpm) * t
+        fin pressure = startLoad + (load - startLoad) * t
+        fin pedal = startThrottle + (throttle - startThrottle) * t
+        fin advance = speed * 6.0 / self.rate
+        fin before = self.crank
+        self.crank += advance
+        if self.crank >= 720.0 {
+            self.crank -= 720.0
+            self.cycles += 1
+        }
+        // A cylinder whose firing angle the crank just passed opens its exhaust.
+        var exhaust: Double = 0.0
+        var c = 0
+        while c < cylinders {
+            fin angle = self.firing[c]
+            fin crossed = if self.crank >= before then before < angle && self.crank >= angle else before < angle || self.crank >= angle
+            if crossed {
+                fin cut = self.limiter && self.cycles % 2 == 1
+                fin variation = 1.0 + 0.08 * self.noise.white()
+                fin power = if cut then 0.04 else (0.22 + 0.78 * pressure) * variation
+                // Overrun: a shut throttle at speed burns what is left in the exhaust, now and then.
+                if pedal <= 0.01 && speed > (if self.motorcycle then 5000.0 else 3800.0) && self.noise.white() > (if self.motorcycle then 0.84 else 0.94) {
+                    self.popLevel = 0.9 + 0.4 * self.noise.white()
+                }
+                self.age[c] = 0.0
+                self.strength[c] = power
+            } else if self.age[c] >= 0.0 {
+                self.age[c] = self.age[c] + advance
+                if self.age[c] >= pulseDegrees then self.age[c] = -1.0
+            }
+            exhaust += self.strength[c] * pulseShape(self.age[c])
+            c += 1
+        }
+        // Headers: each cylinder's pulse arrives after its own length (approximated on the summed signal by two taps).
+        self.headers.push(exhaust)
+        fin collected = 0.5 * self.headers.read(self.header[0]) + 0.5 * self.headers.read(self.header[cylinders - 1])
+        // The pipe: what comes back from the silencer meets what goes in.
+        fin ringing = collected - 0.45 * self.pipe.read(self.pipeDelay)
+        self.pipe.push(ringing)
+        var sound = self.chamberHigh.process(self.chamberLow.process(ringing))
+        // Overrun pops: a burst of noise through the exhaust's band.
+        if self.popLevel > 0.001 {
+            sound += self.popBand.process(self.hiss.white() * self.popLevel) * 2.5
+            self.popLevel *= 0.9975
+        }
+        sound = self.silencer.process(sound)
+        // Intake roar rides on the throttle and the rpm.
+        fin breath = speed / (if self.motorcycle then 11500.0 else 6800.0)
+        sound += self.intakeBand.process(self.hiss.white()) * pedal * breath * 0.35
+        // The valve train: faint ticks at the cam's rate.
+        fin tick: Double = if exhaust > 0.0 && self.noise.white() > 0.995 then 1.0 else 0.0
+        sound += self.tickBand.process(tick) * 0.06 * breath
+        // The car's turbo spools with load and whistles above it.
+        if !self.motorcycle {
+            self.boost += (pressure * breath - self.boost) * 0.00012
+            self.whistle += 2.0 * PI * (2500.0 + 7000.0 * self.boost) / self.rate
+            if self.whistle > 2.0 * PI then self.whistle -= 2.0 * PI
+            sound += sin(self.whistle) * self.boost * 0.012
+        }
+        addSample(into, i, self.tailpipe.process(sound) * self.gain)
+        i += 1
+    }
+    self.rpm = rpm
+    self.load = load
+    self.throttle = throttle
+}
+
+func EngineVoice!.release() {
+    self.headers.release()
+    self.pipe.release()
+}
+
+// ── Horn ────────────────────────────────────────────────────────────────
+
+/**
+ * An electric horn: a diaphragm buzzing at its pitch drives a bell that
+ * favours the upper harmonics. The car sounds two detuned horns (about 420
+ * and 500 Hz), the motorcycle one brighter one (about 400 Hz).
+ */
+pack HornVoice {
+    var rate: Double = 48000.0
+    var pitches: Array<Double> = []
+    var phases: Array<Double> = []
+    var harmonics: Int = 10
+    var level: Double = 0.0
+    var vibrato: Double = 0.0
+    var bell: Biquad = .()
+    var body: Biquad = .()
+}
+
+func hornVoice(motorcycle: Bool, rate: Double): HornVoice {
+    var horn = HornVoice(rate: rate, harmonics: if motorcycle then 14 else 10)
+    horn.pitches = if motorcycle then [400.0] else [420.0, 500.0]
+    for pitch in horn.pitches { horn.phases.add(0.0) }
+    horn.bell.peak(if motorcycle then 2600.0 else 2100.0, 1.5, 6.0, rate)
+    horn.body.highpass(180.0, 0.7, rate)
+    return take horn
+}
+
+/** Adds [frames] samples of the horn into [into]: it sounds while [held], rising in 8 ms and dying in 40 ms. */
+func HornVoice!.render(into: Long, frames: Int, held: Bool) {
+    fin attack = 1.0 / (0.008 * self.rate)
+    fin release = 1.0 / (0.040 * self.rate)
+    var i = 0
+    while i < frames {
+        self.level = if held then (if self.level + attack > 1.0 then 1.0 else self.level + attack) else (if self.level - release < 0.0 then 0.0 else self.level - release)
+        if self.level <= 0.0 {
+            // Silent: keep the filters still, so the next press starts clean.
+            addSample(into, i, 0.0)
+            i += 1
+            continue
+        }
+        self.vibrato += 2.0 * PI * 5.5 / self.rate
+        if self.vibrato > 2.0 * PI then self.vibrato -= 2.0 * PI
+        fin wobble = 1.0 + 0.003 * sin(self.vibrato)
+        var buzz: Double = 0.0
+        var p = 0
+        while p < self.pitches.size {
+            fin pitch = self.pitches[p] * wobble
+            var phase = self.phases[p] + 2.0 * PI * pitch / self.rate
+            if phase > 2.0 * PI then phase -= 2.0 * PI
+            self.phases[p] = phase
+            var n = 1
+            while n <= self.harmonics && (n as Double) * pitch < 9000.0 {
+                buzz += sin(phase * (n as Double)) / (n as Double)
+                n += 1
+            }
+            p += 1
+        }
+        fin shaped = self.bell.process(self.body.process(buzz * 0.35))
+        // The diaphragm saturates: a soft clip.
+        fin clipped = shaped / (1.0 + (if shaped < 0.0 then -shaped else shaped))
+        addSample(into, i, clipped * self.level * 0.6)
+        i += 1
+    }
+}

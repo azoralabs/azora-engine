@@ -1,0 +1,286 @@
+module engine.atmosphere.cloudshader
+
+/**
+ * Metal source of the cloud passes, appended to the atmosphere's (it uses its
+ * `AetherU`, tables and phase functions): the noise the clouds are carved
+ * from, generated once; the ray march; the shadow the clouds cast.
+ *
+ * Distances here are in metres. The layer lies between two spheres around the
+ * planet's centre, under the camera, so it curves down to the horizon.
+ */
+func cloudMetalSource(): String = "
+// ---- Tiling noise ----------------------------------------------------------
+
+uint3 pcgHash(uint3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+
+float3 cellPoint(int3 cell, int period, uint salt) {
+    uint3 wrapped = uint3((cell % period + period) % period);
+    return float3(pcgHash(wrapped + uint3(salt, salt * 7u, salt * 13u))) / 4294967295.0;
+}
+
+/** 1 at a feature point falling to 0 a cell away: cellular (Worley) noise, tiling every [cells]. */
+float worley(float3 p, int cells, uint salt) {
+    float3 q = p * float(cells);
+    int3 base = int3(floor(q));
+    float3 f = q - float3(base);
+    float nearest = 1.0;
+    for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        int3 offset = int3(x, y, z);
+        float3 d = float3(offset) + cellPoint(base + offset, cells, salt) - f;
+        nearest = min(nearest, dot(d, d));
+    }
+    return 1.0 - saturate(sqrt(nearest));
+}
+
+float worleyFbm(float3 p, int cells, uint salt) {
+    return worley(p, cells, salt) * 0.625 + worley(p, cells * 2, salt + 1u) * 0.25 + worley(p, cells * 4, salt + 2u) * 0.125;
+}
+
+float3 latticeGradient(int3 cell, int period) {
+    float3 h = cellPoint(cell, period, 91u) * 2.0 - 1.0;
+    return normalize(h + float3(1e-4));
+}
+
+/** Gradient (Perlin) noise in about -1..1, tiling every [period]. */
+float gradientNoise(float3 p, int period) {
+    float3 q = p * float(period);
+    int3 i = int3(floor(q));
+    float3 f = q - float3(i);
+    float3 w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float n000 = dot(latticeGradient(i, period), f);
+    float n100 = dot(latticeGradient(i + int3(1, 0, 0), period), f - float3(1, 0, 0));
+    float n010 = dot(latticeGradient(i + int3(0, 1, 0), period), f - float3(0, 1, 0));
+    float n110 = dot(latticeGradient(i + int3(1, 1, 0), period), f - float3(1, 1, 0));
+    float n001 = dot(latticeGradient(i + int3(0, 0, 1), period), f - float3(0, 0, 1));
+    float n101 = dot(latticeGradient(i + int3(1, 0, 1), period), f - float3(1, 0, 1));
+    float n011 = dot(latticeGradient(i + int3(0, 1, 1), period), f - float3(0, 1, 1));
+    float n111 = dot(latticeGradient(i + int3(1, 1, 1), period), f - float3(1, 1, 1));
+    return mix(mix(mix(n000, n100, w.x), mix(n010, n110, w.x), w.y), mix(mix(n001, n101, w.x), mix(n011, n111, w.x), w.y), w.z) * 1.6;
+}
+
+float gradientFbm(float3 p, int period, int octaves) {
+    float total = 0.0, amplitude = 0.5, weight = 0.0;
+    int f = period;
+    for (int o = 0; o < octaves; o++) {
+        total += gradientNoise(p, f) * amplitude;
+        weight += amplitude;
+        amplitude *= 0.5;
+        f *= 2;
+    }
+    return total / weight;
+}
+
+float remap(float v, float lo, float hi, float newLo, float newHi) {
+    return newLo + (v - lo) * (newHi - newLo) / max(hi - lo, 1e-5);
+}
+
+/** R: Perlin-Worley, the clouds' billows; G, B, A: Worley at rising frequency, to break them up. */
+kernel void cloud_shape_noise(texture3d<float, access::write> out [[texture(0)]], uint3 id [[thread_position_in_grid]]) {
+    if (any(id >= 128u)) return;
+    float3 p = (float3(id) + 0.5) / 128.0;
+    float perlin = saturate(gradientFbm(p, 4, 5) * 0.5 + 0.5);
+    float cells = worleyFbm(p, 4, 3u);
+    float billows = saturate(remap(perlin, 0.0, 1.0, cells, 1.0));
+    out.write(float4(billows, worleyFbm(p, 6, 11u), worleyFbm(p, 12, 17u), worleyFbm(p, 24, 23u)), id);
+}
+
+kernel void cloud_detail_noise(texture3d<float, access::write> out [[texture(0)]], uint3 id [[thread_position_in_grid]]) {
+    if (any(id >= 32u)) return;
+    float3 p = (float3(id) + 0.5) / 32.0;
+    out.write(float4(worleyFbm(p, 2, 31u), worleyFbm(p, 4, 37u), worleyFbm(p, 8, 41u), 1.0), id);
+}
+
+/** R: where clouds may grow, G: how tall; a 2D tile the layer is laid out by. */
+kernel void cloud_weather_map(texture2d<float, access::write> out [[texture(0)]], uint2 id [[thread_position_in_grid]]) {
+    if (any(id >= 256u)) return;
+    float3 p = float3((float2(id) + 0.5) / 256.0, 0.37);
+    float cover = saturate(gradientFbm(p, 4, 5) * 0.75 + 0.5);
+    float tall = saturate(gradientFbm(p + 0.31, 3, 3) * 0.8 + 0.5);
+    out.write(float4(cover, tall, 0.0, 1.0), id);
+}
+
+// ---- The cloud layer --------------------------------------------------------
+
+constant float planetMetres = 6360000.0;
+
+float layerHeight(float3 p, float3 eye) {
+    float3 centre = float3(eye.x, -planetMetres, eye.z);
+    return length(p - centre) - planetMetres;
+}
+
+/** Where along the ray the sphere of radius R around the planet's centre is crossed going outward. */
+float shellExit(float3 o, float3 d, float R) {
+    float b = dot(o, d), c = dot(o, o) - R * R, disc = b * b - c;
+    if (disc < 0.0) return -1.0;
+    return -b + sqrt(disc);
+}
+
+float heightProfile(float hf, float type) {
+    float4 stratus = float4(0.0, 0.07, 0.14, 0.32);
+    float4 cumulus = float4(0.0, 0.16, 0.42, 0.72);
+    float4 tower = float4(0.0, 0.08, 0.72, 1.0);
+    float4 g = type < 0.5 ? mix(stratus, cumulus, type * 2.0) : mix(cumulus, tower, type * 2.0 - 1.0);
+    return smoothstep(g.x, g.y, hf) * (1.0 - smoothstep(g.z, g.w, hf));
+}
+
+/** Extinction per metre at [p]; [cheap] skips the detail erosion (light marches, shadows). */
+float cloudDensity(float3 p, float3 eye, constant AetherU& u, texture3d<float> shape, texture3d<float> detail, texture2d<float> weather,
+        float lod, bool cheap) {
+    constexpr sampler wrap(filter::linear, mip_filter::linear, address::repeat);
+    float h = layerHeight(p, eye);
+    float hf = (h - u.cloudShape.x) / max(u.cloudShape.y - u.cloudShape.x, 1.0);
+    if (hf <= 0.0 || hf >= 1.0) return 0.0;
+    float3 drifted = p - float3(u.cloudMore.z, 0.0, u.cloudMore.w);
+    float2 map = weather.sample(wrap, drifted.xz / 36000.0 + 0.5, level(0.0)).rg;
+    float local = saturate(u.cloudShape.z * 1.6 - 0.8 + map.r * 0.8);
+    if (local <= 0.0) return 0.0;
+    float type = saturate(u.cloudShape.w + (map.g - 0.5) * 0.35);
+    float4 low = shape.sample(wrap, (drifted + float3(0.0, h * 0.2, 0.0)) / 7000.0, level(lod));
+    float fbm = low.g * 0.625 + low.b * 0.25 + low.a * 0.125;
+    float base = remap(low.r, -(1.0 - fbm), 1.0, 0.0, 1.0) * heightProfile(hf, type);
+    base = saturate(remap(base, 1.0 - local, 1.0, 0.0, 1.0)) * local;
+    if (base <= 0.0) return 0.0;
+    if (!cheap) {
+        float3 d = detail.sample(wrap, drifted / 900.0 + float3(0.0, u.time.x * 0.004, 0.0), level(lod)).rgb;
+        float wisps = d.r * 0.625 + d.g * 0.25 + d.b * 0.125;
+        float erosion = mix(wisps, 1.0 - wisps, saturate(hf * 6.0)) * 0.35 * u.cloudMore.y;
+        base = saturate(remap(base, erosion, 1.0, 0.0, 1.0));
+    }
+    return base * u.cloudMore.x * 0.045;
+}
+
+float hg(float c, float g) { return (1.0 - g * g) / (4.0 * PI * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5)); }
+
+/** Interleaved gradient noise: a per-pixel offset for the march that the temporal blend averages away. */
+float pixelJitter(float2 pixel, float frame) {
+    float2 p = pixel + float2(47.0, 17.0) * fmod(frame, 64.0);
+    return fract(52.9829189 * fract(dot(p, float2(0.06711056, 0.00583715))));
+}
+
+/**
+ * The clouds in one direction: the light they send to the eye (already faded
+ * into the sky with distance) and how much of what lies behind shows through.
+ */
+fragment float4 cloud_march(FullOut in [[stage_in]], constant AetherU& u [[buffer(0)]],
+        texture3d<float> shape [[texture(0)]], texture3d<float> detail [[texture(1)]], texture2d<float> weather [[texture(2)]],
+        texture2d<float> transmittance [[texture(3)]], texture2d<float> skyView [[texture(4)]], texture2d<float> history [[texture(5)]]) {
+    constexpr sampler edge(filter::linear, address::clamp_to_edge);
+    constexpr sampler wrapS(filter::linear, address::repeat);
+    float3 dir = normalize(u.forward.xyz + in.ndc.x * u.screen.x * u.right.xyz + in.ndc.y * u.screen.y * u.up.xyz);
+    float3 eye = u.camera.xyz;
+    float4 result = float4(0.0, 0.0, 0.0, 1.0);
+    if (dir.y > -0.06 && u.cloudShape.z > 0.001) {
+        float3 o = float3(0.0, planetMetres + eye.y, 0.0);
+        float enter = shellExit(o, dir, planetMetres + u.cloudShape.x);
+        float leave = shellExit(o, dir, planetMetres + u.cloudShape.y);
+        float start = max(enter, 0.0), end = min(leave, start + 60000.0);
+        if (end > start) {
+            int steps = int(u.cloudMarch.x);
+            float dt = (end - start) / float(steps);
+            float t = start + dt * pixelJitter(in.pos.xy, u.cloudMarch.y);
+            float3 sun = u.sun.xyz;
+            float cosine = dot(dir, sun);
+            float phase = mix(hg(cosine, 0.8), hg(cosine, -0.35), 0.35);
+            float rSun = Rg + (u.cloudShape.x + u.cloudShape.y) * 0.0005 + 1.5;
+            float3 sunLight = lightAt(transmittance, rSun, sun.y) * u.sun.w;
+            float3 moonLight = lightAt(transmittance, rSun, u.moon.y) * u.moon.w * 1.6;
+            float moonPhase = mix(hg(dot(dir, u.moon.xyz), 0.8), hg(dot(dir, u.moon.xyz), -0.35), 0.35);
+            // The sky's light, from overhead and from the side, a little greyed by the clouds around.
+            float3 skyUp = skyView.sample(wrapS, float2(0.5, 0.02)).rgb, skySide = skyView.sample(wrapS, float2(0.25, 0.45)).rgb;
+            float3 ambient = mix(skyUp + skySide, float3(dot(skyUp + skySide, float3(0.3, 0.5, 0.2))), 0.35) * 1.3 + float3(0.004, 0.005, 0.008);
+            float3 total = 0.0;
+            float through = 1.0, weighted = 0.0, weights = 0.0;
+            for (int i = 0; i < steps; i++) {
+                float3 p = eye + dir * t;
+                float lod = clamp(log2(t / 6000.0 + 1.0) * 1.5, 0.0, 4.0);
+                float density = cloudDensity(p, eye, u, shape, detail, weather, lod, false);
+                if (density > 0.0) {
+                    // Toward the sun in six growing steps: how much of its light gets this deep.
+                    float depthToSun = 0.0, reach = 40.0;
+                    float3 q = p;
+                    for (int k = 0; k < 6; k++) {
+                        q += sun * reach;
+                        depthToSun += cloudDensity(q, eye, u, shape, detail, weather, lod + 1.0, true) * reach;
+                        reach *= 1.8;
+                    }
+                    float hf = saturate((layerHeight(p, eye) - u.cloudShape.x) / max(u.cloudShape.y - u.cloudShape.x, 1.0));
+                    // Three octaves of multiple scattering (Wrenninge): each fainter, deeper reaching, rounder.
+                    float lit = 0.0, a = 1.0, b = 1.0, c = 1.0;
+                    for (int o = 0; o < 3; o++) {
+                        lit += a * exp(-depthToSun * b) * mix(hg(cosine * c, 0.8 * c), hg(cosine * c, -0.35 * c), 0.35);
+                        a *= 0.5; b *= 0.45; c *= 0.6;
+                    }
+                    float powder = 1.0 - exp(-density * 2.0 * 90.0);
+                    // The cloud overhead, in four rising samples: under a thick deck little of the sky's light gets in.
+                    float depthUp = 0.0, below = 0.0;
+                    float3 lift = normalize(p - float3(eye.x, -planetMetres, eye.z));
+                    for (int k = 1; k <= 4; k++) {
+                        float above = float(k * k) * 120.0;
+                        depthUp += cloudDensity(p + lift * above, eye, u, shape, detail, weather, lod + 1.0, true) * (above - below);
+                        below = above;
+                    }
+                    // Light that diffused through the cloud: deep in a thick deck it is what remains, white and dim.
+                    float diffuse = 1.0 / (1.0 + 0.1 * depthToSun + 0.08 * depthUp);
+                    float skyward = 1.0 / (1.0 + 0.12 * depthUp);
+                    float3 scattered = sunLight * (lit * mix(1.0, powder, 0.55) * PI + 0.2 * diffuse)
+                        + moonLight * (moonPhase * exp(-depthToSun) * PI + 0.2 * diffuse)
+                        + ambient * mix(0.4, 1.0, hf) * mix(skyward, 1.0, 0.06);
+                    // A strike inside or below the cloud lights it from within.
+                    if (u.flash.w > 0.0) {
+                        float3 toFlash = p - u.flash.xyz;
+                        scattered += float3(0.75, 0.8, 1.0) * u.flash.w * exp(-length(toFlash) / 1700.0) * 0.5;
+                    }
+                    float fade = exp(-density * dt);
+                    total += through * scattered * (1.0 - fade);
+                    weighted += through * (1.0 - fade) * t;
+                    weights += through * (1.0 - fade);
+                    through *= fade;
+                    if (through < 0.01) break;
+                }
+                t += dt;
+            }
+            // Far clouds melt into the sky's own haze.
+            float seenAt = weights > 0.0 ? weighted / weights : end;
+            float haze = exp(-seenAt / 42000.0);
+            // What the far clouds fade into: the clear sky's haze, or under a deck, the deck's own grey.
+            float3 sky = skyView.sample(wrapS, skyViewUV(dir, u.camera.w)).rgb;
+            float3 own = total / max(1.0 - through, 1e-3);
+            float3 farther = mix(sky, own * 0.9 + sky * 0.1, saturate(u.cloudShape.z * 1.4 - 0.4));
+            result = float4(total * haze + farther * (1.0 - through) * (1.0 - haze), through);
+        }
+    }
+    // Clouds are far: last frame's pixel in the same direction is where the history is.
+    float4 before = u.previous * float4(eye + dir * 20000.0, 1.0);
+    float2 seen = float2(before.x / before.w * 0.5 + 0.5, 0.5 - before.y / before.w * 0.5);
+    if (before.w > 0.0 && all(seen > 0.0) && all(seen < 1.0) && u.cloudMarch.y > 0.5) {
+        float4 kept = history.sample(edge, seen);
+        result = mix(result, kept, 0.85);
+    }
+    return result;
+}
+
+/** How much sunlight reaches the ground through the clouds, over a square around the camera. */
+kernel void cloud_shadow(texture2d<float, access::write> out [[texture(0)]], constant AetherU& u [[buffer(0)]],
+        texture3d<float> shape [[texture(1)]], texture3d<float> detail [[texture(2)]], texture2d<float> weather [[texture(3)]],
+        uint2 id [[thread_position_in_grid]]) {
+    if (any(id >= 512u)) return;
+    float2 at = u.shadow.xy + ((float2(id) + 0.5) / 512.0 - 0.5) * u.shadow.z;
+    float3 eye = u.camera.xyz;
+    float3 sun = u.sun.y > u.moon.y || u.sun.y > -0.04 ? u.sun.xyz : u.moon.xyz;
+    sun = normalize(float3(sun.x, max(sun.y, 0.12), sun.z));
+    float3 ground = float3(at.x, 40.0, at.y);
+    float t0 = (u.cloudShape.x - ground.y) / sun.y, t1 = (u.cloudShape.y - ground.y) / sun.y;
+    float depth = 0.0, dt = (t1 - t0) / 12.0;
+    for (int i = 0; i < 12; i++) {
+        float3 p = ground + sun * (t0 + (float(i) + 0.5) * dt);
+        depth += cloudDensity(p, eye, u, shape, detail, weather, 1.0, true) * dt;
+    }
+    out.write(float4(exp(-depth * 0.6), 0.0, 0.0, 1.0), id);
+}
+"

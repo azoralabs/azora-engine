@@ -117,6 +117,7 @@ pack AzGpu {
     var shadowsActive: Bool = true
     var skyPipeline: Long = 0
     var terrains: Array<TerrainMesh> = []
+    var roads: RoadRenderCache = .()
     /** The clip transform of the view being drawn, as `beginView` set it. */
     var view: Mat4 = .(0.0)
     var terrainIndices: TerrainIndices = .()
@@ -500,6 +501,8 @@ func peekMat4(buf: Long, offset: Long): Mat4 = Mat4(
     peekFloat32(buf, offset + 12), peekFloat32(buf, offset + 28), peekFloat32(buf, offset + 44), peekFloat32(buf, offset + 60))
 
 func releaseTerrains(gpu: AzGpu!) {
+    releaseRoadBuffers(gpu.roads)
+    gpu.roads = RoadRenderCache()
     for terrain in gpu.terrains { releaseTerrainMesh(terrain) }
     gpu.terrains.clear()
     releaseTerrainIndices(gpu.terrainIndices)
@@ -509,7 +512,7 @@ impl AzGpu {
     func !.terrainIndex(path: String): Int {
         var i = 0
         while i < self.terrains.size {
-            if self.terrains[i].path == path then return i
+            if self.terrains[i].path == path && self.terrains[i].cacheKey == "" then return i
             i += 1
         }
         if self.terrainIndices.buffers.size == 0 then self.terrainIndices = buildTerrainIndices(self.device)

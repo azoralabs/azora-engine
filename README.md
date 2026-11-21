@@ -133,6 +133,25 @@ tools/azpm.py resolve templates/game   # packages to stage + frameworks to link
 A simulation-only project that imports only `engine.ecs` links no renderer;
 `import engine` (via the facade) pulls in everything.
 
+### World packages
+
+Dolomites Drive exercises `azora-landscape`, `azora-foliage`, `azora-roads`, `azora-vehicles`,
+`azora-atmosphere` and `azora-weather` as Engine workspace packages. Use the
+template's `azora.azon` and scene as a starting point. `azora-game` renders
+the atmosphere and runs weather stages from the scene components. The
+`engine.sky` import remains available for older procedural-sky scenes.
+
+Road control points are child entities ordered by their `RoadPoint.order`.
+`SplineRoad` controls the cross section and grading. The renderer and vehicle
+contact use the same paved triangles and heightfield cut and fill. The original
+16-bit terrain in the template can be recreated with
+`python3 tools/generate-dolomites-heightmap.py`.
+
+Foliage instances are streamed in tiles. Their root heights follow the current
+terrain triangles, including the stitched edges between terrain LODs.
+`VehicleSetup.sport` selects the sport drivetrain and suspension used by the
+template's GT and superbike.
+
 ## Building the library bundle
 
 ```sh

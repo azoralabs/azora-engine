@@ -1,0 +1,88 @@
+module engine.atmosphere.legacy
+
+import std.traits
+import std.math
+import engine.core
+import engine.math
+import engine.ecs
+import engine.scene
+
+/** A procedural sky. Attach it to the directional light that follows the sun and moon. */
+@Component
+@Inspectable(title: "Sky Environment", serializedName: "SkyEnvironment", icon: "sun", category: "Lighting", order: 17)
+pack SkyEnvironment derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 24.0, step: 0.1)
+    var hour: Double = 15.4
+    @Range(min: -90.0, max: 90.0, step: 1.0)
+    var latitude: Double = 46.0
+    @Range(min: 0.0, max: 365.0, step: 1.0)
+    var dayOfYear: Int = 196
+    @Range(min: 0.0, max: 1440.0, step: 1.0)
+    var cycleMinutes: Double = 0.0
+    @Range(min: 0.0, max: 8.0, step: 0.05)
+    var sunIntensity: Double = 1.36
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var moonIntensity: Double = 0.16
+    @Range(min: 0.0, max: 0.04, step: 0.001)
+    var hazeDensity: Double = 0.0022
+}
+
+pack SkySample derives Clone {
+    var sun: Vec3 = .(0.0, 1.0, 0.0)
+    var moon: Vec3 = .(0.0, 1.0, 0.0)
+    var light: Vec3 = .(0.0, 1.0, 0.0)
+    var color: Rgba = .(1.0, 1.0, 1.0, 1.0)
+    var daylight: Double = 1.0
+    var intensity: Double = 1.0
+    var ambient: Double = 0.26
+    var hour: Double = 12.0
+}
+
+func skyClamp(a: Double, low: Double, high: Double): Double = if a < low then low else if a > high then high else a
+
+func skySmooth(low: Double, high: Double, value: Double): Double {
+    fin t = skyClamp((value-low)/(high-low), 0.0, 1.0)
+    return t*t*(3.0-2.0*t)
+}
+
+func solarVector(latitude: Double, declination: Double, angle: Double): Vec3 {
+    return Vec3(
+        -cos(declination)*sin(angle),
+        sin(latitude)*sin(declination) + cos(latitude)*cos(declination)*cos(angle),
+        cos(latitude)*sin(declination) - sin(latitude)*cos(declination)*cos(angle))
+}
+
+func sampleSky(settings: SkyEnvironment&, elapsed: Double): SkySample {
+    fin raw = settings.hour + (if settings.cycleMinutes > 0.0 then elapsed*0.4/settings.cycleMinutes else 0.0)
+    fin hr = raw - (floor(raw/24.0) as Double)*24.0
+    fin latitude = skyClamp(settings.latitude, -90.0, 90.0) * 0.0174532925199433
+    fin declination = 0.4091 * sin((settings.dayOfYear as Double - 81.0) * 0.0172142063)
+    fin angle = (hr-12.0)*0.2617993877991494
+    fin sun = solarVector(latitude, declination, angle)
+    fin moon = solarVector(latitude, -declination*0.72, angle + 3.29)
+    fin day = skySmooth(-0.18, 0.11, sun.y)
+    fin rise = skySmooth(-0.025, 0.12, sun.y)
+    fin noon = skySmooth(0.02, 0.50, sun.y)
+    fin useSun = sun.y > -0.025
+    fin color = if useSun then Rgba(1.0, 0.48+0.47*noon, 0.26+0.65*noon, 1.0) else Rgba(0.67,0.78,1.0,1.0)
+    fin power = if useSun then settings.sunIntensity*rise else settings.moonIntensity*skySmooth(0.0,0.22,moon.y)
+    return SkySample(sun, moon, if useSun then sun else moon, color, day, power, 0.052+0.27*day, hr)
+}
+
+/** A world-space fog layer, with its reference altitude at the entity's world Y. */
+@Component
+@Inspectable(title: "Exponential Height Fog", serializedName: "ExponentialHeightFog", icon: "eye", category: "Lighting", order: 18)
+pack ExponentialHeightFog derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 0.5, step: 0.0005)
+    var density: Double = 0.005
+    @Range(min: 0.0, max: 2.0, step: 0.001)
+    var heightFalloff: Double = 0.018
+    @Range(min: 0.0, max: 100000.0, step: 1.0)
+    var startDistance: Double = 8.0
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var maxOpacity: Double = 0.80
+    var color: Rgba = .(0.64, 0.75, 0.86, 1.0)
+    var followSky: Bool = true
+}

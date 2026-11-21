@@ -1,0 +1,328 @@
+module engine.landscape.collision
+
+import std.traits
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.scene.terrain
+import engine.physics.d3
+import engine.io
+import engine.roads
+import engine.roads.grading
+import engine.landscape.field
+import engine.landscape.volume
+
+@Component
+@Inspectable(title: "Landscape Collision", serializedName: "LandscapeCollision", icon: "mountain", category: "Physics")
+pack LandscapeCollision derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 3.0, step: 0.05)
+    var friction: Double = 1.12
+    @Range(min: -2.0, max: 2.0, step: 0.05)
+    var surfaceOffset: Double = 0.0
+}
+
+/**
+ * One collidable landscape: an image heightfield or a sculpted volume, with
+ * the model transform that places it. `axisX/Y/Z` are the model's columns and
+ * `invX/Y/Z` the rows of its inverse, so points and normals move both ways.
+ */
+pack CollisionSurface {
+    var terrain: TerrainImage = .()
+    var roads: RoadNetwork = .()
+    var pavement: Bool = false
+    var volume: Field = .()
+    var offset: Vec3 = .(0.0,0.0,0.0)
+    var axisX: Vec3 = .(1.0,0.0,0.0)
+    var axisY: Vec3 = .(0.0,1.0,0.0)
+    var axisZ: Vec3 = .(0.0,0.0,1.0)
+    var invX: Vec3 = .(0.0,0.0,0.0)
+    var invY: Vec3 = .(0.0,0.0,0.0)
+    var invZ: Vec3 = .(0.0,0.0,0.0)
+    var bounds: Aabb3D = .(.(0.0,0.0,0.0),.(0.0,0.0,0.0))
+    /** The longest world step a ray can take without skipping a surface feature. */
+    var step: Double = 0.25
+    /** World metres per local unit, for the volume's signed distances. */
+    var unit: Double = 1.0
+    var settings: LandscapeCollision = .()
+}
+
+/** Where a cast met the ground: `t` is the travelled fraction or distance the caller asked for. */
+pack LandscapeGroundHit derives Clone {
+    var hit: Bool = false
+    var t: Double = 1.0
+    var height: Double = 0.0
+    var nx: Double = 0.0
+    var ny: Double = 1.0
+    var nz: Double = 0.0
+    var grip: Double = 0.0
+    var px: Double = 0.0
+    var py: Double = 0.0
+    var pz: Double = 0.0
+}
+
+/** How deep a point is inside the ground and which way is out. */
+pack LandscapeContact derives Clone {
+    var depth: Double = 0.0
+    var nx: Double = 0.0
+    var ny: Double = 1.0
+    var nz: Double = 0.0
+    var grip: Double = 0.0
+}
+
+func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface> {
+    var surfaces: Array<CollisionSurface> = []
+    var roads = buildRoadNetwork(world)
+    fin colliders = ensureStorage<LandscapeCollision>(world)
+    var index = 0
+    while index < storageLength<LandscapeCollision>(colliders) {
+        fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
+        fin config = colliders.values[index].clone()
+        if config.enabled && world.isAlive(entity) && visibleInWorld(world, entity) {
+            var surface = CollisionSurface(settings: config)
+            var model = worldMatrix(world, entity)
+            fin images = ensureStorage<HeightfieldTerrain>(world)
+            fin volumes = ensureStorage<PluginObject>(world)
+            if storageHas<HeightfieldTerrain>(images, entity) {
+                fin source = storageGet<HeightfieldTerrain>(images, entity).clone()
+                if terrainFile(source.image) {
+                    surface.terrain = readTerrainImage("${root}/${source.image}")
+                    model = heightfieldMatrix(world, entity, source)
+                    gradeRoadTerrain(surface.terrain, model, roads)
+                    surface.bounds = aabb3d(Vec3(-0.5,-0.5,-0.5),Vec3(0.5,0.5,0.5))
+                }
+            } else if storageHas<PluginObject>(volumes, entity) {
+                fin source = storageGet<PluginObject>(volumes, entity)
+                if source.plugin == "azora.flex-landscape" && source.id > 0 {
+                    fin data = loadLandscapeVolume(root,source.id)
+                    surface.volume = data.field.clone()
+                    fin field = surface.volume.&
+                    surface.bounds = aabb3d(Vec3(field.originX,field.originY,field.originZ),
+                        Vec3(field.worldX(field.cellsX),field.worldY(field.cellsY),field.worldZ(field.cellsZ)))
+                }
+            }
+            if surface.terrain.samples != 0 || surface.volume.values.size > 0 {
+                fin x = Vec3(model.m00,model.m10,model.m20)
+                fin y = Vec3(model.m01,model.m11,model.m21)
+                fin z = Vec3(model.m02,model.m12,model.m22)
+                fin det = x.dot(y.cross(z))
+                if absValue(det) > 0.000001 {
+                    surface.offset = Vec3(model.m03,model.m13+config.surfaceOffset,model.m23)
+                    surface.axisX = x.clone()
+                    surface.axisY = y.clone()
+                    surface.axisZ = z.clone()
+                    surface.invX = y.cross(z).scale(1.0/det)
+                    surface.invY = z.cross(x).scale(1.0/det)
+                    surface.invZ = x.cross(y).scale(1.0/det)
+                    if surface.terrain.samples != 0 {
+                        // A heightfield is planar inside each triangle: a quarter cell never jumps a ridge.
+                        fin cellX = x.length/((surface.terrain.columns-1) as Double)
+                        fin cellZ = z.length/((surface.terrain.rows-1) as Double)
+                        surface.step = terrainClamp((if cellX < cellZ then cellX else cellZ)*0.25,0.02,4.0)
+                    } else {
+                        surface.unit = (x.length+y.length+z.length)/3.0
+                        surface.step = terrainClamp(surface.volume.cell*surface.unit*0.35,0.02,4.0)
+                    }
+                    surfaces.add(take surface)
+                } else if surface.terrain.samples != 0 {
+                    azFree(surface.terrain.samples)
+                }
+            }
+        }
+        index += 1
+    }
+    if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
+    return take surfaces
+}
+
+func releaseLandscapeColliders(surfaces: Array<CollisionSurface>!) {
+    for surface in surfaces {
+        if surface.terrain.samples != 0 then azFree(surface.terrain.samples)
+    }
+    surfaces.clear()
+}
+
+/** A world point in the surface's own space. */
+func collisionLocal(surface: CollisionSurface&, p: Vec3&): Vec3 {
+    fin d = p.subtract(surface.offset)
+    return Vec3(surface.invX.dot(d),surface.invY.dot(d),surface.invZ.dot(d))
+}
+
+/** A point of the surface's own space in the world. */
+func collisionWorld(surface: CollisionSurface&, x: Double, y: Double, z: Double): Vec3 =
+    surface.offset.add(surface.axisX.scale(x)).add(surface.axisY.scale(y)).add(surface.axisZ.scale(z))
+
+/** A gradient of the surface's own space as a world normal. */
+func collisionNormalOf(surface: CollisionSurface&, x: Double, y: Double, z: Double): Vec3 =
+    (surface.invX.scale(x).add(surface.invY.scale(y)).add(surface.invZ.scale(z))).normalized catch Vec3(0.0,1.0,0.0)
+
+func insideTerrainBounds(surface: CollisionSurface&, l: Vec3&): Bool =
+    l.x >= surface.bounds.min.x && l.x <= surface.bounds.max.x && l.z >= surface.bounds.min.z && l.z <= surface.bounds.max.z
+
+/**
+ * Positive in the air, negative in the ground, zero on the surface. The
+ * magnitude is a local distance, so only its sign and order matter here.
+ */
+func groundDistance(surface: CollisionSurface&, l: Vec3&): Double {
+    if !insideTerrainBounds(surface, l) then return 1.0
+    if surface.terrain.samples != 0 then return l.y - sampleTerrain(surface.terrain,l.x,l.z)
+    if l.y < surface.bounds.min.y || l.y > surface.bounds.max.y then return 1.0
+    return surface.volume.sample(l.x,l.y,l.z)
+}
+
+/** The outward world normal at a local point. */
+func collisionNormal(surface: CollisionSurface&, l: Vec3&): Vec3 {
+    if surface.terrain.samples != 0 {
+        fin cellX = 1.0/(surface.terrain.columns as Double-1.0)
+        fin cellZ = 1.0/(surface.terrain.rows as Double-1.0)
+        fin gx = (sampleTerrain(surface.terrain,l.x-cellX,l.z)-sampleTerrain(surface.terrain,l.x+cellX,l.z))/(2.0*cellX)
+        fin gz = (sampleTerrain(surface.terrain,l.x,l.z-cellZ)-sampleTerrain(surface.terrain,l.x,l.z+cellZ))/(2.0*cellZ)
+        return collisionNormalOf(surface,gx,1.0,gz)
+    }
+    fin n = surface.volume.gradient(l.x,l.y,l.z)
+    return collisionNormalOf(surface,n.x,n.y,n.z)
+}
+
+/**
+ * The first boundary along a world ray of [length] metres in unit [direction].
+ * A ray that starts in the ground hits at distance zero; `t` is in metres.
+ */
+func castLandscapeSurface(surface: CollisionSurface&, origin: Vec3&, direction: Vec3&, length: Double): LandscapeGroundHit {
+    if surface.pavement then return castRoadSurface(surface.roads,origin,direction,length)
+    fin start = collisionLocal(surface,origin)
+    fin span = collisionLocal(surface,origin.add(direction.scale(length))).subtract(start)
+    fin steps = clampInt(ceil(length/surface.step),1,512)
+    var prior: Double = 0.0
+    var cursor = 0
+    while cursor <= steps {
+        fin t = (cursor as Double)/(steps as Double)
+        if groundDistance(surface,start.add(span.scale(t))) <= 0.0 {
+            var lower = prior
+            var upper = t
+            if cursor > 0 {
+                var refine = 0
+                while refine < 14 {
+                    fin mid = (lower+upper)*0.5
+                    if groundDistance(surface,start.add(span.scale(mid))) <= 0.0 then upper = mid else lower = mid
+                    refine += 1
+                }
+            }
+            fin at = start.add(span.scale(upper))
+            fin n = collisionNormal(surface,at)
+            fin point = origin.add(direction.scale(length*upper))
+            return LandscapeGroundHit(true,length*upper,point.y,n.x,n.y,n.z,
+                terrainClamp(surface.settings.friction,0.0,3.0),point.x,point.y,point.z)
+        }
+        prior = t
+        cursor += 1
+    }
+    return LandscapeGroundHit()
+}
+
+/** Finds the nearest paved surface, including a rim that starts in contact. */
+func castRoadSurface(roads: RoadNetwork&, origin: Vec3&, direction: Vec3&, length: Double): LandscapeGroundHit {
+    fin hit = castPavement(roads,origin,direction,length)
+    if hit.distance < 0.0 then return LandscapeGroundHit()
+    fin p = origin.add(direction.scale(hit.distance))
+    fin surface = hit.surface.&
+    return LandscapeGroundHit(true,hit.distance,surface.height,surface.normal.x,surface.normal.y,surface.normal.z,
+        surface.friction,p.x,surface.height,p.z)
+}
+
+/** The nearest ground along a world ray over every landscape. */
+func castLandscape(surfaces: Array<CollisionSurface>&, origin: Vec3&, direction: Vec3&, length: Double): LandscapeGroundHit {
+    var nearest = LandscapeGroundHit(t: length)
+    var index = 0
+    while index < surfaces.size {
+        fin hit = castLandscapeSurface(surfaces[index],origin,direction,length)
+        if hit.hit && (!nearest.hit || hit.t < nearest.t) then nearest = take hit
+        index += 1
+    }
+    return take nearest
+}
+
+/** The first boundary along [motion]; `t` is the travelled fraction of it. */
+func rayLandscape(surfaces: Array<CollisionSurface>&, origin: Vec3&, motion: Vec3&): LandscapeGroundHit {
+    fin length = motion.length
+    if length < 0.000001 then return LandscapeGroundHit()
+    var hit = castLandscape(surfaces,origin,motion.scale(1.0/length),length)
+    hit.t = if hit.hit then hit.t/length else 1.0
+    return take hit
+}
+
+/**
+ * Lowers a wheel of [radius] from [mount] along unit [down] by up to [travel]
+ * metres and finds where its rim first meets the ground. The rim is sampled as
+ * parallel rays across its lower half along [forward], so a kerb or a crest is
+ * met by the front of the tyre before it reaches the axle. `t` is the distance
+ * from [mount] to the wheel centre; a wheel whose rim starts in the ground has
+ * `t` 0.
+ */
+func landscapeWheel(surfaces: Array<CollisionSurface>&, mount: Vec3&, down: Vec3&, forward: Vec3&,
+                    radius: Double, travel: Double): LandscapeGroundHit {
+    var best = LandscapeGroundHit(t: travel)
+    var sample = 0
+    while sample < 7 {
+        fin fraction = when sample {
+            0 -> 0.0
+            1 -> 0.42
+            2 -> -0.42
+            3 -> 0.74
+            4 -> -0.74
+            5 -> 0.93
+            else -> -0.93
+        }
+        fin along = radius*fraction
+        fin drop = sqrt(radius*radius-along*along)
+        fin origin = mount.add(forward.scale(along)).add(down.scale(drop))
+        fin hit = castLandscape(surfaces,origin,down,travel)
+        if hit.hit && (!best.hit || hit.t < best.t) then best = take hit
+        sample += 1
+    }
+    return take best
+}
+
+/** How far a world point is inside a landscape, with the direction out of it. */
+func landscapePenetration(surfaces: Array<CollisionSurface>&, p: Vec3&): LandscapeContact {
+    var deepest = LandscapeContact()
+    var index = 0
+    while index < surfaces.size {
+        fin surface = surfaces[index].&
+        if surface.pavement {
+            fin road = roadSurfaceAt(surface.roads,p.x,p.z)
+            fin depth = (road.height-p.y)*road.normal.y
+            if road.found && depth > deepest.depth && depth < 2.0 {
+                deepest = LandscapeContact(depth,road.normal.x,road.normal.y,road.normal.z,road.friction)
+            }
+            index += 1
+            continue
+        }
+        fin l = collisionLocal(surface,p)
+        if insideTerrainBounds(surface,l) {
+            var depth: Double = 0.0
+            var n = Vec3(0.0,1.0,0.0)
+            if surface.terrain.samples != 0 {
+                fin h = sampleTerrain(surface.terrain,l.x,l.z)
+                if l.y < h {
+                    // The vertical gap to the surface, measured across its local plane.
+                    n = collisionNormal(surface,Vec3(l.x,h,l.z))
+                    depth = collisionWorld(surface,l.x,h,l.z).subtract(p).dot(n)
+                }
+            } else if l.y >= surface.bounds.min.y && l.y <= surface.bounds.max.y {
+                fin d = surface.volume.sample(l.x,l.y,l.z)
+                if d < 0.0 {
+                    n = collisionNormal(surface,l)
+                    depth = -d*surface.unit
+                }
+            }
+            if depth > deepest.depth {
+                deepest = LandscapeContact(depth,n.x,n.y,n.z,terrainClamp(surface.settings.friction,0.0,3.0))
+            }
+        }
+        index += 1
+    }
+    return take deepest
+}

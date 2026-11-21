@@ -1,0 +1,324 @@
+module engine.vehicles.bodywork
+
+import std.traits
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.render.geometry
+
+fin gtPaint = "azora.gt.body"
+fin gtGlass = "azora.gt.glass"
+fin gtCarbon = "azora.gt.carbon"
+fin gtStripe = "azora.gt.stripe"
+fin gtFrontLED = "azora.gt.front"
+fin gtRearLED = "azora.gt.rear"
+fin bikePaint = "azora.superbike.body"
+fin bikeGlass = "azora.superbike.glass"
+fin bikeCarbon = "azora.superbike.carbon"
+fin bikeStripe = "azora.superbike.stripe"
+fin bikeFrontLED = "azora.superbike.front"
+fin bikeRearLED = "azora.superbike.rear"
+fin wheelRubber = "azora.vehicle.tire"
+fin wheelAlloy = "azora.vehicle.alloy"
+fin wheelHubs = "azora.vehicle.hubs"
+fin riderShape = "azora.vehicle.rider"
+
+/** Cross sections of a hull perpendicular to its longitudinal Z axis. */
+pack BodySection derives Clone {
+    var z: Double
+    var width: Double
+    var top: Double
+    var shoulder: Double
+    var low: Double
+}
+
+func bodyMix(a: Double, b: Double, t: Double): Double = a+(b-a)*t
+
+func bodyDifference(a: Vec3&, b: Vec3&): Vec3 = Vec3(a.x-b.x,a.y-b.y,a.z-b.z)
+func bodyCross(a: Vec3&, b: Vec3&): Vec3 = Vec3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x)
+
+func bodyUnit(n: Vec3&): Vec3 {
+    fin length = sqrt(n.x*n.x+n.y*n.y+n.z*n.z)
+    if length <= 0.000001 then return Vec3(0.0,1.0,0.0)
+    return Vec3(n.x/length,n.y/length,n.z/length)
+}
+
+func bodyVertex(data: Array<Double>!, p: Vec3&, n: Vec3&) {
+    data.add(p.x)
+    data.add(p.y)
+    data.add(p.z)
+    data.add(n.x)
+    data.add(n.y)
+    data.add(n.z)
+}
+
+func bodyTriangle(data: Array<Double>!, a: Vec3&, b: Vec3&, c: Vec3&) {
+    fin n = bodyUnit(bodyCross(bodyDifference(b,a),bodyDifference(c,a)))
+    bodyVertex(data,a,n)
+    bodyVertex(data,b,n)
+    bodyVertex(data,c,n)
+}
+
+func bodyQuad(data: Array<Double>!, a: Vec3&, b: Vec3&, c: Vec3&, d: Vec3&) {
+    bodyTriangle(data,a,b,c)
+    bodyTriangle(data,a,c,d)
+}
+
+func bodyBox(data: Array<Double>!, x: Double, y: Double, z: Double, dx: Double, dy: Double, dz: Double) {
+    fin a = Vec3(x-dx,y-dy,z-dz)
+    fin b = Vec3(x+dx,y-dy,z-dz)
+    fin c = Vec3(x+dx,y+dy,z-dz)
+    fin d = Vec3(x-dx,y+dy,z-dz)
+    fin e = Vec3(x-dx,y-dy,z+dz)
+    fin f = Vec3(x+dx,y-dy,z+dz)
+    fin g = Vec3(x+dx,y+dy,z+dz)
+    fin h = Vec3(x-dx,y+dy,z+dz)
+    bodyQuad(data,a,d,c,b)
+    bodyQuad(data,e,f,g,h)
+    bodyQuad(data,a,e,h,d)
+    bodyQuad(data,b,c,g,f)
+    bodyQuad(data,d,h,g,c)
+    bodyQuad(data,a,b,f,e)
+}
+
+func archLower(section: BodySection&, side: Double, cutouts: Bool): Double {
+    if !cutouts || side < 0.74 then return section.low
+    fin front = absValue(section.z+1.32)
+    fin rear = absValue(section.z-1.28)
+    fin near = if front < rear then front else rear
+    fin arch: Double = 0.47
+    if near >= arch then return section.low
+    fin cut = -0.35+sqrt(arch*arch-near*near)
+    return if cut > section.low then cut else section.low
+}
+
+func hullPoint(section: BodySection&, step: Int, sides: Int, cutouts: Bool): Vec3 {
+    fin angle = (step as Double)*6.283185307179586/(sides as Double)
+    fin x = cos(angle)
+    fin y = sin(angle)
+    fin low = archLower(section,absValue(x),cutouts)
+    fin belt = if section.shoulder > low then section.shoulder else low
+    fin height = if y >= 0.0 then bodyMix(belt,section.top,y) else bodyMix(belt,low,-y)
+    return Vec3(section.width*x,height,section.z)
+}
+
+func hullNormal(sections: Array<BodySection>&, row: Int, col: Int, sides: Int, cutouts: Bool): Vec3 {
+    fin s = sections[row].&
+    fin arm = bodyDifference(hullPoint(s,col+1,sides,cutouts),hullPoint(s,col-1,sides,cutouts))
+    fin before = sections[if row > 0 then row-1 else row].&
+    fin after = sections[if row+1 < sections.size then row+1 else row].&
+    fin longitudinal = bodyDifference(hullPoint(after,col,sides,cutouts),hullPoint(before,col,sides,cutouts))
+    return bodyUnit(bodyCross(arm,longitudinal))
+}
+
+func bodyHull(data: Array<Double>!, sections: Array<BodySection>&, sides: Int, cutouts: Bool = false) {
+    var row = 0
+    while row+1 < sections.size {
+        var col = 0
+        while col < sides {
+            fin a = hullPoint(sections[row],col,sides,cutouts)
+            fin b = hullPoint(sections[row],col+1,sides,cutouts)
+            fin c = hullPoint(sections[row+1],col+1,sides,cutouts)
+            fin d = hullPoint(sections[row+1],col,sides,cutouts)
+            fin na = hullNormal(sections,row,col,sides,cutouts)
+            fin nb = hullNormal(sections,row,col+1,sides,cutouts)
+            fin nc = hullNormal(sections,row+1,col+1,sides,cutouts)
+            fin nd = hullNormal(sections,row+1,col,sides,cutouts)
+            bodyVertex(data,a,na)
+            bodyVertex(data,b,nb)
+            bodyVertex(data,c,nc)
+            bodyVertex(data,a,na)
+            bodyVertex(data,c,nc)
+            bodyVertex(data,d,nd)
+            col += 1
+        }
+        row += 1
+    }
+    fin front = sections[0].&
+    fin rear = sections[sections.size-1].&
+    var edge = 0
+    while edge < sides {
+        bodyTriangle(data,Vec3(0.0,front.shoulder,front.z),hullPoint(front,edge+1,sides,cutouts),hullPoint(front,edge,sides,cutouts))
+        bodyTriangle(data,Vec3(0.0,rear.shoulder,rear.z),hullPoint(rear,edge,sides,cutouts),hullPoint(rear,edge+1,sides,cutouts))
+        edge += 1
+    }
+}
+
+func stripePoint(section: BodySection&, x: Double): Vec3 {
+    fin fraction = x/section.width
+    return Vec3(x,bodyMix(section.shoulder,section.top,sqrt(1.0-fraction*fraction))+0.008,section.z)
+}
+
+func stripes(data: Array<Double>!, sections: Array<BodySection>&, width: Double, gap: Double) {
+    var i = 0
+    while i+1 < sections.size {
+        fin a = sections[i].&
+        fin b = sections[i+1].&
+        if a.width > width+gap && b.width > width+gap {
+            bodyQuad(data,stripePoint(a,gap),stripePoint(b,gap),stripePoint(b,gap+width),stripePoint(a,gap+width))
+            bodyQuad(data,stripePoint(a,-gap-width),stripePoint(b,-gap-width),stripePoint(b,-gap),stripePoint(a,-gap))
+        }
+        i += 1
+    }
+}
+
+func gtSections(): Array<BodySection> = [
+    BodySection(-2.16,0.64,0.04,-0.12,-0.27),BodySection(-2.09,0.82,0.14,-0.06,-0.31),
+    BodySection(-1.94,0.94,0.22,0.01,-0.31),BodySection(-1.82,0.98,0.26,0.07,-0.29),
+    BodySection(-1.71,1.00,0.29,0.15,-0.28),BodySection(-1.52,1.01,0.31,0.22,-0.28),
+    BodySection(-1.32,1.00,0.33,0.25,-0.28),BodySection(-1.13,0.99,0.34,0.22,-0.29),
+    BodySection(-0.94,0.95,0.35,0.16,-0.30),BodySection(-0.82,0.91,0.36,0.12,-0.31),
+    BodySection(-0.54,0.88,0.37,0.11,-0.31),BodySection(-0.15,0.88,0.37,0.09,-0.31),
+    BodySection(0.27,0.92,0.39,0.12,-0.31),BodySection(0.60,0.97,0.41,0.16,-0.30),
+    BodySection(0.80,1.01,0.42,0.20,-0.29),BodySection(1.02,1.04,0.43,0.25,-0.28),
+    BodySection(1.28,1.045,0.43,0.28,-0.28),BodySection(1.50,1.04,0.42,0.26,-0.29),
+    BodySection(1.73,1.01,0.39,0.22,-0.30),BodySection(1.96,0.95,0.34,0.15,-0.30),
+    BodySection(2.11,0.87,0.27,0.07,-0.29),BodySection(2.17,0.75,0.22,0.02,-0.24)
+]
+
+func gtCanopySections(): Array<BodySection> = [
+    BodySection(-0.96,0.60,0.36,0.29,0.20),BodySection(-0.78,0.64,0.47,0.31,0.25),
+    BodySection(-0.42,0.655,0.70,0.37,0.28),BodySection(-0.20,0.62,0.82,0.40,0.31),
+    BodySection(0.03,0.59,0.85,0.40,0.30),BodySection(0.45,0.58,0.82,0.41,0.31),
+    BodySection(0.72,0.60,0.72,0.41,0.32),BodySection(1.04,0.64,0.56,0.40,0.32),
+    BodySection(1.36,0.61,0.43,0.38,0.34)
+]
+
+func gtGeometry(world: World!) {
+    if geometryIndex(world,gtPaint) >= 0 then return
+    fin sections = gtSections()
+    fin cabin = gtCanopySections()
+    var paint: Array<Double> = []
+    var glass: Array<Double> = []
+    var carbon: Array<Double> = []
+    var trim: Array<Double> = []
+    var front: Array<Double> = []
+    var rear: Array<Double> = []
+    bodyHull(paint,sections,16,true)
+    bodyHull(glass,cabin,12)
+    fin roof: Array<BodySection> = [BodySection(-0.21,0.42,0.829,0.77,0.75),BodySection(0.02,0.46,0.862,0.79,0.77),
+        BodySection(0.44,0.45,0.845,0.78,0.74),BodySection(0.67,0.38,0.757,0.72,0.69)]
+    bodyHull(paint,roof,12)
+    stripes(trim,sections,0.085,0.035)
+    stripes(trim,roof,0.085,0.035)
+    bodyBox(carbon,0.0,-0.31,-2.04,0.95,0.035,0.24)
+    bodyBox(carbon,0.0,-0.18,-2.147,0.53,0.085,0.018)
+    bodyBox(carbon,0.0,-0.29,2.03,0.82,0.055,0.22)
+    bodyHull(carbon,[BodySection(1.67,0.97,0.88,0.84,0.81),BodySection(1.79,1.02,0.89,0.85,0.80),
+        BodySection(2.06,1.04,0.86,0.82,0.79)],8)
+    var side: Double = -1.0
+    while side <= 1.0 {
+        bodyBox(carbon,side*0.54,0.61,1.87,0.033,0.24,0.065)
+        bodyBox(carbon,side*1.003,0.86,1.88,0.035,0.09,0.22)
+        bodyBox(carbon,side*0.91,-0.276,0.0,0.085,0.04,0.83)
+        bodyBox(carbon,side*0.91,-0.142,-2.01,0.11,0.085,0.075)
+        bodyBox(carbon,side*0.60,-0.16,2.09,0.075,0.058,0.08)
+        bodyBox(paint,side*0.82,0.48,-0.57,0.14,0.055,0.085)
+        bodyQuad(front,Vec3(side*0.49,0.046,-2.128),Vec3(side*0.79,0.09,-2.034),
+            Vec3(side*0.87,0.18,-1.87),Vec3(side*0.67,0.115,-1.96))
+        bodyQuad(rear,Vec3(side*0.22,0.115,2.174),Vec3(side*0.83,0.143,2.119),
+            Vec3(side*0.86,0.177,2.103),Vec3(side*0.22,0.149,2.174))
+        side += 2.0
+    }
+    registerGeometry(world,gtPaint,take paint)
+    registerGeometry(world,gtGlass,take glass)
+    registerGeometry(world,gtCarbon,take carbon)
+    registerGeometry(world,gtStripe,take trim)
+    registerGeometry(world,gtFrontLED,take front)
+    registerGeometry(world,gtRearLED,take rear)
+}
+
+func bikeGeometry(world: World!) {
+    if geometryIndex(world,bikePaint) >= 0 then return
+    var paint: Array<Double> = []
+    var glass: Array<Double> = []
+    var carbon: Array<Double> = []
+    var trim: Array<Double> = []
+    var front: Array<Double> = []
+    var rear: Array<Double> = []
+    fin frontFairing: Array<BodySection> = [BodySection(-1.05,0.125,0.45,0.36,0.29),
+        BodySection(-0.94,0.205,0.56,0.35,0.18),BodySection(-0.76,0.24,0.60,0.26,0.06),
+        BodySection(-0.56,0.255,0.60,0.16,-0.19),BodySection(-0.32,0.26,0.55,0.11,-0.27),
+        BodySection(-0.06,0.23,0.50,0.08,-0.28),BodySection(0.19,0.17,0.39,0.07,-0.22)]
+    bodyHull(paint,frontFairing,14)
+    bodyHull(paint,[BodySection(-0.54,0.15,0.45,0.31,0.25),BodySection(-0.32,0.21,0.62,0.38,0.26),
+        BodySection(-0.13,0.20,0.63,0.36,0.24),BodySection(0.10,0.145,0.49,0.31,0.20)],12)
+    bodyHull(glass,[BodySection(-0.92,0.15,0.56,0.49,0.46),BodySection(-0.78,0.169,0.71,0.56,0.50),
+        BodySection(-0.61,0.145,0.82,0.62,0.55),BodySection(-0.49,0.105,0.83,0.64,0.57)],10)
+    bodyHull(paint,[BodySection(0.12,0.128,0.39,0.29,0.17),BodySection(0.44,0.158,0.47,0.33,0.26),
+        BodySection(0.70,0.135,0.52,0.37,0.29),BodySection(0.95,0.081,0.54,0.42,0.37)],12)
+    bodyHull(carbon,[BodySection(0.06,0.14,0.393,0.34,0.29),BodySection(0.22,0.17,0.405,0.37,0.30),
+        BodySection(0.49,0.13,0.446,0.40,0.36)],10)
+    bodyBox(carbon,0.0,-0.10,-0.031,0.186,0.135,0.30)
+    bodyBox(carbon,0.0,-0.251,-0.28,0.19,0.045,0.35)
+    stripes(trim,frontFairing,0.025,0.018)
+    var side: Double = -1.0
+    while side <= 1.0 {
+        bodyQuad(front,Vec3(side*0.065,0.399,-1.052),Vec3(side*0.17,0.436,-0.976),
+            Vec3(side*0.20,0.471,-0.929),Vec3(side*0.075,0.434,-1.062))
+        bodyQuad(rear,Vec3(side*0.012,0.433,0.961),Vec3(side*0.075,0.456,0.949),
+            Vec3(side*0.079,0.48,0.945),Vec3(side*0.012,0.458,0.963))
+        bodyQuad(carbon,Vec3(side*0.15,0.24,-0.56),Vec3(side*0.37,0.23,-0.48),
+            Vec3(side*0.28,0.19,-0.22),Vec3(side*0.16,0.19,-0.24))
+        side += 2.0
+    }
+    registerGeometry(world,bikePaint,take paint)
+    registerGeometry(world,bikeGlass,take glass)
+    registerGeometry(world,bikeCarbon,take carbon)
+    registerGeometry(world,bikeStripe,take trim)
+    registerGeometry(world,bikeFrontLED,take front)
+    registerGeometry(world,bikeRearLED,take rear)
+}
+
+func rimPoint(r: Double, y: Double, angle: Double): Vec3 = Vec3(r*cos(angle),y,r*sin(angle))
+
+func wheelGeometry(world: World!) {
+    if geometryIndex(world,wheelRubber) >= 0 then return
+    var rubber: Array<Double> = []
+    var alloy: Array<Double> = []
+    var hubs: Array<Double> = []
+    fin radius: Array<Double> = [0.31,0.392,0.468,0.50,0.50,0.468,0.392,0.31]
+    fin offsets: Array<Double> = [-0.45,-0.50,-0.47,-0.29,0.29,0.47,0.50,0.45]
+    var side = 0
+    while side < 20 {
+        fin a = (side as Double)*0.3141592653589793
+        fin b = a+0.3141592653589793
+        var p = 0
+        while p+1 < radius.size {
+            fin c = rimPoint(radius[p],offsets[p],a)
+            fin d = rimPoint(radius[p+1],offsets[p+1],a)
+            fin e = rimPoint(radius[p+1],offsets[p+1],b)
+            fin f = rimPoint(radius[p],offsets[p],b)
+            bodyQuad(rubber,c,d,e,f)
+            p += 1
+        }
+        var y: Double = -0.514
+        while y < 0.6 {
+            bodyQuad(alloy,rimPoint(0.355,y,a),rimPoint(0.355,y,b),rimPoint(0.30,y,b),rimPoint(0.30,y,a))
+            bodyTriangle(hubs,Vec3(0.0,y*0.87,0.0),rimPoint(0.238,y*0.87,a),rimPoint(0.238,y*0.87,b))
+            y += 1.028
+        }
+        side += 1
+    }
+    var spoke = 0
+    while spoke < 9 {
+        fin angle = (spoke as Double)*0.6981317007977318
+        var y: Double = -0.521
+        while y < 0.6 {
+            bodyQuad(alloy,rimPoint(0.075,y,angle-0.28),rimPoint(0.315,y,angle-0.055),
+                rimPoint(0.315,y,angle+0.055),rimPoint(0.075,y,angle+0.28))
+            y += 1.042
+        }
+        spoke += 1
+    }
+    registerGeometry(world,wheelRubber,take rubber)
+    registerGeometry(world,wheelAlloy,take alloy)
+    registerGeometry(world,wheelHubs,take hubs)
+    var rider: Array<Double> = []
+    bodyHull(rider,[BodySection(-0.5,0.005,0.005,0.0,-0.005),BodySection(-0.42,0.27,0.27,0.0,-0.27),
+        BodySection(-0.25,0.43,0.43,0.0,-0.43),BodySection(0.0,0.50,0.5,0.0,-0.5),
+        BodySection(0.25,0.43,0.43,0.0,-0.43),BodySection(0.42,0.27,0.27,0.0,-0.27),
+        BodySection(0.50,0.005,0.005,0.0,-0.005)],12)
+    registerGeometry(world,riderShape,take rider)
+}

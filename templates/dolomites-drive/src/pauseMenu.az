@@ -1,0 +1,60 @@
+module dolomites.pauseMenu
+
+import engine.core
+import engine.ecs
+import engine.game
+import engine.input
+import engine.platform
+import engine.ui.compose
+import engine.ui.node
+
+fin resumeDrive = 1
+fin toggleFullscreen = 2
+fin quitDrive = 3
+
+@System(phase: .PreUpdate)
+func menuInput(frame: Game!) {
+    let window: App! = frame.window
+    if window.keyJustPressed(.F) || (frame.paused && frame.action == toggleFullscreen) {
+        window.toggleFullScreen()
+    }
+    if window.keyJustPressed(.Escape) {
+        frame.paused = !frame.paused
+    } else if frame.paused {
+        when frame.action {
+            resumeDrive -> frame.paused = false
+            quitDrive -> window.quit()
+        }
+    }
+}
+
+impl pack MenuButton {
+    react ctor (anchor: Anchor!).(label: String, action: Int, primary: Bool = false): Entity {
+        fin base = Modifier::fillMaxWidth().height(38.0).rounded(8.0)
+        fin look = if primary then base.background(0.13, 0.38, 0.31).hover(0.18, 0.47, 0.38)
+                   else base.background(0.15, 0.20, 0.21).hover(0.21, 0.28, 0.29)
+        return Button(modifier: look, :action, key: label) {
+            Text(label, modifier: ::fontSize(14.0).semibold())
+        }
+    }
+}
+
+impl pack PauseMenu {
+    react ctor (anchor: Anchor!).(): Entity {
+        return Column(modifier: ::fillMaxSize().background(0.025, 0.04, 0.045, 0.62),
+            verticalArrangement: .Center, horizontalAlignment: .Center, key: "pause") {
+            Column(modifier: ::width(312.0).rounded(14.0).padding(all: 20.0).background(0.075, 0.10, 0.11),
+                spacing: 8.0, key: "menu") {
+                Text("Dolomites Drive", modifier: ::height(18.0).fontSize(12.0).textColor(0.74, 0.81, 0.80).textAlign(.Start))
+                Text("Paused", modifier: ::height(34.0).fontSize(26.0).semibold().textAlign(.Start))
+                MenuButton("Resume", resumeDrive, primary: true)
+                MenuButton("Toggle full screen", toggleFullscreen)
+                MenuButton("Quit game", quitDrive)
+                Text("W/S or ↑/↓   Throttle, brake, reverse", modifier: ::height(18.0).fontSize(12.0).textAlign(.Start))
+                Text("A/D or ←/→   Steer      Shift   Handbrake", modifier: ::height(18.0).fontSize(12.0).textAlign(.Start))
+                Text("Space   Switch vehicle      Esc   Resume", modifier: ::height(18.0).fontSize(12.0).textAlign(.Start))
+                Text("G   Headlights      H   Horn", modifier: ::height(18.0).fontSize(12.0).textAlign(.Start))
+            }
+        }
+    }
+}

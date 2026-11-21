@@ -1,0 +1,70 @@
+import std.io
+import std.os
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.physics.d3
+import engine.landscape
+import engine.vehicles
+import engine.render.geometry
+import engine.io
+
+pack Run {
+    var to100: Double = 100.0
+    var speed: Double = 0.0
+    var triangles: Int = 0
+    var grip: Double = 0.0
+    var response: Double = 0.0
+}
+
+func benchmark(bike: Bool, sport: Bool): Run {
+    var world = World()
+    fin surface = world.spawn()
+    storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world),surface,
+        HeightfieldTerrain(image: "Terrain/flat.pgm",width: 4000.0,length: 18000.0,elevation: 1.0))
+    storageInsert<LandscapeCollision>(ensureStorage<LandscapeCollision>(world),surface,LandscapeCollision())
+    fin start = world.spawn()
+    storageInsert<PlayerStart>(ensureStorage<PlayerStart>(world),start,PlayerStart())
+    storageInsert<Transform>(ensureStorage<Transform>(world),start,Transform(translation: Vec3(0.0,2.0,7000.0)))
+    storageInsert<VehicleSetup>(ensureStorage<VehicleSetup>(world),start,VehicleSetup(motorcycle: bike,sport: sport))
+    var grounds = loadLandscapeColliders(world,".")
+    defer { releaseLandscapeColliders(grounds) }
+    fin car = spawnVehicle(world,start,grounds)
+    fin settings = configuredVehicle(world,car,if bike then .Motorcycle else .Car)
+    var result = Run(grip: settings.tireGrip,response: settings.steerRate)
+    fin dt: Double = 1.0/120.0
+    var step = 0
+    while step < 4800 {
+        simulateVehicle(world,car,grounds,DriveInput(1.0,0.0,false),gravity3d(),dt)
+        step += 1
+        fin current = storageGet<Vehicle>(ensureStorage<Vehicle>(world),car).speed*3.6
+        if result.to100 == 100.0 && current >= 100.0 then result.to100 = (step as Double)*dt
+        if current > result.speed then result.speed = current
+    }
+    fin assets = ensureStorage<GeometryAsset>(world)
+    fin sources = ensureStorage<MeshGeometry>(world)
+    for source in sources.values {
+        fin index = geometryIndex(world,source.name)
+        if index >= 0 then result.triangles += assets.values[index].vertices.size/18
+    }
+    return take result
+}
+
+func main() {
+    fin oldCar = benchmark(false,false)
+    fin car = benchmark(false,true)
+    fin oldBike = benchmark(true,false)
+    fin bike = benchmark(true,true)
+    if envVar("AZORA_VEHICLE_BENCHMARK") == "1" {
+        println("car ${oldCar.to100} ${car.to100} ${oldCar.speed} ${car.speed} ${car.triangles}")
+        println("bike ${oldBike.to100} ${bike.to100} ${oldBike.speed} ${bike.speed} ${bike.triangles}")
+    }
+    assert car.grip > oldCar.grip && car.response > oldCar.response panic "GT grip and response improve"
+    assert bike.grip > oldBike.grip && bike.response > oldBike.response panic "superbike grip and response improve"
+    assert car.to100 < oldCar.to100*0.88 && car.speed > oldCar.speed*1.15 panic "sport car improves acceleration and sustained speed"
+    assert bike.to100 < oldBike.to100*0.9 && bike.speed > oldBike.speed*1.15 panic "sport bike improves acceleration and sustained speed"
+    assert car.triangles < 4000 && bike.triangles < 3500 panic "low triangle budgets"
+    println("sport acceleration speed and triangle budgets ok")
+}

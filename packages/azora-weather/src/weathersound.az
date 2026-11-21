@@ -1,0 +1,188 @@
+module engine.weather.weathersound
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.audio.dsp
+import engine.audio.output
+import engine.atmosphere.components
+import engine.weather.components
+import engine.weather.presets
+
+/** Drops heard at once on each side, and the numbers each one keeps (amplitude, phase, pitch, glide, decay, click). */
+fin dropVoices: Int = 24
+fin dropFields: Int = 6
+
+/**
+ * The weather's own sound. Rain is thousands of tiny impacts a second, each a
+ * click of a fraction of a millisecond (a crackle, never a steady hiss, which
+ * the ear takes for a waterfall), a faint high wash of the far ones, and now
+ * and then a single nearer drop with the ring of the bubble it traps. Wind is
+ * pink noise through band-passes its gusts move, whistling when strong. Each
+ * side has its own noise, so the field is wide and never mono.
+ */
+@Component
+pack AetherSound {
+    var leftNoise: Noise = noise(11)
+    var rightNoise: Noise = noise(23)
+    var picks: Noise = noise(37)
+    var hissLeft: Biquad = .()
+    var hissRight: Biquad = .()
+    var toneLeft: Biquad = .()
+    var toneRight: Biquad = .()
+    var roar: PinkNoise = pinkNoise(41)
+    var roarFilter: Biquad = .()
+    var windLeft: PinkNoise = pinkNoise(53)
+    var windRight: PinkNoise = pinkNoise(59)
+    var windBandLeft: Biquad = .()
+    var windBandRight: Biquad = .()
+    var whistleLeft: Biquad = .()
+    var whistleRight: Biquad = .()
+    var windLow: Biquad = .()
+    /** Two pools of drop voices (left, right), [dropFields] doubles each. */
+    var drops: Long = 0
+    /** The two sides' crackle: the decaying envelope the impacts kick. */
+    var crackleLeft: Double = 0.0
+    var crackleRight: Double = 0.0
+    var rain: Double = 0.0
+    var wind: Double = 0.0
+    var gust: Double = 0.0
+    var time: Double = 0.0
+}
+
+impl AetherSound {
+    dtor .() {
+        if self.drops != 0 then azFree(self.drops)
+    }
+}
+
+func aetherSound(): AetherSound {
+    var sound = AetherSound()
+    sound.drops = sampleBuffer(dropVoices * dropFields * 2)
+    var i = 0
+    while i < dropVoices * dropFields * 2 {
+        setSample(sound.drops, i, 0.0)
+        i += 1
+    }
+    return take sound
+}
+
+/** Starts a drop in voice [voice] of a side: a click and, on wet ground, the ring of its bubble rising in pitch. */
+func startDrop(sound: AetherSound!, base: Int, loud: Double) {
+    fin r = (sound.picks.white() + 1.0) * 0.5
+    fin size = r * r
+    // Small drops ring high and short, big ones lower and longer (Minnaert bubbles, 1-5 kHz).
+    setSample(sound.drops, base, loud * (0.25 + 0.75 * (sound.picks.white() + 1.0) * 0.5))
+    setSample(sound.drops, base + 1, 0.0)
+    setSample(sound.drops, base + 2, 5200.0 - 3600.0 * size)
+    setSample(sound.drops, base + 3, 1.0 + 0.00012 * (1.0 - size))
+    setSample(sound.drops, base + 4, 0.9965 - 0.0025 * (1.0 - size))
+    setSample(sound.drops, base + 5, 1.0)
+}
+
+/** One side's drops for one sample: a decaying click into a decaying, upward-gliding sine. */
+func dropSample(sound: AetherSound!, side: Int, rate: Double, ring: Double): Double {
+    var total: Double = 0.0
+    var v = 0
+    while v < dropVoices {
+        fin base = (side * dropVoices + v) * dropFields
+        fin amplitude = sample(sound.drops, base)
+        if amplitude > 0.0005 {
+            fin phase = sample(sound.drops, base + 1)
+            fin pitch = sample(sound.drops, base + 2)
+            fin click = sample(sound.drops, base + 5)
+            total += amplitude * (sin(phase) * ring + click * sound.picks.white())
+            setSample(sound.drops, base + 1, phase + 6.283185307179586 * pitch / rate)
+            setSample(sound.drops, base + 2, pitch * sample(sound.drops, base + 3))
+            setSample(sound.drops, base, amplitude * sample(sound.drops, base + 4))
+            setSample(sound.drops, base + 5, click * 0.82)
+        }
+        v += 1
+    }
+    return total
+}
+
+/** Starts a drop in the quietest voice of [side]. */
+func pickDrop(sound: AetherSound!, side: Int, loud: Double) {
+    var quietest = 0
+    var level: Double = 1000.0
+    var v = 0
+    while v < dropVoices {
+        fin amplitude = sample(sound.drops, (side * dropVoices + v) * dropFields)
+        if amplitude < level {
+            level = amplitude
+            quietest = v
+        }
+        v += 1
+    }
+    startDrop(sound, (side * dropVoices + quietest) * dropFields, loud)
+}
+
+/**
+ * Adds [frames] of rain and wind for [state]'s weather into [mix] (stereo,
+ * interleaved), at the levels [audio] sets.
+ */
+func mixWeather(sound: AetherSound!, state: AetherState&, audio: AetherAudio&, mix: Long, frames: Int, rate: Double, wetness: Double) {
+    fin targetRain = if audio.enabled then weatherClamp(state.current.rain, 0.0, 1.0) else 0.0
+    fin speed = weatherClamp(sqrt(state.windX * state.windX + state.windZ * state.windZ), 0.0, 40.0)
+    fin targetWind = if audio.enabled then speed else 0.0
+    // The rain's colour: bright clicks, a little fuller in a downpour; the far wash is high and faint.
+    sound.hissLeft.highpass(1500.0 - 500.0 * targetRain, 0.6, rate)
+    sound.hissRight.highpass(1500.0 - 500.0 * targetRain, 0.6, rate)
+    sound.toneLeft.lowpass(11000.0 - 3000.0 * targetRain, 0.6, rate)
+    sound.toneRight.lowpass(11000.0 - 3000.0 * targetRain, 0.6, rate)
+    sound.roarFilter.highpass(2500.0, 0.6, rate)
+    // The wind's voice rises with its speed and its gusts.
+    fin windPitch = 260.0 + 28.0 * speed + 400.0 * sound.gust
+    sound.windBandLeft.bandpass(windPitch, 0.8, rate)
+    sound.windBandRight.bandpass(windPitch * 1.07, 0.8, rate)
+    sound.whistleLeft.bandpass(900.0 + 60.0 * speed, 14.0, rate)
+    sound.whistleRight.bandpass(980.0 + 60.0 * speed, 14.0, rate)
+    sound.windLow.lowpass(140.0, 0.7, rate)
+    fin master = audio.master
+    fin rainLevel = audio.rain * master
+    fin windLevel = audio.wind * master
+    // Impacts per second on each side: thousands of tiny ones, a few hundred heard one by one, ringing on wet ground.
+    fin crackles = 5200.0 / rate
+    fin crackleFade = exp(-1.0 / (0.00035 * rate))
+    fin dropRate = 260.0 * targetRain
+    fin ring = 0.35 + 0.65 * weatherClamp(wetness, 0.0, 1.0)
+    fin glide = 1.0 / (rate * 0.6)
+    var i = 0
+    while i < frames {
+        sound.rain += (targetRain - sound.rain) * glide
+        sound.wind += (targetWind - sound.wind) * glide
+        sound.gust += (state.gust - sound.gust) * glide
+        sound.time += 1.0 / rate
+        fin r = sound.rain
+        // Each impact kicks its side's envelope; the envelope shapes noise into a click a third of a millisecond long.
+        if (sound.picks.white() + 1.0) * 0.5 < crackles * r then sound.crackleLeft += 0.3 + 0.7 * (sound.picks.white() + 1.0) * 0.5
+        if (sound.picks.white() + 1.0) * 0.5 < crackles * r then sound.crackleRight += 0.3 + 0.7 * (sound.picks.white() + 1.0) * 0.5
+        sound.crackleLeft *= crackleFade
+        sound.crackleRight *= crackleFade
+        fin grain = 0.42 * powr(r, 0.6)
+        var left = sound.toneLeft.process(sound.hissLeft.process(sound.leftNoise.white() * sound.crackleLeft)) * grain
+        var right = sound.toneRight.process(sound.hissRight.process(sound.rightNoise.white() * sound.crackleRight)) * grain
+        // The far rain: a faint high wash, the same on both sides.
+        fin far = sound.roarFilter.process(sound.roar.next()) * 0.035 * r
+        left += far
+        right += far
+        if (sound.picks.white() + 1.0) * 0.5 < dropRate / rate then pickDrop(sound, 0, 0.07 * (0.4 + 0.6 * r))
+        if (sound.picks.white() + 1.0) * 0.5 < dropRate / rate then pickDrop(sound, 1, 0.07 * (0.4 + 0.6 * r))
+        left += dropSample(sound, 0, rate, ring)
+        right += dropSample(sound, 1, rate, ring)
+        left *= rainLevel
+        right *= rainLevel
+        // Wind: a band of pink noise, a low rumble, a whistle when it blows hard.
+        fin w = sound.wind / 15.0
+        fin body = 0.11 * w * sqrt(w)
+        fin whistle = weatherClamp((sound.wind - 9.0) / 12.0, 0.0, 1.0) * 0.05
+        fin rumble = sound.windLow.process(sound.windLeft.next() + sound.windRight.next()) * 0.07 * w
+        left += (sound.windBandLeft.process(sound.windLeft.next()) * body + sound.whistleLeft.process(sound.windLeft.next()) * whistle + rumble) * windLevel
+        right += (sound.windBandRight.process(sound.windRight.next()) * body + sound.whistleRight.process(sound.windRight.next()) * whistle + rumble) * windLevel
+        addSample(mix, i * 2, left)
+        addSample(mix, i * 2 + 1, right)
+        i += 1
+    }
+}

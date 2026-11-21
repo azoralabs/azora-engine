@@ -1,0 +1,113 @@
+module engine.foliage
+
+import std.math
+import std.serializer
+import std.traits
+import engine.core
+import engine.math
+import engine.scene
+
+fin grassFoliage: Int = 0
+fin firFoliage: Int = 1
+
+/** Base cover and terrain-local brush stamps, stored as part of the scene. */
+@Component
+@Inspectable(title: "Foliage", serializedName: "FoliagePaint", icon: "trees", category: "Landscape")
+pack FoliagePaint derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var grassDensity: Double = 0.0
+    @Range(min: 0.08, max: 1.2, step: 0.02)
+    var grassHeight: Double = 0.32
+    var seed: Int = 8291
+    @Hidden
+    var strokes: String = ""
+}
+
+/** A procedural fir grove. Existing ForestGrove scenes retain their fields. */
+@Component
+@Inspectable(title: "Forest Grove", serializedName: "ForestGrove", icon: "trees", category: "Landscape")
+pack ForestGrove derives Clone {
+    var enabled: Bool = true
+    var seed: Int = 831
+    @Range(min: 8.0, max: 1000.0, step: 4.0)
+    var radius: Double = 180.0
+    @Range(min: 1.0, max: 3000.0, step: 10.0)
+    var trees: Int = 460
+    @Range(min: 1.0, max: 40.0, step: 0.5)
+    var height: Double = 12.0
+}
+
+pack FoliageStamp derives Clone {
+    var species: Int = 0
+    /** The terrain's local X/Z, from -0.5 through +0.5. */
+    var x: Double = 0.0
+    var z: Double = 0.0
+    var radius: Double = 12.0
+    /** Plants per square metre. Zero clears this species. */
+    var density: Double = 0.0
+    var height: Double = 0.32
+}
+
+func foliageClamp(x: Double, low: Double, high: Double): Double =
+    if x < low then low else if x > high then high else x
+
+func foliageMinimum(a: Double, b: Double): Double = if a < b then a else b
+func foliageMaximum(a: Double, b: Double): Double = if a > b then a else b
+
+func foliageStampText(stamp: FoliageStamp&): String =
+    "${stamp.species},${formatDecimal(stamp.x,8)},${formatDecimal(stamp.z,8)},${formatDecimal(stamp.radius,3)},${formatDecimal(stamp.density,4)},${formatDecimal(stamp.height,3)};"
+
+func foliageReal(text: String, fallback: Double): Double = serialAsReal(serialNumber(text) catch SerialValue.Null) catch fallback
+
+func foliageStamps(text: String): Array<FoliageStamp> {
+    var decoded: Array<FoliageStamp> = []
+    for record in split(text,";") {
+        if record == "" then continue
+        fin fields = split(record,",")
+        if fields.size != 6 then continue
+        fin species = foliageReal(fields[0],-1.0) as Int
+        fin x = foliageReal(fields[1],2.0)
+        fin z = foliageReal(fields[2],2.0)
+        fin radius = foliageReal(fields[3],0.0)
+        fin density = foliageReal(fields[4],-1.0)
+        fin height = foliageReal(fields[5],0.0)
+        if (species == grassFoliage || species == firFoliage) && absValue(x) <= 0.5 && absValue(z) <= 0.5 &&
+            radius > 0.0 && radius <= 1000.0 && density >= 0.0 && density <= 4.0 && height > 0.0 && height <= 40.0 {
+            decoded.add(FoliageStamp(species,x,z,radius,density,height))
+        }
+    }
+    return take decoded
+}
+
+pack FoliageCoverage {
+    var density: Double = 0.0
+    var height: Double = 0.32
+}
+
+/** Stamps are ordered. A brush replaces the species' cover within its disk. */
+func foliageCover(result: FoliageCoverage!, marks: Array<FoliageStamp>&, x: Double, z: Double,
+                  width: Double, length: Double, density: Double, height: Double) {
+    result.density = density
+    result.height = height
+    for mark in marks {
+        fin dx = (x-mark.x)*width
+        fin dz = (z-mark.z)*length
+        if dx*dx+dz*dz <= mark.radius*mark.radius {
+            result.density = mark.density
+            result.height = mark.height
+        }
+    }
+}
+
+pack FoliageRandom { var word: Long = 1 }
+
+func foliageRandom(random: FoliageRandom!): Double {
+    random.word = (random.word * 48271) % 2147483647
+    return (random.word as Double) / 2147483647.0
+}
+
+func foliageSeed(seed: Long, x: Int, z: Int): Long {
+    fin mixed = (seed + (x as Long)*73856093 + (z as Long)*19349663) % 2147483646
+    return (mixed + 2147483646) % 2147483646 + 1
+}

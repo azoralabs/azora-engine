@@ -1,0 +1,225 @@
+module engine.weather.presets
+
+import std.math
+import engine.core
+import engine.math
+import engine.audio.dsp
+import engine.weather.components
+
+/** The kinds of weather the sky moves between. */
+enum WeatherPreset {
+    Clear
+    Cloudy
+    Overcast
+    Fog
+    LightRain
+    Rain
+    Thunderstorm
+    LightSnow
+    Snow
+    Blizzard
+}
+
+/**
+ * What one moment's weather is made of: the cloud layer's cover, kind (0
+ * stratus … 1 cumulonimbus) and density; how hard it rains and snows; the fog;
+ * the wind in m/s and its gustiness; lightning strikes per minute.
+ */
+pack WeatherMix derives Clone {
+    var coverage: Double = 0.0
+    var cloudType: Double = 0.5
+    var density: Double = 1.0
+    var rain: Double = 0.0
+    var snow: Double = 0.0
+    var fog: Double = 0.0
+    var wind: Double = 0.0
+    var gusts: Double = 0.0
+    var lightning: Double = 0.0
+}
+
+func presetMix(preset: WeatherPreset): WeatherMix = when preset {
+    .Clear -> WeatherMix(0.06, 0.45, 0.7, 0.0, 0.0, 0.0, 2.0, 0.1, 0.0)
+    .Cloudy -> WeatherMix(0.48, 0.55, 0.9, 0.0, 0.0, 0.0, 4.0, 0.25, 0.0)
+    .Overcast -> WeatherMix(0.93, 0.2, 1.2, 0.0, 0.0, 0.06, 5.0, 0.3, 0.0)
+    .Fog -> WeatherMix(0.72, 0.1, 0.8, 0.0, 0.0, 0.9, 1.0, 0.05, 0.0)
+    .LightRain -> WeatherMix(0.86, 0.3, 1.1, 0.35, 0.0, 0.15, 5.5, 0.3, 0.0)
+    .Rain -> WeatherMix(0.95, 0.4, 1.6, 0.75, 0.0, 0.25, 7.0, 0.45, 0.0)
+    .Thunderstorm -> WeatherMix(1.0, 0.9, 2.2, 1.0, 0.0, 0.3, 11.0, 0.7, 5.0)
+    .LightSnow -> WeatherMix(0.84, 0.22, 1.0, 0.0, 0.35, 0.2, 3.0, 0.2, 0.0)
+    .Snow -> WeatherMix(0.96, 0.25, 1.2, 0.0, 0.75, 0.35, 5.0, 0.35, 0.0)
+    .Blizzard -> WeatherMix(1.0, 0.3, 1.5, 0.0, 1.0, 0.65, 16.0, 0.8, 0.0)
+}
+
+/** The preset called [name] in the Inspector; anything else is clear weather. */
+func presetNamed(name: String): WeatherPreset = when name {
+    "Cloudy" -> .Cloudy
+    "Overcast" -> .Overcast
+    "Fog" -> .Fog
+    "LightRain" -> .LightRain
+    "Rain" -> .Rain
+    "Thunderstorm" -> .Thunderstorm
+    "LightSnow" -> .LightSnow
+    "Snow" -> .Snow
+    "Blizzard" -> .Blizzard
+    else -> .Clear
+}
+
+func presetName(preset: WeatherPreset): String = when preset {
+    .Clear -> "Clear"
+    .Cloudy -> "Cloudy"
+    .Overcast -> "Overcast"
+    .Fog -> "Fog"
+    .LightRain -> "LightRain"
+    .Rain -> "Rain"
+    .Thunderstorm -> "Thunderstorm"
+    .LightSnow -> "LightSnow"
+    .Snow -> "Snow"
+    .Blizzard -> "Blizzard"
+}
+
+/** The preset after [preset] in the order of the list, wrapping: what a debug key steps through. */
+func nextPreset(preset: WeatherPreset): WeatherPreset = when preset {
+    .Clear -> .Cloudy
+    .Cloudy -> .Overcast
+    .Overcast -> .Fog
+    .Fog -> .LightRain
+    .LightRain -> .Rain
+    .Rain -> .Thunderstorm
+    .Thunderstorm -> .LightSnow
+    .LightSnow -> .Snow
+    .Snow -> .Blizzard
+    .Blizzard -> .Clear
+}
+
+func weatherClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+/** Sets [into] to [from] moved a share [t] of the way to [to]. */
+func blendInto(into: WeatherMix!, from: WeatherMix&, to: WeatherMix&, t: Double) {
+    into.coverage = from.coverage + (to.coverage - from.coverage) * t
+    into.cloudType = from.cloudType + (to.cloudType - from.cloudType) * t
+    into.density = from.density + (to.density - from.density) * t
+    into.rain = from.rain + (to.rain - from.rain) * t
+    into.snow = from.snow + (to.snow - from.snow) * t
+    into.fog = from.fog + (to.fog - from.fog) * t
+    into.wind = from.wind + (to.wind - from.wind) * t
+    into.gusts = from.gusts + (to.gusts - from.gusts) * t
+    into.lightning = from.lightning + (to.lightning - from.lightning) * t
+}
+
+/**
+ * The weather as it is now, on the Aether Sphere entity: the mix it is moving
+ * from and to and how far it got, the ground's wetness and snow, the wind and
+ * its gusts, how far the clouds have drifted. Not saved with the scene.
+ */
+@Component
+pack AetherState {
+    var from: WeatherMix = .()
+    var to: WeatherMix = .()
+    var current: WeatherMix = .()
+    var progress: Double = 1.0
+    var target: String = ""
+    var started: Bool = false
+    var wetness: Double = 0.0
+    var snowCover: Double = 0.0
+    var gust: Double = 0.0
+    var gustLevel: Double = 0.0
+    var gustTimer: Double = 0.0
+    /** The wind as it blows now, m/s along world X and Z, gusts included. */
+    var windX: Double = 0.0
+    var windZ: Double = 0.0
+    /** Metres the clouds have drifted with the wind. */
+    var driftX: Double = 0.0
+    var driftZ: Double = 0.0
+    var random: Noise = noise(88172645463325252)
+    var randomTimer: Double = 0.0
+    var randomPreset: WeatherPreset = .Clear
+}
+
+/** A uniform number in 0..<1 from the state's own sequence. */
+func weatherRandom(state: AetherState!): Double = (state.random.white() + 1.0) * 0.5
+
+func retarget(state: AetherState!, name: String) {
+    blendInto(state.from, state.current, state.current, 0.0)
+    fin goal = presetMix(presetNamed(name))
+    blendInto(state.to, goal, goal, 0.0)
+    state.target = name
+    state.progress = 0.0
+}
+
+/**
+ * Moves the weather [dt] seconds on: toward the preset [weather] names (or a
+ * random one), the overrides on top, then the wind, the gusts, the wetness of
+ * the ground and its snow. With [outside] the wind is the scene's own (a
+ * `Wind` component), blowing [outsideX], [outsideZ] m/s, and not the preset's.
+ */
+func stepWeather(state: AetherState!, weather: AetherWeather&, dt: Double, outside: Bool = false, outsideX: Double = 0.0,
+                 outsideZ: Double = 0.0) {
+    if !state.started {
+        // The scene opens in its weather as if it had been going for a while: the ground already wet or white.
+        fin opening = presetMix(presetNamed(weather.preset))
+        blendInto(state.from, opening, opening, 0.0)
+        blendInto(state.to, opening, opening, 0.0)
+        blendInto(state.current, opening, opening, 0.0)
+        state.target = weather.preset
+        state.randomPreset = presetNamed(weather.preset)
+        state.wetness = opening.rain
+        state.snowCover = opening.snow
+        state.started = true
+    }
+    if weather.random {
+        state.randomTimer -= dt
+        if state.randomTimer <= 0.0 {
+            // A walk through the list: mostly to a neighbour, now and then further.
+            var steps = 1 + ((weatherRandom(state) * 3.0) as Int)
+            while steps > 0 {
+                state.randomPreset = nextPreset(state.randomPreset)
+                steps -= 1
+            }
+            state.randomTimer = weather.randomMinutes * 60.0 * (0.5 + weatherRandom(state))
+        }
+    }
+    fin name = if weather.random then presetName(state.randomPreset) else weather.preset
+    if name != state.target then retarget(state, name)
+    state.progress = weatherClamp(state.progress + (if weather.transitionSeconds > 0.0 then dt / weather.transitionSeconds else 1.0), 0.0, 1.0)
+    fin t = state.progress * state.progress * (3.0 - 2.0 * state.progress)
+    blendInto(state.current, state.from, state.to, t)
+    if weather.rain >= 0.0 then state.current.rain = weather.rain
+    if weather.snow >= 0.0 then state.current.snow = weather.snow
+    if weather.fog >= 0.0 then state.current.fog = weather.fog
+    if weather.windSpeed >= 0.0 then state.current.wind = weather.windSpeed
+    if weather.gusts >= 0.0 then state.current.gusts = weather.gusts
+    if weather.lightning >= 0.0 then state.current.lightning = weather.lightning
+
+    // Gusts: every few seconds a new strength, eased into.
+    state.gustTimer -= dt
+    if state.gustTimer <= 0.0 {
+        fin r = weatherRandom(state)
+        state.gustLevel = r * r * state.current.gusts
+        state.gustTimer = 1.5 + 4.5 * weatherRandom(state)
+    }
+    state.gust += (state.gustLevel - state.gust) * weatherClamp(dt * 0.9, 0.0, 1.0)
+    // The wind blows from its compass bearing (0 north, -Z; 90 east, +X) toward the opposite one.
+    fin bearing = weather.windDirection * 0.017453292519943295
+    fin speed = state.current.wind * (1.0 + state.gust)
+    state.windX = if outside then outsideX else -sin(bearing) * speed
+    state.windZ = if outside then outsideZ else cos(bearing) * speed
+    if outside then state.current.wind = sqrt(outsideX * outsideX + outsideZ * outsideZ)
+    state.driftX += state.windX * dt
+    state.driftZ += state.windZ * dt
+
+    // Rain soaks the ground in about a minute and a half; it takes many minutes to dry.
+    if weather.wetness >= 0.0 {
+        state.wetness = weather.wetness
+    } else if state.current.rain > 0.001 {
+        state.wetness += (weatherClamp(state.current.rain * 1.2, 0.0, 1.0) - state.wetness) * weatherClamp(dt / 30.0, 0.0, 1.0)
+    } else {
+        state.wetness -= state.wetness * weatherClamp(dt / 300.0, 0.0, 1.0)
+    }
+    if weather.snowCover >= 0.0 {
+        state.snowCover = weather.snowCover
+    } else if state.current.snow > 0.001 {
+        state.snowCover += (weatherClamp(state.current.snow * 1.1, 0.0, 1.0) - state.snowCover) * weatherClamp(dt / 60.0, 0.0, 1.0)
+    } else {
+        state.snowCover -= state.snowCover * weatherClamp(dt / 600.0, 0.0, 1.0)
+    }
+}
