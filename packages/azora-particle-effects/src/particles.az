@@ -1,0 +1,619 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.particles
+ *
+ * Particle effects, simulated on the CPU or on the GPU and drawn the same way.
+ *
+ * A system is a fixed pool: nothing is allocated while it runs. Particles
+ * spawned at a rate take ring slots over the oldest; a camera box keeps every
+ * slot alive in a box that follows the eye (rain, snow, dust). On the GPU one
+ * thread moves one particle; collisions read the depth the last frame left, so
+ * anything drawn is something to hit, and each hit can spawn particles in
+ * another system (splashes). The CPU path runs the same model in Azora and
+ * uploads its pool, three frames deep so the GPU never waits on it.
+ */
+module engine.particles
+
+import std.io
+import std.math
+import engine.core
+import engine.math
+import engine.ecs
+import engine.scene
+import engine.objc
+import engine.io
+import engine.particles.shader
+
+/** What an emitter makes: where particles appear, how they move and fall, what they look like, what they hit. */
+@Component
+@Inspectable(title: "Particle Emitter", serializedName: "ParticleEmitter", icon: "sparkles", category: "Effects", order: 40)
+pack ParticleEmitter derives Clone {
+    var enabled: Bool = true
+    @Choice(options: "CPU|GPU")
+    var simulation: Int = 1
+    @Range(min: 1.0, max: 1000000.0, step: 1.0)
+    var capacity: Int = 2000
+    /** New particles per second (a camera box keeps its whole pool alive instead). */
+    @Range(min: 0.0, max: 1000000.0, step: 1.0)
+    var rate: Double = 200.0
+    @Range(min: 0.01, max: 60.0, step: 0.01)
+    var lifeMin: Double = 1.0
+    @Range(min: 0.01, max: 60.0, step: 0.01)
+    var lifeMax: Double = 2.0
+    @Choice(options: "Point|Sphere|Box|Camera Box")
+    var spawn: Int = 0
+    /** A box's half sizes, a sphere's radius (x). */
+    var extent: Vec3 = .(1.0, 1.0, 1.0)
+    var velocity: Vec3 = .(0.0, 2.0, 0.0)
+    @Range(min: 0.0, max: 100.0, step: 0.05)
+    var spread: Double = 1.0
+    @Range(min: -50.0, max: 50.0, step: 0.05)
+    var gravity: Double = 9.81
+    @Range(min: 0.0, max: 50.0, step: 0.05)
+    var drag: Double = 0.1
+    /** A fall speed the particle settles to (drops, flakes); 0 falls freely under gravity. */
+    @Range(min: 0.0, max: 100.0, step: 0.05)
+    var terminalSpeed: Double = 0.0
+    /** How much of the scene's wind carries it. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var wind: Double = 1.0
+    @Range(min: 0.0, max: 10.0, step: 0.05)
+    var turbulence: Double = 0.0
+    @Range(min: 0.0, max: 10.0, step: 0.001)
+    var sizeStart: Double = 0.05
+    @Range(min: 0.0, max: 10.0, step: 0.001)
+    var sizeEnd: Double = 0.02
+    var colorStart: Rgba = .(1.0, 1.0, 1.0, 1.0)
+    var colorEnd: Rgba = .(1.0, 1.0, 1.0, 0.0)
+    @Choice(options: "Billboard|Streak")
+    var shape: Int = 0
+    /** Seconds of motion a streak shows. */
+    @Range(min: 0.0, max: 0.5, step: 0.001)
+    var streak: Double = 0.016
+    /** 0 glows on its own, 1 is lit by the air, the sun or moon and the lamps around. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var lit: Double = 1.0
+    /** Metres over which it fades into what is behind it, and in front of the eye. */
+    @Range(min: 0.0, max: 10.0, step: 0.01)
+    var softness: Double = 0.3
+    @Range(min: 0.0, max: 10.0, step: 0.01)
+    var nearFade: Double = 0.3
+    @Choice(options: "None|Kill|Bounce")
+    var collision: Int = 0
+    /** How far behind a surface a particle may be and still count as hitting it. */
+    @Range(min: 0.01, max: 10.0, step: 0.01)
+    var thickness: Double = 0.5
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var bounce: Double = 0.3
+}
+
+/** Bytes of the block every particle stage reads (`ParticleU`), of one particle, and of one collision event. */
+fin particleBlockBytes: Long = 480
+fin particleBytes: Long = 32
+fin particleEventBytes: Long = 32
+
+/** The compiled particle stages, made once per device. */
+pack ParticlePipelines {
+    var ready: Bool = false
+    var spawn: Long = 0
+    var fill: Long = 0
+    var spawnEvents: Long = 0
+    var update: Long = 0
+    var draw: Long = 0
+    var additive: Long = 0
+    var block: Long = 0
+    /** A zeroed block standing in for the lamps when there are none, and the grid sizes passed by address. */
+    var dark: Long = 0
+    var sizes: Long = 0
+}
+
+impl ParticlePipelines {
+    dtor .() {
+        if self.spawn != 0 then send0(self.spawn, sel("release"))
+        if self.fill != 0 then send0(self.fill, sel("release"))
+        if self.spawnEvents != 0 then send0(self.spawnEvents, sel("release"))
+        if self.update != 0 then send0(self.update, sel("release"))
+        if self.draw != 0 then send0(self.draw, sel("release"))
+        if self.additive != 0 then send0(self.additive, sel("release"))
+        if self.block != 0 then azFree(self.block)
+        if self.dark != 0 then azFree(self.dark)
+        if self.sizes != 0 then azFree(self.sizes)
+    }
+}
+
+/** What Metal said went wrong, from the NSError it left at [diagnostic]. */
+func particleMetalReason(diagnostic: Long): String {
+    fin failure = azPeek64(diagnostic, 0)
+    if failure == 0 then return "no reason given"
+    return azCstring(send0(send0(failure, sel("localizedDescription")), sel("UTF8String")), 0)
+}
+
+func particleKernel(device: Long, library: Long, name: String): Long {
+    fin function = send1(library, sel("newFunctionWithName:"), nsString(name))
+    if function == 0 then return 0
+    fin pipeline = send2(device, sel("newComputePipelineStateWithFunction:error:"), function, 0)
+    send0(function, sel("release"))
+    return pipeline
+}
+
+/** The draw: colour premultiplied over what is there ([additive]: added to it), the drawable's depth attached, untested. */
+func particleDrawPipeline(device: Long, library: Long, additive: Bool): Long {
+    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("particle_vertex"))
+    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("particle_fragment"))
+    defer {
+        if vertexStage != 0 then send0(vertexStage, sel("release"))
+        if fragmentStage != 0 then send0(fragmentStage, sel("release"))
+    }
+    if vertexStage == 0 || fragmentStage == 0 then return 0
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer { send0(descriptor, sel("release")) }
+    send1(descriptor, sel("setVertexFunction:"), vertexStage)
+    send1(descriptor, sel("setFragmentFunction:"), fragmentStage)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    // 80 = BGRA8, 252 = Depth32Float: the Engine's drawable pass.
+    send1(color, sel("setPixelFormat:"), 80)
+    send1(color, sel("setBlendingEnabled:"), 1)
+    send1(color, sel("setSourceRGBBlendFactor:"), 1)
+    send1(color, sel("setDestinationRGBBlendFactor:"), if additive then 1 else 5)
+    send1(color, sel("setSourceAlphaBlendFactor:"), 0)
+    send1(color, sel("setDestinationAlphaBlendFactor:"), 1)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
+}
+
+/** Compiles the particle stages for [device]; a failure prints why and leaves them not ready. */
+func makeParticlePipelines(device: Long): ParticlePipelines {
+    var pipes = ParticlePipelines()
+    pipes.block = azAlloc(particleBlockBytes)
+    pipes.dark = azAlloc(528)
+    pipes.sizes = azAlloc(64)
+    var i: Long = 0
+    while i < 528 {
+        azPoke32(pipes.dark, i, 0)
+        i += 4
+    }
+    if device == 0 then return pipes
+    fin diagnostic = azAlloc(8)
+    azPoke64(diagnostic, 0, 0)
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(particleMetalSource()), 0, diagnostic)
+    if library == 0 {
+        println("azora-engine: particle shaders did not compile:")
+        println(particleMetalReason(diagnostic))
+        azFree(diagnostic)
+        return pipes
+    }
+    azFree(diagnostic)
+    pipes.spawn = particleKernel(device, library, "particle_spawn")
+    pipes.fill = particleKernel(device, library, "particle_fill")
+    pipes.spawnEvents = particleKernel(device, library, "particle_spawn_events")
+    pipes.update = particleKernel(device, library, "particle_update")
+    pipes.draw = particleDrawPipeline(device, library, false)
+    pipes.additive = particleDrawPipeline(device, library, true)
+    send0(library, sel("release"))
+    pipes.ready = pipes.spawn != 0 && pipes.fill != 0 && pipes.spawnEvents != 0 && pipes.update != 0 && pipes.draw != 0 && pipes.additive != 0
+    return pipes
+}
+
+/**
+ * Where one frame's particles are seen from and what they can hit, filled by
+ * whoever runs them (a game, a plugin). The three matrices are column-major
+ * float4x4 in memory, as shaders read them: this frame's clip transform, and
+ * the transform and inverse of the frame whose [depth] collisions read.
+ */
+pack ParticleView {
+    var commands: Long = 0
+    var viewProj: Long = 0
+    var previousViewProj: Long = 0
+    var previousInverse: Long = 0
+    var depth: Long = 0
+    var eyeX: Double = 0.0
+    var eyeY: Double = 0.0
+    var eyeZ: Double = 0.0
+    var time: Double = 0.0
+    var delta: Double = 0.0
+    var motionX: Double = 0.0
+    var motionY: Double = 0.0
+    var motionZ: Double = 0.0
+    var fullWidth: Double = 1.0
+    var fullHeight: Double = 1.0
+    var depthWidth: Double = 1.0
+    var depthHeight: Double = 1.0
+    var near: Double = 0.1
+    var far: Double = 1000.0
+    /** Pixels one metre spans one metre away: the drawable's half height over tan(fov / 2). */
+    var focal: Double = 500.0
+    var windX: Double = 0.0
+    var windY: Double = 0.0
+    var windZ: Double = 0.0
+    var lightX: Double = 0.0
+    var lightY: Double = 1.0
+    var lightZ: Double = 0.0
+    var lightStrength: Double = 1.0
+    var lightRed: Double = 1.0
+    var lightGreen: Double = 1.0
+    var lightBlue: Double = 1.0
+    var ambient: Double = 0.3
+    var airRed: Double = 0.6
+    var airGreen: Double = 0.7
+    var airBlue: Double = 0.8
+    /** The Engine's point and spot lights (528 bytes, fragment buffer 5's layout); 0 for none. */
+    var lights: Long = 0
+}
+
+/** One pool of particles and the buffers it lives in. */
+pack ParticleSystem {
+    var capacity: Int = 0
+    var onGpu: Bool = true
+    /** The pool: private to the GPU, or (CPU) shared and three pools deep. */
+    var particles: Long = 0
+    /** Shared: the ring head (uint 0) and the count of collision events this frame (uint 1). */
+    var counters: Long = 0
+    var events: Long = 0
+    var eventsCapacity: Int = 0
+    /** CPU: position, velocity, age and life per particle, as doubles. */
+    var state: Long = 0
+    var head: Int = 0
+    var region: Int = 0
+    var random: Long = 7
+    var filled: Bool = false
+    var carry: Double = 0.0
+    var frames: Int = 0
+    var active: Int = 0
+}
+
+impl ParticleSystem {
+    dtor .() { self.release() }
+}
+
+/** Gives back the system's buffers and empties it; releasing twice is harmless. */
+func ParticleSystem!.release() {
+    if self.particles != 0 then send0(self.particles, sel("release"))
+    if self.counters != 0 then send0(self.counters, sel("release"))
+    if self.events != 0 then send0(self.events, sel("release"))
+    if self.state != 0 then azFree(self.state)
+    self.particles = 0
+    self.counters = 0
+    self.events = 0
+    self.state = 0
+    self.active = 0
+}
+
+/**
+ * A pool of [capacity] particles on [queue]'s device, simulated on the GPU or
+ * the CPU; [eventsCapacity] collision events a frame for systems spawned from
+ * its hits. The pool starts empty (every slot dead).
+ */
+func particleSystem(device: Long, queue: Long, capacity: Int, onGpu: Bool, eventsCapacity: Int = 0): ParticleSystem {
+    var system = ParticleSystem(capacity: if capacity > 0 then capacity else 1, onGpu: onGpu)
+    fin bytes = (system.capacity as Long) * particleBytes * (if onGpu then 1 else 3)
+    // 32 = private storage (GPU only); 0 = shared, the CPU writes it.
+    system.particles = send2(device, sel("newBufferWithLength:options:"), bytes, if onGpu then 32 else 0)
+    system.counters = send2(device, sel("newBufferWithLength:options:"), 16, 0)
+    if system.counters != 0 then azPoke64(send0(system.counters, sel("contents")), 0, 0)
+    system.eventsCapacity = if eventsCapacity > 0 then eventsCapacity else 1
+    system.events = send2(device, sel("newBufferWithLength:options:"), (system.eventsCapacity as Long) * particleEventBytes, 32)
+    if !onGpu {
+        system.state = azAlloc((system.capacity as Long) * 64)
+        var i: Long = 0
+        while i < (system.capacity as Long) * 8 {
+            azPokeF64(system.state, i * 8, 0.0)
+            i += 1
+        }
+        var j: Long = 0
+        fin contents = send0(system.particles, sel("contents"))
+        while j < bytes {
+            azPoke32(contents, j, 0)
+            j += 4
+        }
+    } else if system.particles != 0 && queue != 0 {
+        // Every slot dead until spawned: age 0 against life 0.
+        fin commands = send0(queue, sel("commandBuffer"))
+        fin blit = send0(commands, sel("blitCommandEncoder"))
+        particleFillBuffer(blit, system.particles, bytes)
+        send0(blit, sel("endEncoding"))
+        send0(commands, sel("commit"))
+    }
+    return take system
+}
+
+/** Zeroes [bytes] of [buffer] on the GPU (`fillBuffer:range:value:`, the NSRange passed as two words). */
+func particleFillBuffer(blit: Long, buffer: Long, bytes: Long) {
+    send4(blit, sel("fillBuffer:range:value:"), buffer, 0, bytes, 0)
+}
+
+func particlePoke(block: Long, offset: Long, x: Double, y: Double, z: Double, w: Double) {
+    azPokeF32(block, offset, x)
+    azPokeF32(block, offset + 4, y)
+    azPokeF32(block, offset + 8, z)
+    azPokeF32(block, offset + 12, w)
+}
+
+/**
+ * Writes the block the particle stages read for [emitter] seen from [view]:
+ * spawned at [origin], [active] slots in use, [spawned] new ones this step.
+ */
+func writeParticleBlock(block: Long, emitter: ParticleEmitter&, view: ParticleView&, origin: Vec3&, capacity: Int, active: Int,
+                        spawned: Int, seed: Int, perEvent: Int, eventKind: Int, eventsCapacity: Int) {
+    if view.viewProj != 0 then azCopy(block, view.viewProj, 64)
+    if view.previousViewProj != 0 then azCopy(block + 64, view.previousViewProj, 64)
+    if view.previousInverse != 0 then azCopy(block + 128, view.previousInverse, 64)
+    particlePoke(block, 192, view.eyeX, view.eyeY, view.eyeZ, view.time)
+    particlePoke(block, 208, view.delta, emitter.gravity, emitter.drag, emitter.terminalSpeed)
+    particlePoke(block, 224, view.windX, view.windY, view.windZ, emitter.wind)
+    particlePoke(block, 240, emitter.spawn as Double, emitter.extent.x, emitter.extent.y, emitter.extent.z)
+    particlePoke(block, 256, origin.x, origin.y, origin.z, emitter.spread)
+    particlePoke(block, 272, emitter.velocity.x, emitter.velocity.y, emitter.velocity.z, emitter.turbulence)
+    particlePoke(block, 288, emitter.lifeMin, if emitter.lifeMax > emitter.lifeMin then emitter.lifeMax else emitter.lifeMin, active as Double, capacity as Double)
+    particlePoke(block, 304, emitter.sizeStart, emitter.sizeEnd, emitter.streak, emitter.softness)
+    particlePoke(block, 320, emitter.colorStart.r, emitter.colorStart.g, emitter.colorStart.b, emitter.colorStart.a)
+    particlePoke(block, 336, emitter.colorEnd.r, emitter.colorEnd.g, emitter.colorEnd.b, emitter.colorEnd.a)
+    particlePoke(block, 352, emitter.shape as Double, emitter.lit, view.focal, emitter.collision as Double)
+    particlePoke(block, 368, view.fullWidth, view.fullHeight, view.depthWidth, view.depthHeight)
+    particlePoke(block, 384, view.near, view.far, emitter.thickness, emitter.bounce)
+    particlePoke(block, 400, view.lightX, view.lightY, view.lightZ, view.lightStrength)
+    particlePoke(block, 416, view.lightRed, view.lightGreen, view.lightBlue, view.ambient)
+    particlePoke(block, 432, view.airRed, view.airGreen, view.airBlue, emitter.nearFade)
+    particlePoke(block, 448, seed as Double, spawned as Double, perEvent as Double, eventKind as Double)
+    particlePoke(block, 464, view.motionX, view.motionY, view.motionZ, eventsCapacity as Double)
+}
+
+/** Runs [kernel] over [threads] threads (groups of 256), the block at 1 and the system's pool at 0. */
+func particleDispatch(pipes: ParticlePipelines&, commands: Long, kernel: Long, system: ParticleSystem&, threads: Int,
+                      depth: Long, source: ParticleSystem&) {
+    if threads <= 0 then return
+    fin encoder = send0(commands, sel("computeCommandEncoder"))
+    send1(encoder, sel("setComputePipelineState:"), kernel)
+    send3(encoder, sel("setBuffer:offset:atIndex:"), system.particles, 0, 0)
+    send3(encoder, sel("setBytes:length:atIndex:"), pipes.block, particleBlockBytes, 1)
+    if kernel == pipes.update {
+        send3(encoder, sel("setBuffer:offset:atIndex:"), system.counters, 4, 2)
+        send3(encoder, sel("setBuffer:offset:atIndex:"), system.events, 0, 3)
+        if depth != 0 then send2(encoder, sel("setTexture:atIndex:"), depth, 0)
+    } else {
+        send3(encoder, sel("setBuffer:offset:atIndex:"), system.counters, 0, 2)
+        if kernel == pipes.spawnEvents {
+            send3(encoder, sel("setBuffer:offset:atIndex:"), source.counters, 4, 3)
+            send3(encoder, sel("setBuffer:offset:atIndex:"), source.events, 0, 4)
+        }
+    }
+    fin groups = ((threads + 255) / 256) as Long
+    azPoke64(pipes.sizes, 0, groups)
+    azPoke64(pipes.sizes, 8, 1)
+    azPoke64(pipes.sizes, 16, 1)
+    azPoke64(pipes.sizes, 24, 256)
+    azPoke64(pipes.sizes, 32, 1)
+    azPoke64(pipes.sizes, 40, 1)
+    send2(encoder, sel("dispatchThreadgroups:threadsPerThreadgroup:"), pipes.sizes, pipes.sizes + 24)
+    send0(encoder, sel("endEncoding"))
+}
+
+/** A uniform number in 0..<1 from the system's own sequence (Park-Miller, which never overflows a Long). */
+func ParticleSystem!.nextRandom(): Double {
+    self.random = (self.random * 48271) % 2147483647
+    return ((self.random - 1) as Double) / 2147483646.0
+}
+
+/**
+ * Moves the system one step of [view]: spawns what [emitter]'s rate (times
+ * [intensity]) asks for at [origin], or fills its camera box once, then moves
+ * everything and (GPU) records its collisions. A camera box keeps
+ * [intensity] of its pool alive.
+ */
+func ParticleSystem!.simulate(pipes: ParticlePipelines&, emitter: ParticleEmitter&, view: ParticleView&, origin: Vec3&, intensity: Double = 1.0) {
+    fin share = if intensity < 0.0 then 0.0 else if intensity > 1.0 then 1.0 else intensity
+    fin box = emitter.spawn == 3
+    self.active = if box then ((self.capacity as Double) * share) as Int else self.capacity
+    self.carry += emitter.rate * share * view.delta
+    var spawned = if box then 0 else self.carry as Int
+    if spawned > self.capacity then spawned = self.capacity
+    self.carry -= spawned as Double
+    if spawned > 0 && self.carry > (self.capacity as Double) then self.carry = 0.0
+    self.frames += 1
+    if !self.onGpu {
+        simulateOnCpu(self, emitter, view, origin, spawned)
+        return
+    }
+    if !pipes.ready || view.commands == 0 || self.particles == 0 then return
+    writeParticleBlock(pipes.block, emitter, view, origin, self.capacity, self.active, spawned, self.frames, 0, 0, self.eventsCapacity)
+    // This step's hits are counted from zero.
+    fin blit = send0(view.commands, sel("blitCommandEncoder"))
+    send4(blit, sel("fillBuffer:range:value:"), self.counters, 4, 4, 0)
+    send0(blit, sel("endEncoding"))
+    if box && !self.filled {
+        particleDispatch(pipes, view.commands, pipes.fill, self, self.capacity, 0, self)
+        self.filled = true
+    }
+    particleDispatch(pipes, view.commands, pipes.spawn, self, spawned, 0, self)
+    particleDispatch(pipes, view.commands, pipes.update, self, self.capacity, view.depth, self)
+}
+
+/**
+ * Spawns, in this system, [perEvent] particles for each collision [source]
+ * recorded this step (run after the source's `simulate`): rings ([kind] 1),
+ * puffs (2) or droplets (3), shaped by [emitter], then moves the system one
+ * step unless [step] is false (more sources follow). GPU systems only.
+ */
+func ParticleSystem!.spawnFromHits(pipes: ParticlePipelines&, emitter: ParticleEmitter&, view: ParticleView&, source: ParticleSystem&,
+                                   perEvent: Int, kind: Int, step: Bool = true) {
+    if !self.onGpu || !pipes.ready || view.commands == 0 || self.particles == 0 then return
+    self.active = self.capacity
+    self.frames += 1
+    fin origin = Vec3(view.eyeX, view.eyeY, view.eyeZ)
+    writeParticleBlock(pipes.block, emitter, view, origin, self.capacity, self.capacity, 0, self.frames, perEvent, kind, source.eventsCapacity)
+    particleDispatch(pipes, view.commands, pipes.spawnEvents, self, source.eventsCapacity * perEvent, 0, source)
+    // Spawned from several sources in one step, a system moves once: [step] on the last of them.
+    if step then particleDispatch(pipes, view.commands, pipes.update, self, self.capacity, view.depth, self)
+}
+
+/** Draws the system's live particles into [encoder] (a pass over the drawable), soft against [depth]. */
+func ParticleSystem&.draw(pipes: ParticlePipelines&, emitter: ParticleEmitter&, view: ParticleView&, encoder: Long, depth: Long,
+                          depthState: Long, additive: Bool = false) {
+    if !pipes.ready || encoder == 0 || self.particles == 0 || self.active <= 0 then return
+    fin origin = Vec3(view.eyeX, view.eyeY, view.eyeZ)
+    writeParticleBlock(pipes.block, emitter, view, origin, self.capacity, self.active, 0, self.frames, 0, 0, self.eventsCapacity)
+    send1(encoder, sel("setRenderPipelineState:"), if additive then pipes.additive else pipes.draw)
+    send1(encoder, sel("setDepthStencilState:"), depthState)
+    fin offset: Long = if self.onGpu then 0 else (self.region as Long) * (self.capacity as Long) * particleBytes
+    send3(encoder, sel("setVertexBuffer:offset:atIndex:"), self.particles, offset, 0)
+    send3(encoder, sel("setVertexBytes:length:atIndex:"), pipes.block, particleBlockBytes, 1)
+    send3(encoder, sel("setVertexBytes:length:atIndex:"), if view.lights != 0 then view.lights else pipes.dark, 528, 2)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), pipes.block, particleBlockBytes, 1)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), depth, 0)
+    // 4 = triangle strip: four vertices a particle; only the active are instanced.
+    fin instances = if emitter.spawn == 3 then self.active else self.capacity
+    send4(encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, instances as Long)
+}
+
+/** The CPU path: the same spawning and motion, then the pool copied into the next of the three regions the GPU draws from. */
+func simulateOnCpu(system: ParticleSystem!, emitter: ParticleEmitter&, view: ParticleView&, origin: Vec3&, spawned: Int) {
+    if system.state == 0 || system.particles == 0 then return
+    fin capacity = system.capacity
+    fin box = emitter.spawn == 3
+    if box && !system.filled {
+        var i = 0
+        while i < capacity {
+            cpuSpawn(system, i, emitter, view, origin, false)
+            fin life = azPeekF64(system.state, (i as Long) * 64 + 56)
+            azPokeF64(system.state, (i as Long) * 64 + 48, system.nextRandom() * life)
+            i += 1
+        }
+        system.filled = true
+    }
+    var k = 0
+    while k < spawned {
+        cpuSpawn(system, system.head % capacity, emitter, view, origin, false)
+        system.head = (system.head + 1) % capacity
+        k += 1
+    }
+    fin dt = view.delta
+    fin carryX = view.windX * emitter.wind
+    fin carryY = view.windY * emitter.wind
+    fin carryZ = view.windZ * emitter.wind
+    fin pull = if emitter.drag * dt > 1.0 then 1.0 else emitter.drag * dt
+    fin limit = if box then system.active else capacity
+    var i = 0
+    while i < limit {
+        fin at = (i as Long) * 64
+        fin life = azPeekF64(system.state, at + 56)
+        var age = azPeekF64(system.state, at + 48)
+        if box || age < life {
+            age += dt
+            var vx = azPeekF64(system.state, at + 24)
+            var vy = azPeekF64(system.state, at + 32)
+            var vz = azPeekF64(system.state, at + 40)
+            if emitter.terminalSpeed > 0.0 {
+                vx += (carryX - vx) * pull
+                vy += (carryY - emitter.terminalSpeed - vy) * pull
+                vz += (carryZ - vz) * pull
+            } else {
+                vy -= emitter.gravity * dt
+                vx += (carryX - vx) * pull
+                vy += (carryY - vy) * pull
+                vz += (carryZ - vz) * pull
+            }
+            var px = azPeekF64(system.state, at) + vx * dt
+            var py = azPeekF64(system.state, at + 8) + vy * dt
+            var pz = azPeekF64(system.state, at + 16) + vz * dt
+            if box {
+                // Wrapped to stay around the eye; below the box it starts again at the top.
+                if py - view.eyeY < -emitter.extent.y {
+                    cpuSpawn(system, i, emitter, view, origin, true)
+                    i += 1
+                    continue
+                }
+                fin spanX = emitter.extent.x * 2.0
+                fin spanZ = emitter.extent.z * 2.0
+                px = view.eyeX + (px - view.eyeX) - spanX * (floor((px - view.eyeX) / spanX + 0.5) as Double)
+                pz = view.eyeZ + (pz - view.eyeZ) - spanZ * (floor((pz - view.eyeZ) / spanZ + 0.5) as Double)
+                if py - view.eyeY > emitter.extent.y then py -= emitter.extent.y * 2.0
+            }
+            azPokeF64(system.state, at, px)
+            azPokeF64(system.state, at + 8, py)
+            azPokeF64(system.state, at + 16, pz)
+            azPokeF64(system.state, at + 24, vx)
+            azPokeF64(system.state, at + 32, vy)
+            azPokeF64(system.state, at + 40, vz)
+            azPokeF64(system.state, at + 48, age)
+        }
+        i += 1
+    }
+    // Into the region the GPU finished with two frames ago.
+    system.region = (system.region + 1) % 3
+    fin target = send0(system.particles, sel("contents")) + (system.region as Long) * (capacity as Long) * particleBytes
+    var j = 0
+    while j < capacity {
+        fin from = (j as Long) * 64
+        fin into = (j as Long) * particleBytes
+        azPokeF32(target, into, azPeekF64(system.state, from))
+        azPokeF32(target, into + 4, azPeekF64(system.state, from + 8))
+        azPokeF32(target, into + 8, azPeekF64(system.state, from + 16))
+        azPokeF32(target, into + 12, azPeekF64(system.state, from + 48))
+        azPokeF32(target, into + 16, azPeekF64(system.state, from + 24))
+        azPokeF32(target, into + 20, azPeekF64(system.state, from + 32))
+        azPokeF32(target, into + 24, azPeekF64(system.state, from + 40))
+        azPokeF32(target, into + 28, azPeekF64(system.state, from + 56))
+        j += 1
+    }
+}
+
+/** A new particle at [slot] of a CPU pool: the same shapes as the GPU's spawn. */
+func cpuSpawn(system: ParticleSystem!, slot: Int, emitter: ParticleEmitter&, view: ParticleView&, origin: Vec3&, top: Bool) {
+    fin rx = system.nextRandom()
+    fin ry = system.nextRandom()
+    fin rz = system.nextRandom()
+    var x = origin.x
+    var y = origin.y
+    var z = origin.z
+    when emitter.spawn {
+        1 -> {
+            // Inside a sphere: a direction, and a radius whose cube is uniform.
+            fin up = ry * 2.0 - 1.0
+            fin around = rz * 6.283185307179586
+            fin flat = sqrt(if 1.0 - up * up > 0.0 then 1.0 - up * up else 0.0)
+            fin radius = emitter.extent.x * powr(rx, 0.3333333333)
+            x += flat * cos(around) * radius
+            y += up * radius
+            z += flat * sin(around) * radius
+        }
+        2 -> {
+            x += (rx * 2.0 - 1.0) * emitter.extent.x
+            y += (ry * 2.0 - 1.0) * emitter.extent.y
+            z += (rz * 2.0 - 1.0) * emitter.extent.z
+        }
+        3 -> {
+            x = view.eyeX + (rx * 2.0 - 1.0) * emitter.extent.x
+            y = if top then view.eyeY + emitter.extent.y * (1.0 - 0.1 * ry) else view.eyeY + (ry * 2.0 - 1.0) * emitter.extent.y
+            z = view.eyeZ + (rz * 2.0 - 1.0) * emitter.extent.z
+        }
+        else -> {}
+    }
+    fin up = system.nextRandom() * 2.0 - 1.0
+    fin around = system.nextRandom() * 6.283185307179586
+    fin flat = sqrt(if 1.0 - up * up > 0.0 then 1.0 - up * up else 0.0)
+    fin speed = emitter.spread * system.nextRandom()
+    fin life = emitter.lifeMin + (if emitter.lifeMax > emitter.lifeMin then emitter.lifeMax - emitter.lifeMin else 0.0) * system.nextRandom()
+    fin at = (slot as Long) * 64
+    azPokeF64(system.state, at, x)
+    azPokeF64(system.state, at + 8, y)
+    azPokeF64(system.state, at + 16, z)
+    azPokeF64(system.state, at + 24, emitter.velocity.x + flat * cos(around) * speed)
+    azPokeF64(system.state, at + 32, emitter.velocity.y + up * speed)
+    azPokeF64(system.state, at + 40, emitter.velocity.z + flat * sin(around) * speed)
+    azPokeF64(system.state, at + 48, 0.0)
+    azPokeF64(system.state, at + 56, life)
+}

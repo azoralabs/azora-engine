@@ -62,6 +62,7 @@ bridge .C {
     func CGImageGetWidth(image: Long): Long
     func CGImageGetHeight(image: Long): Long
     func CGImageRelease(image: Long)
+    func CGBitmapContextCreateImage(context: Long): Long
     // The CGRect is four doubles, which arm64 passes exactly as four arguments.
     func CGContextDrawImage(context: Long, x: Double, y: Double, width: Double, height: Double, image: Long)
 }
@@ -101,6 +102,14 @@ pack AzGpu {
     var photonPages: Int = 0
     /** The dynamic field's pages from its last build, reused where nothing over them moved. */
     var photonCache: PhotonPageCache = .()
+    /** Seconds the CPU takes to trace one page, as last measured: how many fit a frame's share. */
+    var photonPageSeconds: Double = 0.0
+    /** Field updates so far, and per entity id the placement each mesh caster last had and the update it changed in. */
+    var photonUpdates: Int = 0
+    var casterPlacements: Array<Long> = []
+    var casterMoved: Array<Int> = []
+    /** The frame's point and spot lights as the fragment stages read them (buffer 5, 528 bytes). */
+    var localLights: Long = 0
     var staticShadowBuffer: Long = 0
     var staticShadowReady: Bool = false
     var virtualShadows: Bool = true
@@ -119,6 +128,25 @@ pack AzGpu {
      * resolution from it and the last one. Interface drawing stays native.
      */
     var upscale: Bool = false
+    /**
+     * Set by a game whose systems read the scene's colour and depth (render
+     * stages): without upscaling the scene is then drawn into a full-resolution
+     * offscreen pass, so its depth can be sampled, and the resolve copies it.
+     */
+    var offscreenScene: Bool = false
+    /** True while the scene pass's encoder is ended for `RenderVolumes` passes; the resolve does not end it again. */
+    var sceneSuspended: Bool = false
+    /** A system drew this frame's sky (`App.beginCustomSky`); the built-in one stays away. */
+    var skyClaimed: Bool = false
+    /**
+     * The scene environment (64 bytes) every scene draw reads at fragment buffer
+     * 6: wetness, snow cover, flash, cloud shadow mapping, wind. Zero is a dry,
+     * clear scene.
+     */
+    var environment: Long = 0
+    /** The cloud shadow map scene draws read at fragment texture 31; 0 binds a white texel. */
+    var cloudShadow: Long = 0
+    var whiteTexture: Long = 0
     var scenePass: ScenePass = .()
     /** How the scissor of the pass being encoded relates to the drawable: below 1 inside a scene pass. */
     var passScale: Double = 1.0
@@ -322,6 +350,14 @@ func gpuInit(scale: Double): AzGpu {
     gpu.detailPipeline = makeDepthPipeline(device, lib)
     gpu.detailMap = sceneTexture(device, 252, detailResolution, detailResolution)
     gpu.detailLight = azAlloc(80)
+    gpu.localLights = azAlloc(528)
+    gpu.environment = azAlloc(64)
+    var zero = 0
+    while zero < 16 {
+        azPokeF32(gpu.environment, (zero * 4) as Long, 0.0)
+        zero += 1
+    }
+    gpu.whiteTexture = whiteTexel(device)
     gpu.velocityPipeline = makeVelocityPipeline(device, lib)
     fin nearer = newObject("MTLDepthStencilDescriptor")
     send1(nearer, sel("setDepthCompareFunction:"), 3)
@@ -396,6 +432,12 @@ func gpuShutdown(gpu: AzGpu!) {
     if gpu.device != Long(0) { send0(gpu.device, sel("release")) }
     if gpu.viewProj != Long(0) { azFree(gpu.viewProj) }
     if gpu.scratch != Long(0) { azFree(gpu.scratch) }
+    if gpu.localLights != 0 then azFree(gpu.localLights)
+    gpu.localLights = 0
+    if gpu.environment != 0 then azFree(gpu.environment)
+    gpu.environment = 0
+    if gpu.whiteTexture != 0 then send0(gpu.whiteTexture, sel("release"))
+    gpu.whiteTexture = 0
     gpu.depthTex = Long(0)
     gpu.sampler = Long(0)
     gpu.depthOff = Long(0)
@@ -449,6 +491,13 @@ func pokeMat4(buf: Long, offset: Long, m: Mat4&) {
     azPokeF32(buf, offset + Long(56), m.m23)
     azPokeF32(buf, offset + Long(60), m.m33)
 }
+
+/** The column-major float4x4 at [offset] in [buf], as [pokeMat4] wrote it. */
+func peekMat4(buf: Long, offset: Long): Mat4 = Mat4(
+    peekFloat32(buf, offset), peekFloat32(buf, offset + 16), peekFloat32(buf, offset + 32), peekFloat32(buf, offset + 48),
+    peekFloat32(buf, offset + 4), peekFloat32(buf, offset + 20), peekFloat32(buf, offset + 36), peekFloat32(buf, offset + 52),
+    peekFloat32(buf, offset + 8), peekFloat32(buf, offset + 24), peekFloat32(buf, offset + 40), peekFloat32(buf, offset + 56),
+    peekFloat32(buf, offset + 12), peekFloat32(buf, offset + 28), peekFloat32(buf, offset + 44), peekFloat32(buf, offset + 60))
 
 func releaseTerrains(gpu: AzGpu!) {
     for terrain in gpu.terrains { releaseTerrainMesh(terrain) }
@@ -587,6 +636,19 @@ func makeDepthPipeline(device: Long, library: Long): Long {
     return send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, 0)
 }
 
+/** One white R8 texel: what a shader samples where no map is bound (a cloud shadow that shades nothing). */
+func whiteTexel(device: Long): Long {
+    // 10 = MTLPixelFormatR8Unorm.
+    fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 10, 1, 1, 0)
+    fin texture = send1(device, sel("newTextureWithDescriptor:"), descriptor)
+    if texture == 0 then return 0
+    fin texel = azAlloc(16)
+    azPoke8(texel, 0, 255)
+    fin unused = azSendRegion(texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, 1, 1, 1, 0, texel, 1)
+    azFree(texel)
+    return texture
+}
+
 /** A private texture the GPU both draws into and reads. */
 func sceneTexture(device: Long, format: Long, width: Long, height: Long): Long {
     fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), format, width, height, 0)
@@ -613,12 +675,17 @@ func releaseScenePass(pass: ScenePass!) {
     pass.historyValid = false
 }
 
-/** Sizes the scene targets for a [width] x [height] drawable: the scene at half of each, the history at all of it. */
-func ensureScenePass(gpu: AzGpu!, width: Long, height: Long) {
-    if gpu.scenePass.fullWidth == width && gpu.scenePass.fullHeight == height && gpu.scenePass.color != 0 then return
+/**
+ * Sizes the scene targets for a [width] x [height] drawable: the scene at half
+ * of each when [half] (temporal upscaling), else at all of it; the history at
+ * all of it.
+ */
+func ensureScenePass(gpu: AzGpu!, width: Long, height: Long, half: Bool = true) {
+    fin low = if half then (width + 1) / 2 else width
+    fin lowHeight = if half then (height + 1) / 2 else height
+    if gpu.scenePass.fullWidth == width && gpu.scenePass.fullHeight == height && gpu.scenePass.width == low &&
+        gpu.scenePass.color != 0 then return
     releaseScenePass(gpu.scenePass)
-    fin low = (width + 1) / 2
-    fin lowHeight = (height + 1) / 2
     gpu.scenePass.color = sceneTexture(gpu.device, 80, low, lowHeight)
     gpu.scenePass.depth = sceneTexture(gpu.device, 252, low, lowHeight)
     gpu.scenePass.historyA = sceneTexture(gpu.device, 115, width, height)
@@ -662,8 +729,8 @@ func halton(index: Int, base: Int): Double {
  * at a quarter of the pixels. Nothing happens when it is off or already begun.
  */
 func beginScenePass(gpu: AzGpu!) {
-    if !gpu.upscale || !gpu.hasEncoder || gpu.scenePass.active || gpu.resolvePipeline == 0 then return
-    ensureScenePass(gpu, gpu.depthW, gpu.depthH)
+    if !(gpu.upscale || gpu.offscreenScene) || !gpu.hasEncoder || gpu.scenePass.active || gpu.resolvePipeline == 0 then return
+    ensureScenePass(gpu, gpu.depthW, gpu.depthH, gpu.upscale)
     if gpu.scenePass.color == 0 then return
     send0(gpu.enc, sel("endEncoding"))
     fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
@@ -684,10 +751,43 @@ func beginScenePass(gpu: AzGpu!) {
     gpu.passScale = (gpu.scenePass.width as Double) / (gpu.scenePass.fullWidth as Double)
     gpu.scenePass.active = true
     gpu.scenePass.viewed = false
+    gpu.sceneSuspended = false
     // This frame's sub-pixel offset, in half-resolution pixels; it cycles through eight.
+    // A full-resolution pass (no upscaling) is drawn where the pixels are.
     fin phase = gpu.scenePass.frame % 8 + 1
-    gpu.scenePass.jitterX = halton(phase, 2) - 0.5
-    gpu.scenePass.jitterY = halton(phase, 3) - 0.5
+    gpu.scenePass.jitterX = if gpu.upscale then halton(phase, 2) - 0.5 else 0.0
+    gpu.scenePass.jitterY = if gpu.upscale then halton(phase, 3) - 0.5 else 0.0
+}
+
+/**
+ * Ends the scene pass's encoder so passes of a system's own can read the
+ * scene's colour and depth and draw over them (`RenderVolumes`). The scene
+ * pass stays active: [resumeScenePass] reopens it, or the resolve takes it as
+ * it is.
+ */
+func suspendScenePass(gpu: AzGpu!) {
+    if !gpu.scenePass.active || gpu.sceneSuspended then return
+    send0(gpu.enc, sel("endEncoding"))
+    gpu.enc = 0
+    gpu.sceneSuspended = true
+}
+
+/** Reopens a suspended scene pass, keeping what its colour and depth hold. */
+func resumeScenePass(gpu: AzGpu!) {
+    if !gpu.sceneSuspended then return
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), gpu.scenePass.color)
+    send1(color, sel("setLoadAction:"), 1)
+    send1(color, sel("setStoreAction:"), 1)
+    fin depth = send0(pass, sel("depthAttachment"))
+    send1(depth, sel("setTexture:"), gpu.scenePass.depth)
+    send1(depth, sel("setLoadAction:"), 1)
+    send1(depth, sel("setStoreAction:"), 1)
+    gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
+    gpu.mode = -1
+    gpu.meshPipeline = 0
+    gpu.sceneSuspended = false
 }
 
 /**
@@ -740,7 +840,8 @@ func drawMotion(gpu: AzGpu!): Bool {
 
 func resolveScenePass(gpu: AzGpu!) {
     if !gpu.scenePass.active then return
-    send0(gpu.enc, sel("endEncoding"))
+    if !gpu.sceneSuspended then send0(gpu.enc, sel("endEncoding"))
+    gpu.sceneSuspended = false
     gpu.scenePass.active = false
     gpu.passScale = 1.0
     fin moved = drawMotion(gpu)
@@ -790,7 +891,8 @@ func resolveScenePass(gpu: AzGpu!) {
     azPokeF32(uniforms, 168, gpu.scenePass.fullHeight as Double)
     azPokeF32(uniforms, 172, 0.1)
     azPokeF32(uniforms, 176, if moved then 1.0 else 0.0)
-    azPokeF32(uniforms, 180, 0.0)
+    // A full-resolution pass without upscaling is copied as it is.
+    azPokeF32(uniforms, 180, if gpu.scenePass.width == gpu.scenePass.fullWidth then 1.0 else 0.0)
     azPokeF32(uniforms, 184, 0.0)
     azPokeF32(uniforms, 188, 0.0)
     send1(resolve, sel("setRenderPipelineState:"), gpu.resolvePipeline)
@@ -820,6 +922,6 @@ func resolveScenePass(gpu: AzGpu!) {
 
     gpu.scenePass.readA = !gpu.scenePass.readA
     if viewed then gpu.scenePass.previous = copyMat4(gpu.scenePass.viewProj)
-    gpu.scenePass.historyValid = viewed
+    gpu.scenePass.historyValid = viewed && gpu.upscale
     gpu.scenePass.frame += 1
 }

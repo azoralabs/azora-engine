@@ -599,10 +599,8 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     @ProvidesAccess
     func !.next(): Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
-        // Spelled with its type arguments: the row's element types cannot be
-        // read back off the fetches, whose types come from calls, and a variadic
-        // callee is specialized from the types it is given.
-        return tupleOf<Entity, ...T>(row, inline for Ty in ...T {
+        // The row owns its entity snapshot and borrows the fetched components.
+        return Tuple(row.clone(), inline for Ty in ...T {
             storageGet<Ty>(storageOf<Ty>(self.world), row)
         })
     }
@@ -791,6 +789,11 @@ func hasResourceNamed(world: World&, name: String): Bool = resourceStamp(world, 
 @SignatureOnly
 inline func<T> resource(world: World&): T {
     return resourceSlot<T>(world, T.typeName).value.clone()
+}
+
+/** Borrows a world-owned resource without cloning its contents. */
+inline func<T> borrowResource(world: World&): T&|world| {
+    return resourceSlot<T>(world, T.typeName).value
 }
 
 /** The resource under an explicit [name], as a copy. See [resource]. */
@@ -1634,9 +1637,23 @@ func systemPhaseRank(phase: SystemPhase): Int {
         .Update -> 2
         .PostUpdate -> 3
         .FixedUpdate -> 4
-        .Render -> 5
-        .Last -> 6
+        .RenderSky -> 5
+        .RenderVolumes -> 6
+        .RenderTransparent -> 7
+        .Render -> 8
+        .Audio -> 9
+        .Last -> 10
     }
+}
+
+/** Whether any enabled system of [plan] runs in [phase]: a stage nothing uses costs nothing. */
+func phaseHasSystems(plan: SystemPlan&, phase: SystemPhase): Bool {
+    var index = 0
+    while index < plan.count {
+        if plan.systems[index].phase == phase && plan.systems[index].enabled then return true
+        index += 1
+    }
+    return false
 }
 
 /**

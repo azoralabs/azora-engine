@@ -34,6 +34,12 @@ if [ "$MODE" = all ] || [ "$MODE" = foundation ]; then
     done
 fi
 if [ "$MODE" = all ] || [ "$MODE" = game ]; then
+    scene_game="$ENGINE_DIR/tests/scene-game"
+    "$ENGINE_DIR/tools/build.sh" "$scene_game" build
+    actual="$(cd "$scene_game" && AZORA_FRAME_LIMIT=6 .azora-build/scene-game)"
+    [ "$actual" = "scene game passed" ]
+    echo "$actual"
+
     # The shipping game template is first built unchanged. Its complete source
     # is then staged with a bounded entry point using the same host lifecycle.
     "$ENGINE_DIR/tools/build.sh" "$ENGINE_DIR/templates/game" build

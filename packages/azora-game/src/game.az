@@ -1,0 +1,410 @@
+module engine.game
+
+import std.io
+import std.math
+import std.reflection
+import engine.core
+import engine.ecs
+import engine.audio.output
+import engine.gizmos
+import engine.gpu
+import engine.gpu.draw
+import engine.input
+import engine.io
+import engine.math
+import engine.math.mat
+import engine.objc
+import engine.particles
+import engine.platform
+import engine.render.scene
+import engine.scene
+import engine.scene.io
+import engine.sky
+import engine.ui.compose
+import engine.ui.paint
+import engine.ui.systems
+
+/** A scene game declares one configuration named game in its entry module. */
+pack GameConfig {
+    fin title: String
+    fin width: Int = 1280
+    fin height: Int = 760
+    fin scene: String = "scene.azscene"
+    fin fixedHz: Int = 60
+    fin maxFrameSeconds: Double = 0.08
+}
+
+/**
+ * The 3D view as the render stages see it: the camera, the scene's targets and
+ * the encoder of the pass being drawn. Filled before `RenderSky` each frame.
+ *
+ * [encoder] is the scene pass in `RenderSky`, 0 in `RenderVolumes` (the scene
+ * pass is suspended: systems open passes of their own on [commands]) and the
+ * reconstructed full-resolution view in `RenderTransparent`. [color] and
+ * [depth] are the scene's targets, [width] x [height] pixels (half the
+ * drawable's with temporal upscaling); their pixel `i` holds the point at
+ * `i + 0.5 - jitter`.
+ */
+pack SceneView {
+    var encoder: Long = 0
+    var commands: Long = 0
+    var device: Long = 0
+    var color: Long = 0
+    var depth: Long = 0
+    var width: Int = 0
+    var height: Int = 0
+    var fullWidth: Int = 0
+    var fullHeight: Int = 0
+    var jitterX: Double = 0.0
+    var jitterY: Double = 0.0
+    var upscaled: Bool = false
+    /**
+     * Four column-major float4x4, as shaders read them: this frame's clip
+     * transform (without jitter), its inverse, last frame's and its inverse.
+     */
+    var matrices: Long = 0
+    var eyeX: Double = 0.0
+    var eyeY: Double = 0.0
+    var eyeZ: Double = 0.0
+    var forwardX: Double = 0.0
+    var forwardY: Double = 0.0
+    var forwardZ: Double = -1.0
+    var rightX: Double = 1.0
+    var rightY: Double = 0.0
+    var rightZ: Double = 0.0
+    var upX: Double = 0.0
+    var upY: Double = 1.0
+    var upZ: Double = 0.0
+    /** tan(fov / 2) and width / height: a pixel's ray is forward + x·tangent·aspect·right + y·tangent·up. */
+    var tangent: Double = 0.5
+    var aspect: Double = 1.0
+    var near: Double = 0.1
+    var far: Double = 1000.0
+    var time: Double = 0.0
+    var delta: Double = 0.0
+    var frame: Int = 0
+    /** How fast the eye moved since the last frame, m/s (0 while paused). */
+    var motionX: Double = 0.0
+    var motionY: Double = 0.0
+    var motionZ: Double = 0.0
+}
+
+/** Bytes of [SceneView.matrices]. */
+fin sceneViewMatrixBytes: Long = 256
+
+/** Which render stages the game's systems use, found once from its plan. */
+pack RenderStages {
+    var sky: Bool = false
+    var volumes: Bool = false
+    var transparent: Bool = false
+}
+
+pack Game {
+    var world: World!
+    var window: App!
+    var overlay: Composition!
+    /** The sound this frame mixes: `Audio` systems add their voices to `frame.audio`. */
+    var audio: AudioOutput!
+    var view: SceneView = .()
+    var stages: RenderStages = .()
+    /** The particle stages, compiled the first time something emits; [particlesTried] keeps a failure from retrying every frame. */
+    var particles: ParticlePipelines = .()
+    var particlesTried: Bool = false
+    var camera: EditorCamera = EditorCamera()
+    var stats: FrameStats = FrameStats()
+    var time: Time = timeInit()
+    var paused: Bool = false
+    var action: Int = 0
+    var interpolation: Double = 0.0
+}
+
+impl Game { func fromGame(frame: Game!): Game! = frame }
+impl World { func fromGame(frame: Game!): World! = frame.world }
+impl Time { func fromGame(frame: Game!): Time& = frame.time }
+impl Anchor { func fromGame(frame: Game!): Anchor = Anchor(frame.overlay, frame.overlay.root) }
+impl QueryOf<...T> {
+    func fromGame(frame: Game!): QueryOf<...T> = QueryOf::provide(frame.world)
+}
+
+/** Resolve each declared parameter at the point its system runs. */
+react func dispatchGame(plan: SystemPlan&, phase: SystemPhase, frame: Game!) {
+    var step = 0
+    while step < plan.resolvedCount {
+        fin due = plan.resolved[step]
+        if plan.systems[due].phase == phase && plan.systems[due].enabled {
+            var index = 0
+            inline for S in reflect<*>.withAnnot<System> {
+                if index == due {
+                    S(inline for P in reflect<S>.params { P::fromGame(frame) })
+                }
+                index += 1
+            }
+        }
+        step += 1
+    }
+}
+
+/** Points [frame.view] at this frame's camera and scene targets, keeping last frame's transform as its past. */
+func updateSceneView(frame: Game!, viewProj: Mat4&, rect: ViewRect&) {
+    let camera: EditorCamera& = frame.camera.&
+    let gpu: AzGpu! = frame.window.gpu
+    fin view = frame.view.matrices
+    if view != 0 {
+        // Last frame's pair becomes the past; a first frame's past is itself.
+        if frame.view.frame > 0 then azCopy(view + 128, view, 128)
+        pokeMat4(view, 0, viewProj)
+        pokeMat4(view, 64, mat4Inverse(viewProj))
+        if frame.view.frame == 0 then azCopy(view + 128, view, 128)
+    }
+    fin eye = camera.position()
+    fin forward = camera.forward()
+    fin right = camera.right()
+    fin up = camera.up()
+    fin moved = frame.view.frame > 0 && frame.time.deltaSecs > 0.0
+    frame.view.motionX = if moved then (eye.x - frame.view.eyeX) / frame.time.deltaSecs else 0.0
+    frame.view.motionY = if moved then (eye.y - frame.view.eyeY) / frame.time.deltaSecs else 0.0
+    frame.view.motionZ = if moved then (eye.z - frame.view.eyeZ) / frame.time.deltaSecs else 0.0
+    frame.view.eyeX = eye.x
+    frame.view.eyeY = eye.y
+    frame.view.eyeZ = eye.z
+    frame.view.forwardX = forward.x
+    frame.view.forwardY = forward.y
+    frame.view.forwardZ = forward.z
+    frame.view.rightX = right.x
+    frame.view.rightY = right.y
+    frame.view.rightZ = right.z
+    frame.view.upX = up.x
+    frame.view.upY = up.y
+    frame.view.upZ = up.z
+    frame.view.tangent = tan(camera.fov * degreesToRadians * 0.5)
+    frame.view.aspect = rect.aspect()
+    frame.view.near = camera.near
+    frame.view.far = camera.far
+    frame.view.time = frame.time.elapsedSecs
+    frame.view.delta = frame.time.deltaSecs
+    frame.view.frame += 1
+    frame.view.commands = gpu.cmd
+    frame.view.device = gpu.device
+    frame.view.encoder = gpu.enc
+    frame.view.fullWidth = gpu.depthW as Int
+    frame.view.fullHeight = gpu.depthH as Int
+    fin pass = gpu.scenePass.active
+    frame.view.upscaled = pass && gpu.upscale
+    frame.view.color = if pass then gpu.scenePass.color else 0
+    frame.view.depth = if pass then gpu.scenePass.depth else 0
+    frame.view.width = if pass then gpu.scenePass.width as Int else gpu.depthW as Int
+    frame.view.height = if pass then gpu.scenePass.height as Int else gpu.depthH as Int
+    frame.view.jitterX = if pass then gpu.scenePass.jitterX else 0.0
+    frame.view.jitterY = if pass then gpu.scenePass.jitterY else 0.0
+}
+
+/** A scene emitter's running pool, made from its `ParticleEmitter` the first time it is drawn. */
+@Component
+pack ParticleRuntime {
+    var system: ParticleSystem = .()
+    var capacity: Int = 0
+    var simulation: Int = -1
+}
+
+/** Compiles the particle stages once; answers whether they are ready. */
+func ensureParticles(frame: Game!): Bool {
+    if !frame.particlesTried {
+        frame.particles = makeParticlePipelines(frame.window.gpu.device)
+        frame.particlesTried = true
+    }
+    return frame.particles.ready
+}
+
+/**
+ * How particles see this frame: the camera and its targets, last frame's
+ * transform and depth for collisions, the scene's light, wind and lamps.
+ * [commands] is where the simulation is encoded.
+ */
+func particleViewOf(frame: Game!, commands: Long): ParticleView {
+    let gpu: AzGpu! = frame.window.gpu
+    fin light = sceneLightFrom(frame.world, frame.view.time)
+    fin weather = resourceNamedOr<SceneEnvironment>(frame.world, "SceneEnvironment", SceneEnvironment())
+    // A Wind in the scene blows the particles; without one, the weather's own wind does.
+    fin windy = frame.world.isAlive(sceneWindEntity(frame.world))
+    fin blowing = if windy then sceneWind(frame.world, frame.view.time) else Vec3(weather.windX, 0.0, weather.windZ)
+    fin matrices = frame.view.matrices
+    return ParticleView(commands: commands, viewProj: matrices, previousViewProj: matrices + 128, previousInverse: matrices + 192,
+        depth: frame.view.depth, eyeX: frame.view.eyeX, eyeY: frame.view.eyeY, eyeZ: frame.view.eyeZ, time: frame.view.time,
+        delta: frame.view.delta, motionX: frame.view.motionX, motionY: frame.view.motionY, motionZ: frame.view.motionZ,
+        fullWidth: frame.view.fullWidth as Double, fullHeight: frame.view.fullHeight as Double,
+        depthWidth: frame.view.width as Double, depthHeight: frame.view.height as Double, near: frame.view.near, far: frame.view.far,
+        focal: (frame.view.fullHeight as Double) * 0.5 / frame.view.tangent, windX: blowing.x, windY: blowing.y, windZ: blowing.z,
+        lightX: light.direction.x, lightY: light.direction.y, lightZ: light.direction.z, lightStrength: light.intensity,
+        lightRed: light.color.r, lightGreen: light.color.g, lightBlue: light.color.b, ambient: light.ambient,
+        airRed: light.haze.r * (0.25 + 0.75 * light.daylight), airGreen: light.haze.g * (0.25 + 0.75 * light.daylight),
+        airBlue: light.haze.b * (0.25 + 0.75 * light.daylight), lights: gpu.localLights)
+}
+
+/** Steps every scene emitter, in a command buffer of its own committed before the frame's (collisions read last frame's depth). */
+func simulateSceneEmitters(frame: Game!) {
+    fin emitters = ensureStorage<ParticleEmitter>(frame.world)
+    if storageLength<ParticleEmitter>(emitters) == 0 || !ensureParticles(frame) then return
+    let runtimes = ensureStorage<ParticleRuntime>(frame.world)
+    fin commands = send0(frame.window.gpu.queue, sel("commandBuffer"))
+    fin seen = particleViewOf(frame, commands)
+    var index = 0
+    while index < storageLength<ParticleEmitter>(emitters) {
+        fin entity = storageEntityAt<ParticleEmitter>(emitters, index)
+        fin emitter = emitters.values[index].clone()
+        if emitter.enabled && frame.world.isAlive(entity) && visibleInWorld(frame.world, entity) {
+            fin wanted = if emitter.capacity > 0 then emitter.capacity else 1
+            if !storageHas<ParticleRuntime>(runtimes, entity) || storageGet<ParticleRuntime>(runtimes, entity).capacity != wanted ||
+                storageGet<ParticleRuntime>(runtimes, entity).simulation != emitter.simulation {
+                storageInsert<ParticleRuntime>(runtimes, entity, ParticleRuntime(particleSystem(frame.window.gpu.device, frame.window.gpu.queue,
+                    wanted, emitter.simulation == 1, 1), wanted, emitter.simulation))
+            }
+            let store = ensureStorage<ParticleRuntime>(frame.world)
+            store.values[storageIndexOf<ParticleRuntime>(store, entity)].system.simulate(frame.particles, emitter, seen, worldPosition(frame.world, entity))
+        }
+        index += 1
+    }
+    send0(commands, sel("commit"))
+}
+
+/** Draws every scene emitter over the finished view. */
+func drawSceneEmitters(frame: Game!) {
+    fin emitters = ensureStorage<ParticleEmitter>(frame.world)
+    if storageLength<ParticleEmitter>(emitters) == 0 || !frame.particles.ready || frame.view.depth == 0 then return
+    fin runtimes = ensureStorage<ParticleRuntime>(frame.world)
+    fin seen = particleViewOf(frame, 0)
+    var index = 0
+    while index < storageLength<ParticleEmitter>(emitters) {
+        fin entity = storageEntityAt<ParticleEmitter>(emitters, index)
+        fin emitter = emitters.values[index].clone()
+        if emitter.enabled && storageHas<ParticleRuntime>(runtimes, entity) {
+            storageGet<ParticleRuntime>(runtimes, entity).system.draw(frame.particles, emitter, seen, frame.window.gpu.enc,
+                frame.view.depth, frame.window.gpu.depthOff)
+        }
+        index += 1
+    }
+    frame.window.gpu.mode = -1
+    frame.window.gpu.meshPipeline = 0
+}
+
+/**
+ * The 3D view, in stages: the sky (a `RenderSky` system's, else the built-in
+ * one), the opaque scene, `RenderVolumes` over its colour and depth, the
+ * temporal resolve, then `RenderTransparent` at full resolution.
+ */
+react func drawGameScene(frame: Game!, plan: SystemPlan&, meshes: PrimitiveMeshes&, rect: ViewRect&) {
+    let camera: EditorCamera& = frame.camera.&
+    fin elapsed = frame.time.elapsedSecs
+    let gpu: AzGpu! = frame.window.gpu
+    fin emitting = storageLength<ParticleEmitter>(ensureStorage<ParticleEmitter>(frame.world)) > 0
+    gpu.offscreenScene = frame.stages.volumes || frame.stages.transparent || emitting
+    gpu.skyClaimed = false
+    fin viewProj = camera.viewProj(rect.aspect())
+    frame.window.beginScenePass()
+    updateSceneView(frame, viewProj, rect)
+    if emitting then simulateSceneEmitters(frame)
+    if frame.stages.sky then dispatchGame(plan, .RenderSky, frame)
+    if !gpu.skyClaimed {
+        fin skyEntity = sceneSkyLight(frame.world)
+        if frame.world.isAlive(skyEntity) {
+            fin environment = storageGet<SkyEnvironment>(storageOf<SkyEnvironment>(frame.world), skyEntity)
+            fin sky = sampleSky(environment, elapsed)
+            frame.window.drawSkyView(0.0, 0.0, rect.width, rect.height, sky,
+                camera.forward(), camera.right(), camera.up(), tan(camera.fov * degreesToRadians * 0.5))
+        }
+    }
+    frame.window.beginView(viewProj, rect)
+    frame.window.setMaterialEye(camera.position())
+    frame.window.applySceneLight(frame.world, elapsed)
+    frame.window.updateScenePhotons(frame.world, camera.target, elapsed)
+    frame.window.drawScene(frame.world, meshes)
+    if frame.stages.volumes && gpu.scenePass.active {
+        frame.window.suspendScenePass()
+        frame.view.encoder = 0
+        frame.view.commands = gpu.cmd
+        dispatchGame(plan, .RenderVolumes, frame)
+    }
+    frame.window.endView()
+    if emitting && gpu.hasEncoder {
+        frame.view.encoder = gpu.enc
+        drawSceneEmitters(frame)
+    }
+    if frame.stages.transparent && gpu.hasEncoder {
+        frame.view.encoder = gpu.enc
+        dispatchGame(plan, .RenderTransparent, frame)
+        gpu.mode = -1
+        gpu.meshPipeline = 0
+    }
+}
+
+react func runSceneGame(config: GameConfig&) {
+    assert config.fixedHz > 0 && config.maxFrameSeconds > 0.0 panic "invalid game clock"
+    fin plan = systemPlan()
+    assert !plan.cyclic panic plan.cycleReport
+    var world = World()
+    var file = readFile(config.scene)
+    fin loaded = file.ok() && readScene(world, file.text(0, file.size)) >= 0
+    file.release()
+    if !loaded {
+        println("Could not load ${config.scene}")
+        return
+    }
+    var window = appInit(config.title, config.width, config.height)
+    if !window.ok then return
+    defer { window.shutdown() }
+    window.setFusionRoot(".")
+    window.prepareFusionMaterials(world)
+    var meshes = window.primitiveMeshes()
+    defer { window.releasePrimitives(meshes) }
+    var uiWorld = World()
+    var overlay = Composition::of(uiWorld, "game")
+    defer { overlay.dispose() }
+    var audio = audioOutputOpen()
+    defer { audio.close() }
+    var frame = Game(world, window, overlay, audio)
+    frame.stages = RenderStages(phaseHasSystems(plan, .RenderSky), phaseHasSystems(plan, .RenderVolumes),
+        phaseHasSystems(plan, .RenderTransparent))
+    frame.view.matrices = azAlloc(sceneViewMatrixBytes)
+    defer { azFree(frame.view.matrices) }
+    world.setFixedTimestep(1.0 / (config.fixedHz as Double))
+    frame.time.setFixedDelta(world.fixedTimestep)
+    dispatchGame(plan, .Startup, frame)
+
+    while window.frame() {
+        fin seconds = window.deltaTime()
+        frame.stats.tick(seconds)
+        frame.action = if window.mouseClicked(.Left) then overlay.hit(window.mouseX(), window.mouseY()) else 0
+        fin wasPaused = frame.paused
+        fin delta = if seconds < config.maxFrameSeconds then seconds else config.maxFrameSeconds
+        frame.time.deltaSecs = if wasPaused then 0.0 else delta
+        dispatchGame(plan, .PreUpdate, frame)
+        frame.time.advance(if frame.paused || wasPaused then 0.0 else delta)
+        if !frame.paused && !wasPaused {
+            world.progress(frame.time.deltaSecs)
+            while world.consumeFixedStep() { dispatchGame(plan, .FixedUpdate, frame) }
+            frame.interpolation = world.fixedAccumulator / world.fixedTimestep
+            dispatchGame(plan, .Update, frame)
+            dispatchGame(plan, .PostUpdate, frame)
+        }
+
+        fin rect = ViewRect(0.0, 0.0, window.width() as Double, window.height() as Double)
+        drawGameScene(frame, plan, meshes, rect)
+        overlay.begin()
+        dispatchGame(plan, .Render, frame)
+        overlay.commit()
+        var child = 0
+        while child < overlay.childCount(overlay.root) {
+            fin node = overlay.childAt(overlay.root, child)
+            overlay.arrange(node, 0.0, 0.0, rect.width, rect.height)
+            paintTree(window, overlay, node, 0.0, rect.height)
+            child += 1
+        }
+        window.present()
+        // Sound for the frame just shown, heard from the camera; paused games still mix (a fade, a menu click).
+        audio.setListener(frame.camera.position(), frame.camera.forward(), frame.camera.right(), delta)
+        if audio.beginBlock() > 0 {
+            dispatchGame(plan, .Audio, frame)
+            audio.endBlock()
+        }
+        dispatchGame(plan, .Last, frame)
+    }
+}

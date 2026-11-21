@@ -1,0 +1,249 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Azora Engine — the sound a game synthesizes, streamed to the speakers.
+//
+// Each frame the game asks how many samples the speakers will need before the
+// next frame ([AudioOutput.beginBlock]), its audio systems mix their voices
+// into that block, and [AudioOutput.endBlock] queues it on an AVAudioPlayerNode.
+// No callback runs on the audio thread: Azora code stays on the main thread,
+// and a block is a frame's worth plus [audioLead] of headroom, so a late frame
+// is absorbed rather than heard.
+
+module engine.audio.output
+
+import std.math
+import std.os::{envVar}
+import engine.io
+import engine.objc
+import engine.math
+import engine.audio.dsp
+
+/** Seconds of sound kept queued ahead of the speakers: a late frame fits in it, and it is short enough not to lag. */
+fin audioLead: Double = 0.040
+
+/** The most frames one block holds: a quarter second at 48 kHz. */
+fin audioCapacity: Int = 12000
+
+/** Seconds of sound AZORA_AUDIO_CAPTURE records at most. */
+fin captureSeconds: Int = 120
+
+pack AudioOutput {
+    var engine: Long = 0
+    var player: Long = 0
+    var format: Long = 0
+    var rate: Int = 48000
+    /** This block, interleaved stereo Doubles. */
+    var mix: Long = 0
+    var capacity: Int = 0
+    /** Player frames queued so far, and the frames of the block being mixed. */
+    var scheduled: Long = 0
+    var frames: Int = 0
+    var limiter: Limiter = .()
+    /** AZORA_AUDIO_CAPTURE: every block, as WAV bytes written on [close]. */
+    var capture: Long = 0
+    var captured: Int = 0
+    var capturePath: String = ""
+    /** The listener: where it is, which way is forward and right, and how fast it moves. */
+    var lx: Double = 0.0
+    var ly: Double = 0.0
+    var lz: Double = 0.0
+    var fx: Double = 0.0
+    var fy: Double = 0.0
+    var fz: Double = -1.0
+    var rx: Double = 1.0
+    var ry: Double = 0.0
+    var rz: Double = 0.0
+    var vx: Double = 0.0
+    var vy: Double = 0.0
+    var vz: Double = 0.0
+    var placed: Bool = false
+}
+
+/** Opens the default output device; a failed open gives an output whose blocks are always empty. */
+func audioOutputOpen(rate: Int = 48000): AudioOutput {
+    var output = AudioOutput(rate: rate, capacity: audioCapacity)
+    output.mix = sampleBuffer(audioCapacity * 2)
+    fin engine = send0(send0(cls("AVAudioEngine"), sel("alloc")), sel("init"))
+    if engine == 0 then return take output
+    fin player = send0(send0(cls("AVAudioPlayerNode"), sel("alloc")), sel("init"))
+    // initStandardFormatWithSampleRate:(double) channels:(uint32): the rate rides in d0, the channels in x2.
+    fin format = azSendQuadI3(send0(cls("AVAudioFormat"), sel("alloc")), sel("initStandardFormatWithSampleRate:channels:"),
+        rate as Double, 0.0, 0.0, 0.0, 2, 0, 0)
+    send1(engine, sel("attachNode:"), player)
+    send3(engine, sel("connect:to:format:"), player, send0(engine, sel("mainMixerNode")), format)
+    send0(engine, sel("prepare"))
+    if (send1(engine, sel("startAndReturnError:"), 0) & 255) == 0 {
+        send0(player, sel("release"))
+        send0(format, sel("release"))
+        send0(engine, sel("release"))
+        return take output
+    }
+    send0(player, sel("play"))
+    output.engine = engine
+    output.player = player
+    output.format = format
+    fin path = envVar("AZORA_AUDIO_CAPTURE")
+    if path != "" {
+        output.capture = azAlloc((captureSeconds * rate * 4 + 44) as Long)
+        output.capturePath = path
+    }
+    return take output
+}
+
+/** Where the player is, in frames since it started; -1 before it has rendered anything. */
+func AudioOutput&.playedFrames(): Long {
+    fin now = send0(self.player, sel("lastRenderTime"))
+    if now == 0 then return -1
+    fin time = send1(self.player, sel("playerTimeForNodeTime:"), now)
+    return if time == 0 then -1 else send0(time, sel("sampleTime"))
+}
+
+/**
+ * Starts this frame's block and answers how many frames to mix: enough to
+ * keep [audioLead] queued. After a stall the time the player went without is
+ * not owed - the block covers what lies ahead - so a hitch is a short gap,
+ * never a backlog that lags the sound behind the picture from then on.
+ */
+func AudioOutput!.beginBlock(): Int {
+    self.frames = 0
+    if self.engine == 0 then return 0
+    if (send0(self.engine, sel("isRunning")) & 255) == 0 {
+        // Plugging in headphones stops the engine; start it, and its player, again.
+        send0(self.engine, sel("prepare"))
+        if (send1(self.engine, sel("startAndReturnError:"), 0) & 255) == 0 then return 0
+        send0(self.player, sel("play"))
+        self.scheduled = 0
+    }
+    fin played = self.playedFrames()
+    fin position: Long = if played > 0 then played else 0
+    if position > self.scheduled then self.scheduled = position
+    fin wanted = (audioLead * (self.rate as Double)) as Long - (self.scheduled - position)
+    self.frames = if wanted <= 0 then 0 else if wanted > self.capacity as Long then self.capacity else wanted as Int
+    var i = 0
+    while i < self.frames * 2 {
+        setSample(self.mix, i, 0.0)
+        i += 1
+    }
+    return self.frames
+}
+
+/** Adds a mono voice of [frames] samples to the block, [gain] loud, placed at [pan]. */
+func AudioOutput!.mixMono(source: Long, frames: Int, gain: Double, pan: Double) {
+    fin left = gain * equalPowerLeft(pan)
+    fin right = gain * equalPowerRight(pan)
+    fin count = if frames < self.frames then frames else self.frames
+    var i = 0
+    while i < count {
+        fin x = sample(source, i)
+        addSample(self.mix, i * 2, x * left)
+        addSample(self.mix, i * 2 + 1, x * right)
+        i += 1
+    }
+}
+
+/** Limits the block and queues it behind the last. */
+func AudioOutput!.endBlock() {
+    if self.engine == 0 || self.frames <= 0 then return
+    self.limiter.process(self.mix, self.frames, 0.95)
+    fin buffer = send2(send0(cls("AVAudioPCMBuffer"), sel("alloc")), sel("initWithPCMFormat:frameCapacity:"), self.format, self.frames as Long)
+    if buffer == 0 then return
+    send1(buffer, sel("setFrameLength:"), self.frames as Long)
+    fin channels = send0(buffer, sel("floatChannelData"))
+    fin left = azPeek64(channels, 0)
+    fin right = azPeek64(channels, 8)
+    var i = 0
+    while i < self.frames {
+        azPokeF32(left, (i as Long) * 4, sample(self.mix, i * 2))
+        azPokeF32(right, (i as Long) * 4, sample(self.mix, i * 2 + 1))
+        i += 1
+    }
+    send2(self.player, sel("scheduleBuffer:completionHandler:"), buffer, 0)
+    send0(buffer, sel("release"))
+    self.scheduled += self.frames as Long
+    if self.capture != 0 {
+        var frame = 0
+        while frame < self.frames && self.captured < captureSeconds * self.rate {
+            fin at = (44 + self.captured * 4) as Long
+            pokeSample16(self.capture, at, sample(self.mix, frame * 2))
+            pokeSample16(self.capture, at + 2, sample(self.mix, frame * 2 + 1))
+            self.captured += 1
+            frame += 1
+        }
+    }
+}
+
+/** Puts the listener at [position] facing [forward]; its velocity comes from where it was [dt] seconds ago. */
+func AudioOutput!.setListener(position: Vec3&, forward: Vec3&, right: Vec3&, dt: Double) {
+    if self.placed && dt > 0.0 {
+        self.vx = (position.x - self.lx) / dt
+        self.vy = (position.y - self.ly) / dt
+        self.vz = (position.z - self.lz) / dt
+    }
+    self.lx = position.x
+    self.ly = position.y
+    self.lz = position.z
+    self.fx = forward.x
+    self.fy = forward.y
+    self.fz = forward.z
+    self.rx = right.x
+    self.ry = right.y
+    self.rz = right.z
+    self.placed = true
+}
+
+func AudioOutput&.distanceTo(x: Double, y: Double, z: Double): Double =
+    sqrt((x - self.lx) * (x - self.lx) + (y - self.ly) * (y - self.ly) + (z - self.lz) * (z - self.lz))
+
+/** -1 when a sound at (x, y, z) is to the listener's left, 1 to its right, 0 ahead, behind or at the listener. */
+func AudioOutput&.panOf(x: Double, y: Double, z: Double): Double {
+    fin distance = self.distanceTo(x, y, z)
+    if distance < 0.000001 then return 0.0
+    return ((x - self.lx) * self.rx + (y - self.ly) * self.ry + (z - self.lz) * self.rz) / distance
+}
+
+/** How much a sound at (x, y, z) moving at (vx, vy, vz) is raised in pitch as the listener hears it (343 m/s). */
+func AudioOutput&.dopplerRatio(x: Double, y: Double, z: Double, vx: Double, vy: Double, vz: Double): Double {
+    fin distance = self.distanceTo(x, y, z)
+    if distance < 0.000001 then return 1.0
+    // Unit vector from the source to the listener.
+    fin ux = (self.lx - x) / distance
+    fin uy = (self.ly - y) / distance
+    fin uz = (self.lz - z) / distance
+    fin source = vx * ux + vy * uy + vz * uz
+    fin listener = self.vx * ux + self.vy * uy + self.vz * uz
+    return dspClamp((343.0 - listener) / (343.0 - dspClamp(source, -300.0, 300.0)), 0.5, 2.0)
+}
+
+/** Stops the sound and, when capturing, writes the capture. */
+func AudioOutput!.close() {
+    if self.engine != 0 {
+        send0(self.player, sel("stop"))
+        send0(self.engine, sel("stop"))
+        send0(self.player, sel("release"))
+        send0(self.format, sel("release"))
+        send0(self.engine, sel("release"))
+        self.engine = 0
+    }
+    if self.capture != 0 {
+        waveHeader(self.capture, self.captured, self.rate)
+        fin unused = saveBytes(self.capture, self.captured * 4 + 44, self.capturePath)
+        azFree(self.capture)
+        self.capture = 0
+    }
+    if self.mix != 0 then azFree(self.mix)
+    self.mix = 0
+}

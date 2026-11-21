@@ -47,7 +47,6 @@ import std.io::{println}
 
 bridge .C {
     func CACurrentMediaTime(): Double
-    func system(command: String): Int
 }
 
 // ── State ───────────────────────────────────────────────────────────────
@@ -72,6 +71,8 @@ pack AzTime {
     var start: Double
     var last: Double
     var delta: Double
+    /** Real time the paced deltas have not handed out yet (see [App.pacedDelta]); under half a refresh. */
+    var owed: Double = 0.0
 }
 
 /// The engine application: window + GPU + input + timing. Created by
@@ -96,6 +97,34 @@ pack App {
     /** AZORA_CAPTURE=frame:path saves this window as presented at that frame, for comparing renders. */
     var captureFrame: Int = 0
     var capturePath: String = ""
+    /** Frames left to keep asking for activation, until the app is first active. */
+    var seekingFocus: Int = 0
+    /**
+     * DIAGNOSTIC, temporary (the car that sometimes will not drive): the first
+     * minute of key events, focus and driving state, written to
+     * .azora-build/input-trace-<time>.log. [traceEvents] is a raw block the
+     * event pump fills - a count, then type, key code, mapped key, repeat per event.
+     */
+    var traceText: String = ""
+    var traceEvents: Long = 0
+    var tracePath: String = ""
+    var traceSaved: Double = 0.0
+}
+
+/** Whether [object] answers [selector]. */
+func responds(object: Long, selector: String): Bool =
+    (send1(object, sel("respondsToSelector:"), sel(selector)) & Long(255)) != Long(0)
+
+/**
+ * Asks for the app to become active. Since macOS 14 activation is
+ * cooperative: `activate` is granted when the active app yields to this one
+ * (Studio does when it runs a game) and refused while the user works
+ * elsewhere, so asking again is harmless. Before it, the forcing request is
+ * the only one there is.
+ */
+func requestActivation(nsapp: Long) {
+    if responds(nsapp, "activate") then send0(nsapp, sel("activate"))
+    else send1(nsapp, sel("activateIgnoringOtherApps:"), Long(1))
 }
 
 /** The decimal number [text] starts with from [from]; 0 when it starts with none. */
@@ -159,9 +188,12 @@ func appInit(title: String, width: Int, height: Int): App {
 
     fin win = AzWindow(window, contentV, gpu.layer, scale)
 
-    send1(window, sel("makeKeyAndOrderFront:"), Long(0))
-    send1(nsapp, sel("activateIgnoringOtherApps:"), Long(1))
+    // Launch first, then ask to come forward: asked before finishLaunching,
+    // the request could be lost, and the game's window opened while the
+    // keyboard stayed with the app that started it - the car would not drive.
     send0(nsapp, sel("finishLaunching"))
+    send1(window, sel("makeKeyAndOrderFront:"), Long(0))
+    requestActivation(nsapp)
 
     fin now = CACurrentMediaTime()
     var app = App(
@@ -175,12 +207,19 @@ func appInit(title: String, width: Int, height: Int): App {
         false,
         false
     )
+    // About five seconds at 120 Hz. Only the cooperative request is repeated: the
+    // forcing one would pull the window back from an app the user switched to.
+    if responds(nsapp, "activate") then app.seekingFocus = 600
+    app.traceEvents = azAlloc(8 + 64 * 32)
+    app.tracePath = ".azora-build/input-trace-${azSendD0(send0(cls("NSDate"), sel("date")), sel("timeIntervalSince1970")) as Long}.log"
     app.frameLimit = leadingNumber(envVar("AZORA_FRAME_LIMIT"))
     fin capture = envVar("AZORA_CAPTURE")
     fin colon = indexOf(capture, ":")
     if colon > 0 {
         app.captureFrame = leadingNumber(capture)
         app.capturePath = substring(capture, colon + 1, stringLength(capture))
+        // The capture reads the drawable back, which a framebuffer-only texture forbids.
+        send1(app.gpu.layer, sel("setFramebufferOnly:"), 0)
     }
     return take app
 }
@@ -216,6 +255,15 @@ impl App {
         self.pool = objcAutoreleasePoolPush()
 
         self.pumpEvents()
+        self.traceInput()
+        // A game started by another app asks again until it is first active:
+        // the launcher may hand activation over after the first request.
+        if self.seekingFocus > 0 {
+            fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
+            self.seekingFocus -= 1
+            if (send0(nsapp, sel("isActive")) & Long(255)) != Long(0) then self.seekingFocus = 0
+            else if self.seekingFocus % 15 == 0 then requestActivation(nsapp)
+        }
         if self.frameLimit > 0 && self.framesRun >= self.frameLimit then return false
         self.framesRun += 1
         if self.framesRun == 60 && self.gpu.timing {
@@ -240,25 +288,88 @@ impl App {
             return false
         }
 
-        fin now = CACurrentMediaTime()
-        var dt = now - self.clk.last
-        if dt > 0.25 {
-            dt = 0.25
-        }
-        self.clk.delta = dt
-        self.clk.last = now
-
         gpuBeginFrame(self)
+        // Read once the drawable is in hand: waiting for it is what holds the
+        // loop to the display, so this clock ticks with the refreshes.
+        self.clk.delta = self.pacedDelta(CACurrentMediaTime())
         return true
+    }
+
+    /**
+     * Seconds since the last frame, on the display's beat. A frame shown one
+     * refresh after the last must move the game by one refresh, but the clock
+     * read near the wait for a drawable wobbles by a millisecond or two, and
+     * that wobble fed to the game made the car and the camera judder. A delta
+     * within a third of a whole number of refreshes counts as exactly that
+     * many; the difference is carried into the next frame, so the game's clock
+     * never drifts from the real one. A delta off the beat is taken as measured.
+     */
+    func !.pacedDelta(now: Double): Double {
+        var measured = now - self.clk.last
+        self.clk.last = now
+        if measured > 0.25 {
+            self.clk.owed = 0.0
+            return 0.25
+        }
+        fin refresh = self.refreshInterval()
+        if refresh <= 0.0 {
+            self.clk.owed = 0.0
+            return measured
+        }
+        fin owed = measured + self.clk.owed
+        fin beats = ((owed / refresh + 0.5) as Long) as Double
+        fin off = owed - beats * refresh
+        if beats >= 1.0 && off < refresh * 0.35 && off > -refresh * 0.35 {
+            self.clk.owed = off
+            return beats * refresh
+        }
+        self.clk.owed = 0.0
+        return measured
+    }
+
+    /** Seconds between refreshes of the screen the window is on; 0 when unknown. */
+    func &.refreshInterval(): Double {
+        fin screen = send0(self.win.handle, sel("screen"))
+        if screen == Long(0) || !responds(screen, "maximumFramesPerSecond") then return 0.0
+        fin rate = send0(screen, sel("maximumFramesPerSecond"))
+        return if rate > Long(0) && rate < Long(1000) then 1.0 / (rate as Double) else 0.0
+    }
+
+    /** DIAGNOSTIC: adds a timed line to the trace for the first minute and saves it about once a second. */
+    func !.diagnose(line: String) {
+        fin now = self.timeNow()
+        if self.traceEvents == 0 || now > 60.0 then return
+        self.traceText = "${self.traceText}${(now * 1000.0) as Long} ${line}\n"
+        if now - self.traceSaved > 1.0 {
+            self.traceSaved = now
+            fin written = send4(nsString(self.traceText), sel("writeToFile:atomically:encoding:error:"), nsString(self.tracePath), 1, 4, 0)
+        }
+    }
+
+    /** DIAGNOSTIC: the key events this frame's pump saw, and every 30 frames who has the keyboard. */
+    func !.traceInput() {
+        if self.traceEvents == 0 then return
+        fin count = azPeek64(self.traceEvents, 0)
+        var i: Long = 0
+        while i < count {
+            fin at = 8 + i * 32
+            fin type = azPeek64(self.traceEvents, at)
+            fin kind = if type == 10 then "down" else if type == 11 then "up" else "flags"
+            self.diagnose("key ${kind} code=${azPeek64(self.traceEvents, at + 8)} mapped=${azPeek64(self.traceEvents, at + 16)} repeat=${azPeek64(self.traceEvents, at + 24)}")
+            i += 1
+        }
+        azPoke64(self.traceEvents, 0, 0)
+        if self.framesRun % 30 == 1 {
+            fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
+            fin keyWindow = send0(nsapp, sel("keyWindow"))
+            self.diagnose("focus frame=${self.framesRun} active=${send0(nsapp, sel("isActive")) & 255} keyWindowIsOurs=${keyWindow == self.win.handle} keyWindow=${keyWindow != 0} visible=${send0(self.win.handle, sel("isVisible")) & 255} W=${self.keyDown(.W)} Up=${self.keyDown(.Up)} S=${self.keyDown(.S)} Down=${self.keyDown(.Down)} dt=${self.clk.delta}")
+        }
     }
 
     /// Finishes the frame and presents it.
     func !.present() {
-        gpuEndFrame(self)
-        if self.captureFrame > 0 && self.framesRun == self.captureFrame {
-            fin window = send0(self.win.handle, sel("windowNumber"))
-            if system("/usr/sbin/screencapture -x -o -l${window} '${self.capturePath}'") != 0 then println("capture failed: ${self.capturePath}")
-        }
+        if self.captureFrame > 0 && self.framesRun == self.captureFrame then gpuEndFrameCaptured(self, self.capturePath)
+        else gpuEndFrame(self)
         // About two seconds at 60 Hz: long enough that text which blinks or
         // alternates stays cached, short enough that churn cannot accumulate.
         self.releaseStaleText(Long(120))
@@ -350,8 +461,11 @@ impl App {
     /// True while [key] is held down.
     func &.keyDown(key: KeyCode): Bool = azPeek8(self.inp.state, key.value as Long) != 0
 
-    /// True only on the frame [key] went down.
+    /// True on a key-down event, including keyboard auto-repeat.
     func &.keyPressed(key: KeyCode): Bool = azPeek8(self.inp.state, Long(2048) + key.value as Long) != 0
+
+    /// True on the initial down edge, even if the key was released in the same frame.
+    func &.keyJustPressed(key: KeyCode): Bool = (azPeek8(self.inp.state, Long(2048) + key.value as Long) & 1) != 0
 
     /// Mouse position in window points, origin top-left.
     func &.mouseX(): Double {
@@ -437,6 +551,17 @@ impl App {
             }
             fin evType = send0(ev, sel("type"))
 
+            if (evType == Long(10) || evType == Long(11) || evType == Long(12)) && self.traceEvents != 0 {
+                fin count = azPeek64(self.traceEvents, 0)
+                if count < 64 {
+                    fin at = 8 + count * 32
+                    azPoke64(self.traceEvents, at, evType)
+                    azPoke64(self.traceEvents, at + 8, send0(ev, sel("keyCode")) & 65535)
+                    azPoke64(self.traceEvents, at + 16, if evType == Long(12) then 0 else self.mapKey(ev) as Long)
+                    azPoke64(self.traceEvents, at + 24, if evType == Long(10) then send0(ev, sel("isARepeat")) else 0)
+                    azPoke64(self.traceEvents, 0, count + 1)
+                }
+            }
             if evType == Long(10) {
                 // keyDown — swallowed (avoids the system beep for unhandled keys).
                 // A held key repeats as another press, which is what an editor's
@@ -445,7 +570,8 @@ impl App {
                 if send0(ev, sel("isARepeat")) == Long(0) {
                     self.setKey(key, 1)
                 } else if key >= 0 && key < 2048 {
-                    azPoke8(self.inp.state, Long(2048) + key as Long, 1)
+                    fin edge = Long(2048) + key as Long
+                    azPoke8(self.inp.state, edge, azPeek8(self.inp.state, edge) | 2)
                 }
                 // Text is what the key types, with its modifiers applied, so
                 // Shift and Option layouts and non-ASCII input arrive intact.
@@ -515,7 +641,7 @@ impl App {
         // quit it), and a game kept driving on a key let go elsewhere. Held
         // keys are dropped while inactive, and the modifiers always follow the
         // keyboard's actual state.
-        if send0(nsapp, sel("isActive")) == Long(0) {
+        if (send0(nsapp, sel("isActive")) & Long(255)) == Long(0) {
             var key = 0
             while key < 2048 {
                 azPoke8(self.inp.state, key as Long, 0)
@@ -794,6 +920,52 @@ func gpuBeginFrame(app: App!) {
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
     gpu.hasEncoder = true
     gpu.mode = -1
+}
+
+/**
+ * Finishes the frame like [gpuEndFrame], first saving it as a PNG at [path]
+ * (AZORA_CAPTURE). The pixels are read back from the GPU rather than taken
+ * from the window server, so a capture works with the display asleep or the
+ * window covered, and the first of a batch no longer fails.
+ */
+func gpuEndFrameCaptured(app: App!, path: String) {
+    let gpu: AzGpu! = app.gpu
+    if !gpu.hasEncoder then return
+    resolveScenePass(gpu)
+    send0(gpu.enc, sel("endEncoding"))
+    send0(gpu.cmd, sel("commit"))
+    send0(gpu.cmd, sel("waitUntilCompleted"))
+    fin texture = send0(gpu.drawable, sel("texture"))
+    fin width = send0(texture, sel("width"))
+    fin height = send0(texture, sel("height"))
+    fin pixels = azAlloc(width * height * 4)
+    // MTLRegion: origin (0, 0, 0), size (width, height, 1); larger than 16 bytes, so it goes by address.
+    fin region = azAlloc(48)
+    azPoke64(region, 24, width)
+    azPoke64(region, 32, height)
+    azPoke64(region, 40, 1)
+    send4(texture, sel("getBytes:bytesPerRow:fromRegion:mipmapLevel:"), pixels, width * 4, region, 0)
+    fin space = CGColorSpaceCreateDeviceRGB()
+    // BGRA8: premultiplied alpha first, 32-bit little-endian.
+    fin context = CGBitmapContextCreate(pixels, width, height, 8, width * 4, space, 8194)
+    fin image = CGBitmapContextCreateImage(context)
+    fin bitmap = send1(send0(cls("NSBitmapImageRep"), sel("alloc")), sel("initWithCGImage:"), image)
+    fin png = send2(bitmap, sel("representationUsingType:properties:"), 4, send0(cls("NSDictionary"), sel("dictionary")))
+    if png == 0 || (send2(png, sel("writeToFile:atomically:"), nsString(path), 1) & 255) == 0 then println("capture failed: ${path}")
+    send0(bitmap, sel("release"))
+    CGImageRelease(image)
+    CGContextRelease(context)
+    CGColorSpaceRelease(space)
+    azFree(region)
+    azFree(pixels)
+    // Shown after all, from a command buffer of its own.
+    fin show = send0(gpu.queue, sel("commandBuffer"))
+    send1(show, sel("presentDrawable:"), gpu.drawable)
+    send0(show, sel("commit"))
+    gpu.enc = 0
+    gpu.cmd = 0
+    gpu.drawable = 0
+    gpu.hasEncoder = false
 }
 
 func gpuEndFrame(app: App!) {

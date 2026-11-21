@@ -1,0 +1,181 @@
+import std.io
+import std.math
+import engine.core
+import engine.math
+import engine.math.mat
+import engine.objc
+import engine.io
+import engine.gpu
+import engine.particles
+
+func report(name: String, passed: Bool, value: Double) {
+    println(if passed then "${name} ok" else "${name} FAIL ${value}")
+}
+
+/** A view from (0, 10, 0) looking straight down, 64 x 64 pixels; the matrices live at [block] (current, previous, inverse). */
+func downView(block: Long, commands: Long, depth: Long, dt: Double, time: Double): ParticleView {
+    fin projection = mat4Perspective(60.0, 1.0, 0.1, 100.0)
+    fin view = Mat4(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, -10.0, 0.0, 0.0, 0.0, 1.0)
+    fin clip = mat4Mul(projection, view)
+    pokeMat4(block, 0, clip)
+    pokeMat4(block, 64, clip)
+    pokeMat4(block, 128, mat4Inverse(clip))
+    return ParticleView(commands: commands, viewProj: block, previousViewProj: block + 64, previousInverse: block + 128, depth: depth,
+        eyeX: 0.0, eyeY: 10.0, eyeZ: 0.0, time: time, delta: dt, fullWidth: 64.0, fullHeight: 64.0, depthWidth: 64.0, depthHeight: 64.0,
+        near: 0.1, far: 100.0, focal: 55.0)
+}
+
+/** Copies a GPU pool into shared memory and answers its contents. */
+func readBack(queue: Long, device: Long, buffer: Long, bytes: Long): Long {
+    fin shared = send2(device, sel("newBufferWithLength:options:"), bytes, 0)
+    fin commands = send0(queue, sel("commandBuffer"))
+    fin blit = send0(commands, sel("blitCommandEncoder"))
+    send5(blit, sel("copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:"), buffer, 0, shared, 0, bytes)
+    send0(blit, sel("endEncoding"))
+    send0(commands, sel("commit"))
+    send0(commands, sel("waitUntilCompleted"))
+    return shared
+}
+
+func step(queue: Long, run: ParticleSystem!, pipes: ParticlePipelines&, emitter: ParticleEmitter&, view: ParticleView!, origin: Vec3&) {
+    fin commands = send0(queue, sel("commandBuffer"))
+    view.commands = commands
+    run.simulate(pipes, emitter, view, origin)
+    send0(commands, sel("commit"))
+    send0(commands, sel("waitUntilCompleted"))
+}
+
+func main() {
+    fin device = MTLCreateSystemDefaultDevice()
+    fin queue = send0(device, sel("newCommandQueue"))
+    var pipes = makeParticlePipelines(device)
+    fin block = azAlloc(192)
+    fin origin = Vec3(0.0, 0.0, 0.0)
+
+    // CPU: 100 a second for one second, living ten: a hundred alive.
+    var rate = ParticleEmitter(simulation: 0, capacity: 500, rate: 100.0, lifeMin: 10.0, lifeMax: 10.0, spread: 0.0, gravity: 0.0, drag: 0.0)
+    var cpu = particleSystem(device, queue, 500, false)
+    var view = downView(block, 0, 0, 0.1, 0.0)
+    var i = 0
+    while i < 10 {
+        cpu.simulate(pipes, rate, view, origin)
+        i += 1
+    }
+    var alive = 0
+    i = 0
+    while i < 500 {
+        if azPeekF64(cpu.state, (i as Long) * 64 + 48) < azPeekF64(cpu.state, (i as Long) * 64 + 56) then alive += 1
+        i += 1
+    }
+    report("cpuRateSpawn", alive == 100, alive as Double)
+
+    // CPU: one particle thrown up at 5 m/s under gravity, stepped like the GPU (velocity, then position).
+    var thrown = ParticleEmitter(simulation: 0, capacity: 1, rate: 10.0, lifeMin: 10.0, lifeMax: 10.0, velocity: Vec3(0.0, 5.0, 0.0),
+        spread: 0.0, gravity: 9.81, drag: 0.0, wind: 0.0)
+    var one = particleSystem(device, queue, 1, false)
+    view = downView(block, 0, 0, 0.1, 0.0)
+    one.simulate(pipes, thrown, view, origin)
+    var expectedY: Double = 0.0
+    var expectedV: Double = 5.0
+    // The first step spawned it and moved it once.
+    expectedV -= 9.81 * 0.1
+    expectedY += expectedV * 0.1
+    thrown.rate = 0.0
+    i = 0
+    while i < 9 {
+        one.simulate(pipes, thrown, view, origin)
+        expectedV -= 9.81 * 0.1
+        expectedY += expectedV * 0.1
+        i += 1
+    }
+    fin cpuY = azPeekF64(one.state, 8)
+    report("cpuGravityExact", absValue(cpuY - expectedY) < 1e-9, cpuY - expectedY)
+
+    // GPU: the same throw, the same steps, the same height (to float precision).
+    var gpu = particleSystem(device, queue, 1, true)
+    thrown.rate = 10.0
+    view = downView(block, 0, 0, 0.1, 0.0)
+    step(queue, gpu, pipes, thrown, view, origin)
+    thrown.rate = 0.0
+    i = 0
+    while i < 9 {
+        step(queue, gpu, pipes, thrown, view, origin)
+        i += 1
+    }
+    fin back = readBack(queue, device, gpu.particles, 32)
+    fin gpuY = peekFloat32(send0(back, sel("contents")), 4)
+    send0(back, sel("release"))
+    report("gpuMatchesCpu", pipes.ready && absValue(gpuY - expectedY) < 0.001, gpuY - expectedY)
+
+    // GPU camera box: after the eye moves 100 m east every drop is around it.
+    var rain = ParticleEmitter(simulation: 1, capacity: 4096, spawn: 3, extent: Vec3(9.0, 9.0, 9.0), lifeMin: 1.0, lifeMax: 1.0,
+        spread: 0.0, terminalSpeed: 8.0, drag: 20.0, wind: 1.0, collision: 0)
+    var drops = particleSystem(device, queue, 4096, true)
+    view = downView(block, 0, 0, 1.0 / 60.0, 0.0)
+    step(queue, drops, pipes, rain, view, origin)
+    view.eyeX = 100.0
+    step(queue, drops, pipes, rain, view, origin)
+    fin pool = readBack(queue, device, drops.particles, 4096 * 32)
+    fin contents = send0(pool, sel("contents"))
+    var inside = 0
+    i = 0
+    while i < 4096 {
+        fin x = peekFloat32(contents, (i as Long) * 32)
+        if absValue(x - 100.0) <= 9.01 then inside += 1
+        i += 1
+    }
+    send0(pool, sel("release"))
+    report("cameraBoxFollowsEye", inside == 4096, inside as Double)
+
+    // GPU collisions: the ground plane y = 0 seen from 10 m above is the depth buffer; falling drops hit it.
+    fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 252, 64, 64, 0)
+    send1(descriptor, sel("setUsage:"), 5)
+    send1(descriptor, sel("setStorageMode:"), 2)
+    fin depth = send1(device, sel("newTextureWithDescriptor:"), descriptor)
+    fin ground = mat4Perspective(60.0, 1.0, 0.1, 100.0)
+    // Depth of a point 10 m in front: (m22 * -10 + m23) / 10.
+    fin groundDepth = (ground.m22 * -10.0 + ground.m23) / 10.0
+    fin clearing = send0(queue, sel("commandBuffer"))
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin attachment = send0(pass, sel("depthAttachment"))
+    send1(attachment, sel("setTexture:"), depth)
+    send1(attachment, sel("setLoadAction:"), 2)
+    send1(attachment, sel("setStoreAction:"), 1)
+    fin cleared = azSendF1(attachment, sel("setClearDepth:"), groundDepth)
+    send0(send1(clearing, sel("renderCommandEncoderWithDescriptor:"), pass), sel("endEncoding"))
+    send0(clearing, sel("commit"))
+    send0(clearing, sel("waitUntilCompleted"))
+    rain.collision = 1
+    rain.extent = Vec3(4.0, 12.0, 4.0)
+    var falling = particleSystem(device, queue, 4096, true, 2048)
+    view = downView(block, 0, depth, 1.0 / 60.0, 0.0)
+    var hits = 0
+    var hitY: Double = 99.0
+    var frames = 0
+    while frames < 90 && hits == 0 {
+        step(queue, falling, pipes, rain, view, origin)
+        hits = azPeek32(send0(falling.counters, sel("contents")), 4)
+        frames += 1
+    }
+    if hits > 0 {
+        fin events = readBack(queue, device, falling.events, 32)
+        hitY = peekFloat32(send0(events, sel("contents")), 4)
+        send0(events, sel("release"))
+    }
+    report("depthHitsRecorded", hits > 0 && absValue(hitY) < 0.05, hitY)
+
+    // Those hits become splashes: a ring and droplets for each.
+    var splash = ParticleEmitter(simulation: 1, capacity: 8192, lifeMin: 0.3, lifeMax: 0.3, gravity: 9.81, drag: 0.0, wind: 0.0, sizeStart: 0.02)
+    var splashes = particleSystem(device, queue, 8192, true)
+    fin commands = send0(queue, sel("commandBuffer"))
+    view.commands = commands
+    falling.simulate(pipes, rain, view, origin)
+    splashes.spawnFromHits(pipes, splash, view, falling, 4, 1)
+    send0(commands, sel("commit"))
+    send0(commands, sel("waitUntilCompleted"))
+    fin made = azPeek32(send0(splashes.counters, sel("contents")), 0)
+    fin recorded = azPeek32(send0(falling.counters, sel("contents")), 4)
+    report("hitsSpawnSplashes", recorded > 0 && made == (if recorded > 2048 then 2048 else recorded) * 4, made as Double)
+    send0(depth, sel("release"))
+    azFree(block)
+}

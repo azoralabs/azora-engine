@@ -267,7 +267,7 @@ impl App {
 
     /// Uses the same mesh buffers and transforms for standard and Fusion materials.
     func !.drawMeshPipeline(mesh: Mesh&, model: Mat4&, r: Double, g: Double, b: Double, pipeline: Long, lighting: Bool = true,
-                            indices: Long = 0, indexCount: Int = 0) {
+                            indices: Long = 0, indexCount: Int = 0, emission: Double = 0.0) {
         let gpu: AzGpu! = self.gpu
         if !gpu.hasEncoder || mesh.buffer == 0 then return
         if gpu.casting {
@@ -324,7 +324,12 @@ impl App {
         // Texture footprint: a half-resolution scene pass samples as finely as a full one.
         azPokeF32(gpu.scratch,204,gpu.passScale)
         azCopy(gpu.scratch+208,gpu.viewProj+112,16)
-        fin size: Long = 224
+        // extra: x is the surface's own light (StandardMaterial.emission).
+        azPokeF32(gpu.scratch,224,emission)
+        azPokeF32(gpu.scratch,228,0.0)
+        azPokeF32(gpu.scratch,232,0.0)
+        azPokeF32(gpu.scratch,236,0.0)
+        fin size: Long = 240
         send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0, 0)
         send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, size, 1)
         send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, size, 1)
@@ -341,6 +346,9 @@ impl App {
         }
         if gpu.detailLight != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.detailLight, 80, 4)
         if gpu.detailMap != 0 then send2(gpu.enc, sel("setFragmentTexture:atIndex:"), gpu.detailMap, 30)
+        if gpu.localLights != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.localLights, 528, 5)
+        if gpu.environment != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.environment, 64, 6)
+        send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if gpu.cloudShadow != 0 then gpu.cloudShadow else gpu.whiteTexture, 31)
         // A mesh in the upscaler's scene pass leaves what its motion needs; the
         // terrain's indexed chunks do not move, so the camera's motion covers them.
         if gpu.scenePass.active && indices == 0 && gpu.motionCurrent != 0 && gpu.motionCount < motionCapacity {
@@ -1044,4 +1052,25 @@ impl App {
 
     /** Reconstructs the scene pass into the drawable and reopens it (see [resolveScenePass]). */
     func !.resolveScenePass() { resolveScenePass(self.gpu) }
+
+    /** Ends the scene pass's encoder for passes of a system's own (see [suspendScenePass]). */
+    func !.suspendScenePass() { suspendScenePass(self.gpu) }
+
+    /** Reopens a suspended scene pass (see [resumeScenePass]). */
+    func !.resumeScenePass() { resumeScenePass(self.gpu) }
+
+    /**
+     * Claims this frame's sky for a system that draws its own: answers the
+     * encoder of the 3D view to draw it into (its colour BGRA8, depth Depth32F),
+     * and the built-in sky is not drawn. The pipeline it leaves bound is
+     * forgotten, so the next mesh rebinds its own.
+     */
+    func !.beginCustomSky(): Long {
+        self.beginScenePass()
+        if !self.gpu.hasEncoder then return 0
+        self.gpu.skyClaimed = true
+        self.gpu.mode = -1
+        self.gpu.meshPipeline = 0
+        return self.gpu.enc
+    }
 }

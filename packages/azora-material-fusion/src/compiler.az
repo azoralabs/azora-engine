@@ -55,7 +55,7 @@ func emitFusionNode(node: FusionNode&, slot: Int): String {
         "noise" -> "    float n${id} = noiseMask(in.local * ${metalReal(node.scale, 0.01, 100.0)});\n"
         "mix" -> "    Sample n${id} = mixSurfaces(n${node.a}, n${node.b}, ${mask});\n"
         "layer" -> "    Sample n${id} = stackLayers(ctx, n${node.a}, n${node.b}, ${mask}, ${metalReal(node.thickness, 0.0, 8.0)});\n"
-        else -> "    float3 finalColor=(int(u.eye.w)&1)!=0 ? n${node.a}.color : mix(n${node.a}.light,pow(u.fog.xyz,float3(2.2)),heightFog(u.eye.xyz,in.world,u.fog.w,u.fogShape));\n    return float4(pow(saturate(finalColor),float3(0.454545)),1.0);\n"
+        else -> "    float3 finalColor=(int(u.eye.w)&1)!=0 ? n${node.a}.color : mix(n${node.a}.light+localLights(spots,in.world,n,v,n${node.a}.color,n${node.a}.f0),pow(u.fog.xyz,float3(2.2)),heightFog(u.eye.xyz,in.world,u.fog.w,u.fogShape));\n    return float4(pow(saturate(finalColor),float3(0.454545)),1.0);\n"
     }
 }
 
@@ -101,7 +101,7 @@ func compileFusionGraph(document: FusionGraph&): FusionProgram {
     var source = StringBuilder()
     source.append(fusionMetalPrelude())
     source.append(fusionTexturePrelude())
-    source.append("fragment float4 fusion_fragment(Vertex in [[stage_in]], constant Uniforms& u [[buffer(1)]], const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]], constant float4* detailLight [[buffer(4)]], depth2d<float> detail [[texture(30)]]")
+    source.append("fragment float4 fusion_fragment(Vertex in [[stage_in]], constant Uniforms& u [[buffer(1)]], const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]], constant float4* detailLight [[buffer(4)]], constant float4* spots [[buffer(5)]], constant float4* env [[buffer(6)]], depth2d<float> detail [[texture(30)]], texture2d<float> clouds [[texture(31)]]")
     var sets: Array<String> = []
     for index in order {
         fin node = document.nodes[index].clone()
@@ -118,9 +118,11 @@ func compileFusionGraph(document: FusionGraph&): FusionProgram {
     source.append(") {\n")
     source.append("    float3 n=normalize(in.normal), l=normalize(u.light.xyz), v=normalize(u.eye.xyz-in.world), h=normalize(l+v+float3(1e-6));\n")
     source.append("    PhotonLighting lighting=scenePhotonLight(photons,baked,detail,detailLight,in.world,n,u.eye.w,u.direct.xyz);\n")
+    source.append("    lighting.visibility*=cloudShade(env,clouds,in.world);\n")
     // direct.w scales texture footprints: 0.5 while the scene is drawn at half resolution,
     // so it samples the mip a full-resolution frame would (a -1 bias), not a blurrier one.
     source.append("    Context ctx=makeContext(n,l,v,h,saturate(u.light.w),lighting,u.direct.w>0.0?u.direct.w:1.0);\n")
+    source.append("    ctx.wet=sceneWetness(env,n); ctx.snow=sceneSnow(env,n,in.world); ctx.flash=sceneFlash(env,n); ctx.sky=pow(u.fog.xyz,float3(2.2));\n")
     for index in order {
         fin node = document.nodes[index].clone()
         var slot = 0
@@ -148,8 +150,10 @@ func fusionMetalPrelude(): String {
     return (""
     + "#include <metal_stdlib>\nusing namespace metal;\n"
     + photonMetalSource()
+    + localLightMetalSource()
+    + sceneEnvironmentMetalSource()
     + heightFogShader()
-    + "struct Uniforms { float4x4 vp, model; float4 color, light, eye, fog, direct, fogShape; };\n"
+    + "struct Uniforms { float4x4 vp, model; float4 color, light, eye, fog, direct, fogShape, extra; };\n"
     + "struct Vertex { float4 clip [[position]]; float3 normal, world, local; };\n"
     + "vertex Vertex fusion_vertex(uint i [[vertex_id]], const device float* v [[buffer(0)]], constant Uniforms& u [[buffer(1)]]) {\n"
     + "    float3 p = float3(v[i*6], v[i*6+1], v[i*6+2]);\n"
@@ -159,10 +163,14 @@ func fusionMetalPrelude(): String {
     + "    float4 world = u.model * float4(p,1);\n"
     + "    return {u.vp * world, (cof * n) * (dot(x,cof[0]) < 0 ? -1.0 : 1.0), world.xyz, p};\n"
     + "}\n"
-    + "struct Context { float nl, nv, nh, vh, ambient; PhotonLighting lighting; float3 l,v,h; float footprint; };\n"
+    + "struct Context { float nl, nv, nh, vh, ambient; PhotonLighting lighting; float3 l,v,h; float footprint; float wet, snow; float3 flash, sky; };\n"
     + "struct Sample { float3 color, light, f0; };\n"
     + "float3 fresnel(float3 f0, float cosAngle) { return f0 + (1.0-f0) * pow(1.0-cosAngle, 5.0); }\n"
     + "Sample slab(Context c, float3 color, float roughness, float metal, float emission) {\n"
+    + "    // Weather: water darkens a porous surface and smooths it; snow covers what faces up.\n"
+    + "    color = mix(color*(1.0-0.5*c.wet*(1.0-metal)), float3(0.82,0.85,0.9), c.snow);\n"
+    + "    // A water film smooths a surface only as far as it can fill it: grass stays rough, stone and asphalt shine.\n"
+    + "    roughness = mix(mix(roughness, 0.07, c.wet*saturate(1.3-roughness)), 0.62, c.snow); metal *= 1.0-c.snow;\n"
     + "    float3 f0 = mix(float3(0.04), color, metal), f = fresnel(f0,c.vh);\n"
     + "    float alpha = roughness * roughness, a2 = alpha * alpha;\n"
     + "    float denom = c.nh*c.nh*(a2-1.0)+1.0;\n"
@@ -170,7 +178,9 @@ func fusionMetalPrelude(): String {
     + "    float k = (roughness+1.0)*(roughness+1.0)/8.0;\n"
     + "    float vis = 0.25 / max((c.nv*(1.0-k)+k)*(c.nl*(1.0-k)+k), 1e-5);\n"
     + "    float3 diffuse = color * (1.0-metal) * (1.0-f);\n"
-    + "    float3 lit = (diffuse + f*d*vis) * c.nl * (1.0-c.ambient) * c.lighting.visibility * c.lighting.direct + color * (c.ambient * (1.0-0.35*metal)+emission + c.lighting.indirect*(1.0-metal));\n"
+    + "    float3 lit = (diffuse + f*d*vis) * c.nl * (1.0-c.ambient) * c.lighting.visibility * c.lighting.direct + color * (c.ambient * (1.0-0.35*metal)+emission + c.lighting.indirect*(1.0-metal) + c.flash);\n"
+    + "    // A wet surface mirrors the sky's colour at grazing angles.\n"
+    + "    lit += c.wet*(1.0-c.snow)*fresnel(f0,c.nv)*(1.0-roughness)*(1.0-roughness)*c.sky*0.6;\n"
     + "    return {color, lit, f0};\n"
     + "}\n"
     + "Sample mixSurfaces(Sample a, Sample b, float mask) {\n"
@@ -195,7 +205,7 @@ func fusionMetalPrelude(): String {
     + "    return mix(a,b,t.z);\n"
     + "}\n"
     + "Context makeContext(float3 n,float3 l,float3 v,float3 h,float ambient,PhotonLighting lighting,float footprint) {\n"
-    + "    return {saturate(dot(n,l)), max(saturate(dot(n,v)),1e-4), saturate(dot(n,h)), saturate(dot(v,h)), ambient, lighting, l, v, h, footprint};\n"
+    + "    return {saturate(dot(n,l)), max(saturate(dot(n,v)),1e-4), saturate(dot(n,h)), saturate(dot(v,h)), ambient, lighting, l, v, h, footprint, 0.0, 0.0, float3(0), float3(0)};\n"
     + "}\n")
 }
 
@@ -268,7 +278,9 @@ func fusionTexturePrelude(): String {
     + "                 +noiseMask(wp*(0.29/max(macroScale,0.1))+float3(48,17,33))*0.35;\n"
     + "    col*=macroScale>0.0 ? 0.71+0.61*factor : 1.0;\n"
     + "    float3 perturbed=normalize(n+detail*(bump-n*dot(n,bump)));\n"
+    + "    Context weather=c;\n"
     + "    c=makeContext(perturbed,c.l,c.v,c.h,c.ambient*(0.40+0.60*surface.g),c.lighting,c.footprint);\n"
+    + "    c.wet=weather.wet; c.snow=weather.snow; c.flash=weather.flash; c.sky=weather.sky;\n"
     + "    return slab(c,col,max(surface.r,0.04),surface.a,emission);\n"
     + "}\n")
 }

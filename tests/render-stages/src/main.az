@@ -1,0 +1,92 @@
+module renderStages
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.game
+import engine.gpu
+import engine.math
+import engine.math.mat
+import engine.platform
+
+fin game = GameConfig(title: "Render stages probe", width: 320, height: 240, fixedHz: 60)
+
+/** What each render stage saw this frame. */
+@Component
+pack Trace {
+    var log: String = ""
+    var volumesDepth: Bool = false
+    var volumesSuspended: Bool = false
+    var claimedSeen: Bool = false
+    var transparentOpen: Bool = false
+    var nativeDepth: Bool = false
+}
+
+@System(phase: .Startup)
+func setupTrace(world: World!) {
+    storageInsert<Trace>(ensureStorage<Trace>(world), world.spawn(), Trace())
+}
+
+func report(name: String, passed: Bool) { println(if passed then "${name} ok" else "${name} FAIL") }
+
+@System(phase: .RenderSky)
+func probeSky(frame: Game!, traces: @query [Trace!]) {
+    traces.unpack { owner, seen ->
+        seen.log = seen.log + "S"
+        // Only odd frames claim the sky: the claim must not outlive its frame.
+        if frame.window.framesRun % 2 == 1 then seen.claimedSeen = frame.window.beginCustomSky() != 0
+    }
+}
+
+@System(phase: .RenderVolumes)
+func probeVolumes(frame: Game!, traces: @query [Trace!]) {
+    traces.unpack { owner, seen ->
+        seen.log = seen.log + "V"
+        seen.volumesDepth = frame.view.depth != 0 && frame.view.color != 0
+        seen.volumesSuspended = frame.view.encoder == 0 && frame.view.commands != 0
+        if frame.window.framesRun == 3 && frame.window.gpu.skyClaimed != seen.claimedSeen then seen.claimedSeen = false
+        if frame.window.framesRun == 4 && frame.window.gpu.skyClaimed then seen.claimedSeen = false
+        if frame.window.framesRun == 6 then seen.nativeDepth = frame.view.depth != 0 && frame.view.width == frame.view.fullWidth
+    }
+}
+
+@System(phase: .RenderTransparent)
+func probeTransparent(frame: Game!, traces: @query [Trace!]) {
+    traces.unpack { owner, seen ->
+        seen.log = seen.log + "T"
+        seen.transparentOpen = frame.view.encoder != 0 && !frame.window.gpu.scenePass.active
+    }
+}
+
+func nearIdentity(m: Mat4&): Bool =
+    absValue(m.m00 - 1.0) + absValue(m.m11 - 1.0) + absValue(m.m22 - 1.0) + absValue(m.m33 - 1.0) +
+    absValue(m.m01) + absValue(m.m02) + absValue(m.m10) + absValue(m.m12) + absValue(m.m20) + absValue(m.m21) < 0.001
+
+@System(phase: .Last)
+func checkStages(frame: Game!, traces: @query [Trace!]) {
+    traces.unpack { owner, seen ->
+        if frame.window.framesRun == 3 {
+            report("skyStage", seen.log == "SVTSVTSVT")
+            report("volumesSeeDepth", seen.volumesDepth && seen.volumesSuspended)
+            report("transparentAfterResolve", seen.transparentOpen)
+        }
+        if frame.window.framesRun == 4 {
+            report("skyClaimResets", seen.claimedSeen)
+            fin seenView = frame.view.&
+            fin eye = frame.camera.position()
+            fin product = mat4Mul(peekMat4(seenView.matrices, 64), peekMat4(seenView.matrices, 0))
+            report("viewMatrices", nearIdentity(product) &&
+                absValue(seenView.eyeX - eye.x) + absValue(seenView.eyeY - eye.y) + absValue(seenView.eyeZ - eye.z) < 0.0001 &&
+                seenView.near > 0.0 && seenView.far > seenView.near && seenView.tangent > 0.0)
+            report("viewFollowsDrawable", seenView.fullWidth as Long == frame.window.gpu.depthW && seenView.fullHeight as Long == frame.window.gpu.depthH)
+            report("phasePredicate", phaseHasSystems(systemPlan(), .RenderVolumes) && !phaseHasSystems(systemPlan(), .FixedUpdate))
+            // The rest of the run draws without temporal upscaling.
+            frame.window.gpu.upscale = false
+        }
+        if frame.window.framesRun == 6 {
+            report("nativeHasDepth", seen.nativeDepth)
+            frame.window.quit()
+        }
+    }
+}

@@ -1,0 +1,322 @@
+module engine.particles.shader
+
+/**
+ * Metal source of the particle system: the GPU simulation (one thread per
+ * particle), spawning (by rate, or from another system's collision events),
+ * and the instanced draw shared by GPU- and CPU-simulated systems.
+ *
+ * A particle is two float4: position and age; velocity and life. A negative
+ * life marks a ring, a particle lying on a surface whose normal its velocity
+ * holds. Nothing is allocated or compacted: rate-spawned particles take ring
+ * slots over the oldest, a camera box keeps every slot alive around the eye.
+ */
+func particleMetalSource(): String = "#include <metal_stdlib>
+using namespace metal;
+
+struct ParticleU {
+    float4x4 viewProj;          // this frame's clip transform (drawing)
+    float4x4 previousViewProj;  // the frame whose depth collisions read
+    float4x4 previousInverse;
+    float4 eye;        // eye, seconds
+    float4 step;       // dt, gravity, drag, terminal speed (0: none)
+    float4 wind;       // wind m/s, how much it carries
+    float4 spawn;      // shape (0 point, 1 sphere, 2 box, 3 camera box), extent
+    float4 origin;     // where it spawns, spread m/s
+    float4 velocity;   // initial velocity, turbulence
+    float4 life;       // life min, max, active count, capacity
+    float4 sizes;      // size start, end, streak exposure s, soft depth m
+    float4 colorStart;
+    float4 colorEnd;
+    float4 render;     // shape (0 billboard, 1 streak), lit 0..1, focal px, collision (0 none, 1 kill, 2 bounce)
+    float4 screen;     // drawable px, depth px
+    float4 depth;      // near, far, collision thickness m, bounce
+    float4 light;      // toward the sun or moon, its strength
+    float4 lightColor; // its colour, ambient
+    float4 air;        // the air's colour (display), near fade m
+    float4 counters;   // seed, spawn count, per event, rings (1) or puffs (2)
+    float4 motion;     // the eye's velocity, events capacity
+};
+
+uint particleHash(uint x) {
+    x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u;
+    return x;
+}
+float particleRandom(uint x) { return float(particleHash(x)) / 4294967295.0; }
+float3 particleRandom3(uint x) { return float3(particleRandom(x * 3u + 1u), particleRandom(x * 3u + 2u), particleRandom(x * 3u + 3u)); }
+
+float3 randomDirection(uint key) {
+    float z = particleRandom(key) * 2.0 - 1.0, a = particleRandom(key + 7u) * 6.2831853;
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    return float3(r * cos(a), z, r * sin(a));
+}
+
+/** A new particle at slot [slot] of a rate or camera-box system. */
+void spawnParticle(device float4* p, uint slot, uint key, constant ParticleU& u, bool top) {
+    float3 r = particleRandom3(key);
+    float3 at;
+    int shape = int(u.spawn.x);
+    if (shape == 1) at = u.origin.xyz + randomDirection(key + 11u) * u.spawn.y * pow(r.x, 0.3333);
+    else if (shape == 2) at = u.origin.xyz + (r * 2.0 - 1.0) * u.spawn.yzw;
+    else if (shape == 3) {
+        // The camera's box: anywhere in it, or (respawning) across its top.
+        at = u.eye.xyz + (r * 2.0 - 1.0) * u.spawn.yzw;
+        if (top) at.y = u.eye.y + u.spawn.z * (1.0 - 0.1 * r.y);
+    } else at = u.origin.xyz;
+    float3 v = u.velocity.xyz + randomDirection(key + 23u) * u.origin.w * r.z;
+    float life = mix(u.life.x, u.life.y, particleRandom(key + 31u));
+    p[slot * 2u] = float4(at, 0.0);
+    p[slot * 2u + 1u] = float4(v, life);
+}
+
+kernel void particle_spawn(device float4* p [[buffer(0)]], constant ParticleU& u [[buffer(1)]], device atomic_uint* head [[buffer(2)]],
+        uint id [[thread_position_in_grid]]) {
+    if (id >= uint(u.counters.y)) return;
+    uint slot = atomic_fetch_add_explicit(head, 1u, memory_order_relaxed) % uint(u.life.w);
+    spawnParticle(p, slot, uint(u.counters.x) * 7919u + id * 104729u, u, false);
+}
+
+/** Fills a camera box: every slot alive, anywhere in the box. */
+kernel void particle_fill(device float4* p [[buffer(0)]], constant ParticleU& u [[buffer(1)]], uint id [[thread_position_in_grid]]) {
+    if (id >= uint(u.life.w)) return;
+    spawnParticle(p, id, uint(u.counters.x) * 7919u + id * 104729u, u, false);
+    p[id * 2u].w = particleRandom(id * 13u + 5u) * u.life.y;
+}
+
+/**
+ * Particles from another system's collisions: each event (where, how hard;
+ * the surface's normal) becomes [per event] particles of one kind - rings
+ * lying on up-facing surfaces (1), puffs (2), or droplets thrown up and out (3).
+ */
+kernel void particle_spawn_events(device float4* p [[buffer(0)]], constant ParticleU& u [[buffer(1)]], device atomic_uint* head [[buffer(2)]],
+        device atomic_uint* events [[buffer(3)]], device const float4* hits [[buffer(4)]], uint id [[thread_position_in_grid]]) {
+    uint per = uint(u.counters.z);
+    uint count = min(atomic_load_explicit(events, memory_order_relaxed), uint(u.motion.w));
+    if (id >= count * per) return;
+    uint e = id / per, k = id % per;
+    float4 at = hits[e * 2u], normal = hits[e * 2u + 1u];
+    uint key = uint(u.counters.x) * 7919u + id * 104729u;
+    uint slot = atomic_fetch_add_explicit(head, 1u, memory_order_relaxed) % uint(u.life.w);
+    float life = mix(u.life.x, u.life.y, particleRandom(key + 31u));
+    float3 n = normal.xyz;
+    int kind = int(u.counters.w + 0.5);
+    if (kind == 2) {
+        // A puff: rising a little, spreading.
+        p[slot * 2u] = float4(at.xyz + n * 0.02, 0.0);
+        p[slot * 2u + 1u] = float4(n * 0.15 + randomDirection(key) * 0.2, life);
+    } else if (kind == 1) {
+        // A ring, only where the surface faces up enough to hold water; elsewhere the slot stays dead.
+        bool flat = n.y > 0.55;
+        p[slot * 2u] = float4(at.xyz + n * 0.008, flat ? 0.0 : 1.0);
+        p[slot * 2u + 1u] = float4(n, flat ? -life : 0.5);
+    } else {
+        // A droplet thrown up and out of the crown.
+        float3 side = normalize(randomDirection(key + 3u) - n * dot(randomDirection(key + 3u), n) + float3(1e-4, 0.0, 0.0));
+        // How hard the drop hit, times the emitter's spread: how high its crown is thrown.
+        float speed = (0.6 + 0.9 * particleRandom(key + 5u)) * min(at.w / 9.0, 1.2) * u.origin.w;
+        p[slot * 2u] = float4(at.xyz + n * 0.01, 0.0);
+        p[slot * 2u + 1u] = float4((n * 1.3 + side) * speed, life * 0.8);
+    }
+}
+
+float sceneDepthDistance(float z, constant ParticleU& u) {
+    return u.depth.x * u.depth.y / max(u.depth.y - z * (u.depth.y - u.depth.x), 1e-4);
+}
+
+float3 depthWorld(float2 px, float z, constant ParticleU& u) {
+    float2 ndc = float2(px.x / u.screen.z * 2.0 - 1.0, 1.0 - px.y / u.screen.w * 2.0);
+    float4 w = u.previousInverse * float4(ndc, z, 1.0);
+    return w.xyz / w.w;
+}
+
+/**
+ * One step of every particle: forces, wind, turbulence, motion; a camera box
+ * wraps what leaves it; collisions against the depth the last frame left
+ * (where a particle went behind the surface by less than its thickness) record
+ * an event, then kill (respawn at the top) or bounce.
+ */
+kernel void particle_update(device float4* p [[buffer(0)]], constant ParticleU& u [[buffer(1)]], depth2d<float> depth [[texture(0)]],
+        device atomic_uint* events [[buffer(2)]], device float4* hits [[buffer(3)]], uint id [[thread_position_in_grid]]) {
+    if (id >= uint(u.life.w)) return;
+    bool box = int(u.spawn.x) == 3;
+    if (box && id >= uint(u.life.z)) return;
+    float4 a = p[id * 2u], b = p[id * 2u + 1u];
+    float life = abs(b.w);
+    float dt = u.step.x;
+    if (!box && a.w >= life) return;
+    a.w += dt;
+    float3 v = b.xyz;
+    if (b.w < 0.0) {
+        // A ring stays where it is.
+        p[id * 2u] = a;
+        return;
+    }
+    float3 carried = u.wind.xyz * u.wind.w;
+    if (u.step.w > 0.0) {
+        // Drag-limited: it settles toward its terminal fall with the wind.
+        float fall = u.step.w * (0.82 + 0.36 * particleRandom(id * 17u + 3u));
+        v = mix(v, carried + float3(0.0, -fall, 0.0), saturate(dt * u.step.z));
+    } else {
+        v.y -= u.step.y * dt;
+        v += (carried - v) * saturate(u.step.z * dt);
+    }
+    if (u.velocity.w > 0.0) {
+        float phase = particleRandom(id * 29u + 1u) * 6.2831853, t = u.eye.w;
+        v += float3(cos(t * 1.1 + phase), 0.0, sin(t * 0.9 + phase * 1.7)) * u.velocity.w * dt * 3.0;
+    }
+    float3 at = a.xyz + v * dt;
+    uint key = uint(u.counters.x) * 7919u + id * 104729u;
+    if (box) {
+        float3 rel = at - u.eye.xyz;
+        if (rel.y < -u.spawn.z) {
+            spawnParticle(p, id, key, u, true);
+            return;
+        }
+        float3 extent = u.spawn.yzw * 2.0;
+        rel.xz -= extent.xz * floor(rel.xz / extent.xz + 0.5);
+        if (rel.y > u.spawn.z) rel.y -= extent.y;
+        at = u.eye.xyz + rel;
+    }
+    if (u.render.w > 0.5) {
+        float4 clip = u.previousViewProj * float4(at, 1.0);
+        if (clip.w > u.depth.x) {
+            float2 px = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5) * u.screen.zw;
+            if (all(px >= 2.0) && all(px < u.screen.zw - 3.0)) {
+                float z = depth.read(uint2(px));
+                float surface = sceneDepthDistance(z, u);
+                if (z < 1.0 && clip.w > surface && clip.w < surface + u.depth.z) {
+                    float3 hit = depthWorld(px + 0.5, z, u);
+                    float3 dx = depthWorld(px + float2(2.5, 0.5), depth.read(uint2(px + float2(2.0, 0.0))), u) - hit;
+                    float3 dy = depthWorld(px + float2(0.5, 2.5), depth.read(uint2(px + float2(0.0, 2.0))), u) - hit;
+                    float3 n = normalize(cross(dy, dx) + float3(0.0, 1e-6, 0.0));
+                    if (n.y < 0.0) n = -n;
+                    uint e = atomic_fetch_add_explicit(events, 1u, memory_order_relaxed);
+                    if (e < uint(u.motion.w)) {
+                        hits[e * 2u] = float4(hit, length(v));
+                        hits[e * 2u + 1u] = float4(n, 0.0);
+                    }
+                    if (u.render.w < 1.5) {
+                        if (box) spawnParticle(p, id, key, u, true);
+                        else p[id * 2u] = float4(hit, life);
+                        return;
+                    }
+                    v = reflect(v, n) * u.depth.w;
+                    at = hit + n * 0.01;
+                }
+            }
+        }
+    }
+    p[id * 2u] = float4(at, box ? fmod(a.w, max(life, 1e-3)) : a.w);
+    p[id * 2u + 1u] = float4(v, b.w);
+}
+
+/** Point and spot lights (the Engine's buffer 5) at a point in the air, scattered forward the way a drop does. */
+float3 particleLights(constant float4* lights, float3 at) {
+    int count = int(lights[32].x);
+    float3 sum = 0.0;
+    for (int i = 0; i < count; i++) {
+        float4 a = lights[i * 4], b = lights[i * 4 + 1], c = lights[i * 4 + 2];
+        float3 toLight = a.xyz - at;
+        float d = length(toLight);
+        if (d >= a.w || d < 1e-3) continue;
+        float3 l = toLight / d;
+        float r = d / a.w, fall = saturate(1.0 - r * r * r * r);
+        fall = fall * fall / (1.0 + d * d);
+        float cone = b.w < -1.5 ? 1.0 : smoothstep(b.w, c.w, dot(-l, b.xyz));
+        sum += c.xyz * fall * cone;
+    }
+    return sum;
+}
+
+struct ParticleOut {
+    float4 pos [[position]];
+    float4 color;
+    float2 local;
+    float depth;
+    float kind;   // 0 billboard, 1 streak, 2 ring
+    float age;
+};
+
+ParticleOut hiddenParticle() {
+    ParticleOut o;
+    o.pos = float4(0.0, 0.0, -1.0, 1.0); o.color = 0.0; o.local = 0.0; o.depth = 0.0; o.kind = 0.0; o.age = 1.0;
+    return o;
+}
+
+/** One particle as a quad (a four-vertex strip per instance): a billboard, a streak back along its motion, or a ring on its surface. */
+vertex ParticleOut particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], device const float4* p [[buffer(0)]],
+        constant ParticleU& u [[buffer(1)]], constant float4* lights [[buffer(2)]]) {
+    float4 a = p[iid * 2u], b = p[iid * 2u + 1u];
+    bool box = int(u.spawn.x) == 3;
+    float life = abs(b.w);
+    if (iid >= uint(u.life.z) || (!box && a.w >= life)) return hiddenParticle();
+    float t = box ? 0.0 : saturate(a.w / max(life, 1e-4));
+    float size = mix(u.sizes.x, u.sizes.y, t);
+    float3 at = a.xyz, rel = at - u.eye.xyz;
+    float dist = length(rel);
+    float fade = smoothstep(u.air.w * 0.4, u.air.w, dist);
+    if (box) fade *= 1.0 - smoothstep(0.78, 1.0, max(max(abs(rel.x) / u.spawn.y, abs(rel.y) / u.spawn.z), abs(rel.z) / u.spawn.w));
+    float4 tint = mix(u.colorStart, u.colorEnd, t);
+    // Lit like something translucent in the air: the air's own light, the sun or moon, the lamps it passes.
+    float3 lit = u.air.rgb * 1.2 + u.lightColor.rgb * u.light.w * 0.25 + particleLights(lights, at) * 1.5;
+    float3 color = tint.rgb * mix(float3(1.0), lit, u.render.y);
+    float2 corner = float2((vid & 1u) == 0u ? -1.0 : 1.0, vid < 2u ? -1.0 : 1.0);
+    ParticleOut o;
+    o.local = corner;
+    o.age = t;
+    float2 halfScreen = u.screen.xy * 0.5;
+    if (b.w < 0.0) {
+        // A ring lying on its surface, widening as it ages.
+        float3 n = b.xyz, tx = normalize(cross(n, float3(0.0, 0.0, 1.0)) + float3(1e-4, 0.0, 0.0)), ty = cross(n, tx);
+        float4 clip = u.viewProj * float4(at + (tx * corner.x + ty * corner.y) * size, 1.0);
+        if (clip.w < 0.05) return hiddenParticle();
+        o.pos = clip; o.depth = clip.w; o.kind = 2.0;
+        o.color = float4(color, tint.a * fade * (1.0 - t) * (1.0 - t));
+        return o;
+    }
+    float4 head = u.viewProj * float4(at, 1.0);
+    float3 moving = b.xyz - u.motion.xyz;
+    bool streak = u.render.x > 0.5;
+    float3 back = streak ? moving * u.sizes.z : float3(0.0);
+    float4 tail = u.viewProj * float4(at - back, 1.0);
+    if (head.w < 0.05 || tail.w < 0.05) return hiddenParticle();
+    float2 sa = head.xy / head.w * halfScreen, sb = tail.xy / tail.w * halfScreen;
+    float2 d = sb - sa;
+    float span = length(d);
+    float2 axis = span > 1e-3 ? d / span : float2(0.0, -1.0);
+    float2 normal = float2(-axis.y, axis.x);
+    float width = size * u.render.z / head.w;
+    float drawn = max(width, 1.0);
+    bool tailEnd = vid >= 2u;
+    float2 place = (tailEnd ? sb : sa) + axis * (tailEnd ? drawn * 0.5 : -drawn * 0.5) + normal * corner.x * drawn * 0.5;
+    float4 clip = tailEnd ? tail : head;
+    o.pos = float4(place / halfScreen * clip.w, clip.z, clip.w);
+    o.depth = clip.w;
+    o.kind = streak ? 1.0 : 0.0;
+    // Thinner than a pixel: one pixel wide, as transparent as it is thin (no shimmer).
+    o.color = float4(color, tint.a * fade * min(width / drawn, 1.0));
+    return o;
+}
+
+fragment float4 particle_fragment(ParticleOut in [[stage_in]], constant ParticleU& u [[buffer(1)]], depth2d<float> scene [[texture(0)]]) {
+    if (in.color.a <= 0.002) discard_fragment();
+    float2 px = in.pos.xy * (u.screen.zw / u.screen.xy);
+    uint2 at = uint2(clamp(px, float2(0.0), u.screen.zw - 1.0));
+    float behind = sceneDepthDistance(scene.read(at), u) - in.depth;
+    // A ring lies on the surface it was spawned from: it is seen unless something stands in front of it.
+    // Everything else fades softly into what is behind it, with a little slack for a half-resolution depth.
+    float visible = in.kind > 1.5 ? step(-0.12, behind) : saturate((behind + 0.03) / max(u.sizes.w, 1e-3));
+    if (visible <= 0.0) discard_fragment();
+    float shape;
+    if (in.kind > 1.5) {
+        float r = length(in.local);
+        shape = exp(-pow((r - 0.82) / 0.1, 2.0)) + 0.35 * exp(-pow((r - 0.5) / 0.09, 2.0)) * step(0.3, in.age);
+    } else if (in.kind > 0.5) {
+        float along = in.local.y * 0.5 + 0.5;
+        shape = smoothstep(0.0, 0.25, along) * (1.0 - smoothstep(0.75, 1.0, along)) * (1.0 - smoothstep(0.5, 1.0, abs(in.local.x)));
+    } else {
+        shape = 1.0 - smoothstep(0.3, 1.0, length(in.local));
+    }
+    float a = in.color.a * shape * visible;
+    return float4(in.color.rgb * a, a);
+}
+"

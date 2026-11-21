@@ -110,8 +110,10 @@ mkdir -p "$SRC_DIR"
 RESOLVE="$("$PYTHON_BIN" "$LIB_DIR/tools/azpm.py" resolve "$PROJECT_DIR")"
 
 NATIVE_FLAGS=""
+ENTRYPOINT=""
 while IFS=$'\t' read -r kind a b; do
     case "$kind" in
+        ENTRYPOINT) ENTRYPOINT="$a" ;;
         STAGE)
             mkdir -p "$SRC_DIR/$b"
             cp "$a/"*.az "$SRC_DIR/$b/" 2>/dev/null || true
@@ -130,6 +132,12 @@ cp "$PROJECT_DIR/src/"*.az "$SRC_DIR/"
 if [ ! -f "$SRC_DIR/main.az" ]; then
     echo "error: project has no src/main.az entry point" >&2
     exit 1
+fi
+
+# Append only to the staged copy so editor diagnostics keep their source lines.
+if [ -n "$ENTRYPOINT" ]; then
+    printf '\n' >> "$SRC_DIR/main.az"
+    cat "$ENTRYPOINT" >> "$SRC_DIR/main.az"
 fi
 
 if [ "$ACTION" = "inspect" ]; then
@@ -214,7 +222,9 @@ if [ ! -d "$NATIVE_DIR" ]; then
 fi
 
 echo "azora-engine: linking"
-"$CLANG_BIN" "$BUILD_DIR/$APP_NAME.ll" \
+# A game is linked optimized: unoptimized IR made every frame's CPU work about
+# 40% slower. AZORA_OPTIMIZE=-O0 links a debuggable build instead.
+"$CLANG_BIN" ${AZORA_OPTIMIZE:--O2} "$BUILD_DIR/$APP_NAME.ll" \
     -L "$NATIVE_DIR" -lazora_runtime \
     -Wl,-rpath,"$NATIVE_DIR" \
     $NATIVE_FLAGS \

@@ -1,0 +1,66 @@
+import std.io
+import std.math
+import engine.io
+import engine.objc
+import engine.audio
+import engine.audio.dsp
+import engine.audio.output
+
+/** Seconds since boot, from Foundation (QuartzCore is not linked here). */
+func uptime(): Double = azSendD0(send0(cls("NSProcessInfo"), sel("processInfo")), sel("systemUptime"))
+
+// Plays a sine through the real output for about a second, as a game would,
+// one block a frame, with a 0.3 s stall in the middle; then reads back what
+// AZORA_AUDIO_CAPTURE recorded.
+
+func report(name: String, passed: Bool, value: Double) {
+    println(if passed then "${name} ok" else "${name} FAIL ${value}")
+}
+
+func waitUntil(moment: Double) {
+    while uptime() < moment {}
+}
+
+func main() {
+    var output = audioOutputOpen()
+    report("outputOpens", output.engine != 0, 0.0)
+    fin tone = sampleBuffer(output.capacity)
+    var phase: Double = 0.0
+    var afterStall = 0
+    var next = uptime()
+    var block = 0
+    while block < 120 {
+        next += 1.0 / 120.0
+        if block == 60 then next += 0.3
+        waitUntil(next)
+        fin frames = output.beginBlock()
+        if block == 60 then afterStall = frames
+        var i = 0
+        while i < frames {
+            setSample(tone, i, sin(phase))
+            phase += 2.0 * PI * 440.0 / (output.rate as Double)
+            i += 1
+        }
+        output.mixMono(tone, frames, 0.5, 0.0)
+        output.endBlock()
+        block += 1
+    }
+    output.close()
+    azFree(tone)
+
+    var capture = readFile(".azora-build/capture.wav")
+    fin frames = (capture.size - 44) / 4
+    fin left = sampleBuffer(frames)
+    var i = 0
+    while i < frames {
+        setSample(left, i, (capture.i16(44 + i * 4) as Double) / 32767.0)
+        i += 1
+    }
+    capture.release()
+    fin seconds = (frames as Double) / 48000.0
+    report("capturedAboutOneSecond", seconds >= 0.9 && seconds <= 1.3, seconds)
+    report("audioRecoversAfterStall", afterStall <= 1921, afterStall as Double)
+    fin jump = peakDelta(left, frames)
+    report("captureHasNoClicks", frames > 0 && jump < 0.06, jump)
+    azFree(left)
+}

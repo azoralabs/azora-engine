@@ -127,36 +127,22 @@ func navEnvironment(
     width: Double = 1280.0
     height: Double = 720.0
     windowClass: NavWindowClass = .Expanded
-    revision: Long = Long(0)
+    revision: Long = 0
 ): NavEnvironment {
-    return .(
-        width,
-        height,
-        1.0,
-        windowClass,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        false,
-        true,
-        false,
-        false,
-        revision
-    )
+    return .(width, height, 1.0, windowClass, 0.0, 0.0, 0.0, 0.0, false, true, false, false, revision)
 }
 
 /** Invalid IDs are sentinels only and are never allocated to live entries. */
 func navEntryIdInvalid(): NavEntryId {
-    return .(Long(0), Long(0))
+    return .(0, 0)
 }
 
 func navContentKeyInvalid(): NavContentKey {
-    return .(Long(0), Long(0))
+    return .(0, 0)
 }
 
 func navOwnerIdInvalid(): NavOwnerId {
-    return .(Long(0), Long(0))
+    return .(0, 0)
 }
 
 func navEntryIdEqual(
@@ -312,45 +298,35 @@ func<K> navBackStack(
     root: K
     capacity: Int = 32
 ): NavBackStack<K>
-in {
-    assert capacity > 0 panic "navigation capacity must be positive"
-} scope {
-    var items: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(capacity)
-    items[0] = NavStackItem<K>(NavEntryId(Long(1), Long(1)), root)
-    return NavBackStack<K>(items, 1, Long(0), Long(2), navChangeNone())
+in assert capacity > 0 panic "navigation capacity must be positive"
+scope {
+    var items: Array<NavStackItem<K>> = ::fill(capacity)
+    items[0] = .(.(1, 1), root)
+    return .(items, 1, 0, 2, navChangeNone())
 }
 
 impl NavBackStack<K> {
-    prop  &.count: Int = self._size
-    prop  &.capacity: Int = self._items.size
-    prop  &.canPop: Bool = self._size > 1
-    prop  &.version: Long = self._revision
-    prop  &.current: K = self._items[self._size - 1].key
-    prop  &.currentItem: NavStackItem<K> = self._items[self._size - 1]
-    prop  &.lastChange: NavChange = self._lastChange
-    prop  &.lastDirection: NavDirection = self._lastChange.direction
+    prop &.count: Int = self._size
+    prop &.capacity: Int = self._items.size
+    prop &.canPop: Bool = self._size > 1
+    prop &.version: Long = self._revision
+    prop &.current: K = self._items[self._size - 1].key
+    prop &.currentItem: NavStackItem<K> = self._items[self._size - 1]
+    prop &.lastChange: NavChange = self._lastChange
+    prop &.lastDirection: NavDirection = self._lastChange.direction
 
     func &.at(index: Int): K
-    in {
-        assert index >= 0 && index < self._size panic "navigation index out of bounds"
-    } scope {
-        return self._items[index].key
-    }
+    in assert index >= 0 && index < self._size panic "navigation index out of bounds"
+    scope return self._items[index].key
 
     func &.itemAt(index: Int): NavStackItem<K>
-    in {
-        assert index >= 0 && index < self._size panic "navigation index out of bounds"
-    } scope {
-        return self._items[index]
-    }
+    in assert index >= 0 && index < self._size panic "navigation index out of bounds"
+    scope return self._items[index]
 
     func &.indexOf(id: NavEntryId&): Int {
-        var index = 0
-        while index < self._size {
-            if navEntryIdEqual(self._items[index].id, id) { return index }
-            index = index + 1
-        }
-        return -1
+        return for i: Int in 0..<self._size {
+            if navEntryIdEqual(self._items[i].id, id) then break i
+        } else -1
     }
 
     func !._publish(
@@ -367,9 +343,9 @@ impl NavBackStack<K> {
 
     /** Pushes a new route occurrence, even when its key equals the top key. */
     func !.push(key: K): NavEntryId ?! NavError {
-        if self._size >= self._items.size { return .CapacityExceeded }
+        if self._size >= self._items.size then return .CapacityExceeded
         fin from = self.currentItem.id
-        fin id = NavEntryId(self._nextId, Long(1))
+        fin id: NavEntryId = .(self._nextId, Long(1))
         self._nextId = self._nextId + Long(1)
         self._items[self._size] = NavStackItem<K>(id, key)
         self._size = self._size + 1

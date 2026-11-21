@@ -171,6 +171,10 @@ class Workspace:
 
 def _cmd_resolve(ws: Workspace, project_dir: str) -> None:
     pkgs = ws.resolve(project_dir)
+    manifest = os.path.join(project_dir, "azora.azon")
+    if os.path.isfile(manifest) and "azora-game" in load_manifest(manifest).get("dependencies", {}):
+        entry = os.path.join(ws.packages["azora-game"].dir, "entrypoint.az")
+        print(f"ENTRYPOINT\t{entry}")
     frameworks: list[str] = []
     libs: list[str] = []
     for pkg in pkgs:

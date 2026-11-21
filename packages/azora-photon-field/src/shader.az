@@ -1,5 +1,50 @@
 module engine.lighting.photon.shader
 
+/**
+ * Point and spot lights for the standard and Material Fusion pipelines
+ * (buffer 5, see `gatherLocalLights`): range falloff, a soft cone, a diffuse
+ * and a highlight term on the surface's albedo and reflectance.
+ */
+func localLightMetalSource(): String {
+    return (""
+        + "float3 localLights(constant float4* lights,float3 p,float3 n,float3 v,float3 albedo,float3 f0) {\n"
+        + "    int count=int(lights[32].x); float3 sum=float3(0);\n"
+        + "    for(int i=0;i<count;i++) {\n"
+        + "        float4 a=lights[i*4], b=lights[i*4+1], c=lights[i*4+2];\n"
+        + "        float3 toLight=a.xyz-p; float d=length(toLight);\n"
+        + "        if(d>=a.w || d<1e-4) continue;\n"
+        + "        float3 l=toLight/d; float r=d/a.w; float fall=saturate(1.0-r*r*r*r); fall=fall*fall/(1.0+d*d);\n"
+        + "        float cone=b.w<-1.5?1.0:smoothstep(b.w,c.w,dot(-l,b.xyz));\n"
+        + "        float nl=saturate(dot(n,l)); float3 h=normalize(l+v);\n"
+        + "        sum+=c.xyz*fall*cone*nl*(albedo+f0*pow(saturate(dot(n,h)),48.0)*2.0);\n"
+        + "    }\n"
+        + "    return sum;\n"
+        + "}\n")
+}
+
+/**
+ * The scene's weather as surfaces read it (fragment buffer 6, texture 31):
+ * float4 0 = wetness, snow, flash, time; 1 = flash colour, cloud shadow
+ * strength; 2 = shadow map centre X, Z, 1/side, bound; 3 = wind X, Z.
+ */
+func sceneEnvironmentMetalSource(): String {
+    return (""
+        + "float cloudShade(constant float4* env,texture2d<float> map,float3 p) {\n"
+        + "    if(env[2].w<0.5) return 1.0;\n"
+        + "    constexpr sampler s(filter::linear,address::clamp_to_edge);\n"
+        + "    float2 uv=(p.xz-env[2].xy)*env[2].z+0.5;\n"
+        + "    float edge=saturate(min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y))*12.0);\n"
+        + "    return mix(1.0,mix(1.0,map.sample(s,uv).r,edge),env[1].w);\n"
+        + "}\n"
+        + "float sceneWetness(constant float4* env,float3 n) { return env[0].x*mix(0.6,1.0,saturate(n.y)); }\n"
+        + "float sceneSnow(constant float4* env,float3 n,float3 p) {\n"
+        + "    if(env[0].y<=0.0) return 0.0;\n"
+        + "    float drift=fract(sin(dot(floor(p*1.7),float3(127.1,311.7,74.7)))*43758.5453)*0.12;\n"
+        + "    return saturate(env[0].y*1.25)*smoothstep(0.5,0.8,n.y+drift-0.06);\n"
+        + "}\n"
+        + "float3 sceneFlash(constant float4* env,float3 n) { return env[1].xyz*env[0].z*(0.55+0.45*saturate(n.y)); }\n")
+}
+
 /** Shared Metal functions for the standard and Material Fusion pipelines. */
 func photonMetalSource(): String {
     return (""
@@ -21,11 +66,18 @@ func photonMetalSource(): String {
         + "        float2 plane=float2(dot(n,x),dot(n,y))/max(facing,0.16);\n"
         + "        float bias=map[6]+pixel*(0.32+0.18*length(plane));\n"
         + "        float2 grid=uv/pixel-0.5, base=floor(grid), sub=fract(grid);\n"
+        + "        // Tap g is sample g of the field's grid. The sixteen fall in one page, or near a\n"
+        + "        // corner in up to four: each page's slot is read once, not once per tap.\n"
+        + "        int side=int(map[3]), res=int(map[4]), first=24+side*side, known=-1, slot=-1;\n"
+        + "        int2 origin=int2(map[1],map[2]);\n"
         + "        for(int j=-1;j<=2;j++) for(int i=-1;i<=2;i++) {\n"
         + "            float2 offset=float2(i,j); float2 tent=max(float2(0),1.65-abs(offset-sub));\n"
-        + "            float w=tent.x*tent.y; float2 tap=(base+offset+0.5)*pixel;\n"
-        + "            float receiver=depth-dot(plane,tap-uv); int a=photonSample(map,tap);\n"
-        + "            if(a>=0) shadow+=w*smoothstep(bias,bias+0.35*pixel,map[a]-receiver);\n"
+        + "            float w=tent.x*tent.y; float2 tap=(base+offset+0.5)*pixel, g=base+offset;\n"
+        + "            float receiver=depth-dot(plane,tap-uv);\n"
+        + "            int2 page=int2(floor(g/float(res))), local=int2(g)-page*res, at=page-origin;\n"
+        + "            int cell=(any(at<0)||any(at>=side))?-1:at.y*side+at.x;\n"
+        + "            if(cell!=known) { known=cell; slot=cell<0?-1:int(map[24+cell]); }\n"
+        + "            if(slot>=0) shadow+=w*smoothstep(bias,bias+0.35*pixel,map[first+((slot*res+local.y)*res+local.x)*8]-receiver);\n"
         + "            weights+=w;\n"
         + "        }\n"
         + "    }\n"

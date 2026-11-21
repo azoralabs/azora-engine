@@ -1,0 +1,431 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Azora Engine — the building blocks synthesized sound is made of: noise,
+// filters, delay lines, a reverb, a limiter and the gains that place a sound
+// around the listener.
+//
+// Everything that runs per sample takes and returns plain Doubles and changes
+// its own state in place: nothing here builds a pack while sound is rendered,
+// so a voice costs the same at the ten-thousandth second as at the first.
+// Buffers are raw blocks of Doubles (see [sampleBuffer]).
+
+module engine.audio.dsp
+
+import std.math
+import engine.io
+import engine.objc
+import std.string
+import std.char
+
+// ── Buffers ─────────────────────────────────────────────────────────────
+
+/** A zeroed block of [count] Double samples; free it with `azFree`. */
+func sampleBuffer(count: Int): Long = azAlloc(((if count > 0 then count else 1) as Long) * 8)
+
+func sample(buffer: Long, index: Int): Double = azPeekF64(buffer, (index as Long) * 8)
+
+func setSample(buffer: Long, index: Int, value: Double) { azPokeF64(buffer, (index as Long) * 8, value) }
+
+func addSample(buffer: Long, index: Int, value: Double) { setSample(buffer, index, sample(buffer, index) + value) }
+
+func dspClamp(value: Double, low: Double, high: Double): Double = if value < low then low else if value > high then high else value
+
+func dspAbs(value: Double): Double = if value < 0.0 then -value else value
+
+/** The largest magnitude among the first [count] samples. */
+func peak(buffer: Long, count: Int): Double {
+    var top: Double = 0.0
+    var i = 0
+    while i < count {
+        fin x = dspAbs(sample(buffer, i))
+        if x > top then top = x
+        i += 1
+    }
+    return top
+}
+
+/** The largest step between neighbouring samples: a click shows up here. */
+func peakDelta(buffer: Long, count: Int): Double {
+    var top: Double = 0.0
+    var i = 1
+    while i < count {
+        fin step = dspAbs(sample(buffer, i) - sample(buffer, i - 1))
+        if step > top then top = step
+        i += 1
+    }
+    return top
+}
+
+func rms(buffer: Long, count: Int): Double {
+    if count <= 0 then return 0.0
+    var sum: Double = 0.0
+    var i = 0
+    while i < count {
+        fin x = sample(buffer, i)
+        sum += x * x
+        i += 1
+    }
+    return sqrt(sum / (count as Double))
+}
+
+/** Writes the 44-byte header of a 16-bit stereo PCM WAV holding [frames] frames at the start of [bytes]. */
+func waveHeader(bytes: Long, frames: Int, rate: Int) {
+    fin tags = "RIFFWAVEfmt data"
+    var i = 0
+    while i < 16 {
+        fin at = if i < 4 then i else if i < 12 then i + 4 else i + 24
+        azPoke8(bytes, at as Long, ord(charAt(tags, i)))
+        i += 1
+    }
+    azPoke32(bytes, 4, frames * 4 + 36)
+    azPoke32(bytes, 16, 16)
+    azPoke8(bytes, 20, 1)
+    azPoke8(bytes, 22, 2)
+    azPoke32(bytes, 24, rate)
+    azPoke32(bytes, 28, rate * 4)
+    azPoke8(bytes, 32, 4)
+    azPoke8(bytes, 34, 16)
+    azPoke32(bytes, 40, frames * 4)
+}
+
+/** Stores [value] in -1..1 as a little-endian 16-bit sample at [offset]. */
+func pokeSample16(bytes: Long, offset: Long, value: Double) {
+    fin level = (dspClamp(value, -1.0, 1.0) * 32767.0) as Int
+    fin bits = if level < 0 then level + 65536 else level
+    azPoke8(bytes, offset, bits % 256)
+    azPoke8(bytes, offset + 1, bits / 256)
+}
+
+/** Writes [count] bytes to the file at [path], replacing it. */
+func saveBytes(bytes: Long, count: Int, path: String): Bool {
+    fin data = send2(cls("NSData"), sel("dataWithBytes:length:"), bytes, count as Long)
+    return (send2(data, sel("writeToFile:atomically:"), nsString(path), 1) & 255) != 0
+}
+
+/** Writes [frames] interleaved stereo samples as a 16-bit PCM WAV file. */
+func writeWave(path: String, stereo: Long, frames: Int, rate: Int): Bool {
+    fin bytes = azAlloc((frames * 4 + 44) as Long)
+    if bytes == 0 then return false
+    waveHeader(bytes, frames, rate)
+    var i = 0
+    while i < frames * 2 {
+        pokeSample16(bytes, (44 + i * 2) as Long, sample(stereo, i))
+        i += 1
+    }
+    fin written = saveBytes(bytes, frames * 4 + 44, path)
+    azFree(bytes)
+    return written
+}
+
+// ── Noise ───────────────────────────────────────────────────────────────
+
+/** Uniform white noise: the Park-Miller generator, no two seeds alike. */
+pack Noise {
+    var state: Long = 1
+}
+
+func noise(seed: Long): Noise = Noise(1 + (if seed < 0 then -seed else seed) % 2147483646)
+
+/** The next value, uniform in [-1, 1). */
+func Noise!.white(): Double {
+    self.state = (self.state * 48271) % 2147483647
+    return (self.state as Double) / 1073741823.5 - 1.0
+}
+
+/** Noise whose power falls 3 dB an octave, as rain, wind and surf do (Paul Kellet's filter). */
+pack PinkNoise {
+    var source: Noise = .()
+    var b0: Double = 0.0
+    var b1: Double = 0.0
+    var b2: Double = 0.0
+    var b3: Double = 0.0
+    var b4: Double = 0.0
+    var b5: Double = 0.0
+    var b6: Double = 0.0
+}
+
+func pinkNoise(seed: Long): PinkNoise = PinkNoise(noise(seed))
+
+func PinkNoise!.next(): Double {
+    fin white = self.source.white()
+    self.b0 = 0.99886 * self.b0 + white * 0.0555179
+    self.b1 = 0.99332 * self.b1 + white * 0.0750759
+    self.b2 = 0.96900 * self.b2 + white * 0.1538520
+    self.b3 = 0.86650 * self.b3 + white * 0.3104856
+    self.b4 = 0.55000 * self.b4 + white * 0.5329522
+    self.b5 = -0.7616 * self.b5 - white * 0.0168980
+    fin pink = self.b0 + self.b1 + self.b2 + self.b3 + self.b4 + self.b5 + self.b6 + white * 0.5362
+    self.b6 = white * 0.115926
+    return pink * 0.11
+}
+
+// ── Filters ─────────────────────────────────────────────────────────────
+
+/** The simplest smoothing filter: one pole, 6 dB an octave. */
+pack OnePole {
+    var coefficient: Double = 1.0
+    var state: Double = 0.0
+}
+
+func onePole(cutoffHz: Double, rate: Double): OnePole {
+    var filter = OnePole()
+    filter.tune(cutoffHz, rate)
+    return take filter
+}
+
+func OnePole!.tune(cutoffHz: Double, rate: Double) {
+    self.coefficient = 1.0 - exp(-2.0 * PI * dspClamp(cutoffHz, 1.0, rate * 0.49) / rate)
+}
+
+func OnePole!.lowpass(x: Double): Double {
+    self.state += self.coefficient * (x - self.state)
+    return self.state
+}
+
+func OnePole!.highpass(x: Double): Double = x - self.lowpass(x)
+
+/**
+ * A two-pole filter (Robert Bristow-Johnson's cookbook, transposed direct
+ * form II). The setters retune it in place and keep its state, so a filter
+ * swept every block does not click.
+ */
+pack Biquad {
+    var b0: Double = 1.0
+    var b1: Double = 0.0
+    var b2: Double = 0.0
+    var a1: Double = 0.0
+    var a2: Double = 0.0
+    var z1: Double = 0.0
+    var z2: Double = 0.0
+}
+
+func Biquad!.coefficients(b0: Double, b1: Double, b2: Double, a0: Double, a1: Double, a2: Double) {
+    self.b0 = b0 / a0
+    self.b1 = b1 / a0
+    self.b2 = b2 / a0
+    self.a1 = a1 / a0
+    self.a2 = a2 / a0
+}
+
+/** The angle and bandwidth term every cookbook filter starts from, as cos then alpha. */
+func biquadCos(hz: Double, rate: Double): Double = cos(2.0 * PI * dspClamp(hz, 1.0, rate * 0.49) / rate)
+
+func biquadAlpha(hz: Double, q: Double, rate: Double): Double =
+    sin(2.0 * PI * dspClamp(hz, 1.0, rate * 0.49) / rate) / (2.0 * (if q > 0.01 then q else 0.01))
+
+func Biquad!.lowpass(hz: Double, q: Double, rate: Double) {
+    fin c = biquadCos(hz, rate)
+    fin alpha = biquadAlpha(hz, q, rate)
+    self.coefficients((1.0 - c) * 0.5, 1.0 - c, (1.0 - c) * 0.5, 1.0 + alpha, -2.0 * c, 1.0 - alpha)
+}
+
+func Biquad!.highpass(hz: Double, q: Double, rate: Double) {
+    fin c = biquadCos(hz, rate)
+    fin alpha = biquadAlpha(hz, q, rate)
+    self.coefficients((1.0 + c) * 0.5, -(1.0 + c), (1.0 + c) * 0.5, 1.0 + alpha, -2.0 * c, 1.0 - alpha)
+}
+
+/** A band-pass whose peak passes at 0 dB. */
+func Biquad!.bandpass(hz: Double, q: Double, rate: Double) {
+    fin c = biquadCos(hz, rate)
+    fin alpha = biquadAlpha(hz, q, rate)
+    self.coefficients(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * c, 1.0 - alpha)
+}
+
+/** A resonance (or notch, for a negative gain) of [gainDb] at [hz]. */
+func Biquad!.peak(hz: Double, q: Double, gainDb: Double, rate: Double) {
+    fin c = biquadCos(hz, rate)
+    fin alpha = biquadAlpha(hz, q, rate)
+    fin a = exp(gainDb * 0.05756462732485115)
+    self.coefficients(1.0 + alpha * a, -2.0 * c, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * c, 1.0 - alpha / a)
+}
+
+func Biquad!.process(x: Double): Double {
+    fin y = self.b0 * x + self.z1
+    self.z1 = self.b1 * x - self.a1 * y + self.z2
+    self.z2 = self.b2 * x - self.a2 * y
+    return y
+}
+
+// ── Delay lines ─────────────────────────────────────────────────────────
+
+/** The recent past of a signal, read back at any delay: echoes, pipes, combs. */
+pack DelayLine {
+    var samples: Long = 0
+    var size: Int = 0
+    var write: Int = 0
+}
+
+func delayLine(maxSamples: Int): DelayLine {
+    fin size = if maxSamples > 2 then maxSamples else 2
+    return DelayLine(sampleBuffer(size), size, 0)
+}
+
+func DelayLine!.push(x: Double) {
+    setSample(self.samples, self.write, x)
+    self.write = (self.write + 1) % self.size
+}
+
+/** The sample pushed [back] pushes before the newest (0 is the newest), between samples linearly. */
+func DelayLine&.read(back: Double): Double {
+    fin d = dspClamp(back, 0.0, (self.size - 2) as Double)
+    fin whole = d as Int
+    fin part = d - (whole as Double)
+    fin newest = self.write - 1 + self.size
+    fin a = sample(self.samples, (newest - whole) % self.size)
+    fin b = sample(self.samples, (newest - whole - 1) % self.size)
+    return a + (b - a) * part
+}
+
+func DelayLine!.release() {
+    if self.samples != 0 then azFree(self.samples)
+    self.samples = 0
+    self.size = 0
+}
+
+// ── Reverb ──────────────────────────────────────────────────────────────
+
+/** Comb and all-pass lengths at 44.1 kHz (Jezar's Freeverb), scaled to the rate. */
+fin reverbCombs: Array<Int> = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
+fin reverbAllpasses: Array<Int> = [556, 441, 341, 225]
+fin reverbSpread: Int = 23
+
+/**
+ * A room: eight damped feedback combs in parallel then four all-passes in
+ * series, per channel, the right channel's lines a little longer so the two
+ * decorrelate. All lines share one block; [starts], [sizes] and [positions]
+ * say where each lives, left channel's twelve first.
+ */
+pack Reverb {
+    var lines: Long = 0
+    var starts: Array<Int> = []
+    var sizes: Array<Int> = []
+    var positions: Array<Int> = []
+    var stores: Array<Double> = []
+    var feedback: Double = 0.84
+    var damp: Double = 0.2
+}
+
+func reverb(rate: Double): Reverb {
+    var room = Reverb()
+    fin scale = rate / 44100.0
+    var total = 0
+    var channel = 0
+    while channel < 2 {
+        fin extra = channel * reverbSpread
+        for length in reverbCombs {
+            fin size = (((length + extra) as Double) * scale) as Int
+            room.starts.add(total)
+            room.sizes.add(size)
+            room.positions.add(0)
+            room.stores.add(0.0)
+            total += size
+        }
+        for length in reverbAllpasses {
+            fin size = (((length + extra) as Double) * scale) as Int
+            room.starts.add(total)
+            room.sizes.add(size)
+            room.positions.add(0)
+            room.stores.add(0.0)
+            total += size
+        }
+        channel += 1
+    }
+    room.lines = sampleBuffer(total)
+    return take room
+}
+
+/** One step of line [index]: a damped comb for the first eight of a channel, an all-pass after. */
+func Reverb!.step(index: Int, input: Double): Double {
+    fin at = self.starts[index] + self.positions[index]
+    fin held = sample(self.lines, at)
+    self.positions[index] = (self.positions[index] + 1) % self.sizes[index]
+    if index % 12 < 8 {
+        self.stores[index] = held * (1.0 - self.damp) + self.stores[index] * self.damp
+        setSample(self.lines, at, input + self.stores[index] * self.feedback)
+        return held
+    }
+    setSample(self.lines, at, input + held * 0.5)
+    return held - input
+}
+
+/** Adds the room to [frames] interleaved stereo samples in place; [wet] 0 leaves them dry. */
+func Reverb!.process(stereo: Long, frames: Int, wet: Double) {
+    var frame = 0
+    while frame < frames {
+        fin left = sample(stereo, frame * 2)
+        fin right = sample(stereo, frame * 2 + 1)
+        fin input = (left + right) * 0.015
+        var outLeft: Double = 0.0
+        var outRight: Double = 0.0
+        var line = 0
+        while line < 8 {
+            outLeft += self.step(line, input)
+            outRight += self.step(line + 12, input)
+            line += 1
+        }
+        while line < 12 {
+            outLeft = self.step(line, outLeft)
+            outRight = self.step(line + 12, outRight)
+            line += 1
+        }
+        setSample(stereo, frame * 2, left * (1.0 - wet) + outLeft * wet * 3.0)
+        setSample(stereo, frame * 2 + 1, right * (1.0 - wet) + outRight * wet * 3.0)
+        frame += 1
+    }
+}
+
+func Reverb!.release() {
+    if self.lines != 0 then azFree(self.lines)
+    self.lines = 0
+}
+
+// ── Level ───────────────────────────────────────────────────────────────
+
+/** Keeps interleaved stereo under a ceiling: the gain drops at once and recovers over about 80 ms. */
+pack Limiter {
+    var gain: Double = 1.0
+}
+
+func Limiter!.process(stereo: Long, frames: Int, ceiling: Double) {
+    fin recovery = 1.0 - exp(-1.0 / (0.08 * 48000.0))
+    var frame = 0
+    while frame < frames {
+        fin left = sample(stereo, frame * 2)
+        fin right = sample(stereo, frame * 2 + 1)
+        fin loudest = if dspAbs(left) > dspAbs(right) then dspAbs(left) else dspAbs(right)
+        self.gain += (1.0 - self.gain) * recovery
+        if loudest * self.gain > ceiling then self.gain = ceiling / loudest
+        setSample(stereo, frame * 2, left * self.gain)
+        setSample(stereo, frame * 2 + 1, right * self.gain)
+        frame += 1
+    }
+}
+
+// ── Placing a sound ─────────────────────────────────────────────────────
+
+/** The left gain for [pan] from -1 (left) to 1 (right), at equal power. */
+func equalPowerLeft(pan: Double): Double = cos((dspClamp(pan, -1.0, 1.0) + 1.0) * PI * 0.25)
+
+func equalPowerRight(pan: Double): Double = sin((dspClamp(pan, -1.0, 1.0) + 1.0) * PI * 0.25)
+
+/** Inverse-distance loudness, 1 within [reference] metres. */
+func distanceGain(distance: Double, reference: Double): Double =
+    reference / (if distance > reference then distance else reference)
+
+/** How far up the spectrum air lets a sound through over [distance] metres, in hertz. */
+func airCutoff(distance: Double): Double = dspClamp(20000.0 * exp(-distance / 900.0), 900.0, 20000.0)

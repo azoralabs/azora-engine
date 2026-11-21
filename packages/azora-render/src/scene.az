@@ -100,6 +100,71 @@ func visibleInWorld(world: World!, entity: Entity): Bool {
     return true
 }
 
+/** The most point and spot lights a frame shades with; the nearest to the eye win. */
+fin maxLocalLights: Int = 8
+
+/**
+ * Writes the visible point and spot lights nearest [eye] - at most
+ * [maxLocalLights], nearest first - into [into] as the fragment stages read
+ * them (buffer 5), 16 floats each: position and range; the way the light
+ * points (its -Z) and the cosine of the cone's half angle, -2 for a point
+ * light; colour times intensity and the cosine where the soft edge begins.
+ * The count follows at byte 512. Answers the count.
+ */
+func gatherLocalLights(world: World!, eye: Vec3&, into: Long): Int {
+    fin lights = ensureStorage<Light3d>(world)
+    var chosen: Array<Int> = []
+    var distances: Array<Double> = []
+    var index = 0
+    while index < storageLength<Light3d>(lights) {
+        fin entity = storageEntityAt<Light3d>(lights, index)
+        if lights.values[index].kind != 0 && world.isAlive(entity) && visibleInWorld(world, entity) {
+            fin m = worldMatrix(world, entity)
+            fin dx = m.m03 - eye.x
+            fin dy = m.m13 - eye.y
+            fin dz = m.m23 - eye.z
+            chosen.add(index)
+            distances.add(dx * dx + dy * dy + dz * dz)
+        }
+        index += 1
+    }
+    var count = 0
+    while count < maxLocalLights && count < chosen.size {
+        // Selection: the nearest of those left goes next.
+        var best = count
+        var look = count + 1
+        while look < chosen.size {
+            if distances[look] < distances[best] then best = look
+            look += 1
+        }
+        fin keptIndex = chosen[best]
+        fin keptDistance = distances[best]
+        chosen[best] = chosen[count]
+        distances[best] = distances[count]
+        chosen[count] = keptIndex
+        distances[count] = keptDistance
+        fin light = lights.values[keptIndex].clone()
+        fin m = worldMatrix(world, storageEntityAt<Light3d>(lights, keptIndex))
+        fin at = (count * 64) as Long
+        fin outer = light.spotAngle * 0.017453292519943295
+        azPokeF32(into, at, m.m03)
+        azPokeF32(into, at + 4, m.m13)
+        azPokeF32(into, at + 8, m.m23)
+        azPokeF32(into, at + 12, light.range)
+        azPokeF32(into, at + 16, -m.m02)
+        azPokeF32(into, at + 20, -m.m12)
+        azPokeF32(into, at + 24, -m.m22)
+        azPokeF32(into, at + 28, if light.kind == 2 then cos(outer) else -2.0)
+        azPokeF32(into, at + 32, light.color.r * light.intensity)
+        azPokeF32(into, at + 36, light.color.g * light.intensity)
+        azPokeF32(into, at + 40, light.color.b * light.intensity)
+        azPokeF32(into, at + 44, if light.kind == 2 then cos(outer * (1.0 - light.spotSoftness)) else -2.0)
+        count += 1
+    }
+    azPokeF32(into, 512, count as Double)
+    return count
+}
+
 /** The mesh a [Mesh3d.shape] names. */
 func primitiveFor(meshes: PrimitiveMeshes&, shape: Int): Mesh& {
     return when shape {
@@ -121,6 +186,147 @@ func sceneSkyLight(world: World!): Entity {
     return Entity::invalid
 }
 
+/**
+ * How the scene is lit this frame, as a plugin that owns the sky publishes it
+ * (`publishSceneLight`); without one it comes from a `SkyEnvironment` or the
+ * first directional `Light3d` (`sceneLightFrom`).
+ *
+ * [direction] points toward the sun or moon. The Photon Field traces with the
+ * `field` values, which a running day changes in whole-minute steps, so the
+ * field is not traced again every frame while the shading follows smoothly.
+ */
+pack SceneLight derives Clone {
+    var direction: Vec3 = .(0.5, 0.8, 0.3)
+    var color: Rgba = .(1.0, 1.0, 1.0, 1.0)
+    var intensity: Double = 1.0
+    var ambient: Double = 0.35
+    var fieldDirection: Vec3 = .(0.5, 0.8, 0.3)
+    var fieldColor: Rgba = .(1.0, 1.0, 1.0, 1.0)
+    var fieldIntensity: Double = 1.0
+    /** The air's colour and density for the materials' own distance haze (0: none, as when a plugin draws the air). */
+    var haze: Rgba = .(0.0, 0.0, 0.0, 1.0)
+    var hazeDensity: Double = 0.0
+    /** 0 at night, 1 by day: what an `ExponentialHeightFog` that follows the sky is tinted by. */
+    var daylight: Double = 1.0
+}
+
+/**
+ * The weather as surfaces see it, read by every scene draw (fragment buffer 6
+ * and texture 31): how wet and how snowed-on they are, a lightning flash, the
+ * cloud shadow map over the ground and the wind. The default is a dry, clear
+ * scene - what a scene without weather draws.
+ */
+pack SceneEnvironment derives Clone {
+    var wetness: Double = 0.0
+    var snow: Double = 0.0
+    var flash: Double = 0.0
+    var time: Double = 0.0
+    var flashColor: Rgba = .(0.0, 0.0, 0.0, 1.0)
+    /** How dark a cloud's shadow is where its map says fully shaded. */
+    var shadowStrength: Double = 0.0
+    /** The map's texture (R, 1 = sunlit) and the world square it covers: centre X and Z, side in metres. */
+    var shadowTexture: Long = 0
+    var shadowX: Double = 0.0
+    var shadowZ: Double = 0.0
+    var shadowSize: Double = 0.0
+    var windX: Double = 0.0
+    var windZ: Double = 0.0
+}
+
+/** The scene's first enabled, visible `Wind`, or none. */
+func sceneWindEntity(world: World!): Entity {
+    fin winds = ensureStorage<Wind>(world)
+    var index = 0
+    while index < storageLength<Wind>(winds) {
+        fin entity = storageEntityAt<Wind>(winds, index)
+        if winds.values[index].enabled && world.isAlive(entity) && visibleInWorld(world, entity) then return entity
+        index += 1
+    }
+    return Entity::invalid
+}
+
+/** How the scene's wind blows at [time], m/s; still air when it has none. */
+func sceneWind(world: World!, time: Double): Vec3 {
+    fin entity = sceneWindEntity(world)
+    if !world.isAlive(entity) then return Vec3(0.0, 0.0, 0.0)
+    return windAt(storageGet<Wind>(ensureStorage<Wind>(world), entity), time)
+}
+
+fin sceneLightName = "SceneLight"
+fin sceneEnvironmentName = "SceneEnvironment"
+
+/** Makes [light] the scene's light from now on (replacing any published before). */
+func publishSceneLight(world: World!, light: SceneLight) {
+    fin replaced = insertResourceNamed<SceneLight>(world, sceneLightName, light)
+}
+
+/** Makes [environment] what scene draws see from now on. */
+func publishSceneEnvironment(world: World!, environment: SceneEnvironment) {
+    fin replaced = insertResourceNamed<SceneEnvironment>(world, sceneEnvironmentName, environment)
+}
+
+/**
+ * Writes [environment] as the shaders read it, 16 floats: wetness, snow,
+ * flash, time; flash colour and shadow strength; the shadow map's centre X and
+ * Z, one over its side and 1 when a map is bound; wind X and Z.
+ */
+func packSceneEnvironment(environment: SceneEnvironment&, into: Long) {
+    azPokeF32(into, 0, environment.wetness)
+    azPokeF32(into, 4, environment.snow)
+    azPokeF32(into, 8, environment.flash)
+    azPokeF32(into, 12, environment.time)
+    azPokeF32(into, 16, environment.flashColor.r)
+    azPokeF32(into, 20, environment.flashColor.g)
+    azPokeF32(into, 24, environment.flashColor.b)
+    azPokeF32(into, 28, environment.shadowStrength)
+    azPokeF32(into, 32, environment.shadowX)
+    azPokeF32(into, 36, environment.shadowZ)
+    azPokeF32(into, 40, if environment.shadowSize > 0.0 then 1.0 / environment.shadowSize else 0.0)
+    azPokeF32(into, 44, if environment.shadowTexture != 0 && environment.shadowSize > 0.0 then 1.0 else 0.0)
+    azPokeF32(into, 48, environment.windX)
+    azPokeF32(into, 52, environment.windZ)
+    azPokeF32(into, 56, 0.0)
+    azPokeF32(into, 60, 0.0)
+}
+
+/**
+ * The light the scene is drawn with at [elapsed] seconds: a published
+ * [SceneLight]; else the scene's `SkyEnvironment`, its field stepped by whole
+ * minutes of a running day; else its first visible directional `Light3d`;
+ * else a default sun.
+ */
+func sceneLightFrom(world: World!, elapsed: Double): SceneLight {
+    if hasResourceNamed(world, sceneLightName) then return resourceNamed<SceneLight>(world, sceneLightName)
+    fin sky = sceneSkyLight(world)
+    if world.isAlive(sky) {
+        fin settings = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky).clone()
+        fin sampled = sampleSky(settings, elapsed)
+        var stepped = settings.clone()
+        fin raw = settings.hour + (if settings.cycleMinutes > 0.0 then elapsed*0.4/settings.cycleMinutes else 0.0)
+        stepped.hour = if settings.cycleMinutes > 0.0 then (floor(raw*60.0) as Double)/60.0 else raw
+        stepped.cycleMinutes = 0.0
+        fin field = sampleSky(stepped, 0.0)
+        fin day = sampled.daylight
+        return SceneLight(sampled.light.clone(), sampled.color.clone(), sampled.intensity, sampled.ambient,
+            field.light.clone(), field.color.clone(), field.intensity,
+            Rgba(0.07+0.52*day, 0.10+0.62*day, 0.19+0.65*day, 1.0), skyClamp(settings.hazeDensity, 0.0, 0.04), day)
+    }
+    fin lights = ensureStorage<Light3d>(world)
+    var index = 0
+    while index < storageLength<Light3d>(lights) {
+        fin entity = storageEntityAt<Light3d>(lights, index)
+        if world.isAlive(entity) && visibleInWorld(world, entity) {
+            fin light = storageValueAt<Light3d>(lights, index).clone()
+            fin m = worldMatrix(world, entity)
+            // The light travels along its -Z; the shader wants the way back to it.
+            return SceneLight(Vec3(m.m02, m.m12, m.m22), Rgba(1.0, 1.0, 1.0, 1.0), 1.0, clampAmbient(0.22 + 0.08 * light.intensity),
+                Vec3(m.m02, m.m12, m.m22), light.color.clone(), light.intensity)
+        }
+        index = index + 1
+    }
+    return SceneLight()
+}
+
 impl App {
     func !.applyHeightFog(world: World!, day: Double) {
         fin layers = ensureStorage<ExponentialHeightFog>(world)
@@ -138,38 +344,27 @@ impl App {
         }
     }
 
-    /** Lights subsequent draws from the scene's first light; a scene with none keeps the default. */
+    /**
+     * Lights subsequent draws with the scene's light (`sceneLightFrom`) and
+     * hands them its weather (a published `SceneEnvironment`, else a dry,
+     * clear one).
+     */
     func !.applySceneLight(world: World!, elapsed: Double = 0.0) {
-        fin sky = sceneSkyLight(world)
-        if world.isAlive(sky) {
-            fin settings = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky)
-            fin sampled = sampleSky(settings, elapsed)
-            self.setLightDirection(sampled.light.x, sampled.light.y, sampled.light.z)
-            self.setAmbientLight(sampled.ambient)
-            self.setDirectColor(sampled.color, sampled.intensity)
-            fin day = sampled.daylight
-            self.setSkyHaze(Rgba(0.07+0.52*day, 0.10+0.62*day, 0.19+0.65*day, 1.0), skyClamp(settings.hazeDensity, 0.0, 0.04))
-            self.applyHeightFog(world, day)
-            return
+        fin light = sceneLightFrom(world, elapsed)
+        self.setLightDirection(light.direction.x, light.direction.y, light.direction.z)
+        self.setAmbientLight(light.ambient)
+        self.setDirectColor(light.color, light.intensity)
+        self.setSkyHaze(light.haze, light.hazeDensity)
+        self.applyHeightFog(world, light.daylight)
+        if self.gpu.environment == 0 then return
+        if hasResourceNamed(world, sceneEnvironmentName) {
+            fin environment = resourceNamed<SceneEnvironment>(world, sceneEnvironmentName)
+            packSceneEnvironment(environment, self.gpu.environment)
+            self.gpu.cloudShadow = if environment.shadowSize > 0.0 then environment.shadowTexture else 0
+        } else {
+            packSceneEnvironment(SceneEnvironment(), self.gpu.environment)
+            self.gpu.cloudShadow = 0
         }
-        self.setSkyHaze(Rgba(0.0, 0.0, 0.0, 1.0), 0.0)
-        self.applyHeightFog(world, 1.0)
-        self.setDirectColor(Rgba(1.0, 1.0, 1.0, 1.0), 1.0)
-        var index = 0
-        while index < storageLength<Light3d>(ensureStorage<Light3d>(world)) {
-            fin entity = storageEntityAt<Light3d>(ensureStorage<Light3d>(world), index)
-            if world.isAlive(entity) && visibleInWorld(world, entity) {
-                fin light = storageValueAt<Light3d>(ensureStorage<Light3d>(world), index).clone()
-                fin m = worldMatrix(world, entity)
-                // The light travels along its -Z; the shader wants the way back to it.
-                self.setLightDirection(m.m02, m.m12, m.m22)
-                self.setAmbientLight(clampAmbient(0.22 + 0.08 * light.intensity))
-                return
-            }
-            index = index + 1
-        }
-        self.setLightDirection(0.5, 0.8, 0.3)
-        self.setAmbientLight(0.35)
     }
 
     /** Points Fusion's asset resolver at the scene's project directory. */
@@ -354,6 +549,11 @@ impl App {
 
     /** Draws every visible mesh in [world] under the view already begun. */
     func !.drawScene(world: World!, meshes: PrimitiveMeshes&) {
+        if self.gpu.localLights != 0 {
+            // The eye setMaterialEye left in the uniforms picks the nearest lights.
+            fin eye = Vec3(peekFloat32(self.gpu.viewProj, 64), peekFloat32(self.gpu.viewProj, 68), peekFloat32(self.gpu.viewProj, 72))
+            fin unused = gatherLocalLights(world, eye, self.gpu.localLights)
+        }
         self.drawDetailShadows(world, meshes)
         self.drawSceneMeshes(world, meshes)
         self.drawHeightfields(world)
@@ -438,7 +638,8 @@ impl App {
                 var model = sceneMeshMatrix(world, entity, mesh.size)
                 if mesh.shape == 2 then model = mat4Mul(model, mat4RotationZ(1.5707963267948966))
                 fin pipeline = self.scenePipeline(world, entity)
-                self.drawMeshPipeline(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b, pipeline)
+                self.drawMeshPipeline(primitiveFor(meshes, mesh.shape), model, color.r, color.g, color.b, pipeline,
+                    emission: sceneEmission(world, entity))
             }
             index = index + 1
         }
@@ -451,6 +652,12 @@ func heightfieldMatrix(world: World!, entity: Entity, surface: HeightfieldTerrai
     mat4Mul(worldMatrix(world, entity), mat4Scale(
         terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0),
         terrainClamp(surface.length, 1.0, 100000.0)))
+
+/** The light [entity]'s StandardMaterial gives off itself; 0 without one. */
+func sceneEmission(world: World!, entity: Entity): Double {
+    if !storageHas<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity) then return 0.0
+    return storageGet<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity).emission
+}
 
 func sceneAlbedo(world: World!, entity: Entity): Rgba {
     if storageHas<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity) {
@@ -481,6 +688,36 @@ func photonCasterHash(key: Long, caster: PhotonCaster&): Long {
     result = photonVectorHash(result, caster.invZ)
     return photonColorHash(result, caster.color)
 }
+
+/** Field updates a mesh caster must keep its placement for before the traced field includes it. */
+fin casterRest: Int = 60
+/** Seconds of a frame the CPU may spend tracing the field's pages while an older field is still shown. */
+fin photonFrameBudget: Double = 0.0015
+
+/**
+ * Whether the mesh caster [id], now at [placement], has rested long enough to
+ * be traced into the Photon Field. A moving one would re-trace the pages under
+ * it every frame; it stays out until it rests, and the sharp cascade - the only
+ * shadow near the view - draws it every frame anyway. A caster seen for the
+ * first time counts as resting, so a scene's still meshes are traced at once.
+ */
+func AzGpu!.casterSettled(id: Int, placement: Long): Bool {
+    while self.casterPlacements.size <= id {
+        self.casterPlacements.add(0)
+        self.casterMoved.add(0)
+    }
+    if self.casterPlacements[id] == 0 {
+        self.casterMoved[id] = self.photonUpdates - casterRest
+    } else if self.casterPlacements[id] != placement {
+        self.casterMoved[id] = self.photonUpdates
+    }
+    self.casterPlacements[id] = placement
+    return self.photonUpdates - self.casterMoved[id] >= casterRest
+}
+
+/** Pages to trace this frame: what [photonFrameBudget] fits at the measured cost, at least one. */
+func photonAllowance(pageSeconds: Double): Int =
+    if pageSeconds <= 0.0 then 1 else photonMax(1.0, photonFrameBudget / pageSeconds) as Int
 
 func photonFrameHash(settings: PhotonField&, light: PhotonLight&, basis: PhotonBasis&, focus: Vec3&): Long {
     var key = photonVectorHash(123, basis.z)
@@ -565,6 +802,7 @@ impl App {
 
     /** Rebuilds demanded pages when light, geometry, or the focus page changes. */
     func !.updateScenePhotons(world: World!, focus: Vec3&, elapsed: Double = 0.0) {
+        self.gpu.photonUpdates += 1
         self.gpu.focusX = focus.x
         self.gpu.focusY = focus.y
         self.gpu.focusZ = focus.z
@@ -587,7 +825,11 @@ impl App {
         fin source = storageGet<Light3d>(ensureStorage<Light3d>(world), entity).clone()
         fin pose = worldMatrix(world, entity)
         var light = PhotonLight(Vec3(pose.m02, pose.m12, pose.m22), source.color, source.intensity, source.shadows)
-        if storageHas<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity) {
+        fin published = hasResourceNamed(world, sceneLightName)
+        if published {
+            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            light = PhotonLight(scene.fieldDirection.clone(), scene.fieldColor.clone(), scene.fieldIntensity, source.shadows)
+        } else if storageHas<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity) {
             fin sky = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity).clone()
             if sky.enabled {
                 // Update CPU pages in one-minute steps during a running day cycle.
@@ -601,11 +843,22 @@ impl App {
         }
         self.gpu.shadowsActive = source.shadows
         self.gpu.detailStrength = photonClamp(settings.shadowStrength, 0.0, 1.0)
-        self.setDirectColor(light.color, light.intensity)
+        if published {
+            // Shading follows the published light smoothly; only the field waits for its steps.
+            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            self.setDirectColor(scene.color, scene.intensity)
+        } else {
+            self.setDirectColor(light.color, light.intensity)
+        }
         fin needDynamic = (self.gpu.virtualShadows && source.shadows) || settings.indirectStrength > 0.0
         fin needStatic = !self.gpu.virtualShadows && source.shadows && !self.gpu.staticShadowReady
         fin basis = photonBasis(light.direction)
-        self.setLightDirection(basis.z.x, basis.z.y, basis.z.z)
+        if published {
+            fin scene = resourceNamed<SceneLight>(world, sceneLightName)
+            self.setLightDirection(scene.direction.x, scene.direction.y, scene.direction.z)
+        } else {
+            self.setLightDirection(basis.z.x, basis.z.y, basis.z.z)
+        }
         if !needDynamic && !needStatic then return
         var key = photonFrameHash(settings, light, basis, focus)
         var casters: Array<PhotonCaster> = []
@@ -617,8 +870,10 @@ impl App {
                 fin mesh = meshes.values[index].clone()
                 fin model = sceneMeshMatrix(world, meshEntity, mesh.size)
                 fin caster = photonCaster(mesh.shape, model, self.photonAlbedo(world, meshEntity), basis)
-                key = photonCasterHash(key, caster)
-                casters.add(take caster)
+                if self.gpu.casterSettled(meshEntity.id, photonCasterHash(17, caster)) {
+                    key = photonCasterHash(key, caster)
+                    casters.add(take caster)
+                }
             }
             index = index + 1
         }
@@ -652,7 +907,15 @@ impl App {
             self.gpu.staticShadowReady = true
         }
         if needDynamic && key != self.gpu.photonKey {
-            fin data = buildPhotonField(settings, light, basis, focus, casters, self.gpu.photonCache)
+            // While a field is shown, its successor is traced a frame's share at a time.
+            fin allowance = if self.gpu.photonBuffer == 0 then -1 else photonAllowance(self.gpu.photonPageSeconds)
+            fin started = self.timeNow()
+            fin data = buildPhotonField(settings, light, basis, focus, casters, self.gpu.photonCache, allowance)
+            if data.traced > 0 {
+                fin each = (self.timeNow() - started) / (data.traced as Double)
+                self.gpu.photonPageSeconds = if self.gpu.photonPageSeconds <= 0.0 then each else self.gpu.photonPageSeconds*0.75 + each*0.25
+            }
+            if !data.complete then return
             fin resolution = photonClamp(settings.pageResolution as Double, 8.0, 48.0) as Int
             fin gathered = if settings.indirectStrength > 0.0 && self.gpu.irradiancePipeline != 0 then data.pages*resolution*resolution else 0
             fin buffer = uploadPhotonData(self.gpu.device, data, gathered)

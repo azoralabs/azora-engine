@@ -1,0 +1,45 @@
+module sceneGame
+
+import std.io
+import engine.core
+import engine.ecs
+import engine.game
+import engine.platform
+
+fin game = GameConfig(title: "Scene game probe", width: 320, height: 240, fixedHz: 120)
+
+@Component
+pack Counter { var updates: Int = 0 }
+
+@System(phase: .Startup)
+func setup(world: World!) {
+    fin player = world.spawn()
+    storageInsert<Counter>(ensureStorage<Counter>(world), player, Counter())
+}
+
+@System(phase: .PreUpdate)
+func pauseAndResume(frame: Game!) {
+    if frame.window.framesRun == 2 then frame.paused = true
+    if frame.window.framesRun == 4 then frame.paused = false
+}
+
+@System(phase: .Update)
+func countUpdates(counters: @query [Counter!]) {
+    counters.unpack { entity, counter -> counter.updates += 1 }
+}
+
+@System(phase: .Last)
+func checkFrame(frame: Game!, counters: @query [Counter&]) {
+    assert counters.hasNext() panic "startup system did not create the counter"
+    let row = counters.next()
+    assert frame.world.isAlive(row.0) panic "query returned a stale entity"
+    if frame.window.framesRun >= 2 && frame.window.framesRun <= 4 {
+        assert frame.time.deltaSecs == 0.0 && row.1.updates == 1 panic "simulation advanced across pause"
+    }
+    if frame.window.framesRun == 5 {
+        assert row.1.updates == 2 panic "simulation did not resume"
+        assert frame.time.fixedDeltaSecs == 1.0 / 120.0 panic "wrong fixed timestep"
+        println("scene game passed")
+        frame.window.quit()
+    }
+}

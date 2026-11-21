@@ -32,6 +32,7 @@
 module engine.scene
 
 import std.traits
+import std.math
 import engine.core
 import engine.ecs
 import engine.math
@@ -127,6 +128,9 @@ pack StandardMaterial derives Clone {
     var roughness: Double = 0.6
     @Range(min: 0.0, max: 1.0, step: 0.01)
     var metallic: Double = 0.0
+    /** Light the surface gives off itself, in multiples of its colour: a lit lamp, a screen. */
+    @Range(min: 0.0, max: 16.0, step: 0.1)
+    var emission: Double = 0.0
 }
 
 /** Asset-backed surface graph. StandardMaterial provides the missing-asset fallback. */
@@ -165,6 +169,65 @@ pack Light3d derives Clone {
     @Range(min: 0.0, max: 10000.0, step: 0.1)
     var range: Double = 10.0
     var shadows: Bool = true
+    /** A spot light's cone: its half angle in degrees, and how much of it fades softly to the edge. */
+    @Range(min: 1.0, max: 89.0, step: 0.5)
+    var spotAngle: Double = 30.0
+    @Range(min: 0.0, max: 1.0, step: 0.05)
+    var spotSoftness: Double = 0.25
+}
+
+/**
+ * The wind over the scene: how fast it blows, from which compass bearing (0
+ * north, the world's -Z; 90 east, +X), and how it gusts and wavers. Rain,
+ * snow, particles, clouds and the wind's own sound follow it.
+ */
+@Component
+@Inspectable(title: "Wind", serializedName: "Wind", icon: "wind", category: "Environment", order: 19)
+pack Wind derives Clone {
+    var enabled: Bool = true
+    /** Metres per second between gusts. */
+    @Range(min: 0.0, max: 60.0, step: 0.1)
+    var speed: Double = 6.0
+    /** The compass bearing it blows from, in degrees. */
+    @Range(min: 0.0, max: 360.0, step: 1.0)
+    var direction: Double = 225.0
+    /** How much stronger a gust blows: 0.5 adds up to half again. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var gusts: Double = 0.35
+    /** Gusts a second, about. */
+    @Range(min: 0.01, max: 4.0, step: 0.01)
+    var gustFrequency: Double = 0.2
+    /** How far its bearing wavers, as a share of 30 degrees. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var turbulence: Double = 0.2
+}
+
+/** A smooth value noise of [t] in 0..1, the same for the same [t] and [salt]. */
+func windNoise(t: Double, salt: Double): Double {
+    fin cell = floor(t) as Double
+    fin f = t - cell
+    fin a = windFract(sin(cell * 127.1 + salt * 311.7) * 43758.5453)
+    fin b = windFract(sin((cell + 1.0) * 127.1 + salt * 311.7) * 43758.5453)
+    fin s = f * f * (3.0 - 2.0 * f)
+    return a + (b - a) * s
+}
+
+func windFract(x: Double): Double = x - (floor(x) as Double)
+
+/**
+ * Where and how hard [wind] blows at [time] seconds, m/s along world X and Z:
+ * toward the bearing opposite the one it comes from, gusting (two octaves of
+ * smooth noise, only ever stronger) and wavering in bearing.
+ */
+func windAt(wind: Wind&, time: Double): Vec3 {
+    if !wind.enabled then return Vec3(0.0, 0.0, 0.0)
+    fin rate = if wind.gustFrequency > 0.0 then wind.gustFrequency else 0.01
+    fin swell = windNoise(time * rate, 1.0) * 0.7 + windNoise(time * rate * 2.7, 2.0) * 0.3
+    fin gust = wind.gusts * (if swell > 0.45 then (swell - 0.45) / 0.55 else 0.0)
+    fin waver = (windNoise(time * rate * 0.6, 3.0) - 0.5) * 2.0 * wind.turbulence * 0.5235987755982988
+    fin bearing = wind.direction * 0.017453292519943295 + waver
+    fin speed = wind.speed * (1.0 + gust)
+    return Vec3(-sin(bearing) * speed, 0.0, cos(bearing) * speed)
 }
 
 /** A flat, coloured rectangle in the 2D plane. */

@@ -1,0 +1,78 @@
+import std.io
+import std.math
+import engine.io
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.sky
+import engine.render.scene
+
+func report(name: String, passed: Bool) { println(if passed then "${name} ok" else "${name} FAIL") }
+
+func near(a: Double, b: Double): Bool = absValue(a - b) < 0.0001
+
+func main() {
+    fin block = azAlloc(64)
+    var environment = SceneEnvironment(wetness: 0.1, snow: 0.2, flash: 0.3, time: 0.4, flashColor: Rgba(0.5, 0.6, 0.7, 1.0),
+        shadowStrength: 0.8, shadowX: 9.0, shadowZ: 10.0, shadowSize: 4.0, windX: 12.0, windZ: 13.0)
+    packSceneEnvironment(environment, block)
+    fin expected: Array<Double> = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 9.0, 10.0, 0.25, 0.0, 12.0, 13.0, 0.0, 0.0]
+    var same = true
+    var index = 0
+    while index < 16 {
+        if !near(peekFloat32(block, (index * 4) as Long), expected[index]) then same = false
+        index += 1
+    }
+    report("packedOffsets", same)
+    packSceneEnvironment(SceneEnvironment(), block)
+    var zero = true
+    index = 0
+    while index < 16 {
+        if peekFloat32(block, (index * 4) as Long) != 0.0 then zero = false
+        index += 1
+    }
+    report("zeroIsNeutral", zero)
+
+    var world = World()
+    fin sky = world.spawn()
+    storageInsert<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky, SkyEnvironment(hour: 9.25, cycleMinutes: 30.0))
+    storageInsert<Light3d>(ensureStorage<Light3d>(world), sky, Light3d())
+    // 37 s into a 30-minute day: the field steps by whole minutes of the day's hour.
+    fin derived = sceneLightFrom(world, 37.0)
+    fin smooth = sampleSky(storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky), 37.0)
+    report("skyWithoutPublished", near(derived.direction.x, smooth.light.x) && near(derived.direction.y, smooth.light.y) &&
+        near(derived.intensity, smooth.intensity))
+    var stepped = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), sky).clone()
+    fin raw = stepped.hour + 37.0 * 0.4 / stepped.cycleMinutes
+    stepped.hour = (floor(raw * 60.0) as Double) / 60.0
+    stepped.cycleMinutes = 0.0
+    fin field = sampleSky(stepped, 0.0)
+    report("fieldUsesSteppedValues", near(derived.fieldDirection.x, field.light.x) && near(derived.fieldDirection.z, field.light.z) &&
+        !near(derived.fieldDirection.x, derived.direction.x))
+
+    publishSceneLight(world, SceneLight(direction: Vec3(0.0, 1.0, 0.0), intensity: 2.5, ambient: 0.4))
+    fin published = sceneLightFrom(world, 37.0)
+    report("sceneLightWins", near(published.direction.y, 1.0) && near(published.intensity, 2.5) && near(published.ambient, 0.4))
+
+    // A wind from the west (270) blows toward the east (+X); its gusts only ever add, up to their share.
+    fin calm = Wind(speed: 8.0, direction: 270.0, gusts: 0.0, turbulence: 0.0)
+    fin east = windAt(calm, 3.0)
+    report("windBlowsFromBearing", near(east.x, 8.0) && near(east.z, 0.0))
+    fin gusty = Wind(speed: 10.0, direction: 0.0, gusts: 0.5, gustFrequency: 0.7, turbulence: 0.0)
+    var lowest: Double = 1000.0
+    var highest: Double = 0.0
+    var t: Double = 0.0
+    while t < 120.0 {
+        fin w = windAt(gusty, t)
+        fin speed = sqrt(w.x * w.x + w.z * w.z)
+        if speed < lowest then lowest = speed
+        if speed > highest then highest = speed
+        t += 0.05
+    }
+    report("gustsBounded", lowest >= 9.999 && highest <= 15.001 && highest > 12.0)
+    fin windy = world.spawn()
+    storageInsert<Wind>(ensureStorage<Wind>(world), windy, Wind(speed: 4.0, direction: 180.0, gusts: 0.0, turbulence: 0.0))
+    fin scene = sceneWind(world, 1.0)
+    report("sceneWindFound", near(scene.z, -4.0) && near(scene.x, 0.0))
+}

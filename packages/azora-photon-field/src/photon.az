@@ -62,29 +62,62 @@ pack PhotonData {
     var bytes: Long = 0
     var size: Long = 0
     var pages: Int = 0
+    /** False when the build used up its allowance first: [bytes] is 0 and what it traced waits in the cache. */
+    var complete: Bool = true
+    /** Pages this build traced rather than copied from the cache. */
+    var traced: Int = 0
 }
 
 fin photonHeader: Int = 24
 fin photonSample: Int = 8
 
 /**
- * The pages the last build traced, kept for the next one. A page whose
+ * Traced pages kept between builds, one block of samples each. A page whose
  * placement, light and casters are unchanged is copied instead of traced
- * again, so a car driving through the field re-traces the page or two it is
- * in, not every page under the terrain.
+ * again, so moving the field by a page re-traces one row, not every page; a
+ * build allowed only a few pages keeps them here for the next call.
  */
 pack PhotonPageCache {
-    /** A copy of the last build's floats; each cached page's samples start at its entry in [starts]. */
-    var data: Long = 0
     var keys: Array<Long> = []
-    var starts: Array<Int> = []
+    var blocks: Array<Long> = []
 }
 
 func releasePhotonCache(cache: PhotonPageCache!) {
-    if cache.data != 0 then azFree(cache.data)
-    cache.data = 0
+    for block in cache.blocks { azFree(block) }
     cache.keys.clear()
-    cache.starts.clear()
+    cache.blocks.clear()
+}
+
+/** The cached block of the page [key], or 0. */
+func PhotonPageCache&.block(key: Long): Long {
+    var look = 0
+    while look < self.keys.size {
+        if self.keys[look] == key then return self.blocks[look]
+        look += 1
+    }
+    return 0
+}
+
+/** Frees every cached page that is not one of [wanted]. */
+func PhotonPageCache!.keepOnly(wanted: Array<Long>&) {
+    var keys: Array<Long> = []
+    var blocks: Array<Long> = []
+    var look = 0
+    while look < self.keys.size {
+        var kept = false
+        for key in wanted {
+            if key == self.keys[look] then kept = true
+        }
+        if kept {
+            keys.add(self.keys[look])
+            blocks.add(self.blocks[look])
+        } else {
+            azFree(self.blocks[look])
+        }
+        look += 1
+    }
+    self.keys = take keys
+    self.blocks = take blocks
 }
 
 func photonMix(key: Long, value: Double): Long {
@@ -275,9 +308,16 @@ func photonPageSize(settings: PhotonField&): Double = photonClamp(settings.pageS
 func photonPageX(focus: Vec3&, basis: PhotonBasis&, settings: PhotonField&): Int = floor(photonDot(focus, basis.x) / photonPageSize(settings))
 func photonPageY(focus: Vec3&, basis: PhotonBasis&, settings: PhotonField&): Int = floor(photonDot(focus, basis.y) / photonPageSize(settings))
 
-/** Allocates only demanded virtual pages touched by scene geometry. Each sample stores depth and a lit surfel. */
+/**
+ * Allocates only demanded virtual pages touched by scene geometry. Each sample stores depth and a lit surfel.
+ *
+ * [allowance] caps the pages traced in this call (-1: no cap). A build that
+ * needs more returns incomplete with what it traced kept in [cache]; calling
+ * again with the same inputs carries on, so a field that moves can be traced
+ * a few pages per frame while the previous one is still shown.
+ */
 func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: PhotonBasis&, focus: Vec3&, casters: Array<PhotonCaster>&,
-                      cache: PhotonPageCache!): PhotonData {
+                      cache: PhotonPageCache!, allowance: Int = -1): PhotonData {
     if !settings.enabled || casters.size == 0 then return PhotonData()
     fin radius = photonClamp(settings.pageRadius as Double, 1.0, 4.0) as Int
     fin res = photonClamp(settings.pageResolution as Double, 8.0, 48.0) as Int
@@ -304,8 +344,92 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
         cursor = cursor + 1
     }
     if pages.size == 0 then return PhotonData()
+    fin startDepth = top + 1.0
+    fin direction = photonScale(basis.z, -1.0)
+    fin pixel = size / (res as Double)
+    fin pageFloats = res * res * photonSample
+    // What a page's samples depend on: where it is, the light, and the casters over it.
+    var shared = photonMixVector(photonMixVector(photonMixVector(photonMix(photonMix(77, res as Double), size), basis.x), basis.y), basis.z)
+    shared = photonMix(photonMix(photonMix(photonMix(shared, light.color.r), light.color.g), light.color.b), photonClamp(light.intensity, 0.0, 100.0))
+    var keys: Array<Long> = []
+    for cell in pages {
+        fin x = ((minX + cell % side) as Double) * size
+        fin y = ((minY + cell / side) as Double) * size
+        var key = photonMix(photonMix(shared, (minX + cell % side) as Double), (minY + cell / side) as Double)
+        for caster in casters {
+            if caster.shape >= 0 && caster.lowX < x + size && caster.highX >= x && caster.lowY < y + size && caster.highY >= y {
+                key = photonMixVector(photonMixVector(photonMixVector(photonMixVector(photonMix(key, caster.shape as Double),
+                    caster.center), caster.invX), caster.invY), caster.invZ)
+                key = photonMix(photonMix(photonMix(photonMix(key, caster.color.r), caster.color.g), caster.color.b), caster.terrain.samples as Double)
+            }
+        }
+        keys.add(key)
+    }
+    // Pages of fields long gone are not worth keeping once they outnumber the wanted ones.
+    if cache.keys.size > pages.size * 2 then cache.keepOnly(keys)
+
+    // Trace what the cache lacks, as many pages as allowed.
+    var traced = 0
+    var missing = 0
+    var page = 0
+    while page < pages.size {
+        if cache.block(keys[page]) != 0 {
+            page += 1
+            continue
+        }
+        if allowance >= 0 && traced >= allowance {
+            missing += 1
+            page += 1
+            continue
+        }
+        fin block = azAlloc((pageFloats as Long) * 4)
+        if block == 0 then return PhotonData(complete: false, traced: traced)
+        fin cell = pages[page]
+        fin x = ((minX + cell % side) as Double) * size
+        fin y = ((minY + cell / side) as Double) * size
+        var uy = 0
+        while uy < res {
+            var ux = 0
+            while ux < res {
+                fin sx = x + ((ux as Double)+0.5)*pixel
+                fin sy = y + ((uy as Double)+0.5)*pixel
+                fin world = Vec3(basis.x.x*sx+basis.y.x*sy+basis.z.x*startDepth,
+                    basis.x.y*sx+basis.y.y*sy+basis.z.y*startDepth, basis.x.z*sx+basis.y.z*sy+basis.z.z*startDepth)
+                fin at = (uy*res+ux)*photonSample
+                var best: Double = 1000000.0
+                var radiance = Vec3(0.0, 0.0, 0.0)
+                var normal = Vec3(0.0, 0.0, 0.0)
+                for caster in casters {
+                    if caster.shape >= 0 && sx >= caster.lowX && sx <= caster.highX && sy >= caster.lowY && sy <= caster.highY {
+                        fin hit = photonRay(caster, world, direction)
+                        if hit.t >= 0.0 && hit.t < best {
+                            best = hit.t
+                            fin n = hit.normal
+                            normal = photonUnit(Vec3(n.x*caster.invX.x+n.y*caster.invY.x+n.z*caster.invZ.x,
+                                n.x*caster.invX.y+n.y*caster.invY.y+n.z*caster.invZ.y, n.x*caster.invX.z+n.y*caster.invY.z+n.z*caster.invZ.z))
+                            fin lit = photonMax(0.0, photonDot(normal, basis.z)) * photonClamp(light.intensity, 0.0, 100.0)
+                            radiance = Vec3(lit*caster.color.r*light.color.r, lit*caster.color.g*light.color.g, lit*caster.color.b*light.color.b)
+                        }
+                    }
+                }
+                photonStore(block, at, if best < 1000000.0 then startDepth-best else -1.0e9)
+                photonStoreVec(block, at+1, radiance)
+                photonStoreVec(block, at+4, normal)
+                photonStore(block, at+7, if best < 1000000.0 then 1.0 else 0.0)
+                ux = ux + 1
+            }
+            uy = uy + 1
+        }
+        cache.keys.add(keys[page])
+        cache.blocks.add(block)
+        traced += 1
+        page += 1
+    }
+    if missing > 0 then return PhotonData(pages: pages.size, complete: false, traced: traced)
+
+    // Every page is traced: lay the field out for the GPU.
     fin first = photonHeader + cellCount
-    fin bytes = ((first + pages.size * res * res * photonSample) as Long) * 4
+    fin bytes = ((first + pages.size * pageFloats) as Long) * 4
     fin data = azAlloc(bytes)
     if data == 0 then return PhotonData()
     photonStore(data, 0, 1.0)
@@ -329,84 +453,12 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
         photonStore(data, photonHeader + cursor, -1.0)
         cursor = cursor + 1
     }
-    fin startDepth = top + 1.0
-    fin direction = photonScale(basis.z, -1.0)
-    fin pixel = size / (res as Double)
-    // What a page's samples depend on: where it is, the light, and the casters over it.
-    var shared = photonMixVector(photonMixVector(photonMixVector(photonMix(photonMix(77, res as Double), size), basis.x), basis.y), basis.z)
-    shared = photonMix(photonMix(photonMix(photonMix(shared, light.color.r), light.color.g), light.color.b), photonClamp(light.intensity, 0.0, 100.0))
-    var keys: Array<Long> = []
-    var starts: Array<Int> = []
-    var page = 0
+    page = 0
     while page < pages.size {
-        fin cell = pages[page]
-        photonStore(data, photonHeader + cell, page as Double)
-        fin x = ((minX + cell % side) as Double) * size
-        fin y = ((minY + cell / side) as Double) * size
-        var key = photonMix(photonMix(shared, (minX + cell % side) as Double), (minY + cell / side) as Double)
-        for caster in casters {
-            if caster.shape >= 0 && caster.lowX < x + size && caster.highX >= x && caster.lowY < y + size && caster.highY >= y {
-                key = photonMixVector(photonMixVector(photonMixVector(photonMixVector(photonMix(key, caster.shape as Double),
-                    caster.center), caster.invX), caster.invY), caster.invZ)
-                key = photonMix(photonMix(photonMix(photonMix(key, caster.color.r), caster.color.g), caster.color.b), caster.terrain.samples as Double)
-            }
-        }
-        fin start = first + page*res*res*photonSample
-        keys.add(key)
-        starts.add(start)
-        var reused = -1
-        var look = 0
-        while look < cache.keys.size && reused < 0 {
-            if cache.keys[look] == key then reused = cache.starts[look]
-            look += 1
-        }
-        if reused >= 0 && cache.data != 0 {
-            azCopy(data + (start as Long)*4, cache.data + (reused as Long)*4, ((res*res*photonSample) as Long)*4)
-            page = page + 1
-            continue
-        }
-        var uy = 0
-        while uy < res {
-            var ux = 0
-            while ux < res {
-                fin sx = x + ((ux as Double)+0.5)*pixel
-                fin sy = y + ((uy as Double)+0.5)*pixel
-                fin world = Vec3(basis.x.x*sx+basis.y.x*sy+basis.z.x*startDepth,
-                    basis.x.y*sx+basis.y.y*sy+basis.z.y*startDepth, basis.x.z*sx+basis.y.z*sy+basis.z.z*startDepth)
-                fin at = first + ((page*res+uy)*res+ux)*photonSample
-                var best: Double = 1000000.0
-                var radiance = Vec3(0.0, 0.0, 0.0)
-                var normal = Vec3(0.0, 0.0, 0.0)
-                for caster in casters {
-                    if caster.shape >= 0 && sx >= caster.lowX && sx <= caster.highX && sy >= caster.lowY && sy <= caster.highY {
-                        fin hit = photonRay(caster, world, direction)
-                        if hit.t >= 0.0 && hit.t < best {
-                            best = hit.t
-                            fin n = hit.normal
-                            normal = photonUnit(Vec3(n.x*caster.invX.x+n.y*caster.invY.x+n.z*caster.invZ.x,
-                                n.x*caster.invX.y+n.y*caster.invY.y+n.z*caster.invZ.y, n.x*caster.invX.z+n.y*caster.invY.z+n.z*caster.invZ.z))
-                            fin lit = photonMax(0.0, photonDot(normal, basis.z)) * photonClamp(light.intensity, 0.0, 100.0)
-                            radiance = Vec3(lit*caster.color.r*light.color.r, lit*caster.color.g*light.color.g, lit*caster.color.b*light.color.b)
-                        }
-                    }
-                }
-                photonStore(data, at, if best < 1000000.0 then startDepth-best else -1.0e9)
-                photonStoreVec(data, at+1, radiance)
-                photonStoreVec(data, at+4, normal)
-                photonStore(data, at+7, if best < 1000000.0 then 1.0 else 0.0)
-                ux = ux + 1
-            }
-            uy = uy + 1
-        }
-        page = page + 1
+        photonStore(data, photonHeader + pages[page], page as Double)
+        azCopy(data + ((first + page*pageFloats) as Long)*4, cache.block(keys[page]), (pageFloats as Long)*4)
+        page += 1
     }
-    // Keep this build's floats for the next: the caller hands `data` to the GPU and frees it.
-    releasePhotonCache(cache)
-    cache.data = azAlloc(bytes)
-    if cache.data != 0 {
-        azCopy(cache.data, data, bytes)
-        cache.keys = take keys
-        cache.starts = take starts
-    }
-    return PhotonData(data, bytes, pages.size)
+    cache.keepOnly(keys)
+    return PhotonData(data, bytes, pages.size, true, traced)
 }

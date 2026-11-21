@@ -1,0 +1,57 @@
+import std.io
+import std.math
+import engine.io
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.render.scene
+
+// Ten lights around the origin: six spots at 1..6 m, three point lights at
+// 7..9 m and a directional one at 0.5 m. The eight nearest local lights must
+// come back, nearest first, the sun left out.
+
+func report(name: String, passed: Bool, value: Double) {
+    println(if passed then "${name} ok" else "${name} FAIL ${value}")
+}
+
+func addLight(world: World!, distance: Double, kind: Int) {
+    fin entity = world.spawn()
+    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: Vec3(distance, 0.0, 0.0)))
+    storageInsert<Light3d>(ensureStorage<Light3d>(world), entity, Light3d(kind: kind, range: 20.0, spotAngle: 30.0, spotSoftness: 0.25))
+}
+
+func near(a: Double, b: Double): Bool = a - b < 0.0001 && b - a < 0.0001
+
+func main() {
+    var world = World()
+    addLight(world, 0.5, 0)
+    // Spawned out of order, so sorting is what puts them in order.
+    addLight(world, 9.0, 1)
+    addLight(world, 3.0, 2)
+    addLight(world, 1.0, 2)
+    addLight(world, 7.0, 1)
+    addLight(world, 6.0, 2)
+    addLight(world, 2.0, 2)
+    addLight(world, 8.0, 1)
+    addLight(world, 5.0, 2)
+    addLight(world, 4.0, 2)
+    fin block = azAlloc(528)
+    fin count = gatherLocalLights(world, Vec3(0.0, 0.0, 0.0), block)
+    report("gathersAtMostEight", count == 8 && near(peekFloat32(block, 512), 8.0), count as Double)
+    var ordered = true
+    var sunFound = false
+    var i = 0
+    while i < count {
+        fin x = peekFloat32(block, (i * 64) as Long)
+        if i > 0 && x < peekFloat32(block, ((i - 1) * 64) as Long) then ordered = false
+        if near(x, 0.5) then sunFound = true
+        i += 1
+    }
+    report("nearestFirst", ordered && near(peekFloat32(block, 0), 1.0), peekFloat32(block, 0))
+    report("directionalIgnored", !sunFound, 0.5)
+    fin outer = peekFloat32(block, 28)
+    fin inner = peekFloat32(block, 44)
+    report("spotConeEncoded", near(outer, cos(30.0 * PI / 180.0)) && near(inner, cos(22.5 * PI / 180.0)), outer)
+    report("pointHasNoCone", near(peekFloat32(block, 6 * 64 + 28), -2.0) && near(peekFloat32(block, 7 * 64 + 28), -2.0), peekFloat32(block, 6 * 64 + 28))
+    azFree(block)
+}
