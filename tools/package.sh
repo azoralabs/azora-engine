@@ -72,7 +72,7 @@ echo "  ✓ azora compiler"
 # ── 3. Assemble the bundle ───────────────────────────────────────────────
 rm -rf "$DIST"
 mkdir -p "$DIST/packages" "$DIST/native/macos" "$DIST/tools/azorac/lib" \
-         "$DIST/runtime/include" "$DIST/templates"
+         "$DIST/runtime/include" "$DIST/templates" "$DIST/materials"
 
 cp "$ROOT_DIR/library.json" "$DIST/"
 # The engine ships as a workspace of packages (crates) resolved by azpm.
@@ -89,6 +89,8 @@ for jar in "$AZORAC_LIB/"*.jar; do
     esac
 done
 cp -R "$ROOT_DIR/templates/." "$DIST/templates/"
+cp -R "$ROOT_DIR/materials/." "$DIST/materials/"
+cp "$ROOT_DIR/tools/import-standard-materials.sh" "$DIST/tools/"
 find "$DIST/templates" -name .azora-build -type d -prune -exec rm -rf {} +
 
 case "$(uname -s)" in

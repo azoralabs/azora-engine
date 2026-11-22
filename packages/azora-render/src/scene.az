@@ -915,25 +915,87 @@ func clampAmbient(value: Double): Double {
     }
 }
 
-func roadPositionKey(point: Vec3&): String =
-    "${formatDecimal(point.x,4)},${formatDecimal(point.y,4)},${formatDecimal(point.z,4)}"
-
 func roadMaterialAsset(world: World!, entity: Entity): String {
     fin materials = ensureStorage<FusionMaterial>(world)
     return if !storageHas<FusionMaterial>(materials,entity) then "" else storageGet<FusionMaterial>(materials,entity).asset
 }
 
-func roadLayout(world: World!): String {
-    var layout = ""
+func roadKeyPart(key: Long, value: Long): Long = (key ^ value ^ (value >> 32)) * 1099511628211
+
+func roadKeyReal(key: Long, value: Double, scratch: Long): Long {
+    azPokeF64(scratch, 0, value)
+    return roadKeyPart(key, azPeek64(scratch, 0))
+}
+
+func roadKeyMaterial(key: Long, path: String): Long {
+    fin length = stringLength(path)
+    var result = roadKeyPart(key, length as Long)
+    for i: Int in 0..<length then result = roadKeyPart(result, (charAt(path, i) as Int) as Long)
+    return result
+}
+
+func roadKeyPlacement(key: Long, pose: Mat4&, scratch: Long): Long {
+    var result = roadKeyReal(key, pose.m00, scratch)
+    result = roadKeyReal(result, pose.m01, scratch)
+    result = roadKeyReal(result, pose.m02, scratch)
+    result = roadKeyReal(result, pose.m03, scratch)
+    result = roadKeyReal(result, pose.m10, scratch)
+    result = roadKeyReal(result, pose.m11, scratch)
+    result = roadKeyReal(result, pose.m12, scratch)
+    result = roadKeyReal(result, pose.m13, scratch)
+    result = roadKeyReal(result, pose.m20, scratch)
+    result = roadKeyReal(result, pose.m21, scratch)
+    result = roadKeyReal(result, pose.m22, scratch)
+    return roadKeyReal(result, pose.m23, scratch)
+}
+
+/** Fingerprints the authored inputs without formatting them into strings each frame. */
+func roadLayout(world: World!, scratch: Long): Long {
+    var layout: Long = 0
     fin roads = ensureStorage<SplineRoad>(world)
+    fin points = ensureStorage<RoadPoint>(world)
+    fin transforms = ensureStorage<Transform>(world)
     var i = 0
     while i < storageLength<SplineRoad>(roads) {
         fin entity = storageEntityAt<SplineRoad>(roads,i)
         fin s = roads.values[i].&
         if s.enabled && world.isAlive(entity) && visibleInWorld(world,entity) {
-            layout = "${layout};${entity.id}:${s.closed},${s.forwardLanes},${s.reverseLanes},${s.laneWidth},${s.shoulder},${s.crossfall},${s.gradingWidth},${s.friction},${s.markings},${s.isBridge},${s.pierDepth},${s.pierSpacing}:${roadMaterialAsset(world,entity)}"
-            fin points = roadKnots(world,entity)
-            for knot in points { layout = "${layout}:${knot.order},${roadPositionKey(knot.point)}" }
+            layout = roadKeyPart(layout, 1)
+            layout = roadKeyPart(layout, entity.id as Long)
+            layout = roadKeyPart(layout, if s.closed then 1 else 0)
+            layout = roadKeyPart(layout, s.forwardLanes as Long)
+            layout = roadKeyPart(layout, s.reverseLanes as Long)
+            layout = roadKeyReal(layout, s.laneWidth, scratch)
+            layout = roadKeyReal(layout, s.shoulder, scratch)
+            layout = roadKeyReal(layout, s.crossfall, scratch)
+            layout = roadKeyReal(layout, s.gradingWidth, scratch)
+            layout = roadKeyReal(layout, s.friction, scratch)
+            layout = roadKeyPart(layout, if s.markings then 1 else 0)
+            layout = roadKeyPart(layout, if s.isBridge then 1 else 0)
+            layout = roadKeyReal(layout, s.pierDepth, scratch)
+            layout = roadKeyReal(layout, s.pierSpacing, scratch)
+            layout = roadKeyMaterial(layout, roadMaterialAsset(world, entity))
+            layout = roadKeyPlacement(layout, worldMatrix(world, entity), scratch)
+            // Knots are direct children. Their local translation and the road's
+            // world transform determine the same positions that roadKnots uses.
+            var j = 0
+            while j < storageLength<RoadPoint>(points) {
+                fin point = storageEntityAt<RoadPoint>(points, j)
+                if world.isAlive(point) && world.getParent(point) == entity {
+                    layout = roadKeyPart(layout, 2)
+                    layout = roadKeyPart(layout, points.values[j].order as Long)
+                    fin at = storageIndexOf<Transform>(transforms, point)
+                    if at >= 0 {
+                        fin translation = transforms.values[at].translation.&
+                        layout = roadKeyReal(layout, translation.x, scratch)
+                        layout = roadKeyReal(layout, translation.y, scratch)
+                        layout = roadKeyReal(layout, translation.z, scratch)
+                    } else {
+                        layout = roadKeyPart(roadKeyPart(roadKeyPart(layout, 0), 0), 0)
+                    }
+                }
+                j++
+            }
         }
         i++
     }
@@ -944,7 +1006,13 @@ func roadLayout(world: World!): String {
         fin site = sites.values[i].&
         if site.enabled && world.isAlive(entity) && visibleInWorld(world,entity) {
             fin pose = worldMatrix(world,entity)
-            layout = "${layout};j${entity.id}:${site.kind},${site.radius},${site.carriageway},${pose.m02},${pose.m22},${roadPositionKey(worldPosition(world,entity))}:${roadMaterialAsset(world,entity)}"
+            layout = roadKeyPart(layout, 3)
+            layout = roadKeyPart(layout, entity.id as Long)
+            layout = roadKeyPart(layout, site.kind as Long)
+            layout = roadKeyReal(layout, site.radius, scratch)
+            layout = roadKeyReal(layout, site.carriageway, scratch)
+            layout = roadKeyPlacement(layout, pose, scratch)
+            layout = roadKeyMaterial(layout, roadMaterialAsset(world, entity))
         }
         i++
     }
@@ -975,11 +1043,12 @@ func uploadRoadMesh(device: Long, network: RoadNetwork&, asset: String, material
 
 impl App {
     func !.prepareRoads(world: World!) {
-        fin layout = roadLayout(world)
+        fin layout = roadLayout(world, self.gpu.scratch)
         if layout == self.gpu.roads.layout then return
         releaseRoadBuffers(self.gpu.roads)
         self.gpu.roads.network = buildRoadNetwork(world)
         self.gpu.roads.layout = layout
+        self.gpu.roads.revision++
         for part in self.gpu.roads.network.surfaceRanges {
             fin asset = roadMaterialAsset(world,part.owner)
             self.gpu.roads.surfaces.add(uploadRoadMesh(self.gpu.device,self.gpu.roads.network,asset,0,part.first,part.limit))
@@ -992,7 +1061,7 @@ impl App {
     }
 
     func !.drawRoads() {
-        if self.gpu.roads.layout == "" || self.gpu.roads.buffers.size == 0 then return
+        if self.gpu.roads.layout == 0 || self.gpu.roads.buffers.size == 0 then return
         fin model = mat4Identity()
         for surface in self.gpu.roads.surfaces {
             fin pipeline = self.gpu.fusion.resolve(self.gpu.device,surface.asset)
@@ -1006,18 +1075,21 @@ impl App {
 
     /** Shares the exact cut and fill algorithm used by vehicle contact. */
     func !.sceneTerrainIndex(entity: Entity, surface: HeightfieldTerrain&, model: Mat4&): Int {
-        if self.gpu.roads.layout == "" || self.gpu.roads.network.grid.size == 0 || !terrainFile(surface.image) then return self.gpu.terrainIndex(surface.image)
-        fin cacheKey = "road terrain ${entity.id}"
-        fin key = "${self.gpu.roads.layout};${model.m00},${model.m01},${model.m02},${model.m03},${model.m10},${model.m11},${model.m12},${model.m13},${model.m20},${model.m21},${model.m22},${model.m23}"
+        if self.gpu.roads.layout == 0 || self.gpu.roads.network.grid.size == 0 || !terrainFile(surface.image) then return self.gpu.terrainIndex(surface.image)
         var found = 0
-        while found < self.gpu.terrains.size && self.gpu.terrains[found].cacheKey != cacheKey then found += 1
-        if found < self.gpu.terrains.size && self.gpu.terrains[found].path == surface.image && self.gpu.terrains[found].layout == key then return found
+        while found < self.gpu.terrains.size && self.gpu.terrains[found].gradedEntity != entity.id then found += 1
+        if found < self.gpu.terrains.size {
+            fin cached = self.gpu.terrains[found].&
+            if cached.path == surface.image && cached.layout == self.gpu.roads.revision &&
+                sameTerrainPlacement(cached.placement, model) then return found
+        }
         if self.gpu.terrainIndices.buffers.size == 0 then self.gpu.terrainIndices = buildTerrainIndices(self.gpu.device)
         fin image = readTerrainImage("${self.gpu.fusion.root}/${surface.image}")
         gradeRoadTerrain(image,model,self.gpu.roads.network)
         var mesh = if image.samples == 0 then TerrainMesh(surface.image) else buildTerrainMesh(self.gpu.device,surface.image,image)
-        mesh.cacheKey = cacheKey
-        mesh.layout = key
+        mesh.gradedEntity = entity.id
+        mesh.layout = self.gpu.roads.revision
+        mesh.placement = copyMat4(model)
         if found < self.gpu.terrains.size {
             releaseTerrainMesh(self.gpu.terrains[found])
             self.gpu.terrains[found] = take mesh

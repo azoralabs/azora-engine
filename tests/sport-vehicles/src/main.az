@@ -49,6 +49,17 @@ func benchmark(bike: Bool, sport: Bool): Run {
         fin index = geometryIndex(world,source.name)
         if index >= 0 then result.triangles += assets.values[index].vertices.size/18
     }
+    if sport && !bike {
+        fin heading = storageGet<Vehicle>(ensureStorage(world),car).yaw
+        storageInsert<Velocity3D>(ensureStorage(world),car,velocity3d(vehicleForward(heading).scale(30.0)))
+        fin corner = DriveInput(1.0,1.0,false)
+        for frame: Int in 0..<600 {
+            simulateVehicle(world,car,grounds,corner,gravity3d(),dt)
+            fin current = storageGet<Vehicle>(ensureStorage(world),car)
+            fin up = vehicleQuat(current).rotate(.(0.0,1.0,0.0))
+            assert up.y > 0.9 panic "GT stays upright in a sustained full-lock turn on flat ground"
+        }
+    }
     return take result
 }
 

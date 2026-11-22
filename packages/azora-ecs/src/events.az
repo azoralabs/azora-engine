@@ -59,8 +59,10 @@ pack EventReader {
     var next: Long
 }
 
-/** A reader positioned at the start of whatever is currently buffered. */
-func eventReader(): EventReader = .(0)
+impl EventReader {
+    /** A reader positioned at the start of whatever is currently buffered. */
+    fin start: Self = .(0)
+}
 
 /** An empty queue with room for [capacity] events per frame. */
 func<T> eventsNew(capacity: Int): Events<T> {
@@ -169,7 +171,7 @@ func<T> eventsSkip(events: Events<T>&, reader: EventReader!) {
 
 test "a reader sees what was sent, once" {
     var events = eventsNew<Int>(4)
-    var reader = eventReader()
+    var reader: EventReader = ::start
 
     assert !eventsHasNext<Int>(events, reader) panic "a fresh queue has nothing to read"
 
@@ -184,8 +186,8 @@ test "a reader sees what was sent, once" {
 
 test "two readers do not consume each other's events" {
     var events = eventsNew<Int>(4)
-    var first = eventReader()
-    var second = eventReader()
+    var first: EventReader = ::start
+    var second: EventReader = ::start
 
     eventsSend<Int>(events, 7)
     assert eventsNext<Int>(events, first, -1) == 7 panic "the first reader sees the event"
@@ -195,7 +197,7 @@ test "two readers do not consume each other's events" {
 
 test "an event survives exactly one frame past the one it was sent in" {
     var events = eventsNew<Int>(4)
-    var late = eventReader()
+    var late: EventReader = ::start
 
     eventsSend<Int>(events, 1)
     eventsUpdate<Int>(events)
@@ -210,7 +212,7 @@ test "an event survives exactly one frame past the one it was sent in" {
 
 test "a reader that falls behind sees what is left rather than nothing" {
     var events = eventsNew<Int>(4)
-    var asleep = eventReader()
+    var asleep: EventReader = ::start
 
     eventsSend<Int>(events, 1)
     eventsUpdate<Int>(events)
@@ -226,7 +228,7 @@ test "a reader that falls behind sees what is left rather than nothing" {
 
 test "skipping moves past everything without reading it" {
     var events = eventsNew<Int>(4)
-    var reader = eventReader()
+    var reader: EventReader = ::start
     eventsSend<Int>(events, 1)
     eventsSend<Int>(events, 2)
     eventsSkip<Int>(events, reader)
@@ -238,7 +240,7 @@ test "skipping moves past everything without reading it" {
 
 test "the queue grows past its initial capacity" {
     var events = eventsNew<Int>(1)
-    var reader = eventReader()
+    var reader: EventReader = ::start
     for i: Int in 0..<40 then eventsSend<Int>(events, i)
     assert eventsUnread<Int>(events, reader) == 40 panic "every event must be kept"
     assert eventsNext<Int>(events, reader, -1) == 0 panic "the first must still be first"

@@ -26,7 +26,6 @@ import std.container::*
 import std.traits
 import engine.core
 
-
 pack Entity derives (Copy, Clone, Equal, Hash) {
     var id: Int
     var generation: Int
@@ -151,20 +150,20 @@ impl World {
 
     prop &.count: Int = self.aliveCount
 
-    func &.entityAt(id: Int): Entity = if id < 0 || id >= self.entityCount then ::invalid else .(id, self.generations[id])
+    func &.entityAt(id: Int): Entity
+    scope return if id < 0 || id >= self.entityCount then ::invalid else .(id, self.generations[id])
 
     func !.setName(entity: Entity, name: String) {
         if self.isAlive(entity) then self.names[entity.id] = name
     }
 
-    func &.getName(entity: Entity): String = if !self.isAlive(entity) then "" else self.names[entity.id]
+    func &.getName(entity: Entity): String
+    scope return if !self.isAlive(entity) then "" else self.names[entity.id]
 
-    func &.lookup(name: String): Entity {
-        for i: Int in 0..<self.entityCount {
-            if self.alive[i] && self.names[i] == name then return .(i, self.generations[i])
-        }
-        return ::invalid
-    }
+    func &.lookup(name: String): Entity
+    scope return for i: Int in 0..<self.entityCount {
+        if self.alive[i] && self.names[i] == name then break .(i, self.generations[i])
+    } else ::invalid
 
     func !.setParent(child: Entity, parent: Entity) {
         if !self.isAlive(child) || !self.isAlive(parent) then return
@@ -184,16 +183,18 @@ impl World {
     func &.getParent(entity: Entity): Entity {
         if !self.isAlive(entity) then return ::invalid
         fin parentId = self.parents[entity.id]
-        return if parentId < 0 || parentId >= self.entityCount then ::invalid else .(parentId, self.generations[parentId])
+        return if parentId < 0 || parentId >= self.entityCount then ::invalid
+        else .(parentId, self.generations[parentId])
     }
 
-    func &.getChildCount(entity: Entity): Int = if !self.isAlive(entity) then 0 else self.childCounts[entity.id]
+    func &.getChildCount(entity: Entity): Int
+    scope return if !self.isAlive(entity) then 0 else self.childCounts[entity.id]
 
-    func !.markPrefab(entity: Entity) {
-        if self.isAlive(entity) then self.prefabs[entity.id] = true
-    }
+    func !.markPrefab(entity: Entity)
+    scope if self.isAlive(entity) then self.prefabs[entity.id] = true
 
-    func &.isPrefab(entity: Entity): Bool = if !self.isAlive(entity) then false else self.prefabs[entity.id]
+    func &.isPrefab(entity: Entity): Bool
+    scope return if !self.isAlive(entity) then false else self.prefabs[entity.id]
 
     func !.spawnResource(name: String): Entity {
         fin entity = self.spawnNamed(name)
@@ -201,11 +202,11 @@ impl World {
         return entity
     }
 
-    func !.markResource(entity: Entity) {
-        if self.isAlive(entity) then self.resourceMarks[entity.id] = true
-    }
+    func !.markResource(entity: Entity)
+    scope if self.isAlive(entity) then self.resourceMarks[entity.id] = true
 
-    func &.isResource(entity: Entity): Bool = if !self.isAlive(entity) then false else self.resourceMarks[entity.id]
+    func &.isResource(entity: Entity): Bool
+    scope return if !self.isAlive(entity) then false else self.resourceMarks[entity.id]
 
     func !.progress(deltaTime: Double) {
         self.tick++
@@ -213,17 +214,14 @@ impl World {
         self.fixedAccumulator += deltaTime
     }
 
-    func !.setFixedTimestep(timestep: Double) {
-        self.fixedTimestep = timestep
-    }
+    func !.setFixedTimestep(timestep: Double)
+    scope self.fixedTimestep = timestep
 
-    func !.consumeFixedStep(): Bool {
-        if self.fixedAccumulator >= self.fixedTimestep {
-            self.fixedAccumulator -= self.fixedTimestep
-            return true
-        }
-        return false
-    }
+    func !.consumeFixedStep(): Bool
+    scope return if self.fixedAccumulator >= self.fixedTimestep {
+        self.fixedAccumulator -= self.fixedTimestep
+        true
+    } else false
 
     @ProvidesAccess
     prop &.stamp: Int = self.revision as Int
@@ -264,14 +262,13 @@ func<T> storageIndexOf(store: Storage<T>&, entity: Entity): Int {
 
 /** Points [id]'s sparse slot at dense [index] (-1: no component). */
 func<T> storageMark(store: Storage<T>!, id: Int, index: Int) {
-    if id < 0 {
-        return
-    }
+    if id < 0 then return
     while store.sparse.size <= id then store.sparse.add(0)
     store.sparse[id] = index + 1
 }
 
-func<T> storageHas(store: Storage<T>&, entity: Entity): Bool = storageIndexOf<T>(store, entity) >= 0
+func<T> storageHas(store: Storage<T>&, entity: Entity): Bool
+scope return storageIndexOf<T>(store, entity) >= 0
 
 func<T> storageInsert(store: Storage<T>!, entity: Entity, value: T) {
     fin index = storageIndexOf<T>(store, entity)
@@ -307,7 +304,8 @@ func<T: Clone> storageGetOrDefault(store: Storage<T>&, entity: Entity, defaultVa
 }
 
 /** An owned snapshot for callers that need a component beyond the storage borrow. */
-func<T: Clone> storageGetClone(store: Storage<T>&, entity: Entity): T = storageGet<T>(store, entity).clone()
+func<T: Clone> storageGetClone(store: Storage<T>&, entity: Entity): T
+scope return storageGet<T>(store, entity).clone()
 
 func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
@@ -319,11 +317,7 @@ func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     store.changed.remove(index)
     storageMark<T>(store, entity.id, -1)
     // The tail moved down one place.
-    var i = index
-    while i < store.entities.size {
-        storageMark<T>(store, store.entities[i].id, i)
-        i++
-    }
+    for i: Int in index..<store.entities.size then storageMark<T>(store, store.entities[i].id, i)
     store.revision++
     return true
 }
@@ -340,12 +334,10 @@ func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
  */
 @Experimental(since: "0.1")
 func removeFromEveryStorage(world: World!, entity: Entity): Int {
-    var dropped = 0
-    var i = 0
-    while i < world.storages.size {
+    var dropped: Int = 0
+    for i: Int in 0..<world.storages.size {
         let store: Storage<Any>! = world.storages[i] as Storage<Any>!
         if storageRemove<Any>(store, entity) then dropped++
-        i++
     }
     return dropped
 }
@@ -368,10 +360,8 @@ func<T> storageClearTracking(store: Storage<T>!) {
 }
 
 func<T> storageCount(store: Storage<T>&): Int {
-    var total = 0
-    for i: Int in 0..<store.entities.size {
-        if store.entities[i].isValid then total++
-    }
+    var total: Int = 0
+    for i: Int in 0..<store.entities.size then if store.entities[i].isValid then total++
     return total
 }
 
@@ -394,9 +384,7 @@ func spawnEntity(world: World!): Entity = world.spawn()
 
 /** Destroys [entity]. The free counterpart to `World.despawn`, as above. */
 @Experimental(since: "0.1")
-func despawnEntity(world: World!, entity: Entity) {
-    world.despawn(entity)
-}
+func despawnEntity(world: World!, entity: Entity) scope world.despawn(entity)
 
 func<T> spawnWith(world: World!, store: Storage<T>!, value: T): Entity {
     fin entity = world.spawn()
@@ -404,9 +392,9 @@ func<T> spawnWith(world: World!, store: Storage<T>!, value: T): Entity {
     return entity
 }
 
-func<T: Clone> copyComponent(store: Storage<T>!, source: Entity, target: Entity) {
-    if storageHas<T>(store, source) then storageInsert<T>(store, target, storageGetClone(store, source))
-}
+func<T: Clone> copyComponent(store: Storage<T>!, source: Entity, target: Entity)
+scope if storageHas<T>(store, source)
+then storageInsert<T>(store, target, storageGetClone(store, source))
 
 func<T> spawnResourceWith(world: World!, store: Storage<T>!, name: String, value: T): Entity {
     fin entity = world.spawnResource(name)
@@ -449,9 +437,7 @@ pack Single<...T> where (...T).size >= 1 {
 
 impl Single<...T> {
     /** The first (and, for a one-type query, only) component value. */
-    oper.* &.() {
-        return self.value0
-    }
+    oper.* &.() = self.value0
 }
 
 /**
@@ -468,6 +454,7 @@ impl Single<...T> {
 @Experimental(since: "0.1")
 pack QueryOf<...T> {
     var cursor: QueryCursor
+
     /**
      * The world the query was asked of.
      *
@@ -486,9 +473,7 @@ pack QueryOf<...T> {
  * `Iterator`, and a query is one.
  */
 impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
-    func !.reset() {
-        self.cursor.reset()
-    }
+    func !.reset() scope self.cursor.reset()
 
     /** Advances the cursor, answering whether a row was found. */
     func !.hasNext(): Bool = self.cursor.hasNext()
@@ -508,9 +493,12 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     func !.next(): Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
         // The row owns its entity snapshot and borrows the fetched components.
-        return Tuple(row.clone(), inline for Ty in ...T {
-            storageGet<Ty>(storageOf(self.world), row)
-        })
+        return Tuple(
+            row.clone()
+            inline for Ty in ...T {
+                storageGet<Ty>(storageOf(self.world), row)
+            }
+        )
     }
 
     /**
@@ -558,7 +546,6 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
 }
 
 impl QueryOf<...T> {
-
     /**
      * Builds the query from the world.
      *
@@ -568,13 +555,6 @@ impl QueryOf<...T> {
      * what lets a system declare a query as a parameter and receive it built.
      */
     @Experimental(since: "0.1")
-    /**
-     * How far the storages this query reads have moved.
-     *
-     * A query's rows change when a component is written, and a storage counts
-     * its own writes, so the sum over the fetch terms answers for the whole
-     * query in one number.
-     */
     @ProvidesAccess
     func stamp(world: World&): Int {
         var total = 0
@@ -584,6 +564,13 @@ impl QueryOf<...T> {
         return total
     }
 
+    /**
+     * How far the storages this query reads have moved.
+     *
+     * A query's rows change when a component is written, and a storage counts
+     * its own writes, so the sum over the fetch terms answers for the whole
+     * query in one number.
+     */
     @ProvidesAccess
     func provide(world: World&): QueryOf<...T> {
         var cursor = queryAll(world, false)
@@ -595,7 +582,6 @@ impl QueryOf<...T> {
 }
 
 impl QueryOf<...T> {
-
     /**
      * Returns the next matching entity.
      *
@@ -625,17 +611,18 @@ pack ResourceSlot<T> {
  * and the replaced value is destroyed.
  */
 @Experimental(since: "0.1")
-inline func<T> insertResource(world: World!, value: T): Bool = storeResource<T>(world, T.typeName, ResourceSlot<T>(take value))
+inline func<T> insertResource(world: World!, value: T): Bool
+scope return storeResource<T>(world, T.typeName, ResourceSlot<T>(take value))
 
 /** Puts [value] under an explicit [name]. See [insertResource]. */
 @Experimental(since: "0.1")
-inline func<T> insertResourceNamed(world: World!, name: String, value: T): Bool = storeResource<T>(world, name, ResourceSlot<T>(take value))
+inline func<T> insertResourceNamed(world: World!, name: String, value: T): Bool
+scope return storeResource<T>(world, name, ResourceSlot<T>(take value))
 
 /** Stores [slot] under [name], destroying the resource it replaces. */
 func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool {
     world.resourceWrites++
-    var i = 0
-    while i < world.resourceNames.size {
+    return for i: Int in 0..<world.resourceNames.size {
         if world.resourceNames[i] == name {
             // remove destroys the old resource before the new one is appended.
             world.resourceNames.remove(i)
@@ -644,14 +631,14 @@ func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool 
             world.resourceNames.add(name)
             world.resources.add(take slot)
             world.resourceStamps.add(world.resourceWrites)
-            return true
+            break true
         }
-        i++
+    } else {
+        world.resourceNames.add(name)
+        world.resources.add(take slot)
+        world.resourceStamps.add(world.resourceWrites)
+        false
     }
-    world.resourceNames.add(name)
-    world.resources.add(take slot)
-    world.resourceStamps.add(world.resourceWrites)
-    return false
 }
 
 /**
@@ -663,12 +650,10 @@ func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool 
  * "different".
  */
 @Experimental(since: "0.1")
-func resourceStamp(world: World&, name: String): Int {
-    for i: Int in 0..<world.resourceNames.size {
-        if world.resourceNames[i] == name then return world.resourceStamps[i]
-    }
-    return -1
-}
+func resourceStamp(world: World&, name: String): Int
+scope return for i: Int in 0..<world.resourceNames.size {
+    if world.resourceNames[i] == name then break world.resourceStamps[i]
+} else -1
 
 /** Whether the world holds a resource under [name]. */
 @Experimental(since: "0.1")
@@ -683,14 +668,17 @@ func hasResourceNamed(world: World&, name: String): Bool = resourceStamp(world, 
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> resource(world: World&): T = resourceSlot<T>(world, T.typeName).value.clone()
+inline func<T> resource(world: World&): T
+scope return resourceSlot<T>(world, T.typeName).value.clone()
 
 /** Borrows a world-owned resource without cloning its contents. */
-inline func<T> borrowResource(world: World&): T&|world| = resourceSlot<T>(world, T.typeName).value
+inline func<T> borrowResource(world: World&): T&|world|
+scope return resourceSlot<T>(world, T.typeName).value
 
 /** The resource under an explicit [name], as a copy. See [resource]. */
 @Experimental(since: "0.1")
-inline func<T> resourceNamed(world: World&, name: String): T = resourceSlot<T>(world, name).value.clone()
+inline func<T> resourceNamed(world: World&, name: String): T
+scope return resourceSlot<T>(world, name).value.clone()
 
 /**
  * The slot holding the resource under [name], borrowed from the world.
@@ -699,9 +687,8 @@ inline func<T> resourceNamed(world: World&, name: String): T = resourceSlot<T>(w
  * out where that type is known.
  */
 func<T> resourceSlot(world: World&, name: String): ResourceSlot<T>&|world| {
-    for i: Int in 0..<world.resourceNames.size {
-        if world.resourceNames[i] == name then return world.resources[i] as ResourceSlot<T>&
-    }
+    for i: Int in 0..<world.resourceNames.size
+    then if world.resourceNames[i] == name then return world.resources[i] as ResourceSlot<T>&
     panic "no resource '${name}' in this world - insert it before the systems that ask for it"
 }
 
@@ -734,7 +721,8 @@ inline func<T> resourceNamedOr(world: World&, name: String, fallback: T): T {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> registerStorage(world: World!, store: Storage<T>): Bool = registerStorageNamed<T>(world, T.typeName, take store)
+inline func<T> registerStorage(world: World!, store: Storage<T>): Bool
+scope return registerStorageNamed<T>(world, T.typeName, take store)
 
 /**
  * Registers [store] under an explicit [name].
@@ -764,13 +752,13 @@ func<T> registerStorageNamed(world: World!, name: String, store: Storage<T>): Bo
 
 /** Mutable access to a registered component storage, creating it on first use. */
 @Experimental(since: "0.1")
-inline func<T> ensureStorage(world: World!): Storage<T>! = ensureStorageNamed<T>(world, T.typeName)
+inline func<T> ensureStorage(world: World!): Storage<T>!
+scope return ensureStorageNamed<T>(world, T.typeName)
 
 /** Mutable access under an explicit component name. The world owns the returned store. */
 func<T> ensureStorageNamed(world: World!, name: String): Storage<T>! {
-    for i: Int in 0..<world.storageNames.size {
-        if world.storageNames[i] == name then return world.storages[i] as Storage<T>!
-    }
+    for i: Int in 0..<world.storageNames.size
+    then if world.storageNames[i] == name then return world.storages[i] as Storage<T>!
     var created = Storage<T>(Array<Entity>(), Array<T>(), Array<Bool>(), Array<Bool>(), Long(0))
     registerStorageNamed<T>(world, name, take created)
     return world.storages[world.storages.size - 1] as Storage<T>!
@@ -786,20 +774,21 @@ func<T> ensureStorageNamed(world: World!, name: String): Storage<T>! {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> storageOf(world: World&): Storage<T>& = storageNamed<T>(world, T.typeName)
+inline func<T> storageOf(world: World&): Storage<T>&
+scope return storageNamed<T>(world, T.typeName)
 
 /** The world's storage registered under an explicit [name]. See [storageOf]. */
 @Experimental(since: "0.1")
 func<T> storageNamed(world: World&, name: String): Storage<T>& {
-    for i: Int in 0..<world.storageNames.size {
-        if world.storageNames[i] == name then return world.storages[i] as Storage<T>&
-    }
+    for i: Int in 0..<world.storageNames.size
+    then if world.storageNames[i] == name then return world.storages[i] as Storage<T>&
     // Empty readonly query storage has program lifetime and never contains a T.
     // Mutable access uses ensureStorage, which registers a world-owned store.
     return emptyStorage as Storage<T>&
 }
 
-fin emptyStorage: Storage<Any> = Storage<Any>(Array<Entity>(), Array<Any>(), Array<Bool>(), Array<Bool>(), 0)
+fin emptyStorage: Storage<Any> =
+    Storage<Any>(Array<Entity>(), Array<Any>(), Array<Bool>(), Array<Bool>(), 0)
 
 /**
  * A query narrowed to rows that also carry `T`.
@@ -855,7 +844,6 @@ macro @query {
 }
 
 impl QueryWith<Q, ...T> {
-
     /**
      * Builds the narrowed query from the world.
      *
@@ -886,7 +874,6 @@ impl QueryWith<Q, ...T> {
 }
 
 impl QueryWithout<Q, ...T> {
-
     /** The same, keeping only the rows that carry *none* of `...T`. */
     @Experimental(since: "0.1")
     /** How far the storages this query reads have moved. See [QueryOf::stamp]. */
@@ -987,9 +974,7 @@ impl Iterator for QueryWith<Q, ...T> assoc Item = Entity {
 }
 
 impl Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
-    func !.reset() {
-        self.cursor.reset()
-    }
+    func !.reset() scope self.cursor.reset()
 
     func !.hasNext(): Bool = self.cursor.hasNext()
 

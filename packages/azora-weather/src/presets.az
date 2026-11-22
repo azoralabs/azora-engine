@@ -38,16 +38,16 @@ pack WeatherMix derives Clone {
 }
 
 func presetMix(preset: WeatherPreset): WeatherMix = when preset {
-    .Clear -> WeatherMix(0.06, 0.45, 0.7, 0.0, 0.0, 0.0, 2.0, 0.1, 0.0)
-    .Cloudy -> WeatherMix(0.48, 0.55, 0.9, 0.0, 0.0, 0.0, 4.0, 0.25, 0.0)
-    .Overcast -> WeatherMix(0.93, 0.2, 1.2, 0.0, 0.0, 0.06, 5.0, 0.3, 0.0)
-    .Fog -> WeatherMix(0.72, 0.1, 0.8, 0.0, 0.0, 0.9, 1.0, 0.05, 0.0)
-    .LightRain -> WeatherMix(0.86, 0.3, 1.1, 0.35, 0.0, 0.15, 5.5, 0.3, 0.0)
-    .Rain -> WeatherMix(0.95, 0.4, 1.6, 0.75, 0.0, 0.25, 7.0, 0.45, 0.0)
-    .Thunderstorm -> WeatherMix(1.0, 0.9, 2.2, 1.0, 0.0, 0.3, 11.0, 0.7, 5.0)
-    .LightSnow -> WeatherMix(0.84, 0.22, 1.0, 0.0, 0.35, 0.2, 3.0, 0.2, 0.0)
-    .Snow -> WeatherMix(0.96, 0.25, 1.2, 0.0, 0.75, 0.35, 5.0, 0.35, 0.0)
-    .Blizzard -> WeatherMix(1.0, 0.3, 1.5, 0.0, 1.0, 0.65, 16.0, 0.8, 0.0)
+    .Clear -> .(0.06, 0.45, 0.7, 0.0, 0.0, 0.0, 2.0, 0.1, 0.0)
+    .Cloudy -> .(0.48, 0.55, 0.9, 0.0, 0.0, 0.0, 4.0, 0.25, 0.0)
+    .Overcast -> .(0.93, 0.2, 1.2, 0.0, 0.0, 0.06, 5.0, 0.3, 0.0)
+    .Fog -> .(0.72, 0.1, 0.8, 0.0, 0.0, 0.9, 1.0, 0.05, 0.0)
+    .LightRain -> .(0.86, 0.3, 1.1, 0.35, 0.0, 0.15, 5.5, 0.3, 0.0)
+    .Rain -> .(0.95, 0.4, 1.6, 0.75, 0.0, 0.25, 7.0, 0.45, 0.0)
+    .Thunderstorm -> .(1.0, 0.9, 2.2, 1.0, 0.0, 0.3, 11.0, 0.7, 5.0)
+    .LightSnow -> .(0.84, 0.22, 1.0, 0.0, 0.35, 0.2, 3.0, 0.2, 0.0)
+    .Snow -> .(0.96, 0.25, 1.2, 0.0, 0.75, 0.35, 5.0, 0.35, 0.0)
+    .Blizzard -> .(1.0, 0.3, 1.5, 0.0, 1.0, 0.65, 16.0, 0.8, 0.0)
 }
 
 /** The preset called [name] in the Inspector; anything else is clear weather. */
@@ -91,7 +91,8 @@ func nextPreset(preset: WeatherPreset): WeatherPreset = when preset {
     .Blizzard -> .Clear
 }
 
-func weatherClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+func weatherClamp(x: Double, low: Double, high: Double): Double
+scope return if x < low then low else if x > high then high else x
 
 /** Sets [into] to [from] moved a share [t] of the way to [to]. */
 func blendInto(into: WeatherMix!, from: WeatherMix&, to: WeatherMix&, t: Double) {
@@ -152,8 +153,14 @@ func retarget(state: AetherState!, name: String) {
  * the ground and its snow. With [outside] the wind is the scene's own (a
  * `Wind` component), blowing [outsideX], [outsideZ] m/s, and not the preset's.
  */
-func stepWeather(state: AetherState!, weather: AetherWeather&, dt: Double, outside: Bool = false, outsideX: Double = 0.0,
-                 outsideZ: Double = 0.0) {
+func stepWeather(
+    state: AetherState!
+    weather: AetherWeather&
+    dt: Double
+    outside: Bool = false
+    outsideX: Double = 0.0
+    outsideZ: Double = 0.0
+) {
     if !state.started {
         // The scene opens in its weather as if it had been going for a while: the ground already wet or white.
         fin opening = presetMix(presetNamed(weather.preset))

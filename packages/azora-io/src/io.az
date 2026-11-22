@@ -265,13 +265,23 @@ impl Blob {
      * NUL. Fixed-width NUL-padded fields are how most asset formats store text.
      */
     func &.text(offset: Int, length: Int): String {
-        var result = ""
-        for i: Int in 0..<length {
+        if length <= 0 || !self.has(offset, 1) then return ""
+        fin available = self.size - offset
+        fin limit = if length < available then length else available
+        fin result = azAlloc((limit as Long) + 1)
+        if result == 0 then return ""
+        defer { azFree(result) }
+        var written = 0
+        for i: Int in 0..<limit {
             fin code = self.u8(offset + i)
-            if code == 0 then return result
-            result += asciiChar(code)
+            if code == 0 then break
+            if code == 9 || code == 10 || (code >= 32 && code <= 126) {
+                azPoke8(result, written as Long, code)
+                written++
+            }
         }
-        return result
+        azPoke8(result, written as Long, 0)
+        return if written == 0 then "" else strSlice(azCstring(result, 0), 0, written)
     }
 
     /** Whether the bytes at [offset] equal the ASCII [expected]. */

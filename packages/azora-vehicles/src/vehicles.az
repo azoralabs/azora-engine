@@ -52,6 +52,8 @@ pack VehicleSpec {
     var rearAxle: Double = 1.28
     /** Top of the suspension, above the centre of mass. */
     var mountHeight: Double = 0.10
+    /** Height of the chassis origin above the simulated centre of mass. */
+    var centerOfMassDrop: Double = 0.0
     var wheelRadius: Double = 0.36
     var tireWidth: Double = 0.26
     var mass: Double = 1350.0
@@ -443,7 +445,7 @@ func addVehicleVisuals(world: World!, entity: Entity, state: Vehicle!, config: V
     fin rest = restingLength(config)
     var i = 0
     while i < config.wheelCount {
-        state.parts.add(vehiclePivot(world,entity,.(wheelX(config,i),config.mountHeight-rest,wheelZ(config,i))))
+        state.parts.add(vehiclePivot(world,entity,.(wheelX(config,i),config.mountHeight-config.centerOfMassDrop-rest,wheelZ(config,i))))
         i++
     }
     i = 0
@@ -531,6 +533,8 @@ func configuredVehicle(world: World!, entity: Entity, kind: VehicleKind): Vehicl
         if kind == .Car {
             tuning.engineGain *= 1.70
             tuning.mass = 1285.0
+            tuning.centerOfMassDrop = 0.22
+            tuning.mountHeight += tuning.centerOfMassDrop
             tuning.bodyHalfWidth = 0.96
             tuning.bodyHalfLength = 2.11
             tuning.drag = 0.65
@@ -569,7 +573,8 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     fin previous = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
     fin config = configuredVehicle(world,entity,kind)
     vehicle.motorcycle = kind == .Motorcycle
-    fin collider = boxCollider3d(.(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
+    var collider = boxCollider3d(.(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
+    collider.offset.y = config.centerOfMassDrop
     storageInsert<RigidBody3D>(ensureStorage(world),entity,rigidBody3d(.Dynamic,collider,config.mass,false))
     storageInsert<Collider3D>(ensureStorage(world),entity,take collider)
     storageInsert<Name>(ensureStorage(world),entity,.(if vehicle.motorcycle then "Motorcycle" else "Car"))
@@ -596,9 +601,10 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     fin body = storageGet<Transform3D>(ensureStorage(world),entity)
     fin lift = rideHeight(config)-rideHeight(previous)+0.05
     fin position = body.position.add(.(0.0,lift,0.0))
-    rememberPose(vehicle,position,heading,true)
+    fin drawnPosition = position.add(.(0.0,config.centerOfMassDrop,0.0))
+    rememberPose(vehicle,drawnPosition,heading,true)
     storageInsert<Transform3D>(ensureStorage(world),entity,.(position.clone(),.(0.0,vehicle.yaw,0.0),.(1.0,1.0,1.0)))
-    storageInsert<Transform>(ensureStorage(world),entity,.(position.clone(),.(0.0,vehicle.yaw/degreesToRadians,0.0),.(1.0,1.0,1.0)))
+    storageInsert<Transform>(ensureStorage(world),entity,.(drawnPosition.clone(),.(0.0,vehicle.yaw/degreesToRadians,0.0),.(1.0,1.0,1.0)))
     storageInsert<Vehicle>(ensureStorage(world),entity,take vehicle)
 }
 
@@ -688,9 +694,9 @@ pack WheelContact {
 func bodyPoint(config: VehicleSpec&, index: Int): Vec3 {
     fin w = config.bodyHalfWidth
     fin l = config.bodyHalfLength
-    fin low = config.bodyLow
-    fin corner = config.cornerLow
-    fin high = config.bodyHigh
+    fin low = config.bodyLow + config.centerOfMassDrop
+    fin corner = config.cornerLow + config.centerOfMassDrop
+    fin high = config.bodyHigh + config.centerOfMassDrop
     fin mid = (corner+high)*0.5
     return when index {
         0 -> Vec3(-w,corner,-l)
@@ -1086,10 +1092,12 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
         vehicle.roll = asin(vehicleClamp(q.rotate(.(1.0,0.0,0.0)).y,-1.0,1.0))
     }
     fin euler = quatEulerRadians(drawn)
+    fin chassisOffset = drawn.rotate(.(0.0,config.centerOfMassDrop,0.0))
+    fin drawnPosition = position.add(chassisOffset)
     i = 0
     while i < config.wheelCount {
         fin centre = position.add(q.rotate(.(wheelX(config,i),config.mountHeight,wheelZ(config,i)))).add(down.scale(vehicle.wheels[i].length))
-        fin local = drawn.conjugate().rotate(centre.subtract(position))
+        fin local = drawn.conjugate().rotate(centre.subtract(drawnPosition))
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[i],
             Transform(local.clone(),.(0.0,-vehicle.wheels[i].steer/degreesToRadians,0.0),.(1.0,1.0,1.0)))
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[config.wheelCount+i],
@@ -1101,10 +1109,10 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[vehicle.head],
             Transform(.(0.0,0.48,config.frontAxle+0.06),.(0.0,-vehicle.wheels[0].steer/degreesToRadians,0.0),.(1.0,1.0,1.0)))
     }
-    rememberPose(vehicle,position,drawn,false)
+    rememberPose(vehicle,drawnPosition,drawn,false)
     storageInsert<Transform3D>(ensureStorage(world),entity,.(position.clone(),euler.clone(),.(1.0,1.0,1.0)))
     storageInsert<Velocity3D>(ensureStorage(world),entity,.(motion.velocity.clone(),motion.angular.clone()))
-    storageInsert<Transform>(ensureStorage(world),entity,.(position.clone(),euler.scale(1.0/degreesToRadians),.(1.0,1.0,1.0)))
+    storageInsert<Transform>(ensureStorage(world),entity,.(drawnPosition.clone(),euler.scale(1.0/degreesToRadians),.(1.0,1.0,1.0)))
     storageInsert<Vehicle>(ensureStorage(world),entity,take vehicle)
 }
 

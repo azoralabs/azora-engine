@@ -22,6 +22,7 @@ module engine.tilemap.anim
 
 import std.container.array
 import engine.tilemap.types
+import std.traits::Copy
 
 /** How an animation continues once it reaches its last frame. */
 enum TileAnimationMode {
@@ -63,13 +64,12 @@ pack TileAnimationSet {
     var byTile: Array<Int>
 }
 
-func tileAnimation(first: Int, last: Int, fps: Double, mode: TileAnimationMode): TileAnimation = .(first, last, fps, mode)
+func tileAnimation(first: Int, last: Int, fps: Double, mode: TileAnimationMode): TileAnimation
+scope return .(first, last, fps, mode)
 
 /** An animation set covering tile indices `0 .. tileCount - 1`. */
-func tileAnimationSetNew(tileCount: Int): TileAnimationSet {
-    var animations: Array<TileAnimation> = []
-    return .(animations, 0, intGridFill(intMax(tileCount, 0), 1, -1))
-}
+func tileAnimationSetNew(tileCount: Int): TileAnimationSet
+scope return .([], 0, intGridFill(intMax(tileCount, 0), 1, -1))
 
 impl TileAnimation {
     /** The number of frames in the run. */

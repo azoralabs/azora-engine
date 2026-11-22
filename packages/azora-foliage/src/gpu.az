@@ -55,7 +55,9 @@ impl FoliageTile {
 @Component
 pack FoliageGpu {
     var pipeline: Long = 0
-    var worldLayout: String = ""
+    var terrainPath: String = ""
+    var terrainLayout: Long = 0
+    var terrainPlacement: Mat4 = mat4Identity()
     var groveLayout: String = ""
     var stampText: String = ""
     var seed: Int = 0
@@ -179,12 +181,14 @@ func addFirTiles(keys: Array<Int>!, seen: Array<Bool>!, grid: FoliageGrid&, stam
 
 func refreshFoliage(cache: FoliageGpu!, world: World!, landscape: Entity, paint: FoliagePaint&, terrain: TerrainMesh&,
                     model: Mat4&, inv: Mat4&, grid: FoliageGrid&) {
-    fin layout = "${terrain.path}:${terrain.layout}:${model.m00},${model.m01},${model.m02},${model.m03},${model.m10},${model.m11},${model.m12},${model.m13},${model.m20},${model.m21},${model.m22},${model.m23}"
     fin groveKey = foliageGrovesKey(world,inv)
-    fin moved = cache.worldLayout != layout
+    fin moved = cache.terrainPath != terrain.path || cache.terrainLayout != terrain.layout ||
+        !sameTerrainPlacement(cache.terrainPlacement, model)
     if moved {
         cache.tiles.clear()
-        cache.worldLayout = layout
+        cache.terrainPath = terrain.path
+        cache.terrainLayout = terrain.layout
+        cache.terrainPlacement = copyMat4(model)
     }
     if !moved && cache.groveLayout == groveKey && cache.stampText == paint.strokes && cache.seed == paint.seed &&
        cache.grassDensity == paint.grassDensity && cache.grassHeight == paint.grassHeight then return
@@ -347,7 +351,7 @@ func cachedFoliageTile(cache: FoliageGpu!, gpu: AzGpu&, terrain: TerrainImage&, 
         return at
     }
     var tile: FoliageTile = .(key,cache.revision,layout,touched: cache.frame)
-    populateFoliage(tile,gpu.device,id,species,grid,bounds,terrain,model,gpu.roads.network,gpu.roads.layout != "",
+    populateFoliage(tile,gpu.device,id,species,grid,bounds,terrain,model,gpu.roads.network,gpu.roads.layout != 0,
         marks,zones,cache.seed,foliageClamp(cache.grassDensity,0.0,4.0),cache.grassHeight)
     cache.tiles[at] = take tile
     return at
