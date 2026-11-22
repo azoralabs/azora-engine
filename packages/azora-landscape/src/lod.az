@@ -29,7 +29,7 @@ func sharedCell(x: Int, y: Int, z: Int, width: Int, height: Int, length: Int): S
 
 func clusterRoot(parent: Array<Int>&, vertex: Int): Int {
     var root = vertex
-    while parent[root] != root { root = parent[root] }
+    while parent[root] != root then root = parent[root]
     return root
 }
 
@@ -52,11 +52,7 @@ func reduceSurface(cells: Array<SurfaceCell>&, positions: Array<Double>&, normal
                    triangles: Array<Int>&, step: Int, minimumError: Double): SurfaceDetail {
     fin size = cells.size
     var parents: Array<Int> = .() * size
-    var vertex = 0
-    while vertex < size {
-        parents[vertex] = vertex
-        vertex += 1
-    }
+    for vertex: Int in 0..<size then parents[vertex] = vertex
     var index = 0
     while index < triangles.size {
         fin a = triangles[index]
@@ -67,25 +63,20 @@ func reduceSurface(cells: Array<SurfaceCell>&, positions: Array<Double>&, normal
         clusterEdge(parents,cells,normals,c,a,step)
         index += 3
     }
-    var detail = SurfaceDetail(maxDeviation: minimumError)
+    var detail: SurfaceDetail = .(maxDeviation: minimumError)
     detail.positions = .() * positions.size
     detail.normals = .() * normals.size
     var members: Array<Int> = .() * size
-    vertex = 0
-    while vertex < size {
+    for vertex: Int in 0..<size {
         fin root = clusterRoot(parents,vertex)
         parents[vertex] = root
-        members[root] += 1
-        var axis = 0
-        while axis < 3 {
+        members[root]++
+        for axis: Int in 0..<3 {
             detail.positions[root*3+axis] += positions[vertex*3+axis]
             detail.normals[root*3+axis] += normals[vertex*3+axis]
-            axis += 1
         }
-        vertex += 1
     }
-    vertex = 0
-    while vertex < size {
+    for vertex: Int in 0..<size {
         if members[vertex] > 0 {
             fin count = members[vertex] as Double
             fin at = vertex*3
@@ -102,12 +93,10 @@ func reduceSurface(cells: Array<SurfaceCell>&, positions: Array<Double>&, normal
                 detail.normals[at+2] = nz/size2
             }
         }
-        vertex += 1
     }
     // The error a contraction makes is how far each original vertex is from its
     // cluster's plane: sliding a vertex along a flat surface changes nothing on screen.
-    vertex = 0
-    while vertex < size {
+    for vertex: Int in 0..<size {
         fin a = vertex*3
         fin b = parents[vertex]*3
         fin dx = positions[a]-detail.positions[b]
@@ -115,7 +104,6 @@ func reduceSurface(cells: Array<SurfaceCell>&, positions: Array<Double>&, normal
         fin dz = positions[a+2]-detail.positions[b+2]
         fin across = magnitude(dx*detail.normals[b]+dy*detail.normals[b+1]+dz*detail.normals[b+2])
         detail.maxDeviation = higher(detail.maxDeviation,across)
-        vertex += 1
     }
     index = 0
     while index < triangles.size {
@@ -147,7 +135,7 @@ pack SurfaceChunk {
 
 impl SurfaceChunk {
     dtor .() {
-        for level in self.levels { azFree(level.vertices) }
+        for level in self.levels then azFree(level.vertices)
     }
 }
 
@@ -155,8 +143,7 @@ func addSurfaceLevel(mesh: SurfaceChunk!, triangles: Array<Int>&, positions: Arr
                      normals: Array<Double>&, deviation: Double): Bool {
     fin bytes = azAlloc((triangles.size as Long)*24)
     if bytes == 0 then return false
-    var i = 0
-    while i < triangles.size {
+    for i: Int in 0..<triangles.size {
         fin v = triangles[i]*3
         fin at = (i as Long)*24
         azPokeF32(bytes,at,positions[v])
@@ -165,7 +152,6 @@ func addSurfaceLevel(mesh: SurfaceChunk!, triangles: Array<Int>&, positions: Arr
         azPokeF32(bytes,at+12,normals[v])
         azPokeF32(bytes,at+16,normals[v+1])
         azPokeF32(bytes,at+20,normals[v+2])
-        i += 1
     }
     mesh.levels.add(SurfaceLevel(bytes,triangles.size,deviation))
     return true

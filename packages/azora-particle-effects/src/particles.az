@@ -103,9 +103,9 @@ pack ParticleEmitter derives Clone {
 }
 
 /** Bytes of the block every particle stage reads (`ParticleU`), of one particle, and of one collision event. */
-fin particleBlockBytes: Long = 480
-fin particleBytes: Long = 32
-fin particleEventBytes: Long = 32
+inline fin particleBlockBytes: Long = 480
+inline fin particleBytes: Long = 32
+inline fin particleEventBytes: Long = 32
 
 /** The compiled particle stages, made once per device. */
 pack ParticlePipelines {
@@ -178,7 +178,7 @@ func particleDrawPipeline(device: Long, library: Long, additive: Bool): Long {
 
 /** Compiles the particle stages for [device]; a failure prints why and leaves them not ready. */
 func makeParticlePipelines(device: Long): ParticlePipelines {
-    var pipes = ParticlePipelines()
+    var pipes: ParticlePipelines = .()
     pipes.block = azAlloc(particleBlockBytes)
     pipes.dark = azAlloc(528)
     pipes.sizes = azAlloc(64)
@@ -299,7 +299,7 @@ func ParticleSystem!.release() {
  * its hits. The pool starts empty (every slot dead).
  */
 func particleSystem(device: Long, queue: Long, capacity: Int, onGpu: Bool, eventsCapacity: Int = 0): ParticleSystem {
-    var system = ParticleSystem(capacity: if capacity > 0 then capacity else 1, onGpu: onGpu)
+    var system: ParticleSystem = .(capacity: if capacity > 0 then capacity else 1, onGpu: onGpu)
     fin bytes = (system.capacity as Long) * particleBytes * (if onGpu then 1 else 3)
     // 32 = private storage (GPU only); 0 = shared, the CPU writes it.
     system.particles = send2(device, sel("newBufferWithLength:options:"), bytes, if onGpu then 32 else 0)
@@ -312,7 +312,7 @@ func particleSystem(device: Long, queue: Long, capacity: Int, onGpu: Bool, event
         var i: Long = 0
         while i < (system.capacity as Long) * 8 {
             azPokeF64(system.state, i * 8, 0.0)
-            i += 1
+            i++
         }
         var j: Long = 0
         fin contents = send0(system.particles, sel("contents"))
@@ -423,7 +423,7 @@ func ParticleSystem!.simulate(pipes: ParticlePipelines&, emitter: ParticleEmitte
     if spawned > self.capacity then spawned = self.capacity
     self.carry -= spawned as Double
     if spawned > 0 && self.carry > (self.capacity as Double) then self.carry = 0.0
-    self.frames += 1
+    self.frames++
     if !self.onGpu {
         simulateOnCpu(self, emitter, view, origin, spawned)
         return
@@ -452,8 +452,8 @@ func ParticleSystem!.spawnFromHits(pipes: ParticlePipelines&, emitter: ParticleE
                                    perEvent: Int, kind: Int, step: Bool = true) {
     if !self.onGpu || !pipes.ready || view.commands == 0 || self.particles == 0 then return
     self.active = self.capacity
-    self.frames += 1
-    fin origin = Vec3(view.eyeX, view.eyeY, view.eyeZ)
+    self.frames++
+    fin origin: Vec3 = .(view.eyeX, view.eyeY, view.eyeZ)
     writeParticleBlock(pipes.block, emitter, view, origin, self.capacity, self.capacity, 0, self.frames, perEvent, kind, source.eventsCapacity)
     particleDispatch(pipes, view.commands, pipes.spawnEvents, self, source.eventsCapacity * perEvent, 0, source)
     // Spawned from several sources in one step, a system moves once: [step] on the last of them.
@@ -464,7 +464,7 @@ func ParticleSystem!.spawnFromHits(pipes: ParticlePipelines&, emitter: ParticleE
 func ParticleSystem&.draw(pipes: ParticlePipelines&, emitter: ParticleEmitter&, view: ParticleView&, encoder: Long, depth: Long,
                           depthState: Long, additive: Bool = false) {
     if !pipes.ready || encoder == 0 || self.particles == 0 || self.active <= 0 then return
-    fin origin = Vec3(view.eyeX, view.eyeY, view.eyeZ)
+    fin origin: Vec3 = .(view.eyeX, view.eyeY, view.eyeZ)
     writeParticleBlock(pipes.block, emitter, view, origin, self.capacity, self.active, 0, self.frames, 0, 0, self.eventsCapacity)
     send1(encoder, sel("setRenderPipelineState:"), if additive then pipes.additive else pipes.draw)
     send1(encoder, sel("setDepthStencilState:"), depthState)
@@ -485,20 +485,16 @@ func simulateOnCpu(system: ParticleSystem!, emitter: ParticleEmitter&, view: Par
     fin capacity = system.capacity
     fin box = emitter.spawn == 3
     if box && !system.filled {
-        var i = 0
-        while i < capacity {
+        for i: Int in 0..<capacity {
             cpuSpawn(system, i, emitter, view, origin, false)
             fin life = azPeekF64(system.state, (i as Long) * 64 + 56)
             azPokeF64(system.state, (i as Long) * 64 + 48, system.nextRandom() * life)
-            i += 1
         }
         system.filled = true
     }
-    var k = 0
-    while k < spawned {
+    for k: Int in 0..<spawned {
         cpuSpawn(system, system.head % capacity, emitter, view, origin, false)
         system.head = (system.head + 1) % capacity
-        k += 1
     }
     fin dt = view.delta
     fin carryX = view.windX * emitter.wind
@@ -533,7 +529,7 @@ func simulateOnCpu(system: ParticleSystem!, emitter: ParticleEmitter&, view: Par
                 // Wrapped to stay around the eye; below the box it starts again at the top.
                 if py - view.eyeY < -emitter.extent.y {
                     cpuSpawn(system, i, emitter, view, origin, true)
-                    i += 1
+                    i++
                     continue
                 }
                 fin spanX = emitter.extent.x * 2.0
@@ -550,13 +546,12 @@ func simulateOnCpu(system: ParticleSystem!, emitter: ParticleEmitter&, view: Par
             azPokeF64(system.state, at + 40, vz)
             azPokeF64(system.state, at + 48, age)
         }
-        i += 1
+        i++
     }
     // Into the region the GPU finished with two frames ago.
     system.region = (system.region + 1) % 3
     fin target = send0(system.particles, sel("contents")) + (system.region as Long) * (capacity as Long) * particleBytes
-    var j = 0
-    while j < capacity {
+    for j: Int in 0..<capacity {
         fin from = (j as Long) * 64
         fin into = (j as Long) * particleBytes
         azPokeF32(target, into, azPeekF64(system.state, from))
@@ -567,7 +562,6 @@ func simulateOnCpu(system: ParticleSystem!, emitter: ParticleEmitter&, view: Par
         azPokeF32(target, into + 20, azPeekF64(system.state, from + 32))
         azPokeF32(target, into + 24, azPeekF64(system.state, from + 40))
         azPokeF32(target, into + 28, azPeekF64(system.state, from + 56))
-        j += 1
     }
 }
 

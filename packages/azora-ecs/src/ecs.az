@@ -33,7 +33,7 @@ pack Entity derives (Copy, Clone, Equal, Hash) {
 }
 
 impl Entity {
-    prop  &.isValid: Bool = self.id >= 0
+    prop &.isValid: Bool = self.id >= 0
     fin invalid: Entity = .(-1, 0)
 }
 
@@ -70,9 +70,9 @@ pack World {
     /** How many resource writes this world has seen. */
     var resourceWrites: Int = 0
     var totalTime: Double = 0.0
-    var fixedTimestep: Double = Double(1.0) / Double(60.0)
+    var fixedTimestep: Double = 1.0 / 60.0
     var fixedAccumulator: Double = 0.0
-    var revision: Long = Long(0)
+    var revision: Long = 0
 }
 
 
@@ -91,9 +91,9 @@ impl World {
             self.childCounts[id] = 0
             self.prefabs[id] = false
             self.resourceMarks[id] = false
-            self.aliveCount = self.aliveCount + 1
-            self.revision = self.revision + 1
-            return Entity(id, gen)
+            self.aliveCount++
+            self.revision++
+            return .(id, gen)
         }
 
         fin id = self.entityCount
@@ -114,10 +114,10 @@ impl World {
             self.prefabs.add(false)
             self.resourceMarks.add(false)
         }
-        self.entityCount = self.entityCount + 1
-        self.aliveCount = self.aliveCount + 1
-        self.revision = self.revision + 1
-        return Entity(id, 0)
+        self.entityCount++
+        self.aliveCount++
+        self.revision++
+        return .(id, 0)
     }
 
     func !.spawnNamed(name: String): Entity {
@@ -127,120 +127,73 @@ impl World {
     }
 
     func !.despawn(entity: Entity) {
-        if !self.isAlive(entity) {
-            return
-        }
+        if !self.isAlive(entity) then return
 
         removeFromEveryStorage(self, entity)
         self.alive[entity.id] = false
         self.names[entity.id] = ""
-        self.aliveCount = self.aliveCount - 1
+        self.aliveCount--
 
         fin parentId = self.parents[entity.id]
-        if parentId >= 0 && parentId < self.entityCount {
-            self.childCounts[parentId] = self.childCounts[parentId] - 1
-        }
+        if parentId >= 0 && parentId < self.entityCount then self.childCounts[parentId]--
         self.parents[entity.id] = -1
         self.childCounts[entity.id] = 0
         self.prefabs[entity.id] = false
         self.resourceMarks[entity.id] = false
         self.freeIds.add(entity.id)
-        self.revision = self.revision + 1
+        self.revision++
     }
 
     func &.isAlive(entity: Entity): Bool {
-        if entity.id < 0 || entity.id >= self.entityCount {
-            return false
-        }
+        if entity.id < 0 || entity.id >= self.entityCount then return false
         return self.alive[entity.id] && self.generations[entity.id] == entity.generation
     }
 
-    prop  &.count: Int = self.aliveCount
+    prop &.count: Int = self.aliveCount
 
-    func &.entityAt(id: Int): Entity {
-        if id < 0 || id >= self.entityCount {
-            return Entity::invalid
-        }
-        return Entity(id, self.generations[id])
-    }
+    func &.entityAt(id: Int): Entity = if id < 0 || id >= self.entityCount then ::invalid else .(id, self.generations[id])
 
     func !.setName(entity: Entity, name: String) {
-        if self.isAlive(entity) {
-            self.names[entity.id] = name
-        }
+        if self.isAlive(entity) then self.names[entity.id] = name
     }
 
-    func &.getName(entity: Entity): String {
-        if !self.isAlive(entity) {
-            return ""
-        }
-        return self.names[entity.id]
-    }
+    func &.getName(entity: Entity): String = if !self.isAlive(entity) then "" else self.names[entity.id]
 
     func &.lookup(name: String): Entity {
-        var i = 0
-        while i < self.entityCount {
-            if self.alive[i] && self.names[i] == name {
-                return Entity(i, self.generations[i])
-            }
-            i = i + 1
+        for i: Int in 0..<self.entityCount {
+            if self.alive[i] && self.names[i] == name then return .(i, self.generations[i])
         }
-        return Entity::invalid
+        return ::invalid
     }
 
     func !.setParent(child: Entity, parent: Entity) {
-        if !self.isAlive(child) || !self.isAlive(parent) {
-            return
-        }
+        if !self.isAlive(child) || !self.isAlive(parent) then return
         fin oldParent = self.parents[child.id]
-        if oldParent >= 0 && oldParent < self.entityCount {
-            self.childCounts[oldParent] = self.childCounts[oldParent] - 1
-        }
+        if oldParent >= 0 && oldParent < self.entityCount then self.childCounts[oldParent]--
         self.parents[child.id] = parent.id
-        self.childCounts[parent.id] = self.childCounts[parent.id] + 1
+        self.childCounts[parent.id]++
     }
 
     func !.removeParent(entity: Entity) {
-        if !self.isAlive(entity) {
-            return
-        }
+        if !self.isAlive(entity) then return
         fin parentId = self.parents[entity.id]
-        if parentId >= 0 && parentId < self.entityCount {
-            self.childCounts[parentId] = self.childCounts[parentId] - 1
-        }
+        if parentId >= 0 && parentId < self.entityCount then self.childCounts[parentId]--
         self.parents[entity.id] = -1
     }
 
     func &.getParent(entity: Entity): Entity {
-        if !self.isAlive(entity) {
-            return Entity::invalid
-        }
+        if !self.isAlive(entity) then return ::invalid
         fin parentId = self.parents[entity.id]
-        if parentId < 0 || parentId >= self.entityCount {
-            return Entity::invalid
-        }
-        return Entity(parentId, self.generations[parentId])
+        return if parentId < 0 || parentId >= self.entityCount then ::invalid else .(parentId, self.generations[parentId])
     }
 
-    func &.getChildCount(entity: Entity): Int {
-        if !self.isAlive(entity) {
-            return 0
-        }
-        return self.childCounts[entity.id]
-    }
+    func &.getChildCount(entity: Entity): Int = if !self.isAlive(entity) then 0 else self.childCounts[entity.id]
 
     func !.markPrefab(entity: Entity) {
-        if self.isAlive(entity) {
-            self.prefabs[entity.id] = true
-        }
+        if self.isAlive(entity) then self.prefabs[entity.id] = true
     }
 
-    func &.isPrefab(entity: Entity): Bool {
-        if !self.isAlive(entity) {
-            return false
-        }
-        return self.prefabs[entity.id]
-    }
+    func &.isPrefab(entity: Entity): Bool = if !self.isAlive(entity) then false else self.prefabs[entity.id]
 
     func !.spawnResource(name: String): Entity {
         fin entity = self.spawnNamed(name)
@@ -249,22 +202,15 @@ impl World {
     }
 
     func !.markResource(entity: Entity) {
-        if self.isAlive(entity) {
-            self.resourceMarks[entity.id] = true
-        }
+        if self.isAlive(entity) then self.resourceMarks[entity.id] = true
     }
 
-    func &.isResource(entity: Entity): Bool {
-        if !self.isAlive(entity) {
-            return false
-        }
-        return self.resourceMarks[entity.id]
-    }
+    func &.isResource(entity: Entity): Bool = if !self.isAlive(entity) then false else self.resourceMarks[entity.id]
 
     func !.progress(deltaTime: Double) {
-        self.tick = self.tick + 1
-        self.totalTime = self.totalTime + deltaTime
-        self.fixedAccumulator = self.fixedAccumulator + deltaTime
+        self.tick++
+        self.totalTime += deltaTime
+        self.fixedAccumulator += deltaTime
     }
 
     func !.setFixedTimestep(timestep: Double) {
@@ -273,16 +219,14 @@ impl World {
 
     func !.consumeFixedStep(): Bool {
         if self.fixedAccumulator >= self.fixedTimestep {
-            self.fixedAccumulator = self.fixedAccumulator - self.fixedTimestep
+            self.fixedAccumulator -= self.fixedTimestep
             return true
         }
         return false
     }
 
     @ProvidesAccess
-    prop  &.stamp: Int {
-        return self.revision as Int
-    }
+    prop &.stamp: Int = self.revision as Int
 }
 
 /**
@@ -300,7 +244,7 @@ pack Storage<T> {
     var added: Array<Bool>
     var changed: Array<Bool>
     var revision: Long
-    var sparse: Array<Int> = Array<Int>()
+    var sparse: Array<Int> = []
 }
 
 func<T> storageInit(defaultValue: T): Storage<T> {
@@ -313,14 +257,9 @@ func<T> storageInit(defaultValue: T): Storage<T> {
 
 func<T> storageIndexOf(store: Storage<T>&, entity: Entity): Int {
     fin id = entity.id
-    if id < 0 || id >= store.sparse.size {
-        return -1
-    }
+    if id < 0 || id >= store.sparse.size then return -1
     fin index = store.sparse[id] - 1
-    if index < 0 || store.entities[index].generation != entity.generation {
-        return -1
-    }
-    return index
+    return if index < 0 || store.entities[index].generation != entity.generation then -1 else index
 }
 
 /** Points [id]'s sparse slot at dense [index] (-1: no component). */
@@ -328,22 +267,18 @@ func<T> storageMark(store: Storage<T>!, id: Int, index: Int) {
     if id < 0 {
         return
     }
-    while store.sparse.size <= id {
-        store.sparse.add(0)
-    }
+    while store.sparse.size <= id then store.sparse.add(0)
     store.sparse[id] = index + 1
 }
 
-func<T> storageHas(store: Storage<T>&, entity: Entity): Bool {
-    return storageIndexOf<T>(store, entity) >= 0
-}
+func<T> storageHas(store: Storage<T>&, entity: Entity): Bool = storageIndexOf<T>(store, entity) >= 0
 
 func<T> storageInsert(store: Storage<T>!, entity: Entity, value: T) {
     fin index = storageIndexOf<T>(store, entity)
     if index >= 0 {
         store.values[index] = value
         store.changed[index] = true
-        store.revision = store.revision + 1
+        store.revision++
         return
     }
     store.entities.add(entity.clone())
@@ -351,7 +286,7 @@ func<T> storageInsert(store: Storage<T>!, entity: Entity, value: T) {
     store.added.add(true)
     store.changed.add(false)
     storageMark<T>(store, entity.id, store.entities.size - 1)
-    store.revision = store.revision + 1
+    store.revision++
 }
 
 func<T> storageGet(store: Storage<T>&, entity: Entity): T& {
@@ -368,22 +303,15 @@ func<T> storageGet(store: Storage<T>&, entity: Entity): T& {
  */
 func<T: Clone> storageGetOrDefault(store: Storage<T>&, entity: Entity, defaultValue: T&): T {
     fin index = storageIndexOf<T>(store, entity)
-    if index < 0 {
-        return defaultValue.clone()
-    }
-    return store.values[index].clone()
+    return if index < 0 then defaultValue.clone() else store.values[index].clone()
 }
 
 /** An owned snapshot for callers that need a component beyond the storage borrow. */
-func<T: Clone> storageGetClone(store: Storage<T>&, entity: Entity): T {
-    return storageGet<T>(store, entity).clone()
-}
+func<T: Clone> storageGetClone(store: Storage<T>&, entity: Entity): T = storageGet<T>(store, entity).clone()
 
 func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     fin index = storageIndexOf<T>(store, entity)
-    if index < 0 {
-        return false
-    }
+    if index < 0 then return false
     // remove(index) destroys an owned value; removeAt would transfer it.
     store.values.remove(index)
     store.entities.remove(index)
@@ -394,9 +322,9 @@ func<T> storageRemove(store: Storage<T>!, entity: Entity): Bool {
     var i = index
     while i < store.entities.size {
         storageMark<T>(store, store.entities[i].id, i)
-        i = i + 1
+        i++
     }
-    store.revision = store.revision + 1
+    store.revision++
     return true
 }
 
@@ -416,10 +344,8 @@ func removeFromEveryStorage(world: World!, entity: Entity): Int {
     var i = 0
     while i < world.storages.size {
         let store: Storage<Any>! = world.storages[i] as Storage<Any>!
-        if storageRemove<Any>(store, entity) {
-            dropped = dropped + 1
-        }
-        i = i + 1
+        if storageRemove<Any>(store, entity) then dropped++
+        i++
     }
     return dropped
 }
@@ -435,37 +361,25 @@ func<T> storageWasChanged(store: Storage<T>&, entity: Entity): Bool {
 }
 
 func<T> storageClearTracking(store: Storage<T>!) {
-    var i = 0
-    while i < store.added.size {
+    for i: Int in 0..<store.added.size {
         store.added[i] = false
         store.changed[i] = false
-        i = i + 1
     }
 }
 
 func<T> storageCount(store: Storage<T>&): Int {
     var total = 0
-    var i = 0
-    while i < store.entities.size {
-        if store.entities[i].isValid {
-            total = total + 1
-        }
-        i = i + 1
+    for i: Int in 0..<store.entities.size {
+        if store.entities[i].isValid then total++
     }
     return total
 }
 
-func<T> storageEntityAt(store: Storage<T>&, index: Int): Entity {
-    return store.entities[index].clone()
-}
+func<T> storageEntityAt(store: Storage<T>&, index: Int): Entity = store.entities[index].clone()
 
-func<T> storageValueAt(store: Storage<T>&, index: Int): T& {
-    return store.values[index]
-}
+func<T> storageValueAt(store: Storage<T>&, index: Int): T& = store.values[index]
 
-func<T> storageLength(store: Storage<T>&): Int {
-    return store.entities.size
-}
+func<T> storageLength(store: Storage<T>&): Int = store.entities.size
 
 /**
  * Creates an entity with no components.
@@ -476,9 +390,7 @@ func<T> storageLength(store: Storage<T>&): Int {
  * free form has no such reach problem.
  */
 @Experimental(since: "0.1")
-func spawnEntity(world: World!): Entity {
-    return world.spawn()
-}
+func spawnEntity(world: World!): Entity = world.spawn()
 
 /** Destroys [entity]. The free counterpart to `World.despawn`, as above. */
 @Experimental(since: "0.1")
@@ -493,9 +405,7 @@ func<T> spawnWith(world: World!, store: Storage<T>!, value: T): Entity {
 }
 
 func<T: Clone> copyComponent(store: Storage<T>!, source: Entity, target: Entity) {
-    if storageHas<T>(store, source) {
-        storageInsert<T>(store, target, storageGetClone<T>(store, source))
-    }
+    if storageHas<T>(store, source) then storageInsert<T>(store, target, storageGetClone(store, source))
 }
 
 func<T> spawnResourceWith(world: World!, store: Storage<T>!, name: String, value: T): Entity {
@@ -581,9 +491,7 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     }
 
     /** Advances the cursor, answering whether a row was found. */
-    func !.hasNext(): Bool {
-        return self.cursor.hasNext()
-    }
+    func !.hasNext(): Bool = self.cursor.hasNext()
 
     /**
      * The row the cursor is on: the entity, then one component per fetch term.
@@ -601,7 +509,7 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
         fin row: Entity = self.cursor.next()
         // The row owns its entity snapshot and borrows the fetched components.
         return Tuple(row.clone(), inline for Ty in ...T {
-            storageGet<Ty>(storageOf<Ty>(self.world), row)
+            storageGet<Ty>(storageOf(self.world), row)
         })
     }
 
@@ -616,9 +524,7 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
     @ProvidesAccess
     func !.forEach(body: inline (Tuple<Entity, ...T>) -> Unit) {
         self.reset()
-        while self.hasNext() {
-            body(self.next())
-        }
+        while self.hasNext() then body(self.next())
     }
 
     /**
@@ -644,7 +550,7 @@ impl Iterator for QueryOf<...T> assoc Item = Tuple<Entity, ...T> {
             body(
                 row
                 inline for Ty in ...T {
-                    storageGet<Ty>(storageOf<Ty>(self.world), row)
+                    storageGet<Ty>(storageOf(self.world), row)
                 }
             )
         }
@@ -673,7 +579,7 @@ impl QueryOf<...T> {
     func stamp(world: World&): Int {
         var total = 0
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as Int)
+            total += (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
@@ -682,7 +588,7 @@ impl QueryOf<...T> {
     func provide(world: World&): QueryOf<...T> {
         var cursor = queryAll(world, false)
         inline for Ty in ...T {
-            queryWith<Ty>(cursor, storageOf<Ty>(world))
+            queryWith<Ty>(cursor, storageOf(world))
         }
         return QueryOf(take cursor, world)
     }
@@ -696,9 +602,7 @@ impl QueryOf<...T> {
      * System-parameter lowering projects this entity into the tuple of borrowed
      * components requested by the `QueryOf<…>` type arguments.
      */
-    func !.nextEntity(): Entity {
-        return self.cursor.next()
-    }
+    func !.nextEntity(): Entity = self.cursor.next()
 }
 
 /**
@@ -721,19 +625,15 @@ pack ResourceSlot<T> {
  * and the replaced value is destroyed.
  */
 @Experimental(since: "0.1")
-inline func<T> insertResource(world: World!, value: T): Bool {
-    return storeResource<T>(world, T.typeName, ResourceSlot<T>(take value))
-}
+inline func<T> insertResource(world: World!, value: T): Bool = storeResource<T>(world, T.typeName, ResourceSlot<T>(take value))
 
 /** Puts [value] under an explicit [name]. See [insertResource]. */
 @Experimental(since: "0.1")
-inline func<T> insertResourceNamed(world: World!, name: String, value: T): Bool {
-    return storeResource<T>(world, name, ResourceSlot<T>(take value))
-}
+inline func<T> insertResourceNamed(world: World!, name: String, value: T): Bool = storeResource<T>(world, name, ResourceSlot<T>(take value))
 
 /** Stores [slot] under [name], destroying the resource it replaces. */
 func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool {
-    world.resourceWrites = world.resourceWrites + 1
+    world.resourceWrites++
     var i = 0
     while i < world.resourceNames.size {
         if world.resourceNames[i] == name {
@@ -746,7 +646,7 @@ func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool 
             world.resourceStamps.add(world.resourceWrites)
             return true
         }
-        i = i + 1
+        i++
     }
     world.resourceNames.add(name)
     world.resources.add(take slot)
@@ -764,14 +664,10 @@ func<T> storeResource(world: World!, name: String, slot: ResourceSlot<T>): Bool 
  */
 @Experimental(since: "0.1")
 func resourceStamp(world: World&, name: String): Int {
-    var i = 0
-    while i < world.resourceNames.size {
-        if world.resourceNames[i] == name {
-            return world.resourceStamps[i]
-        }
-        i = i + 1
+    for i: Int in 0..<world.resourceNames.size {
+        if world.resourceNames[i] == name then return world.resourceStamps[i]
     }
-    return 0 - 1
+    return -1
 }
 
 /** Whether the world holds a resource under [name]. */
@@ -787,20 +683,14 @@ func hasResourceNamed(world: World&, name: String): Bool = resourceStamp(world, 
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> resource(world: World&): T {
-    return resourceSlot<T>(world, T.typeName).value.clone()
-}
+inline func<T> resource(world: World&): T = resourceSlot<T>(world, T.typeName).value.clone()
 
 /** Borrows a world-owned resource without cloning its contents. */
-inline func<T> borrowResource(world: World&): T&|world| {
-    return resourceSlot<T>(world, T.typeName).value
-}
+inline func<T> borrowResource(world: World&): T&|world| = resourceSlot<T>(world, T.typeName).value
 
 /** The resource under an explicit [name], as a copy. See [resource]. */
 @Experimental(since: "0.1")
-inline func<T> resourceNamed(world: World&, name: String): T {
-    return resourceSlot<T>(world, name).value.clone()
-}
+inline func<T> resourceNamed(world: World&, name: String): T = resourceSlot<T>(world, name).value.clone()
 
 /**
  * The slot holding the resource under [name], borrowed from the world.
@@ -809,12 +699,8 @@ inline func<T> resourceNamed(world: World&, name: String): T {
  * out where that type is known.
  */
 func<T> resourceSlot(world: World&, name: String): ResourceSlot<T>&|world| {
-    var i = 0
-    while i < world.resourceNames.size {
-        if world.resourceNames[i] == name {
-            return world.resources[i] as ResourceSlot<T>&
-        }
-        i = i + 1
+    for i: Int in 0..<world.resourceNames.size {
+        if world.resourceNames[i] == name then return world.resources[i] as ResourceSlot<T>&
     }
     panic "no resource '${name}' in this world - insert it before the systems that ask for it"
 }
@@ -848,9 +734,7 @@ inline func<T> resourceNamedOr(world: World&, name: String, fallback: T): T {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> registerStorage(world: World!, store: Storage<T>): Bool {
-    return registerStorageNamed<T>(world, T.typeName, take store)
-}
+inline func<T> registerStorage(world: World!, store: Storage<T>): Bool = registerStorageNamed<T>(world, T.typeName, take store)
 
 /**
  * Registers [store] under an explicit [name].
@@ -871,7 +755,7 @@ func<T> registerStorageNamed(world: World!, name: String, store: Storage<T>): Bo
             world.storages.add(take store)
             return true
         }
-        i = i + 1
+        i++
     }
     world.storageNames.add(name)
     world.storages.add(take store)
@@ -880,18 +764,12 @@ func<T> registerStorageNamed(world: World!, name: String, store: Storage<T>): Bo
 
 /** Mutable access to a registered component storage, creating it on first use. */
 @Experimental(since: "0.1")
-inline func<T> ensureStorage(world: World!): Storage<T>! {
-    return ensureStorageNamed<T>(world, T.typeName)
-}
+inline func<T> ensureStorage(world: World!): Storage<T>! = ensureStorageNamed<T>(world, T.typeName)
 
 /** Mutable access under an explicit component name. The world owns the returned store. */
 func<T> ensureStorageNamed(world: World!, name: String): Storage<T>! {
-    var i = 0
-    while i < world.storageNames.size {
-        if world.storageNames[i] == name {
-            return world.storages[i] as Storage<T>!
-        }
-        i = i + 1
+    for i: Int in 0..<world.storageNames.size {
+        if world.storageNames[i] == name then return world.storages[i] as Storage<T>!
     }
     var created = Storage<T>(Array<Entity>(), Array<T>(), Array<Bool>(), Array<Bool>(), Long(0))
     registerStorageNamed<T>(world, name, take created)
@@ -908,26 +786,20 @@ func<T> ensureStorageNamed(world: World!, name: String): Storage<T>! {
  */
 @Experimental(since: "0.1")
 @SignatureOnly
-inline func<T> storageOf(world: World&): Storage<T>& {
-    return storageNamed<T>(world, T.typeName)
-}
+inline func<T> storageOf(world: World&): Storage<T>& = storageNamed<T>(world, T.typeName)
 
 /** The world's storage registered under an explicit [name]. See [storageOf]. */
 @Experimental(since: "0.1")
 func<T> storageNamed(world: World&, name: String): Storage<T>& {
-    var i = 0
-    while i < world.storageNames.size {
-        if world.storageNames[i] == name {
-            return world.storages[i] as Storage<T>&
-        }
-        i = i + 1
+    for i: Int in 0..<world.storageNames.size {
+        if world.storageNames[i] == name then return world.storages[i] as Storage<T>&
     }
     // Empty readonly query storage has program lifetime and never contains a T.
     // Mutable access uses ensureStorage, which registers a world-owned store.
     return emptyStorage as Storage<T>&
 }
 
-fin emptyStorage: Storage<Any> = Storage<Any>(Array<Entity>(), Array<Any>(), Array<Bool>(), Array<Bool>(), Long(0))
+fin emptyStorage: Storage<Any> = Storage<Any>(Array<Entity>(), Array<Any>(), Array<Bool>(), Array<Bool>(), 0)
 
 /**
  * A query narrowed to rows that also carry `T`.
@@ -998,7 +870,7 @@ impl QueryWith<Q, ...T> {
     func stamp(world: World&): Int {
         var total = Q::stamp(world)
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as Int)
+            total += (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
@@ -1007,7 +879,7 @@ impl QueryWith<Q, ...T> {
     func provide(world: World&): QueryWith<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {
-            queryWith<Ty>(base.cursor, storageOf<Ty>(world))
+            queryWith<Ty>(base.cursor, storageOf(world))
         }
         return QueryWith(base.cursor)
     }
@@ -1022,7 +894,7 @@ impl QueryWithout<Q, ...T> {
     func stamp(world: World&): Int {
         var total = Q::stamp(world)
         inline for Ty in ...T {
-            total = total + (storageOf<Ty>(world).revision as Int)
+            total += (storageOf<Ty>(world).revision as Int)
         }
         return total
     }
@@ -1031,7 +903,7 @@ impl QueryWithout<Q, ...T> {
     func provide(world: World&): QueryWithout<Q, ...T> {
         var base = Q::provide(world)
         inline for Ty in ...T {
-            queryWithout<Ty>(base.cursor, storageOf<Ty>(world))
+            queryWithout<Ty>(base.cursor, storageOf(world))
         }
         return QueryWithout(base.cursor)
     }
@@ -1054,14 +926,10 @@ impl Iterator for QueryAnd<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func !.hasNext(): Bool {
-        return self.cursor.hasNext()
-    }
+    func !.hasNext(): Bool = self.cursor.hasNext()
 
     /** The entity the cursor is on. */
-    func !.next(): Entity {
-        return self.cursor.next()
-    }
+    func !.next(): Entity = self.cursor.next()
 }
 
 impl Iterator for QueryOr<Q, ...T> assoc Item = Entity {
@@ -1069,14 +937,10 @@ impl Iterator for QueryOr<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func !.hasNext(): Bool {
-        return self.cursor.hasNext()
-    }
+    func !.hasNext(): Bool = self.cursor.hasNext()
 
     /** The entity the cursor is on. */
-    func !.next(): Entity {
-        return self.cursor.next()
-    }
+    func !.next(): Entity = self.cursor.next()
 }
 
 /**
@@ -1102,17 +966,13 @@ pack Removed<T>
 impl QueryWith<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
     @Experimental(since: "0.1")
-    func !.nextEntity(): Entity {
-        return self.cursor.next()
-    }
+    func !.nextEntity(): Entity = self.cursor.next()
 }
 
 impl QueryWithout<Q, ...T> {
     /** The next matching entity. See [QueryOf.nextEntity]. */
     @Experimental(since: "0.1")
-    func !.nextEntity(): Entity {
-        return self.cursor.next()
-    }
+    func !.nextEntity(): Entity = self.cursor.next()
 }
 
 impl Iterator for QueryWith<Q, ...T> assoc Item = Entity {
@@ -1120,14 +980,10 @@ impl Iterator for QueryWith<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func !.hasNext(): Bool {
-        return self.cursor.hasNext()
-    }
+    func !.hasNext(): Bool = self.cursor.hasNext()
 
     /** The entity the cursor is on. */
-    func !.next(): Entity {
-        return self.cursor.next()
-    }
+    func !.next(): Entity = self.cursor.next()
 }
 
 impl Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
@@ -1135,29 +991,19 @@ impl Iterator for QueryWithout<Q, ...T> assoc Item = Entity {
         self.cursor.reset()
     }
 
-    func !.hasNext(): Bool {
-        return self.cursor.hasNext()
-    }
+    func !.hasNext(): Bool = self.cursor.hasNext()
 
     /** The entity the cursor is on. */
-    func !.next(): Entity {
-        return self.cursor.next()
-    }
+    func !.next(): Entity = self.cursor.next()
 }
 
-func queryEmpty(): QueryCursor {
-    return QueryCursor([Entity::invalid.clone()], 1, true, "")
-}
+func queryEmpty(): QueryCursor = .([Entity::invalid.clone()], 1, true, "")
 
-func queryError(message: String): QueryCursor {
-    return QueryCursor([Entity::invalid.clone()], 1, false, message)
-}
+func queryError(message: String): QueryCursor = .([Entity::invalid.clone()], 1, false, message)
 
 impl QueryCursor {
     func !.add(entity: Entity) {
-        if entity.isValid {
-            self.entities.add(entity.clone())
-        }
+        if entity.isValid then self.entities.add(entity.clone())
     }
 
     func !.reset() {
@@ -1170,18 +1016,12 @@ impl QueryCursor {
     }
 
     func !.invalidateAt(index: Int) {
-        if index > 0 && index < self.entities.size {
-            self.entities[index] = Entity::invalid.clone()
-        }
+        if index > 0 && index < self.entities.size then self.entities[index] = Entity::invalid.clone()
     }
 
     func !.hasNext(): Bool {
-        var i = self.cursor
-        while i < self.entities.size {
-            if self.entities[i].isValid {
-                return true
-            }
-            i = i + 1
+        for i in self.cursor..<self.entities.size {
+            if self.entities[i].isValid then return true
         }
         return false
     }
@@ -1189,49 +1029,37 @@ impl QueryCursor {
     func !.next(): Entity {
         while self.cursor < self.entities.size {
             fin entity = self.entities[self.cursor]
-            self.cursor = self.cursor + 1
-            if entity.isValid {
-                return entity.clone()
-            }
+            self.cursor++
+            if entity.isValid then return entity.clone()
         }
         return Entity::invalid.clone()
     }
 
     func &.count(): Int {
         var total = 0
-        var i = 1
-        while i < self.entities.size {
-            if self.entities[i].isValid {
-                total = total + 1
-            }
-            i = i + 1
+        for i: Int in 1..<self.entities.size {
+            if self.entities[i].isValid then total++
         }
         return total
     }
 
-    func &.isEmpty(): Bool {
-        return self.count() <= 0
-    }
+    func &.isEmpty(): Bool = self.count() <= 0
 
     func &.single(): QueryFetch {
         var found = Entity::invalid.clone()
         var total = 0
-        var i = 1
-        while i < self.entities.size {
+        for i: Int in 1..<self.entities.size {
             fin entity = self.entities[i]
             if entity.isValid {
                 found = entity.clone()
-                total = total + 1
+                total++
             }
-            i = i + 1
         }
-        if total == 1 {
-            return QueryFetch(true, take found, "")
+        return when {
+            total == 1 -> .(true, take found, "")
+            total == 0 -> .(false, ::invalid, "query expected one entity, found none")
+            else -> .(false, ::invalid, "query expected one entity, found many")
         }
-        if total == 0 {
-            return QueryFetch(false, Entity::invalid, "query expected one entity, found none")
-        }
-        return QueryFetch(false, Entity::invalid, "query expected one entity, found many")
     }
 }
 
@@ -1240,30 +1068,22 @@ func queryAll(world: World&, includeResources: Bool): QueryCursor {
     var i = 0
     while i < world.entityCount {
         fin entity = world.entityAt(i)
-        if world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
-            query.add(entity)
-        }
-        i = i + 1
+        if world.isAlive(entity) && (includeResources || !world.isResource(entity)) then query.add(entity)
+        i++
     }
     return take query
 }
 
-func queryBroad(world: World&): QueryCursor {
-    return queryAll(world, true)
-}
+func queryBroad(world: World&): QueryCursor = queryAll(world, true)
 
-func queryScene(world: World&): QueryCursor {
-    return queryAll(world, false)
-}
+func queryScene(world: World&): QueryCursor = queryAll(world, false)
 
 func queryRetainAlive(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && !world.isAlive(entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && !world.isAlive(entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1271,10 +1091,8 @@ func queryRetainResources(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && !world.isResource(entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && !world.isResource(entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1282,10 +1100,8 @@ func queryRetainScene(query: QueryCursor!, world: World&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && world.isResource(entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && world.isResource(entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1294,10 +1110,8 @@ func<T> queryFromStorage(world: World&, store: Storage<T>&, includeResources: Bo
     var i = 0
     while i < store.entities.size {
         fin entity = store.entities[i]
-        if entity.isValid && world.isAlive(entity) && (includeResources || !world.isResource(entity)) {
-            query.add(entity)
-        }
-        i = i + 1
+        if entity.isValid && world.isAlive(entity) && (includeResources || !world.isResource(entity)) then query.add(entity)
+        i++
     }
     return take query
 }
@@ -1306,10 +1120,8 @@ func<T> queryWith(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && !storageHas<T>(store, entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && !storageHas<T>(store, entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1317,10 +1129,8 @@ func<T> queryWithout(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && storageHas<T>(store, entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && storageHas<T>(store, entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1328,10 +1138,8 @@ func<T> queryAdded(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && !storageWasAdded<T>(store, entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && !storageWasAdded<T>(store, entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1339,10 +1147,8 @@ func<T> queryChanged(query: QueryCursor!, store: Storage<T>&) {
     var i = 1
     while i < query.entities.size {
         fin entity = query.entities[i]
-        if entity.isValid && !storageWasChanged<T>(store, entity) {
-            query.invalidateAt(i)
-        }
-        i = i + 1
+        if entity.isValid && !storageWasChanged<T>(store, entity) then query.invalidateAt(i)
+        i++
     }
 }
 
@@ -1367,17 +1173,11 @@ pack QueryAccess {
     var error: String
 }
 
-func queryAccessInit(system: String): QueryAccess {
-    return QueryAccess(system, [""], [""], [""], [""], [""], [""], false, false, false, true, "")
-}
+func queryAccessInit(system: String): QueryAccess = .(system, [""], [""], [""], [""], [""], [""], false, false, false, true, "")
 
 func queryNameListHas(list: Array<String>, name: String): Bool {
-    var i = 1
-    while i < list.size {
-        if list[i] == name {
-            return true
-        }
-        i = i + 1
+    for i: Int in 1..<list.size {
+        if list[i] == name then return true
     }
     return false
 }
@@ -1385,48 +1185,34 @@ func queryNameListHas(list: Array<String>, name: String): Bool {
 func queryNameListsOverlap(left: Array<String>, right: Array<String>): Bool {
     var i = 1
     while i < left.size {
-        if queryNameListHas(right, left[i]) {
-            return true
-        }
-        i = i + 1
+        if queryNameListHas(right, left[i]) then return true
+        i++
     }
     return false
 }
 
 func queryAccessRead(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.reads, component) {
-        access.reads.add(component)
-    }
+    if component != "" && !queryNameListHas(access.reads, component) then access.reads.add(component)
 }
 
 func queryAccessWrite(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.writes, component) {
-        access.writes.add(component)
-    }
+    if component != "" && !queryNameListHas(access.writes, component) then access.writes.add(component)
 }
 
 func queryAccessWith(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.withs, component) {
-        access.withs.add(component)
-    }
+    if component != "" && !queryNameListHas(access.withs, component) then access.withs.add(component)
 }
 
 func queryAccessWithout(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.withouts, component) {
-        access.withouts.add(component)
-    }
+    if component != "" && !queryNameListHas(access.withouts, component) then access.withouts.add(component)
 }
 
 func queryAccessAdded(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.added, component) {
-        access.added.add(component)
-    }
+    if component != "" && !queryNameListHas(access.added, component) then access.added.add(component)
 }
 
 func queryAccessChanged(access: QueryAccess!, component: String) {
-    if component != "" && !queryNameListHas(access.changed, component) {
-        access.changed.add(component)
-    }
+    if component != "" && !queryNameListHas(access.changed, component) then access.changed.add(component)
 }
 
 func queryAccessBroad(access: QueryAccess!, includeResources: Bool) {
@@ -1448,19 +1234,13 @@ func queryAccessDisjoint(left: QueryAccess&, right: QueryAccess&): Bool {
 }
 
 func queryAccessConflicts(left: QueryAccess&, right: QueryAccess&): Bool {
-    if queryAccessDisjoint(left, right) {
-        return false
+    return when {
+        queryAccessDisjoint(left, right) -> false
+        queryNameListsOverlap(left.writes, right.writes) -> true
+        queryNameListsOverlap(left.writes, right.reads) -> true
+        queryNameListsOverlap(right.writes, left.reads) -> true
+        else -> false
     }
-    if queryNameListsOverlap(left.writes, right.writes) {
-        return true
-    }
-    if queryNameListsOverlap(left.writes, right.reads) {
-        return true
-    }
-    if queryNameListsOverlap(right.writes, left.reads) {
-        return true
-    }
-    return false
 }
 
 pack ResourceCell<T> {
@@ -1469,30 +1249,19 @@ pack ResourceCell<T> {
     var revision: Int
 }
 
-func<T> resourceInit(defaultValue: T): ResourceCell<T> {
-    return ResourceCell<T>(false, defaultValue, 0)
-}
+func<T> resourceInit(defaultValue: T): ResourceCell<T> = ResourceCell<T>(false, defaultValue, 0)
 
-func<T> resourceExists(resource: ResourceCell<T>&): Bool {
-    return resource.hasValue
-}
+func<T> resourceExists(resource: ResourceCell<T>&): Bool = resource.hasValue
 
 func<T> resourceSet(resource: ResourceCell<T>!, value: T) {
     resource.value = value
     resource.hasValue = true
-    resource.revision = resource.revision + 1
+    resource.revision++
 }
 
-func<T> resourceGet(resource: ResourceCell<T>&): T {
-    return resource.value
-}
+func<T> resourceGet(resource: ResourceCell<T>&): T = resource.value
 
-func<T> resourceGetOrDefault(resource: ResourceCell<T>&, defaultValue: T): T {
-    if resource.hasValue {
-        return resource.value
-    }
-    return defaultValue
-}
+func<T> resourceGetOrDefault(resource: ResourceCell<T>&, defaultValue: T): T = if resource.hasValue then resource.value else defaultValue
 
 pack EventQueue<T> {
     var events: Array<T>
@@ -1508,25 +1277,17 @@ func<T> eventSend(queue: EventQueue<T>!, event: T) {
     queue.events.add(event)
 }
 
-func<T> eventLength(queue: EventQueue<T>&): Int {
-    return queue.events.size - queue.cursor
-}
+func<T> eventLength(queue: EventQueue<T>&): Int = queue.events.size - queue.cursor
 
-func<T> eventIsEmpty(queue: EventQueue<T>&): Bool {
-    return eventLength<T>(queue) <= 0
-}
+func<T> eventIsEmpty(queue: EventQueue<T>&): Bool = eventLength<T>(queue) <= 0
 
-func<T> eventPeek(queue: EventQueue<T>&, index: Int): T {
-    return queue.events[queue.cursor + index]
-}
+func<T> eventPeek(queue: EventQueue<T>&, index: Int): T = queue.events[queue.cursor + index]
 
-func<T> eventHasNext(queue: EventQueue<T>&): Bool {
-    return queue.cursor < queue.events.size
-}
+func<T> eventHasNext(queue: EventQueue<T>&): Bool = queue.cursor < queue.events.size
 
 func<T> eventNext(queue: EventQueue<T>!): T {
     fin event = queue.events[queue.cursor]
-    queue.cursor = queue.cursor + 1
+    queue.cursor++
     return event
 }
 
@@ -1535,9 +1296,7 @@ pack CommandBuffer {
     var cursor: Int
 }
 
-func commandBufferInit(): CommandBuffer {
-    return CommandBuffer(Array<Entity>(), 0)
-}
+func commandBufferInit(): CommandBuffer = .(Array<Entity>(), 0)
 
 impl CommandBuffer {
     func !.despawn(entity: Entity) {
@@ -1547,7 +1306,7 @@ impl CommandBuffer {
     func !.apply(world: World!) {
         while self.cursor < self.despawns.size {
             world.despawn(self.despawns[self.cursor])
-            self.cursor = self.cursor + 1
+            self.cursor++
         }
         self.despawns.clear()
         self.cursor = 0
@@ -1585,21 +1344,16 @@ pack ScheduledSystem {
  * Surrounding spaces are ignored so `"input, physics"` reads naturally.
  */
 func systemNameListed(list: String, name: String): Bool {
-    if list == "" || name == "" {
-        return false
-    }
+    if list == "" || name == "" then return false
     var start = 0
-    var i = 0
-    while i <= list.size {
+    for i: Int in 0..list.size {
         if i == list.size || list[i] == ',' {
             var from = start
             var to = i
             while from < to && list[from] == ' ' {
-                from = from + 1
+                from++
             }
-            while to > from && list[to - 1] == ' ' {
-                to = to - 1
-            }
+            while to > from && list[to - 1] == ' ' then to--
             if to - from == name.size {
                 var matched = true
                 var k = 0
@@ -1608,16 +1362,13 @@ func systemNameListed(list: String, name: String): Bool {
                         matched = false
                         k = name.size
                     } else {
-                        k = k + 1
+                        k++
                     }
                 }
-                if matched {
-                    return true
-                }
+                if matched then return true
             }
             start = i + 1
         }
-        i = i + 1
     }
     return false
 }
@@ -1648,10 +1399,8 @@ func systemPhaseRank(phase: SystemPhase): Int {
 
 /** Whether any enabled system of [plan] runs in [phase]: a stage nothing uses costs nothing. */
 func phaseHasSystems(plan: SystemPlan&, phase: SystemPhase): Bool {
-    var index = 0
-    while index < plan.count {
-        if plan.systems[index].phase == phase && plan.systems[index].enabled then return true
-        index += 1
+    for i: Int in 0..<plan.count {
+        if plan.systems[i].phase == phase && plan.systems[i].enabled then return true
     }
     return false
 }
@@ -1690,18 +1439,14 @@ func systemPlanDeclare(
     inSet: String
 ) {
     plan.systems.add(ScheduledSystem(name, phase, order, runBefore, runAfter, inSet, true))
-    plan.count = plan.count + 1
+    plan.count++
 }
 
 impl SystemPlan {
     /** The index of the system called [name], or `-1`. */
     func &.indexOf(name: String): Int {
-        var i = 0
-        while i < self.count {
-            if self.systems[i].name == name {
-                return i
-            }
-            i = i + 1
+        for i: Int in 0..<self.count {
+            if self.systems[i].name == name then return i
         }
         return -1
     }
@@ -1715,9 +1460,7 @@ impl SystemPlan {
      */
     func !.setEnabled(name: String, enabled: Bool): Bool {
         fin found = self.indexOf(name)
-        if found < 0 {
-            return false
-        }
+        if found < 0 then return false
         self.systems[found].enabled = enabled
         return true
     }
@@ -1733,19 +1476,13 @@ impl SystemPlan {
     func &.constrains(earlier: Int, later: Int): Bool {
         fin a = self.systems[earlier]
         fin b = self.systems[later]
-        if a.phase != b.phase {
-            return false
+        return when {
+            a.phase != b.phase -> false
+            systemNameListed(a.runBefore, b.name) || systemNameListed(b.runAfter, a.name) -> true
+            b.inSet != "" && systemNameListed(a.runBefore, b.inSet) -> true
+            a.inSet != "" && systemNameListed(b.runAfter, a.inSet) -> true
+            else -> false
         }
-        if systemNameListed(a.runBefore, b.name) || systemNameListed(b.runAfter, a.name) {
-            return true
-        }
-        if b.inSet != "" && systemNameListed(a.runBefore, b.inSet) {
-            return true
-        }
-        if a.inSet != "" && systemNameListed(b.runAfter, a.inSet) {
-            return true
-        }
-        return false
     }
 
     /**
@@ -1770,13 +1507,9 @@ impl SystemPlan {
         var initIndex = 0
         while initIndex < self.count {
             placed.add(false)
-            initIndex = initIndex + 1
+            initIndex++
         }
-        var i = 0
-        while i < self.count {
-            placed[i] = false
-            i = i + 1
-        }
+        for i: Int in 0..<self.count then placed[i] = false
 
         var remaining = self.count
         while remaining > 0 {
@@ -1792,7 +1525,7 @@ impl SystemPlan {
                             ready = false
                             other = self.count
                         } else {
-                            other = other + 1
+                            other++
                         }
                     }
                     if ready && choice < 0 {
@@ -1804,35 +1537,31 @@ impl SystemPlan {
                             if here < best {
                                 choice = candidate
                             } else {
-                                if here == best && self.systems[candidate].order < self.systems[choice].order {
-                                    choice = candidate
-                                }
+                                if here == best && self.systems[candidate].order < self.systems[choice].order then choice = candidate
                             }
                         }
                     }
                 }
-                candidate = candidate + 1
+                candidate++
             }
 
             if choice < 0 {
                 // Every remaining system waits on another one.
                 self.cyclic = true
                 self.cycleReport = "system ordering has a cycle"
-                var leftover = 0
-                while leftover < self.count {
+                for leftover: Int in 0..<self.count {
                     if !placed[leftover] {
                         self.resolved[self.resolvedCount] = leftover
-                        self.resolvedCount = self.resolvedCount + 1
+                        self.resolvedCount++
                         placed[leftover] = true
                     }
-                    leftover = leftover + 1
                 }
                 remaining = 0
             } else {
                 self.resolved[self.resolvedCount] = choice
-                self.resolvedCount = self.resolvedCount + 1
+                self.resolvedCount++
                 placed[choice] = true
-                remaining = remaining - 1
+                remaining--
             }
         }
     }
@@ -1843,10 +1572,8 @@ impl SystemPlan {
         var i = 0
         while i < self.resolvedCount {
             fin system = self.systems[self.resolved[i]]
-            if system.phase == phase {
-                names.add(system.name)
-            }
-            i = i + 1
+            if system.phase == phase then names.add(system.name)
+            i++
         }
         return names
     }
@@ -1875,22 +1602,22 @@ impl SystemPlan {
 @Experimental(since: "0.1")
 func systemPlan(): SystemPlan {
     var plan = SystemPlan(
-        Array<ScheduledSystem>(),
-        0,
-        Array<Int>(),
-        0,
-        false,
+        Array<ScheduledSystem>()
+        0
+        Array<Int>()
+        0
+        false
         ""
     )
 
     inline for S in reflect<*>.withAnnot<System> {
         systemPlanDeclare(
-            plan,
-            reflect<S>.declName,
-            reflect<S>.annotMeta<System>.phase,
-            reflect<S>.annotMeta<System>.order,
-            reflect<S>.annotMeta<System>.runBefore,
-            reflect<S>.annotMeta<System>.runAfter,
+            plan
+            reflect<S>.declName
+            reflect<S>.annotMeta<System>.phase
+            reflect<S>.annotMeta<System>.order
+            reflect<S>.annotMeta<System>.runBefore
+            reflect<S>.annotMeta<System>.runAfter
             reflect<S>.annotMeta<System>.inSet
         )
         plan.resolved.add(0)
@@ -1911,19 +1638,15 @@ func systemPlan(): SystemPlan {
  */
 @Experimental(since: "0.1")
 func runPhase(plan: SystemPlan&, phase: SystemPhase, world: World!) {
-    var step = 0
-    while step < plan.resolvedCount {
+    for step: Int in 0..<plan.resolvedCount {
         fin due = plan.resolved[step]
         if plan.systems[due].phase == phase && plan.systems[due].enabled {
             var cursor = 0
             inline for S in reflect<*>.withAnnot<System> {
-                if cursor == due {
-                    S(world)
-                }
-                cursor = cursor + 1
+                if cursor == due then S(world)
+                cursor++
             }
         }
-        step = step + 1
     }
 }
 
@@ -1954,9 +1677,7 @@ func runSystems(plan: SystemPlan&, world: World!) {
 }
 
 /** An empty plan, for tests and for hosts that build a schedule by hand. */
-func systemPlanEmpty(): SystemPlan {
-    return SystemPlan(Array<ScheduledSystem>(), 0, Array<Int>(), 0, false, "")
-}
+func systemPlanEmpty(): SystemPlan = .(Array<ScheduledSystem>(), 0, Array<Int>(), 0, false, "")
 
 test "constraints order systems regardless of declaration order" {
     var plan = systemPlanEmpty()

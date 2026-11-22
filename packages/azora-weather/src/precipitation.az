@@ -38,16 +38,16 @@ pack AetherPrecipitation {
 }
 
 /** Pool sizes of the drawn drops and flakes; the impact pools follow the splash distance. */
-fin nearDropCount: Int = 32768
-fin farDropCount: Int = 26624
-fin nearFlakeCount: Int = 14336
-fin farFlakeCount: Int = 22528
-fin hitsPerStep: Int = 8192
+inline fin nearDropCount: Int = 32768
+inline fin farDropCount: Int = 26624
+inline fin nearFlakeCount: Int = 14336
+inline fin farFlakeCount: Int = 22528
+inline fin hitsPerStep: Int = 8192
 
 /** Landings per square metre and second in a downpour: out to the splash distance, and within [nearReach] of the eye. */
-fin landingsPerSquareMetre: Double = 12.0
-fin nearLandings: Double = 70.0
-fin nearReach: Double = 10.0
+inline fin landingsPerSquareMetre: Double = 12.0
+inline fin nearLandings: Double = 70.0
+inline fin nearReach: Double = 10.0
 
 /** How high the impact box reaches above and below the eye at splash distance [reach]: enough for the ground on a slope. */
 func impactHeight(reach: Double): Double = 3.0 + 0.25 * reach
@@ -76,7 +76,7 @@ func sizeImpacts(rain: AetherPrecipitation!, device: Long, queue: Long, reach: D
 }
 
 func aetherPrecipitation(device: Long, queue: Long): AetherPrecipitation {
-    var rain = AetherPrecipitation()
+    var rain: AetherPrecipitation = .()
     rain.dropsNear = particleSystem(device, queue, nearDropCount, true)
     rain.impactsNear = particleSystem(device, queue, impactCount(nearReach, nearLandings), true, hitsPerStep)
     rain.dropsFar = particleSystem(device, queue, farDropCount, true)
@@ -90,7 +90,7 @@ func aetherPrecipitation(device: Long, queue: Long): AetherPrecipitation {
 
 /** Drops that are never drawn and only land: over a box [reach] metres out, their hits are the splashes. */
 func impactEmitter(reach: Double, intensity: Double): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
-    extent: Vec3(reach, impactHeight(reach), reach), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0,
+    extent: .(reach, impactHeight(reach), reach), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0
     terminalSpeed: 5.0 + 4.0 * intensity, wind: 1.0, collision: 1, thickness: 0.6)
 
 /**
@@ -99,28 +99,28 @@ func impactEmitter(reach: Double, intensity: Double): ParticleEmitter = Particle
  * drawn as streaks. The near box is low, so more of its drops reach the ground.
  */
 func dropEmitter(half: Double, tall: Double, intensity: Double, collide: Bool): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
-    extent: Vec3(half, tall, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0, terminalSpeed: 5.0 + 4.0 * intensity,
-    wind: 1.0, sizeStart: 0.0016, sizeEnd: 0.0016, colorStart: Rgba(1.0, 1.0, 1.0, 0.62), colorEnd: Rgba(1.0, 1.0, 1.0, 0.62),
+    extent: .(half, tall, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 14.0, terminalSpeed: 5.0 + 4.0 * intensity
+    wind: 1.0, sizeStart: 0.0016, sizeEnd: 0.0016, colorStart: .(1.0, 1.0, 1.0, 0.62), colorEnd: .(1.0, 1.0, 1.0, 0.62)
     shape: 1, streak: 1.0 / 60.0, lit: 1.0, softness: 0.35, nearFade: 0.6, collision: if collide then 1 else 0, thickness: 0.6)
 
 /** Flakes: slow, wandering, round. */
 func flakeEmitter(half: Double, collide: Bool): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
-    extent: Vec3(half, half, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 3.0, terminalSpeed: 1.1, wind: 0.9,
-    turbulence: 0.6, sizeStart: 0.011, sizeEnd: 0.011, colorStart: Rgba(1.0, 1.0, 1.0, 0.85), colorEnd: Rgba(1.0, 1.0, 1.0, 0.85),
+    extent: .(half, half, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, drag: 3.0, terminalSpeed: 1.1, wind: 0.9
+    turbulence: 0.6, sizeStart: 0.011, sizeEnd: 0.011, colorStart: .(1.0, 1.0, 1.0, 0.85), colorEnd: .(1.0, 1.0, 1.0, 0.85)
     shape: 0, streak: 1.0 / 120.0, lit: 1.0, softness: 0.3, nearFade: 0.5, collision: if collide then 1 else 0, thickness: 0.6)
 
 /** Rings widening on wet ground where a drop lands; brighter the wetter the ground and the stronger the [splashes]. */
 func ringEmitter(wetness: Double, splashes: Double): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.3, lifeMax: 0.45,
-    gravity: 0.0, drag: 0.0, wind: 0.0, sizeStart: 0.015, sizeEnd: 0.085,
-    colorStart: Rgba(1.0, 1.0, 1.0, (0.25 + 0.25 * wetness) * (0.6 + 0.4 * splashes)), colorEnd: Rgba(1.0, 1.0, 1.0, 0.0),
+    gravity: 0.0, drag: 0.0, wind: 0.0, sizeStart: 0.015, sizeEnd: 0.085
+    colorStart: .(1.0, 1.0, 1.0, (0.25 + 0.25 * wetness) * (0.6 + 0.4 * splashes)), colorEnd: .(1.0, 1.0, 1.0, 0.0)
     lit: 1.0, softness: 0.05, nearFade: 0.3)
 
 /** The droplets of a drop's crown: thrown up and out as hard as [splashes] says, falling back. */
 func dropletEmitter(splashes: Double): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.16, lifeMax: 0.28, spread: 0.25 + 0.6 * splashes,
-    gravity: 9.81, drag: 0.4, wind: 0.0, sizeStart: 0.003 + 0.003 * splashes, sizeEnd: 0.002 + 0.002 * splashes,
-    colorStart: Rgba(1.0, 1.0, 1.0, 0.25 + 0.5 * splashes), colorEnd: Rgba(1.0, 1.0, 1.0, 0.05),
+    gravity: 9.81, drag: 0.4, wind: 0.0, sizeStart: 0.003 + 0.003 * splashes, sizeEnd: 0.002 + 0.002 * splashes
+    colorStart: .(1.0, 1.0, 1.0, 0.25 + 0.5 * splashes), colorEnd: .(1.0, 1.0, 1.0, 0.05)
     shape: 1, streak: 1.0 / 60.0, lit: 1.0, softness: 0.05, nearFade: 0.3)
 
 /** A burst of snow where a flake lands. */
 func puffEmitter(): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.4, lifeMax: 0.6, gravity: 0.0, drag: 2.0, wind: 0.3,
-    sizeStart: 0.025, sizeEnd: 0.08, colorStart: Rgba(1.0, 1.0, 1.0, 0.5), colorEnd: Rgba(1.0, 1.0, 1.0, 0.0), lit: 1.0, softness: 0.1)
+    sizeStart: 0.025, sizeEnd: 0.08, colorStart: .(1.0, 1.0, 1.0, 0.5), colorEnd: .(1.0, 1.0, 1.0, 0.0), lit: 1.0, softness: 0.1)

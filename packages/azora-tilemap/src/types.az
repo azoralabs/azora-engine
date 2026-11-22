@@ -46,12 +46,12 @@ bridge .C {
  * Empty is `-1` rather than `0` because `0` is a perfectly ordinary tile index
  * in every tileset, and reserving it would waste the first tile of the atlas.
  */
-fin tileEmpty = -1
+inline fin tileEmpty = -1
 
 /** Cell flag: the tile is mirrored horizontally when drawn. */
-fin cellFlipX = 1
+inline fin cellFlipX = 1
 /** Cell flag: the tile is mirrored vertically when drawn. */
-fin cellFlipY = 2
+inline fin cellFlipY = 2
 /**
  * Cell flag: the tile is mirrored along its anti-diagonal when drawn.
  *
@@ -59,37 +59,37 @@ fin cellFlipY = 2
  * symmetries of a square, which is exactly what Tiled stores in the three high
  * bits of a global tile id.
  */
-fin cellFlipD = 4
+inline fin cellFlipD = 4
 /** Cell flag: the tile is skipped by the renderer but still occupies the cell. */
-fin cellHidden = 8
+inline fin cellHidden = 8
 
 /** The first cell-flag bit reserved for games; bits below this are engine-owned. */
-fin cellUserShift = 8
+inline fin cellUserShift = 8
 
 /** Trait: the tile blocks movement from every side. */
-fin traitSolid = 1
+inline fin traitSolid = 1
 /** Trait: the tile blocks movement downward only — a jump-through platform. */
-fin traitOneWay = 2
+inline fin traitOneWay = 2
 /** Trait: the tile can be climbed. */
-fin traitLadder = 4
+inline fin traitLadder = 4
 /** Trait: the tile is a fluid volume. */
-fin traitWater = 8
+inline fin traitWater = 8
 /** Trait: the tile damages whatever overlaps it. */
-fin traitHazard = 16
+inline fin traitHazard = 16
 /** Trait: the tile may be removed by gameplay. */
-fin traitDestructible = 32
+inline fin traitDestructible = 32
 /** Trait: the tile is a slope rising toward the right. */
-fin traitSlopeRight = 64
+inline fin traitSlopeRight = 64
 /** Trait: the tile is a slope rising toward the left. */
-fin traitSlopeLeft = 128
+inline fin traitSlopeLeft = 128
 /** Trait: the tile animates, so the drawn index comes from the animation set. */
-fin traitAnimated = 256
+inline fin traitAnimated = 256
 
 /** The first trait bit reserved for games; bits below this are engine-owned. */
-fin traitUserShift = 16
+inline fin traitUserShift = 16
 
 /** The packed tint of a cell that is not individually tinted. */
-fin tileTintNone = -1
+inline fin tileTintNone = -1
 
 // ── Lattices ────────────────────────────────────────────────────────────
 
@@ -229,7 +229,7 @@ variant enum TileLookup {
 /** The tile index of [lookup], or [tileEmpty] when it holds no tile. */
 func tileLookupIndex(lookup: TileLookup): Int {
     when lookup {
-        TileLookup.Tile(index, flags, tint) -> { return index }
+        .Tile(index, flags, tint) -> { return index }
         else -> { return tileEmpty }
     }
     return tileEmpty
@@ -238,7 +238,7 @@ func tileLookupIndex(lookup: TileLookup): Int {
 /** The cell flags of [lookup], or `0` when it holds no tile. */
 func tileLookupFlags(lookup: TileLookup): Int {
     when lookup {
-        TileLookup.Tile(index, flags, tint) -> { return flags }
+        .Tile(index, flags, tint) -> { return flags }
         else -> { return 0 }
     }
     return 0
@@ -247,7 +247,7 @@ func tileLookupFlags(lookup: TileLookup): Int {
 /** The packed tint of [lookup], or [tileTintNone] when it holds no tile. */
 func tileLookupTint(lookup: TileLookup): Int {
     when lookup {
-        TileLookup.Tile(index, flags, tint) -> { return tint }
+        .Tile(index, flags, tint) -> { return tint }
         else -> { return tileTintNone }
     }
     return tileTintNone
@@ -256,7 +256,7 @@ func tileLookupTint(lookup: TileLookup): Int {
 /** True when [lookup] found a tile. */
 func tileLookupPresent(lookup: TileLookup): Bool {
     when lookup {
-        TileLookup.Tile(index, flags, tint) -> { return true }
+        .Tile(index, flags, tint) -> { return true }
         else -> { return false }
     }
     return false
@@ -265,7 +265,7 @@ func tileLookupPresent(lookup: TileLookup): Bool {
 /** True when [lookup] addressed a cell outside the map. */
 func tileLookupOffMap(lookup: TileLookup): Bool {
     when lookup {
-        TileLookup.OutOfBounds() -> { return true }
+        .OutOfBounds() -> { return true }
         else -> { return false }
     }
     return false
@@ -349,65 +349,37 @@ pack TileFlip {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
-func tilePos(x: Int, y: Int): TilePos {
-    return TilePos(x, y)
-}
+func tilePos(x: Int, y: Int): TilePos = .(x, y)
 
-func worldPos(x: Double, y: Double): WorldPos {
-    return WorldPos(x, y)
-}
+func worldPos(x: Double, y: Double): WorldPos = .(x, y)
 
-func tilemapSize(x: Int, y: Int): TilemapSize {
-    return TilemapSize(x, y)
-}
+func tilemapSize(x: Int, y: Int): TilemapSize = .(x, y)
 
-func tileSize(x: Double, y: Double): TileSize {
-    return TileSize(x, y)
-}
+func tileSize(x: Double, y: Double): TileSize = .(x, y)
 
-func gridSize(x: Double, y: Double): GridSize {
-    return GridSize(x, y)
-}
+func gridSize(x: Double, y: Double): GridSize = .(x, y)
 
 /** A grid whose step equals the tile size — the square-map default. */
-func gridSizeFromTile(size: TileSize): GridSize {
-    return GridSize(size.x, size.y)
-}
+func gridSizeFromTile(size: TileSize): GridSize = .(size.x, size.y)
 
-func tileRect(minX: Int, minY: Int, maxX: Int, maxY: Int): TileRect {
-    return TileRect(minX, minY, maxX, maxY)
-}
+func tileRect(minX: Int, minY: Int, maxX: Int, maxY: Int): TileRect = .(minX, minY, maxX, maxY)
 
 /** The empty tile rectangle; every containment test on it is false. */
-func tileRectEmpty(): TileRect {
-    return TileRect(0, 0, -1, -1)
-}
+func tileRectEmpty(): TileRect = .(0, 0, -1, -1)
 
-func worldRect(minX: Double, minY: Double, maxX: Double, maxY: Double): WorldRect {
-    return WorldRect(minX, minY, maxX, maxY)
-}
+func worldRect(minX: Double, minY: Double, maxX: Double, maxY: Double): WorldRect = .(minX, minY, maxX, maxY)
 
 /** A world rectangle from its top-left corner and its size. */
-func worldRectAt(x: Double, y: Double, width: Double, height: Double): WorldRect {
-    return WorldRect(x, y, x + width, y + height)
-}
+func worldRectAt(x: Double, y: Double, width: Double, height: Double): WorldRect = .(x, y, x + width, y + height)
 
-func tileColor(r: Double, g: Double, b: Double, a: Double): TileColor {
-    return TileColor(r, g, b, a)
-}
+func tileColor(r: Double, g: Double, b: Double, a: Double): TileColor = .(r, g, b, a)
 
 /** Opaque white: the tint that leaves tileset art unchanged. */
-func tileColorWhite(): TileColor {
-    return TileColor(1.0, 1.0, 1.0, 1.0)
-}
+func tileColorWhite(): TileColor = .(1.0, 1.0, 1.0, 1.0)
 
-func tileFlipNone(): TileFlip {
-    return TileFlip(false, false, false)
-}
+func tileFlipNone(): TileFlip = .(false, false, false)
 
-func tileFlip(x: Bool, y: Bool, d: Bool): TileFlip {
-    return TileFlip(x, y, d)
-}
+func tileFlip(x: Bool, y: Bool, d: Bool): TileFlip = .(x, y, d)
 
 // ── Scalar helpers ──────────────────────────────────────────────────────
 //
@@ -419,167 +391,96 @@ func tileFlip(x: Bool, y: Bool, d: Bool): TileFlip {
 /** Integer division that rounds toward negative infinity. */
 func tileFloorDiv(a: Int, b: Int): Int {
     var q = a / b
-    if (a % b != 0) && ((a < 0) != (b < 0)) {
-        q = q - 1
-    }
+    if (a % b != 0) && ((a < 0) != (b < 0)) then q--
     return q
 }
 
 /** The non-negative remainder of `a / b` for positive `b`. */
 func tileFloorMod(a: Int, b: Int): Int {
     fin r = a % b
-    if r < 0 {
-        return r + b
-    }
-    return r
+    return if r < 0 then r + b else r
 }
 
-func intMin(a: Int, b: Int): Int {
-    if a < b {
-        return a
-    }
-    return b
-}
+func intMin(a: Int, b: Int): Int = if a < b then a else b
 
-func intMax(a: Int, b: Int): Int {
-    if a > b {
-        return a
-    }
-    return b
-}
+func intMax(a: Int, b: Int): Int = if a > b then a else b
 
 func intClamp(value: Int, low: Int, high: Int): Int {
-    if value < low {
-        return low
+    return when {
+        value < low -> low
+        value > high -> high
+        else -> value
     }
-    if value > high {
-        return high
-    }
-    return value
 }
 
-func intAbs(value: Int): Int {
-    if value < 0 {
-        return 0 - value
-    }
-    return value
-}
+func intAbs(value: Int): Int = if value < 0 then -value else value
 
 /** True when [value] is odd, for negative values as well as positive ones. */
-func intIsOdd(value: Int): Bool {
-    return tileFloorMod(value, 2) == 1
-}
+func intIsOdd(value: Int): Bool = tileFloorMod(value, 2) == 1
 
-func realMin(a: Double, b: Double): Double {
-    if a < b {
-        return a
-    }
-    return b
-}
+func realMin(a: Double, b: Double): Double = if a < b then a else b
 
-func realMax(a: Double, b: Double): Double {
-    if a > b {
-        return a
-    }
-    return b
-}
+func realMax(a: Double, b: Double): Double = if a > b then a else b
 
 func realClamp(value: Double, low: Double, high: Double): Double {
-    if value < low {
-        return low
+    return when {
+        value < low -> low
+        value > high -> high
+        else -> value
     }
-    if value > high {
-        return high
-    }
-    return value
 }
 
-func realAbs(value: Double): Double {
-    return fabs(value)
-}
+func realAbs(value: Double): Double = fabs(value)
 
 /** The largest integer not greater than [value]. */
-func realFloorToInt(value: Double): Int {
-    return floor(value) as Int
-}
+func realFloorToInt(value: Double): Int = floor(value) as Int
 
 /** The smallest integer not less than [value]. */
-func realCeilToInt(value: Double): Int {
-    return ceil(value) as Int
-}
+func realCeilToInt(value: Double): Int = ceil(value) as Int
 
 /** [value] rounded half away from zero. */
-func realRoundToInt(value: Double): Int {
-    if value < 0.0 {
-        return 0 - (floor(0.5 - value) as Int)
-    }
-    return floor(value + 0.5) as Int
-}
+func realRoundToInt(value: Double): Int = if value < 0.0 then -(floor(0.5 - value) as Int) else floor(value + 0.5) as Int
 
 // ── Flag helpers ────────────────────────────────────────────────────────
 
 /** True when every bit of [mask] is set in [flags]. */
-func flagsAll(flags: Int, mask: Int): Bool {
-    return (flags & mask) == mask
-}
+func flagsAll(flags: Int, mask: Int): Bool = (flags & mask) == mask
 
 /** True when any bit of [mask] is set in [flags]. */
-func flagsAny(flags: Int, mask: Int): Bool {
-    return (flags & mask) != 0
-}
+func flagsAny(flags: Int, mask: Int): Bool = (flags & mask) != 0
 
-func flagsSet(flags: Int, mask: Int): Int {
-    return flags | mask
-}
+func flagsSet(flags: Int, mask: Int): Int = flags | mask
 
-func flagsClear(flags: Int, mask: Int): Int {
-    return flags & (0 - 1 - mask)
-}
+func flagsClear(flags: Int, mask: Int): Int = flags & (-1 - mask)
 
-func flagsToggle(flags: Int, mask: Int): Int {
-    return flags ^ mask
-}
+func flagsToggle(flags: Int, mask: Int): Int = flags ^ mask
 
 /** Packs a game's own flag value into the bits above [cellUserShift]. */
-func cellUserFlags(value: Int): Int {
-    return value << cellUserShift
-}
+func cellUserFlags(value: Int): Int = value << cellUserShift
 
 /** Reads back the game-owned bits of a cell's flags. */
-func cellUserValue(flags: Int): Int {
-    return flags >> cellUserShift
-}
+func cellUserValue(flags: Int): Int = flags >> cellUserShift
 
 /** Packs a game's own trait value into the bits above [traitUserShift]. */
-func traitUserFlags(value: Int): Int {
-    return value << traitUserShift
-}
+func traitUserFlags(value: Int): Int = value << traitUserShift
 
 /** Reads back the game-owned bits of a tile's traits. */
-func traitUserValue(traits: Int): Int {
-    return traits >> traitUserShift
-}
+func traitUserValue(traits: Int): Int = traits >> traitUserShift
 
 /** The cell flags describing [mirrors]. */
 func tileFlipToFlags(mirrors: TileFlip): Int {
     var flags = 0
-    if (mirrors.x) {
-        flags = flags | cellFlipX
-    }
-    if (mirrors.y) {
-        flags = flags | cellFlipY
-    }
-    if (mirrors.d) {
-        flags = flags | cellFlipD
-    }
+    if (mirrors.x) then flags = flags | cellFlipX
+    if (mirrors.y) then flags = flags | cellFlipY
+    if (mirrors.d) then flags = flags | cellFlipD
     return flags
 }
 
 /** The mirrors encoded in [flags]. */
 func tileFlipFromFlags(flags: Int): TileFlip {
     return TileFlip(
-        (flags & cellFlipX) != 0,
-        (flags & cellFlipY) != 0,
+        (flags & cellFlipX) != 0
+        (flags & cellFlipY) != 0
         (flags & cellFlipD) != 0
     )
 }
@@ -603,64 +504,44 @@ func tileColorPack(color: TileColor): Int {
 /** Unpacks a `0xAARRGGBB` value written by [tileColorPack]. */
 func tileColorUnpack(packed: Int): TileColor {
     return TileColor(
-        (((packed >> 16) & 0xFF) as Double) / 255.0,
-        (((packed >> 8) & 0xFF) as Double) / 255.0,
-        ((packed & 0xFF) as Double) / 255.0,
+        (((packed >> 16) & 0xFF) as Double) / 255.0
+        (((packed >> 8) & 0xFF) as Double) / 255.0
+        ((packed & 0xFF) as Double) / 255.0
         (((packed >> 24) & 0xFF) as Double) / 255.0
     )
 }
 
 /** Multiplies two tints — how a cell tint layers over a layer tint. */
-func tileColorModulate(a: TileColor, b: TileColor): TileColor {
-    return TileColor(a.r * b.r, a.g * b.g, a.b * b.b, a.a * b.a)
-}
+func tileColorModulate(a: TileColor, b: TileColor): TileColor = .(a.r * b.r, a.g * b.g, a.b * b.b, a.a * b.a)
 
 /** [color] with its alpha scaled by [opacity]. */
-func tileColorFade(color: TileColor, opacity: Double): TileColor {
-    return TileColor(color.r, color.g, color.b, color.a * opacity)
-}
+func tileColorFade(color: TileColor, opacity: Double): TileColor = .(color.r, color.g, color.b, color.a * opacity)
 
 // ── Positions and rectangles ────────────────────────────────────────────
 
 impl TilePos {
     /** True when both coordinates match [other]. */
-    func &.same(other: TilePos): Bool {
-        return self.x == other.x && self.y == other.y
-    }
+    func &.same(other: TilePos): Bool = self.x == other.x && self.y == other.y
 
     /** This position moved by [dx], [dy]. */
-    func &.offset(dx: Int, dy: Int): TilePos {
-        return TilePos(self.x + dx, self.y + dy)
-    }
+    func &.offset(dx: Int, dy: Int): TilePos = .(self.x + dx, self.y + dy)
 
     /** The Manhattan distance to [other]: the step count on a 4-way square grid. */
-    func &.manhattan(other: TilePos): Int {
-        return intAbs(self.x - other.x) + intAbs(self.y - other.y)
-    }
+    func &.manhattan(other: TilePos): Int = intAbs(self.x - other.x) + intAbs(self.y - other.y)
 
     /** The Chebyshev distance to [other]: the step count on an 8-way square grid. */
-    func &.chebyshev(other: TilePos): Int {
-        return intMax(intAbs(self.x - other.x), intAbs(self.y - other.y))
-    }
+    func &.chebyshev(other: TilePos): Int = intMax(intAbs(self.x - other.x), intAbs(self.y - other.y))
 
     /** The row-major index of this position in a map [width] tiles across. */
-    func &.linearIndex(width: Int): Int {
-        return self.y * width + self.x
-    }
+    func &.linearIndex(width: Int): Int = self.y * width + self.x
 }
 
 impl WorldPos {
-    func &.plus(other: WorldPos): WorldPos {
-        return WorldPos(self.x + other.x, self.y + other.y)
-    }
+    func &.plus(other: WorldPos): WorldPos = .(self.x + other.x, self.y + other.y)
 
-    func &.minus(other: WorldPos): WorldPos {
-        return WorldPos(self.x - other.x, self.y - other.y)
-    }
+    func &.minus(other: WorldPos): WorldPos = .(self.x - other.x, self.y - other.y)
 
-    func &.scale(k: Double): WorldPos {
-        return WorldPos(self.x * k, self.y * k)
-    }
+    func &.scale(k: Double): WorldPos = .(self.x * k, self.y * k)
 
     /** The squared distance to [other]; comparing squares avoids a square root. */
     func &.distanceSquared(other: WorldPos): Double {
@@ -672,50 +553,28 @@ impl WorldPos {
 
 impl TilemapSize {
     /** The number of cells in a map of this size. */
-    func &.count(): Int {
-        return self.x * self.y
-    }
+    func &.count(): Int = self.x * self.y
 
     /** True when [pos] addresses a cell inside a map of this size. */
-    func &.contains(pos: TilePos): Bool {
-        return pos.x >= 0 && pos.y >= 0 && pos.x < self.x && pos.y < self.y
-    }
+    func &.contains(pos: TilePos): Bool = pos.x >= 0 && pos.y >= 0 && pos.x < self.x && pos.y < self.y
 
     /** True when both extents are positive. */
-    func &.isValid(): Bool {
-        return self.x > 0 && self.y > 0
-    }
+    func &.isValid(): Bool = self.x > 0 && self.y > 0
 
     /** The rectangle covering every cell of a map of this size. */
-    func &.rect(): TileRect {
-        return TileRect(0, 0, self.x - 1, self.y - 1)
-    }
+    func &.rect(): TileRect = .(0, 0, self.x - 1, self.y - 1)
 }
 
 impl TileRect {
     /** True when the rectangle covers no cell at all. */
-    func &.isEmpty(): Bool {
-        return self.maxX < self.minX || self.maxY < self.minY
-    }
+    func &.isEmpty(): Bool = self.maxX < self.minX || self.maxY < self.minY
 
-    func &.width(): Int {
-        if self.isEmpty() {
-            return 0
-        }
-        return self.maxX - self.minX + 1
-    }
+    func &.width(): Int = if self.isEmpty() then 0 else self.maxX - self.minX + 1
 
-    func &.height(): Int {
-        if self.isEmpty() {
-            return 0
-        }
-        return self.maxY - self.minY + 1
-    }
+    func &.height(): Int = if self.isEmpty() then 0 else self.maxY - self.minY + 1
 
     /** The number of cells the rectangle covers. */
-    func &.area(): Int {
-        return self.width() * self.height()
-    }
+    func &.area(): Int = self.width() * self.height()
 
     func &.contains(pos: TilePos): Bool {
         return pos.x >= self.minX && pos.x <= self.maxX &&
@@ -725,60 +584,46 @@ impl TileRect {
     /** The overlap with [other], possibly empty. */
     func &.intersect(other: TileRect): TileRect {
         return TileRect(
-            intMax(self.minX, other.minX),
-            intMax(self.minY, other.minY),
-            intMin(self.maxX, other.maxX),
+            intMax(self.minX, other.minX)
+            intMax(self.minY, other.minY)
+            intMin(self.maxX, other.maxX)
             intMin(self.maxY, other.maxY)
         )
     }
 
     /** The smallest rectangle covering both this one and [other]. */
     func &.union(other: TileRect): TileRect {
-        if self.isEmpty() {
-            return other
-        }
-        if other.isEmpty() {
-            return self
-        }
+        if self.isEmpty() then return other
+        if other.isEmpty() then return self
         return TileRect(
-            intMin(self.minX, other.minX),
-            intMin(self.minY, other.minY),
-            intMax(self.maxX, other.maxX),
+            intMin(self.minX, other.minX)
+            intMin(self.minY, other.minY)
+            intMax(self.maxX, other.maxX)
             intMax(self.maxY, other.maxY)
         )
     }
 
     /** This rectangle grown by [amount] cells on every side. */
     func &.expand(amount: Int): TileRect {
-        if self.isEmpty() {
-            return self
-        }
+        if self.isEmpty() then return self
         return TileRect(
-            self.minX - amount,
-            self.minY - amount,
-            self.maxX + amount,
+            self.minX - amount
+            self.minY - amount
+            self.maxX + amount
             self.maxY + amount
         )
     }
 
     /** This rectangle clipped to a map of [size]. */
-    func &.clampTo(size: TilemapSize): TileRect {
-        return self.intersect(TileRect(0, 0, size.x - 1, size.y - 1))
-    }
+    func &.clampTo(size: TilemapSize): TileRect = self.intersect(.(0, 0, size.x - 1, size.y - 1))
 }
 
 impl WorldRect {
-    func &.width(): Double {
-        return self.maxX - self.minX
-    }
+    func &.width(): Double = self.maxX - self.minX
 
-    func &.height(): Double {
-        return self.maxY - self.minY
-    }
+    func &.height(): Double = self.maxY - self.minY
 
-    func &.center(): WorldPos {
-        return WorldPos((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
-    }
+    func &.center(): WorldPos = .((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
 
     func &.contains(point: WorldPos): Bool {
         return point.x >= self.minX && point.x <= self.maxX &&
@@ -792,20 +637,16 @@ impl WorldRect {
     }
 
     /** This rectangle grown by [x] horizontally and [y] vertically. */
-    func &.expand(x: Double, y: Double): WorldRect {
-        return WorldRect(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
-    }
+    func &.expand(x: Double, y: Double): WorldRect = .(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
 
     /** This rectangle moved by [dx], [dy]. */
-    func &.translate(dx: Double, dy: Double): WorldRect {
-        return WorldRect(self.minX + dx, self.minY + dy, self.maxX + dx, self.maxY + dy)
-    }
+    func &.translate(dx: Double, dy: Double): WorldRect = .(self.minX + dx, self.minY + dy, self.maxX + dx, self.maxY + dy)
 
     func &.union(other: WorldRect): WorldRect {
         return WorldRect(
-            realMin(self.minX, other.minX),
-            realMin(self.minY, other.minY),
-            realMax(self.maxX, other.maxX),
+            realMin(self.minX, other.minX)
+            realMin(self.minY, other.minY)
+            realMax(self.maxX, other.maxX)
             realMax(self.maxY, other.maxY)
         )
     }
@@ -822,25 +663,25 @@ impl WorldRect {
  */
 func anchorFraction(anchor: TilemapAnchor): WorldPos {
     when anchor {
-        TilemapAnchor.Origin() -> { return WorldPos(0.0, 0.0) }
-        TilemapAnchor.TopLeft() -> { return WorldPos(0.0, 0.0) }
-        TilemapAnchor.TopCenter() -> { return WorldPos(0.5, 0.0) }
-        TilemapAnchor.TopRight() -> { return WorldPos(1.0, 0.0) }
-        TilemapAnchor.CenterLeft() -> { return WorldPos(0.0, 0.5) }
-        TilemapAnchor.Center() -> { return WorldPos(0.5, 0.5) }
-        TilemapAnchor.CenterRight() -> { return WorldPos(1.0, 0.5) }
-        TilemapAnchor.BottomLeft() -> { return WorldPos(0.0, 1.0) }
-        TilemapAnchor.BottomCenter() -> { return WorldPos(0.5, 1.0) }
-        TilemapAnchor.BottomRight() -> { return WorldPos(1.0, 1.0) }
-        TilemapAnchor.Custom(x, y) -> { return WorldPos(x, y) }
+        .Origin() -> { return WorldPos(0.0, 0.0) }
+        .TopLeft() -> { return WorldPos(0.0, 0.0) }
+        .TopCenter() -> { return WorldPos(0.5, 0.0) }
+        .TopRight() -> { return WorldPos(1.0, 0.0) }
+        .CenterLeft() -> { return WorldPos(0.0, 0.5) }
+        .Center() -> { return WorldPos(0.5, 0.5) }
+        .CenterRight() -> { return WorldPos(1.0, 0.5) }
+        .BottomLeft() -> { return WorldPos(0.0, 1.0) }
+        .BottomCenter() -> { return WorldPos(0.5, 1.0) }
+        .BottomRight() -> { return WorldPos(1.0, 1.0) }
+        .Custom(x, y) -> { return WorldPos(x, y) }
     }
-    return WorldPos(0.0, 0.0)
+    return .(0.0, 0.0)
 }
 
 /** False only for [TilemapAnchor.Origin], which leaves the lattice unshifted. */
 func anchorShifts(anchor: TilemapAnchor): Bool {
     when anchor {
-        TilemapAnchor.Origin() -> { return false }
+        .Origin() -> { return false }
         else -> { return true }
     }
     return true
@@ -856,34 +697,20 @@ func anchorShifts(anchor: TilemapAnchor): Bool {
 func intGridFill(width: Int, height: Int, value: Int): Array<Int> {
     fin count = intMax(width * height, 0)
     var cells: Array<Int> = Array::fill<Int>(count)
-    var i = 0
-    while i < count {
-        cells[i] = value
-        i = i + 1
-    }
+    for i: Int in 0..<count then cells[i] = value
     return cells
 }
 
 /** Overwrites every cell of [cells] with [value]. */
 func intGridClear(cells: Array<Int>, value: Int) {
-    var i = 0
-    while i < cells.size {
-        cells[i] = value
-        i = i + 1
-    }
+    for i: Int in 0..<cells.size then cells[i] = value
 }
 
 /** Copies [count] cells of [source] into a fresh plane of [capacity] cells. */
 func intGridResize(source: Array<Int>, count: Int, capacity: Int, value: Int): Array<Int> {
     var grown: Array<Int> = Array::fill<Int>(intMax(capacity, 0))
-    var i = 0
-    while i < grown.size {
-        if i < count && i < source.size {
-            grown[i] = source[i]
-        } else {
-            grown[i] = value
-        }
-        i = i + 1
+    for i: Int in 0..<grown.size {
+        if i < count && i < source.size then grown[i] = source[i] else grown[i] = value
     }
     return grown
 }
@@ -911,8 +738,8 @@ test "colour packing survives a round trip" {
 }
 
 test "a lookup distinguishes an empty cell from an absent one" {
-    assert !tileLookupPresent(TileLookup.Empty) panic "an empty cell holds no tile"
-    assert !tileLookupOffMap(TileLookup.Empty) panic "an empty cell is still on the map"
-    assert tileLookupOffMap(TileLookup.OutOfBounds) panic "an off-map read must be distinguishable"
-    assert tileLookupIndex(TileLookup.Tile(7, 0, tileTintNone)) == 7 panic "a present tile must report its index"
+    assert !tileLookupPresent(.Empty) panic "an empty cell holds no tile"
+    assert !tileLookupOffMap(.Empty) panic "an empty cell is still on the map"
+    assert tileLookupOffMap(.OutOfBounds) panic "an off-map read must be distinguishable"
+    assert tileLookupIndex(.Tile(7, 0, tileTintNone)) == 7 panic "a present tile must report its index"
 }

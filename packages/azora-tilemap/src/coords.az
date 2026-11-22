@@ -70,16 +70,16 @@ variant enum TilePick {
 /** The position [pick] found, whether or not it is on the map. */
 func tilePickPos(pick: TilePick): TilePos {
     when pick {
-        TilePick.At(pos) -> { return pos }
-        TilePick.Outside(pos) -> { return pos }
+        .At(pos) -> { return pos }
+        .Outside(pos) -> { return pos }
     }
-    return TilePos(0, 0)
+    return .(0, 0)
 }
 
 /** True when [pick] landed on a cell of the map. */
 func tilePickOnMap(pick: TilePick): Bool {
     when pick {
-        TilePick.At(pos) -> { return true }
+        .At(pos) -> { return true }
         else -> { return false }
     }
     return false
@@ -99,13 +99,13 @@ func tilemapGeometry(
     origin: WorldPos
 ): TilemapGeometry {
     var geo = TilemapGeometry(
-        kind,
-        size,
-        tile,
-        grid,
-        anchor,
-        origin,
-        WorldPos(0.0, 0.0),
+        kind
+        size
+        tile
+        grid
+        anchor
+        origin
+        WorldPos(0.0, 0.0)
         WorldRect(0.0, 0.0, 0.0, 0.0)
     )
     geometryRefresh(geo)
@@ -115,11 +115,11 @@ func tilemapGeometry(
 /** A square map of [width] x [height] tiles, top-left anchored at the origin. */
 func squareGeometry(width: Int, height: Int, tileWidth: Double, tileHeight: Double): TilemapGeometry {
     return tilemapGeometry(
-        TilemapKind.Square,
-        TilemapSize(width, height),
-        TileSize(tileWidth, tileHeight),
-        GridSize(tileWidth, tileHeight),
-        TilemapAnchor.TopLeft,
+        TilemapKind.Square
+        TilemapSize(width, height)
+        TileSize(tileWidth, tileHeight)
+        GridSize(tileWidth, tileHeight)
+        TilemapAnchor.TopLeft
         WorldPos(0.0, 0.0)
     )
 }
@@ -133,11 +133,11 @@ func isoGeometry(
     tileHeight: Double
 ): TilemapGeometry {
     return tilemapGeometry(
-        TilemapKind.Isometric(system),
-        TilemapSize(width, height),
-        TileSize(tileWidth, tileHeight),
-        GridSize(tileWidth, tileHeight),
-        TilemapAnchor.TopLeft,
+        TilemapKind.Isometric(system)
+        TilemapSize(width, height)
+        TileSize(tileWidth, tileHeight)
+        GridSize(tileWidth, tileHeight)
+        TilemapAnchor.TopLeft
         WorldPos(0.0, 0.0)
     )
 }
@@ -151,11 +151,11 @@ func hexGeometry(
     tileHeight: Double
 ): TilemapGeometry {
     return tilemapGeometry(
-        TilemapKind.Hexagon(system),
-        TilemapSize(width, height),
-        TileSize(tileWidth, tileHeight),
-        GridSize(tileWidth, tileHeight),
-        TilemapAnchor.TopLeft,
+        TilemapKind.Hexagon(system)
+        TilemapSize(width, height)
+        TileSize(tileWidth, tileHeight)
+        GridSize(tileWidth, tileHeight)
+        TilemapAnchor.TopLeft
         WorldPos(0.0, 0.0)
     )
 }
@@ -173,30 +173,27 @@ func hexGeometry(
  */
 func geometryStep(geo: TilemapGeometry): WorldPos {
     when geo.kind {
-        TilemapKind.Square() -> {
-            return WorldPos(geo.grid.x, geo.grid.y)
+        .Square() -> {
+            return .(geo.grid.x, geo.grid.y)
         }
-        TilemapKind.Isometric(system) -> {
+        .Isometric(system) -> {
             when system {
-                IsoCoordSystem.Diamond -> { return WorldPos(geo.grid.x * 0.5, geo.grid.y * 0.5) }
-                IsoCoordSystem.Staggered -> { return WorldPos(geo.grid.x, geo.grid.y * 0.5) }
+                .Diamond -> { return WorldPos(geo.grid.x * 0.5, geo.grid.y * 0.5) }
+                .Staggered -> { return WorldPos(geo.grid.x, geo.grid.y * 0.5) }
             }
-            return WorldPos(geo.grid.x, geo.grid.y)
+            return .(geo.grid.x, geo.grid.y)
         }
-        TilemapKind.Hexagon(system) -> {
-            if hexIsPointyTop(system) {
-                return WorldPos(geo.grid.x, geo.grid.y * 0.75)
-            }
-            return WorldPos(geo.grid.x * 0.75, geo.grid.y)
+        .Hexagon(system) -> {
+            return if hexIsPointyTop(system) then .(geo.grid.x, geo.grid.y * 0.75) else .(geo.grid.x * 0.75, geo.grid.y)
         }
     }
-    return WorldPos(geo.grid.x, geo.grid.y)
+    return .(geo.grid.x, geo.grid.y)
 }
 
 /** True when the lattice draws overlapping tiles that must be painted in depth order. */
 func geometryDepthSorted(geo: TilemapGeometry): Bool {
     when geo.kind {
-        TilemapKind.Isometric(system) -> { return true }
+        .Isometric(system) -> { return true }
         else -> { return false }
     }
     return false
@@ -212,54 +209,52 @@ func geometryDepthSorted(geo: TilemapGeometry): Bool {
  */
 func latticeCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
     when geo.kind {
-        TilemapKind.Square() -> {
-            return WorldPos((pos.x as Double) * geo.grid.x, (pos.y as Double) * geo.grid.y)
+        .Square() -> {
+            return .((pos.x as Double) * geo.grid.x, (pos.y as Double) * geo.grid.y)
         }
-        TilemapKind.Isometric(system) -> {
+        .Isometric(system) -> {
             when system {
-                IsoCoordSystem.Diamond -> {
+                .Diamond -> {
                     return WorldPos(
-                        ((pos.x - pos.y) as Double) * geo.grid.x * 0.5,
+                        ((pos.x - pos.y) as Double) * geo.grid.x * 0.5
                         ((pos.x + pos.y) as Double) * geo.grid.y * 0.5
                     )
                 }
-                IsoCoordSystem.Staggered -> {
+                .Staggered -> {
                     var indent = 0.0
-                    if intIsOdd(pos.y) {
-                        indent = geo.grid.x * 0.5
-                    }
+                    if intIsOdd(pos.y) then indent = geo.grid.x * 0.5
                     return WorldPos(
-                        (pos.x as Double) * geo.grid.x + indent,
+                        (pos.x as Double) * geo.grid.x + indent
                         (pos.y as Double) * geo.grid.y * 0.5
                     )
                 }
             }
-            return WorldPos(0.0, 0.0)
+            return .(0.0, 0.0)
         }
-        TilemapKind.Hexagon(system) -> {
+        .Hexagon(system) -> {
             fin axial = hexToAxial(pos, system)
             if hexIsPointyTop(system) {
                 // Pointy-top: rows are straight, and the skewed axis leans the
                 // lattice half a hex right per row.
                 return WorldPos(
-                    geo.grid.x * ((axial.q as Double) + (axial.r as Double) * 0.5),
+                    geo.grid.x * ((axial.q as Double) + (axial.r as Double) * 0.5)
                     geo.grid.y * 0.75 * (axial.r as Double)
                 )
             }
             return WorldPos(
-                geo.grid.x * 0.75 * (axial.q as Double),
+                geo.grid.x * 0.75 * (axial.q as Double)
                 geo.grid.y * ((axial.r as Double) + (axial.q as Double) * 0.5)
             )
         }
     }
-    return WorldPos(0.0, 0.0)
+    return .(0.0, 0.0)
 }
 
 /** The centre of tile [pos] in world space. */
 func tileCenter(geo: TilemapGeometry, pos: TilePos): WorldPos {
     fin raw = latticeCenter(geo, pos)
     return WorldPos(
-        raw.x + geo.shift.x + geo.origin.x,
+        raw.x + geo.shift.x + geo.origin.x
         raw.y + geo.shift.y + geo.origin.y
     )
 }
@@ -269,13 +264,13 @@ func tileQuad(geo: TilemapGeometry, pos: TilePos): WorldRect {
     fin center = tileCenter(geo, pos)
     fin halfX = geo.tile.x * 0.5
     fin halfY = geo.tile.y * 0.5
-    return WorldRect(center.x - halfX, center.y - halfY, center.x + halfX, center.y + halfY)
+    return .(center.x - halfX, center.y - halfY, center.x + halfX, center.y + halfY)
 }
 
 /** The top-left corner of the rectangle tile [pos] is drawn into. */
 func tileCorner(geo: TilemapGeometry, pos: TilePos): WorldPos {
     fin center = tileCenter(geo, pos)
-    return WorldPos(center.x - geo.tile.x * 0.5, center.y - geo.tile.y * 0.5)
+    return .(center.x - geo.tile.x * 0.5, center.y - geo.tile.y * 0.5)
 }
 
 // ── World to tile ───────────────────────────────────────────────────────
@@ -292,43 +287,43 @@ func tileCorner(geo: TilemapGeometry, pos: TilePos): WorldPos {
  */
 func latticeCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
     when geo.kind {
-        TilemapKind.Square() -> {
+        .Square() -> {
             return TilePos(
-                realFloorToInt(x / geo.grid.x + 0.5),
+                realFloorToInt(x / geo.grid.x + 0.5)
                 realFloorToInt(y / geo.grid.y + 0.5)
             )
         }
-        TilemapKind.Isometric(system) -> {
+        .Isometric(system) -> {
             when system {
-                IsoCoordSystem.Diamond -> {
+                .Diamond -> {
                     fin a = x / (geo.grid.x * 0.5)
                     fin b = y / (geo.grid.y * 0.5)
                     return TilePos(
-                        realFloorToInt((a + b) * 0.5 + 0.5),
+                        realFloorToInt((a + b) * 0.5 + 0.5)
                         realFloorToInt((b - a) * 0.5 + 0.5)
                     )
                 }
-                IsoCoordSystem.Staggered -> {
+                .Staggered -> {
                     return staggeredCellAt(geo, x, y)
                 }
             }
-            return TilePos(0, 0)
+            return .(0, 0)
         }
-        TilemapKind.Hexagon(system) -> {
-            var axial = HexAxial(0, 0)
+        .Hexagon(system) -> {
+            var axial: HexAxial = .(0, 0)
             if hexIsPointyTop(system) {
                 fin r = y / (geo.grid.y * 0.75)
                 fin q = x / geo.grid.x - r * 0.5
-                axial = hexRound(HexFrac(q, r))
+                axial = hexRound(.(q, r))
             } else {
                 fin q = x / (geo.grid.x * 0.75)
                 fin r = y / geo.grid.y - q * 0.5
-                axial = hexRound(HexFrac(q, r))
+                axial = hexRound(.(q, r))
             }
             return hexFromAxial(axial, system)
         }
     }
-    return TilePos(0, 0)
+    return .(0, 0)
 }
 
 /**
@@ -342,17 +337,14 @@ func staggeredCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
     fin rowStep = geo.grid.y * 0.5
     fin approxRow = realFloorToInt(y / rowStep + 0.5)
 
-    var best = TilePos(0, 0)
+    var best: TilePos = .(0, 0)
     var bestDistance = -1.0
-    var offset = -1
-    while offset <= 1 {
+    for offset: Int in -1..1 {
         fin row = approxRow + offset
         var indent = 0.0
-        if intIsOdd(row) {
-            indent = geo.grid.x * 0.5
-        }
+        if intIsOdd(row) then indent = geo.grid.x * 0.5
         fin column = realFloorToInt((x - indent) / geo.grid.x + 0.5)
-        fin candidate = TilePos(column, row)
+        fin candidate: TilePos = .(column, row)
         fin center = latticeCenter(geo, candidate)
         fin dx = center.x - x
         fin dy = center.y - y
@@ -361,7 +353,6 @@ func staggeredCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
             bestDistance = distance
             best = candidate
         }
-        offset = offset + 1
     }
     return best
 }
@@ -369,8 +360,8 @@ func staggeredCellAt(geo: TilemapGeometry, x: Double, y: Double): TilePos {
 /** The tile containing world point [point], on the map or beyond it. */
 func worldToTile(geo: TilemapGeometry, point: WorldPos): TilePos {
     return latticeCellAt(
-        geo,
-        point.x - geo.shift.x - geo.origin.x,
+        geo
+        point.x - geo.shift.x - geo.origin.x
         point.y - geo.shift.y - geo.origin.y
     )
 }
@@ -378,10 +369,7 @@ func worldToTile(geo: TilemapGeometry, point: WorldPos): TilePos {
 /** Where [point] falls, distinguishing a cell of the map from one beyond it. */
 func pickTile(geo: TilemapGeometry, point: WorldPos): TilePick {
     fin pos = worldToTile(geo, point)
-    if geo.size.contains(pos) {
-        return TilePick.At(pos)
-    }
-    return TilePick.Outside(pos)
+    return if geo.size.contains(pos) then TilePick.At(pos) else TilePick.Outside(pos)
 }
 
 // ── Bounds ──────────────────────────────────────────────────────────────
@@ -396,9 +384,7 @@ func pickTile(geo: TilemapGeometry, point: WorldPos): TilePick {
  * lattice, which four corners plus a fudge factor would not be.
  */
 func latticeBounds(geo: TilemapGeometry): WorldRect {
-    if !geo.size.isValid {
-        return WorldRect(0.0, 0.0, 0.0, 0.0)
-    }
+    if !geo.size.isValid then return .(0.0, 0.0, 0.0, 0.0)
 
     fin lastX = geo.size.x - 1
     fin lastY = geo.size.y - 1
@@ -414,7 +400,7 @@ func latticeBounds(geo: TilemapGeometry): WorldRect {
         while x <= lastX {
             fin onBorder = x == 0 || y == 0 || x == lastX || y == lastY
             if onBorder {
-                fin center = latticeCenter(geo, TilePos(x, y))
+                fin center = latticeCenter(geo, .(x, y))
                 if !seeded {
                     minX = center.x
                     maxX = center.x
@@ -430,18 +416,14 @@ func latticeBounds(geo: TilemapGeometry): WorldRect {
             }
             // Interior columns cannot extend the box, so the scan skips over
             // them instead of walking every cell of a large map.
-            if y == 0 || y == lastY || x >= lastX {
-                x = x + 1
-            } else {
-                x = lastX
-            }
+            if y == 0 || y == lastY || x >= lastX then x++ else x = lastX
         }
-        y = y + 1
+        y++
     }
 
     fin halfX = geo.tile.x * 0.5
     fin halfY = geo.tile.y * 0.5
-    return WorldRect(minX - halfX, minY - halfY, maxX + halfX, maxY + halfY)
+    return .(minX - halfX, minY - halfY, maxX + halfX, maxY + halfY)
 }
 
 /**
@@ -455,16 +437,16 @@ func geometryRefresh(geo: TilemapGeometry) {
     if anchorShifts(geo.anchor) {
         fin fraction = anchorFraction(geo.anchor)
         geo.shift = WorldPos(
-            0.0 - (raw.minX + raw.width() * fraction.x),
-            0.0 - (raw.minY + raw.height() * fraction.y)
+            -(raw.minX + raw.width() * fraction.x),
+            -(raw.minY + raw.height() * fraction.y)
         )
     } else {
         geo.shift = WorldPos(0.0, 0.0)
     }
     geo.bounds = WorldRect(
-        raw.minX + geo.shift.x + geo.origin.x,
-        raw.minY + geo.shift.y + geo.origin.y,
-        raw.maxX + geo.shift.x + geo.origin.x,
+        raw.minX + geo.shift.x + geo.origin.x
+        raw.minY + geo.shift.y + geo.origin.y
+        raw.maxX + geo.shift.x + geo.origin.x
         raw.maxY + geo.shift.y + geo.origin.y
     )
 }
@@ -488,9 +470,7 @@ func geometrySetSize(geo: TilemapGeometry, size: TilemapSize) {
 }
 
 /** The centre of the map's bounding box in world space. */
-func geometryCenter(geo: TilemapGeometry): WorldPos {
-    return geo.bounds.center()
-}
+func geometryCenter(geo: TilemapGeometry): WorldPos = geo.bounds.center()
 
 // ── Culling ─────────────────────────────────────────────────────────────
 
@@ -505,12 +485,8 @@ func geometryCenter(geo: TilemapGeometry): WorldPos {
  * off screen, and never excludes one that is on.
  */
 func visibleTiles(geo: TilemapGeometry, view: WorldRect): TileRect {
-    if !geo.size.isValid {
-        return tileRectEmpty()
-    }
-    if !view.overlaps(geo.bounds) {
-        return tileRectEmpty()
-    }
+    if !geo.size.isValid then return tileRectEmpty()
+    if !view.overlaps(geo.bounds) then return tileRectEmpty()
 
     fin offsetX = geo.shift.x + geo.origin.x
     fin offsetY = geo.shift.y + geo.origin.y
@@ -521,55 +497,44 @@ func visibleTiles(geo: TilemapGeometry, view: WorldRect): TileRect {
     fin d = latticeCellAt(geo, view.maxX - offsetX, view.maxY - offsetY)
 
     var rect = TileRect(
-        intMin(intMin(a.x, b.x), intMin(c.x, d.x)),
-        intMin(intMin(a.y, b.y), intMin(c.y, d.y)),
-        intMax(intMax(a.x, b.x), intMax(c.x, d.x)),
+        intMin(intMin(a.x, b.x), intMin(c.x, d.x))
+        intMin(intMin(a.y, b.y), intMin(c.y, d.y))
+        intMax(intMax(a.x, b.x), intMax(c.x, d.x))
         intMax(intMax(a.y, b.y), intMax(c.y, d.y))
     )
 
     fin step = geometryStep(geo)
     var marginX = 1
     var marginY = 1
-    if step.x > 0.0 {
-        marginX = marginX + realCeilToInt(geo.tile.x * 0.5 / step.x)
-    }
-    if step.y > 0.0 {
-        marginY = marginY + realCeilToInt(geo.tile.y * 0.5 / step.y)
-    }
+    if step.x > 0.0 then marginX += realCeilToInt(geo.tile.x * 0.5 / step.x)
+    if step.y > 0.0 then marginY += realCeilToInt(geo.tile.y * 0.5 / step.y)
 
     rect = TileRect(
-        rect.minX - marginX,
-        rect.minY - marginY,
-        rect.maxX + marginX,
+        rect.minX - marginX
+        rect.minY - marginY
+        rect.maxX + marginX
         rect.maxY + marginY
     )
     return rect.clampTo(geo.size)
 }
 
 /** Every tile of the map, as a rectangle. */
-func allTiles(geo: TilemapGeometry): TileRect {
-    if !geo.size.isValid {
-        return tileRectEmpty()
-    }
-    return geo.size.rect()
-}
+func allTiles(geo: TilemapGeometry): TileRect = if !geo.size.isValid then tileRectEmpty() else geo.size.rect()
 
 test "a square lattice round-trips every tile it owns" {
     var geo = squareGeometry(8, 6, 32.0, 32.0)
     var y = 0
     while y < 6 {
-        var x = 0
-        while x < 8 {
-            fin pos = TilePos(x, y)
+        for x: Int in 0..<8 {
+            fin pos: TilePos = .(x, y)
             fin back = worldToTile(geo, tileCenter(geo, pos))
             assert back.same(pos) panic "a tile centre must convert back to that tile"
             y = y
-            x = x + 1
         }
-        y = y + 1
+        y++
     }
-    assert tilePickOnMap(pickTile(geo, tileCenter(geo, TilePos(0, 0)))) panic "the first tile must be picked as on the map"
-    assert !tilePickOnMap(pickTile(geo, WorldPos(-100.0, -100.0))) panic "a point far outside must not be reported as on the map"
+    assert tilePickOnMap(pickTile(geo, tileCenter(geo, .(0, 0)))) panic "the first tile must be picked as on the map"
+    assert !tilePickOnMap(pickTile(geo, .(-100.0, -100.0))) panic "a point far outside must not be reported as on the map"
 }
 
 test "a top-left anchored map starts at its own origin" {
@@ -581,25 +546,19 @@ test "a top-left anchored map starts at its own origin" {
 test "every lattice round-trips its own tile centres" {
     var maps: Array<TilemapGeometry> = Array::fill<TilemapGeometry>(5)
     maps[0] = squareGeometry(6, 6, 32.0, 32.0)
-    maps[1] = isoGeometry(IsoCoordSystem.Diamond, 6, 6, 64.0, 32.0)
-    maps[2] = isoGeometry(IsoCoordSystem.Staggered, 6, 6, 64.0, 32.0)
-    maps[3] = hexGeometry(HexCoordSystem.RowOdd, 6, 6, 32.0, 36.0)
-    maps[4] = hexGeometry(HexCoordSystem.ColumnEven, 6, 6, 36.0, 32.0)
+    maps[1] = isoGeometry(.Diamond, 6, 6, 64.0, 32.0)
+    maps[2] = isoGeometry(.Staggered, 6, 6, 64.0, 32.0)
+    maps[3] = hexGeometry(.RowOdd, 6, 6, 32.0, 36.0)
+    maps[4] = hexGeometry(.ColumnEven, 6, 6, 36.0, 32.0)
 
-    var m = 0
-    while m < 5 {
-        var y = 0
-        while y < 6 {
-            var x = 0
-            while x < 6 {
-                fin pos = TilePos(x, y)
+    for m: Int in 0..<5 {
+        for y: Int in 0..<6 {
+            for x: Int in 0..<6 {
+                fin pos: TilePos = .(x, y)
                 fin back = worldToTile(maps[m], tileCenter(maps[m], pos))
                 assert back.same(pos) panic "a tile centre must convert back to that tile on every lattice"
-                x = x + 1
             }
-            y = y + 1
         }
-        m = m + 1
     }
 }
 
@@ -608,8 +567,8 @@ test "culling keeps the tiles a view covers and drops the rest" {
     fin view = worldRectAt(320.0, 320.0, 128.0, 128.0)
     fin rect = visibleTiles(geo, view)
 
-    assert rect.contains(TilePos(10, 10)) panic "a tile in the middle of the view must survive culling"
-    assert !rect.contains(TilePos(0, 0)) panic "a tile far from the view must be culled"
+    assert rect.contains(.(10, 10)) panic "a tile in the middle of the view must survive culling"
+    assert !rect.contains(.(0, 0)) panic "a tile far from the view must be culled"
     assert rect.area() < 64 * 64 panic "culling must actually reduce the tile count"
 
     assert visibleTiles(geo, worldRectAt(-5000.0, -5000.0, 10.0, 10.0)).isEmpty() panic "a view that misses the map entirely must cull everything"

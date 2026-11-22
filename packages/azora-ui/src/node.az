@@ -95,7 +95,7 @@ pack Cursor derives Clone {
  */
 @Component
 pack Children derives Clone {
-    var list: Array<Entity> = Array<Entity>()
+    var list: Array<Entity> = []
 }
 
 /** Text to display. */
@@ -113,7 +113,7 @@ impl Text {
     ): Entity {
         self.value = value
 
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "text") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "text") else key
         return self.compose(anchor.pass, anchor.parent, id, modifier)
     }
 }
@@ -171,11 +171,9 @@ impl Button {
     ): Entity {
         self.action = action
 
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "button") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "button") else key
         fin node = self.compose(anchor.pass, anchor.parent, id, modifier)
-        using anchor.inside(node) {
-            children()
-        }
+        using anchor.inside(node) then children()
         return node
     }
 }
@@ -194,11 +192,9 @@ impl Column {
         children: inline react Anchor!.() -> Unit
     ): Entity {
         self.spacing = spacing
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "column") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "column") else key
         fin node = anchor.pass.column(anchor.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
-        using anchor.inside(node) {
-            children()
-        }
+        using anchor.inside(node) then children()
         return node
     }
 }
@@ -217,11 +213,9 @@ impl Row {
         children: inline react Anchor!.() -> Unit
     ): Entity {
         self.spacing = spacing
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "row") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "row") else key
         fin node = anchor.pass.row(anchor.parent, id, modifier, horizontalArrangement, verticalAlignment, spacing)
-        using anchor.inside(node) {
-            children()
-        }
+        using anchor.inside(node) then children()
         return node
     }
 }
@@ -242,11 +236,9 @@ impl FlowRow {
         children: inline react Anchor!.() -> Unit
     ): Entity {
         self.spacing = spacing
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "flow") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "flow") else key
         fin node = anchor.pass.flow(anchor.parent, id, modifier, spacing)
-        using anchor.inside(node) {
-            children()
-        }
+        using anchor.inside(node) then children()
         return node
     }
 }
@@ -265,11 +257,9 @@ impl ScrollColumn {
         children: inline react Anchor!.() -> Unit
     ): Entity {
         self.spacing = spacing
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "scroll") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "scroll") else key
         fin node = anchor.pass.scrollColumn(anchor.parent, id, modifier, verticalArrangement, horizontalAlignment, spacing)
-        using anchor.inside(node) {
-            children()
-        }
+        using anchor.inside(node) then children()
         return node
     }
 }
@@ -282,12 +272,12 @@ impl ScrollColumn {
  */
 @Component
 pack IconAtlas derives Clone {
-    var texture: Long = Long(0)
+    var texture: Long = 0
     var cell: Int = 64
     var columns: Int = 16
     var width: Int = 0
     var height: Int = 0
-    var names: Array<String> = Array<String>()
+    var names: Array<String> = []
 }
 
 /**
@@ -306,22 +296,16 @@ pack IconGlyph derives Clone {
 /** Draws [texture] over the node, full colour; 0 draws nothing. */
 @Component
 pack ImageFill derives Clone {
-    var texture: Long = Long(0)
+    var texture: Long = 0
     var alpha: Double = 1.0
 }
 
 /** The atlas cell called [name], or -1 when no atlas holds one. */
 func iconCell(world: World!, name: String): Int {
     fin atlases = ensureStorage<IconAtlas>(world)
-    if storageLength<IconAtlas>(atlases) == 0 {
-        return -1
-    }
-    var index = 0
-    while index < atlases.values[0].names.size {
-        if atlases.values[0].names[index] == name {
-            return index
-        }
-        index = index + 1
+    if storageLength<IconAtlas>(atlases) == 0 then return -1
+    for i: Int in 0..<atlases.values[0].names.size {
+        if atlases.values[0].names[i] == name then return i
     }
     return -1
 }
@@ -336,7 +320,7 @@ impl Shape {
         key: String = ""
     ): Entity {
         self.group = group
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "shape") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "shape") else key
         return anchor.pass.shape(anchor.parent, id, modifier, group)
     }
 }
@@ -354,9 +338,9 @@ impl ImageView {
         alpha: Double = 1.0
         key: String = ""
     ): Entity {
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "image") } else { key }
-        fin node = anchor.pass.shape(anchor.parent, id, modifier.fill(Rgba(0.0, 0.0, 0.0, 0.0)), 0)
-        storageInsert<ImageFill>(ensureStorage<ImageFill>(anchor.pass.world), node, ImageFill(texture, alpha))
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "image") else key
+        fin node = anchor.pass.shape(anchor.parent, id, modifier.fill(.(0.0, 0.0, 0.0, 0.0)), 0)
+        storageInsert<ImageFill>(ensureStorage(anchor.pass.world), node, .(texture, alpha))
         return node
     }
 }
@@ -374,7 +358,7 @@ impl Icon {
         size: Double = 16.0
         key: String = ""
     ): Entity {
-        fin id = if key == "" { anchor.pass.positionalKey(anchor.parent, "icon") } else { key }
+        fin id = if key == "" then anchor.pass.positionalKey(anchor.parent, "icon") else key
         // Transparent paint: a shape with none gets a default fill, and an icon is only its glyph.
         fin node = anchor.pass.shape(anchor.parent, id, Modifier::size(size, size).fill(color.withAlpha(0.0)), 0)
         storageInsert<IconGlyph>(ensureStorage<IconGlyph>(anchor.pass.world), node,
@@ -443,13 +427,13 @@ pack Layout derives Clone {
 }
 
 /** Stacks children downward. */
-fin layoutColumn = 0
+inline fin layoutColumn = 0
 
 /** Lays children across. */
-fin layoutRow = 1
+inline fin layoutRow = 1
 
 /** Places fixed-size children across, wrapping at the right edge. */
-fin layoutFlow = 2
+inline fin layoutFlow = 2
 
 /**
  * A container whose children are offset by [offset] and clipped to its bounds.
@@ -564,51 +548,39 @@ pack ModifierEntry derives (Copy, Clone) {
  * systems decide what that means.
  */
 pack Modifier derives Clone {
-    fin entries: Array<ModifierEntry> = Array<ModifierEntry>()
+    fin entries: Array<ModifierEntry> = []
 }
 
 impl Modifier {
     /** This chain with [entry] appended. */
     func &.then(entry: ModifierEntry): Modifier {
-        var grown: Array<ModifierEntry> = Array<ModifierEntry>()
+        var grown: Array<ModifierEntry> = []
         var index = 0
         while index < self.entries.size {
             grown.add(self.entries[index].clone())
-            index = index + 1
+            index++
         }
         grown.add(take entry)
-        return Modifier(take grown)
+        return .(take grown)
     }
 
     /** Take all the width the parent offers. */
-    func &.fillMaxWidth(): Modifier {
-        return self.then(ModifierEntry(ModifierKind.FillMaxWidth, 0.0, 0.0, 0.0, 0.0))
-    }
+    func &.fillMaxWidth(): Modifier = self.then(.(.FillMaxWidth, 0.0, 0.0, 0.0, 0.0))
 
     /** Take all the height the parent offers. */
-    func &.fillMaxHeight(): Modifier {
-        return self.then(ModifierEntry(ModifierKind.FillMaxHeight, 0.0, 0.0, 0.0, 0.0))
-    }
+    func &.fillMaxHeight(): Modifier = self.then(.(.FillMaxHeight, 0.0, 0.0, 0.0, 0.0))
 
     /** Take all of both. */
-    func &.fillMaxSize(): Modifier {
-        return self.fillMaxWidth().fillMaxHeight()
-    }
+    func &.fillMaxSize(): Modifier = self.fillMaxWidth().fillMaxHeight()
 
     /** A fixed width. */
-    func &.width(value: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Width, value, 0.0, 0.0, 0.0))
-    }
+    func &.width(value: Double): Modifier = self.then(.(.Width, value, 0.0, 0.0, 0.0))
 
     /** A fixed height. */
-    func &.height(value: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Height, value, 0.0, 0.0, 0.0))
-    }
+    func &.height(value: Double): Modifier = self.then(.(.Height, value, 0.0, 0.0, 0.0))
 
     /** A fixed size on both axes. */
-    func &.size(width: Double, height: Double): Modifier {
-        return self.width(width).height(height)
-    }
+    func &.size(width: Double, height: Double): Modifier = self.width(width).height(height)
 
     /**
      * Inset from the edges.
@@ -618,16 +590,16 @@ impl Modifier {
      */
     func &.padding(
         all: Double = 0.0
-        start: Double = 0 - 1.0
-        top: Double = 0 - 1.0
-        end: Double = 0 - 1.0
-        bottom: Double = 0 - 1.0
+        start: Double = -1.0
+        top: Double = -1.0
+        end: Double = -1.0
+        bottom: Double = -1.0
     ): Modifier {
-        fin l = if start < 0.0 { all } else { start }
-        fin t = if top < 0.0 { all } else { top }
-        fin r = if end < 0.0 { all } else { end }
-        fin b = if bottom < 0.0 { all } else { bottom }
-        return self.then(ModifierEntry(ModifierKind.Padding, l, t, r, b))
+        fin l = if start < 0.0 then all else start
+        fin t = if top < 0.0 then all else top
+        fin r = if end < 0.0 then all else end
+        fin b = if bottom < 0.0 then all else bottom
+        return self.then(.(.Padding, l, t, r, b))
     }
 
     /** Fill the node's rectangle with a colour. */
@@ -637,48 +609,36 @@ impl Modifier {
         b: Double
         alpha: Double = 1.0
     ): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Background, r, g, b, alpha))
+        return self.then(.(.Background, r, g, b, alpha))
     }
 
     /** Share of the leftover space along the parent's axis. */
-    func &.weight(value: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Weight, value, 0.0, 0.0, 0.0))
-    }
+    func &.weight(value: Double): Modifier = self.then(.(.Weight, value, 0.0, 0.0, 0.0))
 
     /** Round the background's corners by [radius] points. */
-    func &.rounded(radius: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Rounded, radius, 0.0, 0.0, 0.0))
-    }
+    func &.rounded(radius: Double): Modifier = self.then(.(.Rounded, radius, 0.0, 0.0, 0.0))
 
     /** Draw an inner border [width] points wide, following any rounding. */
-    func &.border(width: Double, r: Double, g: Double, b: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Border, width, r, g, b))
-    }
+    func &.border(width: Double, r: Double, g: Double, b: Double): Modifier = self.then(.(.Border, width, r, g, b))
 
     /** Fill with this colour instead of the background while the pointer is over the node. */
     func &.hover(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Hover, r, g, b, alpha))
+        return self.then(.(.Hover, r, g, b, alpha))
     }
 
     /** The colour of the node's own text. */
     func &.textColor(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
-        return self.then(ModifierEntry(ModifierKind.TextColor, r, g, b, alpha))
+        return self.then(.(.TextColor, r, g, b, alpha))
     }
 
     /** The point size of the node's own text. */
-    func &.fontSize(size: Double): Modifier {
-        return self.then(ModifierEntry(ModifierKind.FontSize, size, 0.0, 0.0, 0.0))
-    }
+    func &.fontSize(size: Double): Modifier = self.then(.(.FontSize, size, 0.0, 0.0, 0.0))
 
     /** Draw the node's text in the interface font's semibold weight. */
-    func &.semibold(): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Font, 1.0, 0.0, 0.0, 0.0))
-    }
+    func &.semibold(): Modifier = self.then(.(.Font, 1.0, 0.0, 0.0, 0.0))
 
     /** Draw the node's text in a fixed-pitch font. */
-    func &.monospace(): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Font, 2.0, 0.0, 0.0, 0.0))
-    }
+    func &.monospace(): Modifier = self.then(.(.Font, 2.0, 0.0, 0.0, 0.0))
 
     /**
      * Draw nothing of this node's subtree outside its rectangle.
@@ -687,34 +647,26 @@ impl Modifier {
      * children can be larger than itself. Clips nest - a clipped node inside
      * another is bounded by both.
      */
-    func &.clip(): Modifier {
-        return self.then(ModifierEntry(ModifierKind.Clip, 1.0, 0.0, 0.0, 0.0))
-    }
+    func &.clip(): Modifier = self.then(.(.Clip, 1.0, 0.0, 0.0, 0.0))
 
     /** Fill with [color]. */
-    func &.fill(color: Rgba): Modifier {
-        return self.background(color.r, color.g, color.b, color.a)
-    }
+    func &.fill(color: Rgba): Modifier = self.background(color.r, color.g, color.b, color.a)
 
     /** Fill with [color] while the pointer is over the node. */
-    func &.hoverFill(color: Rgba): Modifier {
-        return self.hover(color.r, color.g, color.b, color.a)
-    }
+    func &.hoverFill(color: Rgba): Modifier = self.hover(color.r, color.g, color.b, color.a)
 
     /** Draw the node's text in [color]. */
-    func &.ink(color: Rgba): Modifier {
-        return self.textColor(color.r, color.g, color.b, color.a)
-    }
+    func &.ink(color: Rgba): Modifier = self.textColor(color.r, color.g, color.b, color.a)
 
     /** An inner border [width] points wide in [color]. */
     func &.outline(width: Double, color: Rgba): Modifier {
-        return self.border(width, color.r, color.g, color.b).then(ModifierEntry(ModifierKind.BorderAlpha, color.a, 0.0, 0.0, 0.0))
+        return self.border(width, color.r, color.g, color.b).then(.(.BorderAlpha, color.a, 0.0, 0.0, 0.0))
     }
 
     /** Where the node's text sits across its width; padding insets the edges. */
     func &.textAlign(alignment: Alignment): Modifier {
-        fin value: Double = if alignment == Alignment.Start { 0.0 } else if alignment == Alignment.Center { 1.0 } else { 2.0 }
-        return self.then(ModifierEntry(ModifierKind.TextAlign, value, 0.0, 0.0, 0.0))
+        fin value: Double = if alignment == .Start then 0.0 else if alignment == .Center then 1.0 else 2.0
+        return self.then(.(.TextAlign, value, 0.0, 0.0, 0.0))
     }
 }
 
@@ -729,34 +681,22 @@ impl Modifier {
  */
 impl Modifier {
     /** Take all the width the parent offers. */
-    func fillMaxWidth(): Modifier {
-        return Modifier().fillMaxWidth()
-    }
+    func fillMaxWidth(): Modifier = Modifier().fillMaxWidth()
 
     /** Take all the height the parent offers. */
-    func fillMaxHeight(): Modifier {
-        return Modifier().fillMaxHeight()
-    }
+    func fillMaxHeight(): Modifier = Modifier().fillMaxHeight()
 
     /** Take all of both. */
-    func fillMaxSize(): Modifier {
-        return Modifier().fillMaxSize()
-    }
+    func fillMaxSize(): Modifier = Modifier().fillMaxSize()
 
     /** A fixed width. */
-    func width(value: Double): Modifier {
-        return Modifier().width(value)
-    }
+    func width(value: Double): Modifier = Modifier().width(value)
 
     /** A fixed height. */
-    func height(value: Double): Modifier {
-        return Modifier().height(value)
-    }
+    func height(value: Double): Modifier = Modifier().height(value)
 
     /** A fixed size on both axes. */
-    func size(width: Double, height: Double): Modifier {
-        return Modifier().size(width, height)
-    }
+    func size(width: Double, height: Double): Modifier = Modifier().size(width, height)
 
     /** Inset from the edges. */
     func padding(
@@ -780,24 +720,16 @@ impl Modifier {
     }
 
     /** Share of the leftover space along the parent's axis. */
-    func weight(value: Double): Modifier {
-        return .().weight(value)
-    }
+    func weight(value: Double): Modifier = .().weight(value)
 
     /** Round the background's corners. */
-    func rounded(radius: Double): Modifier {
-        return .().rounded(radius)
-    }
+    func rounded(radius: Double): Modifier = .().rounded(radius)
 
     /** The colour of the node's own text. */
-    func textColor(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier {
-        return .().textColor(r, g, b, alpha)
-    }
+    func textColor(r: Double, g: Double, b: Double, alpha: Double = 1.0): Modifier = .().textColor(r, g, b, alpha)
 
     /** The point size of the node's own text. */
-    func fontSize(size: Double): Modifier {
-        return .().fontSize(size)
-    }
+    func fontSize(size: Double): Modifier = .().fontSize(size)
 }
 
 /**

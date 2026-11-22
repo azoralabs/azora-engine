@@ -16,14 +16,14 @@ func report(name: String, passed: Bool, value: Double) {
 
 func addLight(world: World!, distance: Double, kind: Int) {
     fin entity = world.spawn()
-    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: Vec3(distance, 0.0, 0.0)))
-    storageInsert<Light3d>(ensureStorage<Light3d>(world), entity, Light3d(kind: kind, range: 20.0, spotAngle: 30.0, spotSoftness: 0.25))
+    storageInsert<Transform>(ensureStorage(world), entity, .(translation: .(distance, 0.0, 0.0)))
+    storageInsert<Light3d>(ensureStorage(world), entity, .(kind: kind, range: 20.0, spotAngle: 30.0, spotSoftness: 0.25))
 }
 
 func near(a: Double, b: Double): Bool = a - b < 0.0001 && b - a < 0.0001
 
 func main() {
-    var world = World()
+    var world: World = .()
     addLight(world, 0.5, 0)
     // Spawned out of order, so sorting is what puts them in order.
     addLight(world, 9.0, 1)
@@ -36,16 +36,14 @@ func main() {
     addLight(world, 5.0, 2)
     addLight(world, 4.0, 2)
     fin block = azAlloc(528)
-    fin count = gatherLocalLights(world, Vec3(0.0, 0.0, 0.0), block)
+    fin count = gatherLocalLights(world, .(0.0, 0.0, 0.0), block)
     report("gathersAtMostEight", count == 8 && near(peekFloat32(block, 512), 8.0), count as Double)
     var ordered = true
     var sunFound = false
-    var i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin x = peekFloat32(block, (i * 64) as Long)
         if i > 0 && x < peekFloat32(block, ((i - 1) * 64) as Long) then ordered = false
         if near(x, 0.5) then sunFound = true
-        i += 1
     }
     report("nearestFirst", ordered && near(peekFloat32(block, 0), 1.0), peekFloat32(block, 0))
     report("directionalIgnored", !sunFound, 0.5)

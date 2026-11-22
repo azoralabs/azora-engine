@@ -172,9 +172,7 @@ variant enum SpriteFrame {
 // ── Sheets ──────────────────────────────────────────────────────────────
 
 /** The sheet returned by every failure path; drawing from it is a no-op. */
-func spriteSheetEmpty(): SpriteSheet {
-    return SpriteSheet(Long(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-}
+func spriteSheetEmpty(): SpriteSheet = .(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 /**
  * A sheet over an existing texture.
@@ -202,16 +200,16 @@ func spriteSheet(
         rows = animIntMax(usableY / (frameHeight + spacingY), 0)
     }
     return SpriteSheet(
-        texture,
-        texWidth,
-        texHeight,
-        frameWidth,
-        frameHeight,
-        columns,
-        rows,
-        spacingX,
-        spacingY,
-        marginX,
+        texture
+        texWidth
+        texHeight
+        frameWidth
+        frameHeight
+        columns
+        rows
+        spacingX
+        spacingY
+        marginX
         marginY
     )
 }
@@ -221,28 +219,18 @@ func spriteSheetSimple(texture: Long, texWidth: Int, texHeight: Int, frameWidth:
     return spriteSheet(texture, texWidth, texHeight, frameWidth, frameHeight, 0, 0, 0, 0)
 }
 
-func animIntMax(a: Int, b: Int): Int {
-    return if a > b { a } else { b }
-}
+func animIntMax(a: Int, b: Int): Int = if a > b then a else b
 
-func animIntMin(a: Int, b: Int): Int {
-    return if a < b { a } else { b }
-}
+func animIntMin(a: Int, b: Int): Int = if a < b then a else b
 
-func animIntClamp(value: Int, low: Int, high: Int): Int {
-    return animIntMin(animIntMax(value, low), high)
-}
+func animIntClamp(value: Int, low: Int, high: Int): Int = animIntMin(animIntMax(value, low), high)
 
 impl SpriteSheet {
     /** True when the sheet has a usable texture and at least one frame. */
-    func &.ok(): Bool {
-        return self.texture != Long(0) && self.columns > 0 && self.rows > 0
-    }
+    func &.ok(): Bool = self.texture != 0 && self.columns > 0 && self.rows > 0
 
     /** The number of frames on the sheet. */
-    func &.frameCount(): Int {
-        return self.columns * self.rows
-    }
+    func &.frameCount(): Int = self.columns * self.rows
 
     /**
      * The pixel rectangle of frame [index].
@@ -251,15 +239,13 @@ impl SpriteSheet {
      * whatever pixels follow the sheet.
      */
     func &.rectOf(index: Int): SpriteRect {
-        if index < 0 || index >= self.frameCount() || self.columns <= 0 {
-            return SpriteRect(0, 0, 0, 0)
-        }
+        if index < 0 || index >= self.frameCount() || self.columns <= 0 then return .(0, 0, 0, 0)
         fin column = index % self.columns
         fin row = index / self.columns
         return SpriteRect(
-            self.marginX + column * (self.frameWidth + self.spacingX),
-            self.marginY + row * (self.frameHeight + self.spacingY),
-            self.frameWidth,
+            self.marginX + column * (self.frameWidth + self.spacingX)
+            self.marginY + row * (self.frameHeight + self.spacingY)
+            self.frameWidth
             self.frameHeight
         )
     }
@@ -268,21 +254,14 @@ impl SpriteSheet {
 // ── Frame animations ────────────────────────────────────────────────────
 
 func frameAnimation(name: String, first: Int, last: Int, fps: Double, loopMode: LoopMode): FrameAnimation {
-    return FrameAnimation(name, first, last, fps, loopMode)
+    return .(name, first, last, fps, loopMode)
 }
 
 impl FrameAnimation {
-    func &.frameCount(): Int {
-        return animIntMax(self.last - self.first + 1, 1)
-    }
+    func &.frameCount(): Int = animIntMax(self.last - self.first + 1, 1)
 
     /** How long one pass through the animation takes. */
-    func &.duration(): Double {
-        if self.fps <= 0.0 {
-            return 0.0
-        }
-        return (self.frameCount() as Double) / self.fps
-    }
+    func &.duration(): Double = if self.fps <= 0.0 then 0.0 else (self.frameCount() as Double) / self.fps
 
     /**
      * The frame to draw at [localTime] seconds into the animation.
@@ -292,9 +271,7 @@ impl FrameAnimation {
      */
     func &.frameAt(localTime: Double): Int {
         fin frames = self.frameCount()
-        if frames <= 1 || self.fps <= 0.0 {
-            return self.first
-        }
+        if frames <= 1 || self.fps <= 0.0 then return self.first
         fin step = (localTime * self.fps) as Int
         return self.first + animIntClamp(step, 0, frames - 1)
     }
@@ -309,8 +286,8 @@ impl FrameAnimation {
  * array path.
  */
 func frameAnimationClip(animation: FrameAnimation): AnimationClip {
-    var events: Array<AnimationEvent> = Array<AnimationEvent>()
-    return AnimationClip(animation.name, animation.duration(), animation.loopMode, events, 0)
+    var events: Array<AnimationEvent> = []
+    return .(animation.name, animation.duration(), animation.loopMode, events, 0)
 }
 
 // ── Flipbooks ───────────────────────────────────────────────────────────
@@ -320,37 +297,33 @@ func flipbookNew(name: String, capacity: Int, loopMode: LoopMode): Flipbook {
     fin room = animIntMax(capacity, 0)
     var frames: Array<Int> = Array::fill<Int>(room)
     var holds: Array<Double> = Array::fill<Double>(room)
-    return Flipbook(name, frames, holds, 0, loopMode)
+    return .(name, frames, holds, 0, loopMode)
 }
 
 impl Flipbook {
     /** Appends [frame], held for [hold] seconds. */
     func !.add(frame: Int, hold: Double): Int {
         if self.count >= self.frames.size {
-            fin room = if self.frames.size * 2 > 4 { self.frames.size * 2 } else { 4 }
+            fin room = if self.frames.size * 2 > 4 then self.frames.size * 2 else 4
             var grownFrames: Array<Int> = Array::fill<Int>(room)
             var grownHolds: Array<Double> = Array::fill<Double>(room)
-            var i = 0
-            while i < self.count {
+            for i: Int in 0..<self.count {
                 grownFrames[i] = self.frames[i]
                 grownHolds[i] = self.holds[i]
-                i = i + 1
             }
             self.frames = grownFrames
             self.holds = grownHolds
         }
         self.frames[self.count] = frame
         self.holds[self.count] = animMax(hold, 0.0)
-        self.count = self.count + 1
+        self.count++
         return self.count - 1
     }
 
     /** The total length of one pass. */
     func &.duration(): Double {
         var total = 0.0
-        for i in 0..(self.count - 1) {
-            total = total + self.holds[i]
-        }
+        for i in 0..(self.count - 1) then total += self.holds[i]
         return total
     }
 
@@ -361,15 +334,11 @@ impl Flipbook {
      * which is the whole point of a flipbook over a [FrameAnimation].
      */
     func &.frameAt(localTime: Double): Int {
-        if self.count <= 0 {
-            return -1
-        }
+        if self.count <= 0 then return -1
         var remaining = localTime
         for i in 0..(self.count - 1) {
-            if remaining < self.holds[i] {
-                return self.frames[i]
-            }
-            remaining = remaining - self.holds[i]
+            if remaining < self.holds[i] then return self.frames[i]
+            remaining -= self.holds[i]
         }
         return self.frames[self.count - 1]
     }
@@ -377,8 +346,8 @@ impl Flipbook {
 
 /** The clip a flipbook's timing is expressed as. See [frameAnimationClip]. */
 func flipbookClip(book: Flipbook): AnimationClip {
-    var events: Array<AnimationEvent> = Array<AnimationEvent>()
-    return AnimationClip(book.name, book.duration(), book.loopMode, events, 0)
+    var events: Array<AnimationEvent> = []
+    return .(book.name, book.duration(), book.loopMode, events, 0)
 }
 
 // ── Sprite animation sets ───────────────────────────────────────────────
@@ -386,66 +355,51 @@ func flipbookClip(book: Flipbook): AnimationClip {
 /** An empty set of animations over [sheet]. */
 func spriteAnimation(sheet: SpriteSheet, capacity: Int): SpriteAnimation {
     var animations: Array<FrameAnimation> = Array::fill<FrameAnimation>(animIntMax(capacity, 0))
-    return SpriteAnimation(sheet, animations, 0)
+    return .(sheet, animations, 0)
 }
 
 impl SpriteAnimation {
     /** Appends [animation] and returns its index. */
     func !.add(animation: FrameAnimation): Int {
         if self.count >= self.animations.size {
-            fin room = if self.animations.size * 2 > 4 { self.animations.size * 2 } else { 4 }
+            fin room = if self.animations.size * 2 > 4 then self.animations.size * 2 else 4
             var grown: Array<FrameAnimation> = Array::fill<FrameAnimation>(room)
-            var i = 0
-            while i < self.count {
-                grown[i] = self.animations[i]
-                i = i + 1
-            }
+            for i: Int in 0..<self.count then grown[i] = self.animations[i]
             self.animations = grown
         }
         self.animations[self.count] = animation
-        self.count = self.count + 1
+        self.count++
         return self.count - 1
     }
 
     /** The index of the animation called [name], or `-1`. */
     func &.indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
-            if self.animations[i].name == name {
-                return i
-            }
+            if self.animations[i].name == name then return i
         }
         return -1
     }
 
     /** The animation at [index], or a still first frame. */
     func &.at(index: Int): FrameAnimation {
-        if index < 0 || index >= self.count {
-            return frameAnimation("", 0, 0, 0.0, LoopMode.Once)
-        }
-        return self.animations[index]
+        return if index < 0 || index >= self.count then frameAnimation("", 0, 0, 0.0, .Once) else self.animations[index]
     }
 }
 
 // ── Animated sprites ────────────────────────────────────────────────────
 
-func tintWhite(): TintColor {
-    return TintColor(1.0, 1.0, 1.0, 1.0)
-}
+func tintWhite(): TintColor = .(1.0, 1.0, 1.0, 1.0)
 
-func tintColor(r: Double, g: Double, b: Double, a: Double): TintColor {
-    return TintColor(r, g, b, a)
-}
+func tintColor(r: Double, g: Double, b: Double, a: Double): TintColor = .(r, g, b, a)
 
-func spriteMirror(x: Bool, y: Bool): SpriteMirror {
-    return SpriteMirror(x, y)
-}
+func spriteMirror(x: Bool, y: Bool): SpriteMirror = .(x, y)
 
 /** A sprite positioned at the start of animation [index], playing. */
 func animatedSprite(animation: SpriteAnimation, index: Int): AnimatedSprite {
     fin chosen = animation.at(index)
     fin clip = frameAnimationClip(chosen)
-    fin player = AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
-    return AnimatedSprite(animation, index, player, spriteMirror(false, false), tintWhite())
+    fin player: AnimationPlayer = .(clip, 0.0, 1.0, .Playing, BlendWeight(1.0), 0.0)
+    return .(animation, index, player, spriteMirror(false, false), tintWhite())
 }
 
 impl AnimatedSprite {
@@ -457,55 +411,40 @@ impl AnimatedSprite {
      * does not restart the animation on every frame.
      */
     func !.playAnimation(index: Int) {
-        if index == self.current {
-            return
-        }
+        if index == self.current then return
         self.current = index
         fin chosen = self.animation.at(index)
         fin clip = frameAnimationClip(chosen)
-        self.player = AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
+        self.player = AnimationPlayer(clip, 0.0, 1.0, .Playing, .(1.0), 0.0)
     }
 
     /** Switches to the animation called [name], if there is one. */
     func !.playNamed(name: String) {
         fin index = self.animation.indexOf(name)
-        if index >= 0 {
-            self.playAnimation(index)
-        }
+        if index >= 0 then self.playAnimation(index)
     }
 
     /** Advances the sprite's clock and reports its playback state. */
-    func !.advance(dt: Double): PlaybackState {
-        return self.player.advance(dt)
-    }
+    func !.advance(dt: Double): PlaybackState = self.player.advance(dt)
 
     /** The frame index the sprite is showing. */
-    func !.frame(): Int {
-        return self.animation.at(self.current).frameAt(self.player.localTime())
-    }
+    func !.frame(): Int = self.animation.at(self.current).frameAt(self.player.localTime())
 
     /** What to draw right now, mirrors included. */
     func !.currentFrame(): SpriteFrame {
-        if !self.animation.sheet.ok() {
-            return SpriteFrame.Blank
-        }
+        if !self.animation.sheet.ok() then return SpriteFrame.Blank
         fin rect = self.animation.sheet.rectOf(self.frame())
-        if rect.w <= 0 {
-            return SpriteFrame.Blank
-        }
-        return SpriteFrame.Frame(rect, self.mirror.x, self.mirror.y)
+        return if rect.w <= 0 then SpriteFrame.Blank else SpriteFrame.Frame(rect, self.mirror.x, self.mirror.y)
     }
 
     /** True once a non-looping animation has run out. */
-    func &.isFinished(): Bool {
-        return self.player.state == PlaybackState.Finished
-    }
+    func &.isFinished(): Bool = self.player.state == .Finished
 }
 
 /** The rectangle of [frame], or a zero rectangle when there is nothing to draw. */
 func spriteFrameRect(frame: SpriteFrame): SpriteRect {
     return when frame {
-        SpriteFrame.Frame(rect, mirrorX, mirrorY) -> rect
+        .Frame(rect, mirrorX, mirrorY) -> rect
         else -> SpriteRect(0, 0, 0, 0)
     }
 }
@@ -513,7 +452,7 @@ func spriteFrameRect(frame: SpriteFrame): SpriteRect {
 /** True when [frame] has something to draw. */
 func spriteFrameVisible(frame: SpriteFrame): Bool {
     return when frame {
-        SpriteFrame.Frame(rect, mirrorX, mirrorY) -> true
+        .Frame(rect, mirrorX, mirrorY) -> true
         else -> false
     }
 }
@@ -523,9 +462,9 @@ func spriteFrameVisible(frame: SpriteFrame): Bool {
 /** Empty transform curves with room for [capacity] keys each. */
 func transform2dTrack(name: String, capacity: Int): Transform2DTrack {
     return Transform2DTrack(
-        name,
-        trackNew<Vec2>(name + ".position", capacity),
-        trackNew<Vec2>(name + ".scale", capacity),
+        name
+        trackNew<Vec2>(name + ".position", capacity)
+        trackNew<Vec2>(name + ".scale", capacity)
         realTrackNew(name + ".rotation", capacity)
     )
 }
@@ -539,23 +478,21 @@ func transform2dKey(
     rotation: Double
     mode: Interpolation
 ) {
-    trackInsert<Vec2>(track.position, Keyframe<Vec2>(time, position, mode))
-    trackInsert<Vec2>(track.scale, Keyframe<Vec2>(time, scale, mode))
+    trackInsert<Vec2>(track.position, .(time, position, mode))
+    trackInsert<Vec2>(track.scale, .(time, scale, mode))
     realTrackKey(track.rotation, time, rotation, mode)
 }
 
 /** The 2D vector a `Track<Vec2>` holds at [time]. */
 func sampleVec2(track: Track<Vec2>, time: Double): Vec2 {
     fin span = trackSpanAt<Vec2>(track, time)
-    if !span.valid {
-        return vec2Zero()
-    }
+    if !span.valid then return vec2Zero()
     fin fromKey: Keyframe<Vec2> = trackAt<Vec2>(track, span.fromIndex)
     fin toKey: Keyframe<Vec2> = trackAt<Vec2>(track, span.toIndex)
     fin a: Vec2 = fromKey.value
     fin b: Vec2 = toKey.value
     return Vec2(
-        lerpReal(a.x, b.x, span.factor),
+        lerpReal(a.x, b.x, span.factor)
         lerpReal(a.y, b.y, span.factor)
     )
 }
@@ -563,8 +500,8 @@ func sampleVec2(track: Track<Vec2>, time: Double): Vec2 {
 /** The transform a curve holds at [time]. */
 func sampleTransform2d(track: Transform2DTrack, time: Double): Transform2DPose {
     return Transform2DPose(
-        sampleVec2(track.position, time),
-        sampleVec2(track.scale, time),
+        sampleVec2(track.position, time)
+        sampleVec2(track.scale, time)
         sampleReal(track.rotation, time)
     )
 }
@@ -579,10 +516,10 @@ pack Transform2DPose {
 /** Empty colour curves with room for [capacity] keys each. */
 func colorTrack(name: String, capacity: Int): ColorTrack {
     return ColorTrack(
-        name,
-        realTrackNew(name + ".r", capacity),
-        realTrackNew(name + ".g", capacity),
-        realTrackNew(name + ".b", capacity),
+        name
+        realTrackNew(name + ".r", capacity)
+        realTrackNew(name + ".g", capacity)
+        realTrackNew(name + ".b", capacity)
         realTrackNew(name + ".a", capacity)
     )
 }
@@ -598,9 +535,9 @@ func colorKey(track: ColorTrack, time: Double, color: TintColor, mode: Interpola
 /** The colour a curve holds at [time]. */
 func sampleColor(track: ColorTrack, time: Double): TintColor {
     return TintColor(
-        sampleReal(track.red, time),
-        sampleReal(track.green, time),
-        sampleReal(track.blue, time),
+        sampleReal(track.red, time)
+        sampleReal(track.green, time)
+        sampleReal(track.blue, time)
         sampleReal(track.alpha, time)
     )
 }
@@ -610,26 +547,22 @@ func sampleColor(track: ColorTrack, time: Double): TintColor {
 /** An empty layer with room for [capacity] keys in each of its curves. */
 func layerAnimation(name: String, capacity: Int): LayerAnimation {
     return LayerAnimation(
-        name,
-        transform2dTrack(name, capacity),
-        colorTrack(name, capacity),
-        blendWeight(1.0),
+        name
+        transform2dTrack(name, capacity)
+        colorTrack(name, capacity)
+        blendWeight(1.0)
         true
     )
 }
 
 /** The layer's transform at [time], scaled by nothing — the weight is the caller's. */
-func layerTransformAt(layer: LayerAnimation, time: Double): Transform2DPose {
-    return sampleTransform2d(layer.transform, time)
-}
+func layerTransformAt(layer: LayerAnimation, time: Double): Transform2DPose = sampleTransform2d(layer.transform, time)
 
 /** The layer's colour at [time], with its weight folded into the alpha. */
 func layerColorAt(layer: LayerAnimation, time: Double): TintColor {
     fin sampled = sampleColor(layer.color, time)
-    if !layer.visible {
-        return TintColor(sampled.r, sampled.g, sampled.b, 0.0)
-    }
-    return TintColor(sampled.r, sampled.g, sampled.b, sampled.a * layer.weight.value)
+    if !layer.visible then return .(sampled.r, sampled.g, sampled.b, 0.0)
+    return .(sampled.r, sampled.g, sampled.b, sampled.a * layer.weight.value)
 }
 
 /**
@@ -640,8 +573,8 @@ func layerColorAt(layer: LayerAnimation, time: Double): TintColor {
  */
 func blendPose2d(a: Transform2DPose, b: Transform2DPose, t: Double): Transform2DPose {
     return Transform2DPose(
-        Vec2(lerpReal(a.position.x, b.position.x, t), lerpReal(a.position.y, b.position.y, t)),
-        Vec2(lerpReal(a.scale.x, b.scale.x, t), lerpReal(a.scale.y, b.scale.y, t)),
+        Vec2(lerpReal(a.position.x, b.position.x, t), lerpReal(a.position.y, b.position.y, t))
+        Vec2(lerpReal(a.scale.x, b.scale.x, t), lerpReal(a.scale.y, b.scale.y, t))
         lerpReal(a.rotation, b.rotation, t)
     )
 }
@@ -649,9 +582,9 @@ func blendPose2d(a: Transform2DPose, b: Transform2DPose, t: Double): Transform2D
 /** Blends two colours. */
 func blendColor(a: TintColor, b: TintColor, t: Double): TintColor {
     return TintColor(
-        lerpReal(a.r, b.r, t),
-        lerpReal(a.g, b.g, t),
-        lerpReal(a.b, b.b, t),
+        lerpReal(a.r, b.r, t)
+        lerpReal(a.g, b.g, t)
+        lerpReal(a.b, b.b, t)
         lerpReal(a.a, b.a, t)
     )
 }
@@ -668,7 +601,7 @@ test "a sheet's frame rectangles account for margin and spacing" {
 }
 
 test "a frame animation maps its clock onto its run" {
-    fin walk = frameAnimation("walk", 4, 7, 8.0, LoopMode.Repeat)
+    fin walk = frameAnimation("walk", 4, 7, 8.0, .Repeat)
     assert walk.frameCount() == 4 panic "4..7 inclusive is four frames"
     assert animAbs(walk.duration() - 0.5) < 0.001 panic "four frames at 8fps is half a second"
     assert walk.frameAt(0.0) == 4 panic "an animation starts on its first frame"
@@ -678,7 +611,7 @@ test "a frame animation maps its clock onto its run" {
 }
 
 test "a flipbook honours per-frame holds" {
-    var book = flipbookNew("impact", 3, LoopMode.Once)
+    var book = flipbookNew("impact", 3, .Once)
     book.add(10, 0.4)
     book.add(11, 0.05)
     book.add(12, 0.4)
@@ -693,8 +626,8 @@ test "a flipbook honours per-frame holds" {
 
 test "an animated sprite switches without restarting itself" {
     var set = spriteAnimation(spriteSheetSimple(Long(1), 64, 64, 16, 16), 2)
-    fin idle = set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
-    fin run = set.add(frameAnimation("run", 4, 7, 8.0, LoopMode.Repeat))
+    fin idle = set.add(frameAnimation("idle", 0, 1, 4.0, .Repeat))
+    fin run = set.add(frameAnimation("run", 4, 7, 8.0, .Repeat))
 
     var sprite = animatedSprite(set, idle)
     assert sprite.frame() == 0 panic "a new sprite shows its first frame"
@@ -716,15 +649,15 @@ test "an animated sprite switches without restarting itself" {
 
 test "a sprite using no usable sheet draws nothing rather than garbage" {
     var set = spriteAnimation(spriteSheetEmpty(), 1)
-    set.add(frameAnimation("idle", 0, 1, 4.0, LoopMode.Repeat))
+    set.add(frameAnimation("idle", 0, 1, 4.0, .Repeat))
     fin sprite = animatedSprite(set, 0)
     assert !spriteFrameVisible(sprite.currentFrame()) panic "a sprite with no texture must report nothing to draw"
 }
 
 test "transform and colour curves sample componentwise" {
     var track = transform2dTrack("move", 2)
-    transform2dKey(track, 0.0, Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0, Interpolation.Linear)
-    transform2dKey(track, 1.0, Vec2(10.0, 20.0), Vec2(2.0, 2.0), 3.0, Interpolation.Linear)
+    transform2dKey(track, 0.0, .(0.0, 0.0), .(1.0, 1.0), 0.0, .Linear)
+    transform2dKey(track, 1.0, .(10.0, 20.0), .(2.0, 2.0), 3.0, .Linear)
 
     fin pose = sampleTransform2d(track, 0.5)
     assert animAbs(pose.position.x - 5.0) < 0.001 && animAbs(pose.position.y - 10.0) < 0.001 panic "position must interpolate on both axes"
@@ -732,16 +665,16 @@ test "transform and colour curves sample componentwise" {
     assert animAbs(pose.rotation - 1.5) < 0.001 panic "rotation must interpolate"
 
     var fade = colorTrack("fade", 2)
-    colorKey(fade, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
-    colorKey(fade, 1.0, tintColor(1.0, 0.0, 0.0, 0.0), Interpolation.Linear)
+    colorKey(fade, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), .Linear)
+    colorKey(fade, 1.0, tintColor(1.0, 0.0, 0.0, 0.0), .Linear)
     fin half = sampleColor(fade, 0.5)
     assert animAbs(half.g - 0.5) < 0.001 && animAbs(half.a - 0.5) < 0.001 panic "every channel must interpolate independently"
 }
 
 test "a layer folds its weight into its alpha" {
     var layer = layerAnimation("glow", 2)
-    colorKey(layer.color, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
-    colorKey(layer.color, 1.0, tintColor(1.0, 1.0, 1.0, 1.0), Interpolation.Linear)
+    colorKey(layer.color, 0.0, tintColor(1.0, 1.0, 1.0, 1.0), .Linear)
+    colorKey(layer.color, 1.0, tintColor(1.0, 1.0, 1.0, 1.0), .Linear)
 
     layer.weight = blendWeight(0.25)
     assert animAbs(layerColorAt(layer, 0.5).a - 0.25) < 0.001 panic "the layer weight must scale the sampled alpha"
@@ -751,8 +684,8 @@ test "a layer folds its weight into its alpha" {
 }
 
 test "poses and colours blend between two samples" {
-    fin a = Transform2DPose(Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0)
-    fin b = Transform2DPose(Vec2(10.0, 10.0), Vec2(3.0, 3.0), 2.0)
+    fin a: Transform2DPose = .(Vec2(0.0, 0.0), Vec2(1.0, 1.0), 0.0)
+    fin b: Transform2DPose = .(Vec2(10.0, 10.0), Vec2(3.0, 3.0), 2.0)
     fin mid = blendPose2d(a, b, 0.5)
     assert animAbs(mid.position.x - 5.0) < 0.001 && animAbs(mid.scale.x - 2.0) < 0.001 panic "a half blend must sit halfway between the poses"
     assert blendPose2d(a, b, 0.0).rotation == 0.0 panic "a blend of zero is the first pose"

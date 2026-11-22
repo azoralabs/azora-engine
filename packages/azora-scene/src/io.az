@@ -69,20 +69,20 @@ func setExternalComponent(world: World!, entity: Entity, name: String, text: Str
     if text != "" {
         fin decoded = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
         when decoded {
-            SerialValue.Object(fields) -> {}
+            .Object(fields) -> {}
             else -> return false
         }
     }
     fin components = ensureStorage<ExternalSceneComponents>(world)
-    var saved = storageGetOrDefault<ExternalSceneComponents>(components, entity, ExternalSceneComponents())
+    var saved = storageGetOrDefault<ExternalSceneComponents>(components, entity, .())
     var index = 0
-    while index < saved.values.size && saved.values[index].name != name { index += 1 }
+    while index < saved.values.size && saved.values[index].name != name then index += 1
     if index < saved.values.size {
         if text == "" then saved.values.removeAt(index) else saved.values[index].text = text
     } else if text != "" {
         saved.values.add(ExternalSceneComponent(name, text))
     }
-    storageInsert<ExternalSceneComponents>(ensureStorage<ExternalSceneComponents>(world), entity, take saved)
+    storageInsert<ExternalSceneComponents>(ensureStorage(world), entity, take saved)
     return true
 }
 
@@ -102,7 +102,7 @@ func azonText(text: String): String {
             '\t' -> { escaped = "${escaped}\\t" }
             else -> { escaped = "${escaped}${ch}" }
         }
-        index = index + 1
+        index++
     }
     return "\"${escaped}\""
 }
@@ -110,16 +110,15 @@ func azonText(text: String): String {
 /** [members] with `"name": value` appended, comma-separated. */
 func azonMember(members: String, name: String, value: String): String {
     fin entry = "${azonText(name)}: ${value}"
-    if stringLength(members) == 0 { return entry }
-    return "${members}, ${entry}"
+    return if stringLength(members) == 0 then entry else "${members}, ${entry}"
 }
 
 /** Every inspectable component [entity] carries, as one AZON object. */
 func componentsAzon(world: World!, entity: Entity): String {
     var members = ""
     inline for C in reflect<*>.withAnnot<Inspectable> {
-        if storageHas<C>(ensureStorage<C>(world), entity) {
-            fin value = storageGet<C>(ensureStorage<C>(world), entity).clone()
+        if storageHas<C>(ensureStorage(world), entity) {
+            fin value = storageGet<C>(ensureStorage(world), entity).clone()
             var fields = ""
             inline for f in reflect<C>.fields {
                 inline if f.typeName == "Double" {
@@ -149,27 +148,25 @@ func componentsAzon(world: World!, entity: Entity): String {
     fin external = ensureStorage<ExternalSceneComponents>(world)
     if storageHas<ExternalSceneComponents>(external, entity) {
         fin saved = storageGet<ExternalSceneComponents>(external, entity)
-        for field in saved.values { members = azonMember(members, field.name, field.text) }
+        for field in saved.values then members = azonMember(members, field.name, field.text)
     }
     return "{${members}}"
 }
 
 /** Whether [id] is a live entity a scene file should hold. */
-func sceneEntity(world: World&, id: Int): Bool {
-    return world.alive[id] && !world.resourceMarks[id]
-}
+func sceneEntity(world: World&, id: Int): Bool = world.alive[id] && !world.resourceMarks[id]
 
 /** The whole scene in [world] as AZON text. */
 func writeScene(world: World!): String {
     // Parents are written as positions in this file, not as entity ids, so a
     // file stays valid whatever ids the next world hands out.
-    var positions: Array<Int> = Array<Int>()
+    var positions: Array<Int> = []
     var count = 0
     var id = 0
     while id < world.entityCount {
-        positions.add(if sceneEntity(world, id) { count } else { -1 })
-        if sceneEntity(world, id) { count = count + 1 }
-        id = id + 1
+        positions.add(if sceneEntity(world, id) then count else -1)
+        if sceneEntity(world, id) then count = count + 1
+        id++
     }
     var entities = ""
     id = 0
@@ -177,11 +174,11 @@ func writeScene(world: World!): String {
         if sceneEntity(world, id) {
             fin entity = world.entityAt(id)
             fin parentId = world.parents[id]
-            fin parent = if parentId >= 0 && parentId < world.entityCount { positions[parentId] } else { -1 }
+            fin parent = if parentId >= 0 && parentId < world.entityCount then positions[parentId] else -1
             fin record = "{\"parent\": ${parent}, \"components\": ${componentsAzon(world, entity)}}"
-            entities = if stringLength(entities) == 0 { record } else { "${entities},\n    ${record}" }
+            entities = if stringLength(entities) == 0 then record else { "${entities},\n    ${record}" }
         }
-        id = id + 1
+        id++
     }
     return "{\"format\": \"azora-scene\", \"version\": 2, \"entities\": [\n    ${entities}\n]}\n"
 }
@@ -190,25 +187,20 @@ func writeScene(world: World!): String {
 
 /** The position of member [name] in [fields], or -1. */
 func memberIndex(fields: List<SerialField>&, name: String): Int {
-    var index = 0
-    while index < fields.size {
-        if fields[index].name == name { return index }
-        index = index + 1
+    for i: Int in 0..<fields.size {
+        if fields[i].name == name then return i
     }
     return -1
 }
 
 /** [value] as a number, or [fallback] when it is not one. */
-func serialNumberOr(value: SerialValue&, fallback: Double): Double {
-    return serialAsReal(value) catch fallback
-}
+func serialNumberOr(value: SerialValue&, fallback: Double): Double = serialAsReal(value) catch fallback
 
 /** Element [index] of the array [value] as a number, or [fallback]. */
 func serialElementOr(value: SerialValue&, index: Int, fallback: Double): Double {
     when value {
-        SerialValue.Array(elements) -> {
-            if index < elements.size { return serialAsReal(elements[index]) catch fallback }
-            return fallback
+        .Array(elements) -> {
+            return if index < elements.size then serialAsReal(elements[index]) catch fallback else fallback
         }
         else -> return fallback
     }
@@ -230,7 +222,7 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
             recognized.add(components[at].name)
             var value = C()
             when components[at].value {
-                SerialValue.Object(fields) -> {
+                .Object(fields) -> {
                     inline for f in reflect<C>.fields {
                         fin slot = memberIndex(fields, f.name)
                         if slot >= 0 {
@@ -262,7 +254,7 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
                 }
                 else -> { }
             }
-            storageInsert<C>(ensureStorage<C>(world), entity, take value)
+            storageInsert<C>(ensureStorage(world), entity, take value)
         }
     }
     for component in components {
@@ -281,35 +273,35 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
  */
 func readScene(world: World!, text: String): Int {
     fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
-    var spawned: Array<Entity> = Array<Entity>()
-    var parents: Array<Int> = Array<Int>()
+    var spawned: Array<Entity> = []
+    var parents: Array<Int> = []
     when root {
-        SerialValue.Object(members) -> {
+        .Object(members) -> {
             fin format = memberIndex(members, "format")
             fin list = memberIndex(members, "entities")
-            if format < 0 || list < 0 { return -1 }
-            if (serialAsText(members[format].value) catch "") != "azora-scene" { return -1 }
+            if format < 0 || list < 0 then return -1
+            if (serialAsText(members[format].value) catch "") != "azora-scene" then return -1
             when members[list].value {
-                SerialValue.Array(records) -> {
+                .Array(records) -> {
                     var index = 0
                     while index < records.size {
                         when records[index] {
-                            SerialValue.Object(fields) -> {
+                            .Object(fields) -> {
                                 fin entity = world.spawn()
                                 spawned.add(entity)
                                 fin parentAt = memberIndex(fields, "parent")
-                                parents.add(if parentAt >= 0 { serialNumberOr(fields[parentAt].value, -1.0) as Int } else { -1 })
+                                parents.add(if parentAt >= 0 then serialNumberOr(fields[parentAt].value, -1.0) as Int else -1)
                                 fin componentsAt = memberIndex(fields, "components")
                                 if componentsAt >= 0 {
                                     when fields[componentsAt].value {
-                                        SerialValue.Object(components) -> readComponents(world, entity, components)
+                                        .Object(components) -> readComponents(world, entity, components)
                                         else -> { }
                                     }
                                 }
                             }
                             else -> { }
                         }
-                        index = index + 1
+                        index++
                     }
                 }
                 else -> return -1
@@ -320,10 +312,8 @@ func readScene(world: World!, text: String): Int {
     var index = 0
     while index < spawned.size {
         fin parent = parents[index]
-        if parent >= 0 && parent < spawned.size && parent != index {
-            world.setParent(spawned[index], spawned[parent])
-        }
-        index = index + 1
+        if parent >= 0 && parent < spawned.size && parent != index then world.setParent(spawned[index], spawned[parent])
+        index++
     }
     return spawned.size
 }

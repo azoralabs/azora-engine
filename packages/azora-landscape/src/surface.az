@@ -10,7 +10,7 @@ import engine.landscape.lod
 // cells around it into a quad. Unlike marching cubes this needs no case
 // table, and the vertices it places are smooth.
 
-fin chunkCells: Int = 16
+inline fin chunkCells: Int = 16
 
 func chunkCount(cells: Int): Int = (cells + chunkCells - 1) / chunkCells
 
@@ -27,16 +27,14 @@ func hasBit(corner: Int, bit: Int): Bool = (corner / bit) % 2 == 1
  * Extracts chunk (a, b, c), with optional reduced levels of detail.
  */
 func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): SurfaceChunk {
-    var mesh = SurfaceChunk()
+    var mesh: SurfaceChunk = .()
     fin x0 = a * chunkCells
     fin y0 = b * chunkCells
     fin z0 = c * chunkCells
     fin x1 = clampInt(x0 + chunkCells, 0, field.cellsX)
     fin y1 = clampInt(y0 + chunkCells, 0, field.cellsY)
     fin z1 = clampInt(z0 + chunkCells, 0, field.cellsZ)
-    if !crossesSurface(field, x0, y0, z0, x1, y1, z1) {
-        return take mesh
-    }
+    if !crossesSurface(field, x0, y0, z0, x1, y1, z1) then return take mesh
     // The cells whose vertices this chunk's quads use: its own, and one layer
     // before it on each axis, since a quad joins the cells around an edge.
     fin sx = x1 - x0 + 1
@@ -55,11 +53,9 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
             while ci < x1 {
                 if ci >= 0 && cj >= 0 && ck >= 0 {
                     var inside = 0
-                    var n = 0
-                    while n < 8 {
+                    for n: Int in 0..<8 {
                         corner[n] = field.value(ci + (if hasBit(n, 1) then 1 else 0), cj + (if hasBit(n, 2) then 1 else 0), ck + (if hasBit(n, 4) then 1 else 0))
                         if corner[n] <= 0.0 then inside = inside + 1
-                        n = n + 1
                     }
                     if inside > 0 && inside < 8 {
                         // The mean of the edge crossings, in the cell's own units.
@@ -67,8 +63,7 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
                         var sumY: Double = 0.0
                         var sumZ: Double = 0.0
                         var crossings: Double = 0.0
-                        var from = 0
-                        while from < 8 {
+                        for from: Int in 0..<8 {
                             var bit = 1
                             while bit <= 4 {
                                 if !hasBit(from, bit) {
@@ -80,15 +75,14 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
                                         fin ax = if hasBit(from, 1) then 1.0 else 0.0
                                         fin ay = if hasBit(from, 2) then 1.0 else 0.0
                                         fin az = if hasBit(from, 4) then 1.0 else 0.0
-                                        sumX = sumX + ax + (if bit == 1 then t else 0.0)
-                                        sumY = sumY + ay + (if bit == 2 then t else 0.0)
-                                        sumZ = sumZ + az + (if bit == 4 then t else 0.0)
-                                        crossings = crossings + 1.0
+                                        sumX += ax + (if bit == 1 then t else 0.0)
+                                        sumY += ay + (if bit == 2 then t else 0.0)
+                                        sumZ += az + (if bit == 4 then t else 0.0)
+                                        crossings += 1.0
                                     }
                                 }
-                                bit = bit * 2
+                                bit *= 2
                             }
-                            from = from + 1
                         }
                         fin wx = field.worldX(ci) + sumX / crossings * field.cell
                         fin wy = field.worldY(cj) + sumY / crossings * field.cell
@@ -104,21 +98,18 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
                         slots[(ci - x0 + 1) + sx * ((cj - y0 + 1) + sy * (ck - z0 + 1))] = positions.size / 3
                     }
                 }
-                ci = ci + 1
+                ci++
             }
-            cj = cj + 1
+            cj++
         }
-        ck = ck + 1
+        ck++
     }
 
     // Every grid edge this chunk owns that the surface crosses is one quad.
     var triangles: Array<Int> = []
-    var k = z0
-    while k < z1 {
-        var j = y0
-        while j < y1 {
-            var i = x0
-            while i < x1 {
+    for k in z0..<z1 {
+        for j in y0..<y1 {
+            for i in x0..<x1 {
                 fin here = field.value(i, j, k) <= 0.0
                 if j >= 1 && k >= 1 && here != (field.value(i + 1, j, k) <= 0.0) {
                     quad(triangles, slots, positions, normals, sx, sy, x0, y0, z0,
@@ -132,16 +123,11 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
                     quad(triangles, slots, positions, normals, sx, sy, x0, y0, z0,
                         i - 1, j - 1, k, i, j - 1, k, i, j, k, i - 1, j, k)
                 }
-                i = i + 1
             }
-            j = j + 1
         }
-        k = k + 1
     }
 
-    if triangles.size == 0 {
-        return take mesh
-    }
+    if triangles.size == 0 then return take mesh
     fin center = Point((field.worldX(x0-1)+field.worldX(x1))*0.5,
         (field.worldY(y0-1)+field.worldY(y1))*0.5,(field.worldZ(z0-1)+field.worldZ(z1))*0.5)
     fin radius = sqrt(((x1-x0+1)*(x1-x0+1)+(y1-y0+1)*(y1-y0+1)+(z1-z0+1)*(z1-z0+1)) as Double)*field.cell*0.5
@@ -156,9 +142,7 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
         // Small, boundary-dominated or steep chunks need no extra GPU copy.
         if reduced.triangles.size >= 3 && reduced.triangles.size*10 <= count*9 {
             maxDeviation = higher(maxDeviation,reduced.maxDeviation)
-            if addSurfaceLevel(mesh,reduced.triangles,reduced.positions,reduced.normals,maxDeviation) {
-                count = reduced.triangles.size
-            }
+            if addSurfaceLevel(mesh,reduced.triangles,reduced.positions,reduced.normals,maxDeviation) then count = reduced.triangles.size
         }
         step *= 2
     }
@@ -168,18 +152,12 @@ func meshChunk(field: Field&, a: Int, b: Int, c: Int, levels: Bool = true): Surf
 /** Flat or solid chunks do not need vertex extraction. */
 func crossesSurface(field: Field&, x0: Int, y0: Int, z0: Int, x1: Int, y1: Int, z1: Int): Bool {
     fin sign = field.value(x0, y0, z0) <= 0.0
-    var k = z0
-    while k <= z1 {
-        var j = y0
-        while j <= y1 {
-            var i = x0
-            while i <= x1 {
+    for k in z0..z1 {
+        for j in y0..y1 {
+            for i in x0..x1 {
                 if (field.value(i, j, k) <= 0.0) != sign then return true
-                i = i + 1
             }
-            j = j + 1
         }
-        k = k + 1
     }
     return false
 }
@@ -189,8 +167,8 @@ func crossesSurface(field: Field&, x0: Int, y0: Int, z0: Int, x1: Int, y1: Int, 
  * face the way the surface does there.
  */
 func quad(triangles: Array<Int>!, slots: Array<Int>&, positions: Array<Double>&, normals: Array<Double>&,
-    sx: Int, sy: Int, x0: Int, y0: Int, z0: Int,
-    ai: Int, aj: Int, ak: Int, bi: Int, bj: Int, bk: Int,
+    sx: Int, sy: Int, x0: Int, y0: Int, z0: Int
+    ai: Int, aj: Int, ak: Int, bi: Int, bj: Int, bk: Int
     ci: Int, cj: Int, ck: Int, di: Int, dj: Int, dk: Int) {
     var a = slots[(ai - x0 + 1) + sx * ((aj - y0 + 1) + sy * (ak - z0 + 1))] - 1
     var b = slots[(bi - x0 + 1) + sx * ((bj - y0 + 1) + sy * (bk - z0 + 1))] - 1

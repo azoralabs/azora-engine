@@ -106,11 +106,8 @@ pack AtmosphereConditions derives Clone {
 
 func atmosphereEntity(world: World!): Entity {
     fin skies = ensureStorage<AetherSky>(world)
-    var i = 0
-    while i < storageLength<AetherSky>(skies) {
+    return for i: Int in 0..<storageLength<AetherSky>(skies) {
         fin owner = storageEntityAt<AetherSky>(skies, i)
-        if world.isAlive(owner) && skies.values[i].enabled && visibleInWorld(world, owner) then return owner
-        i += 1
-    }
-    return Entity(-1, 0)
+        if world.isAlive(owner) && skies.values[i].enabled && visibleInWorld(world, owner) then break owner
+    } else Entity(-1, 0)
 }

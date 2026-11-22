@@ -169,38 +169,26 @@ pack Move2D {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
-func aabb2d(minX: Double, minY: Double, maxX: Double, maxY: Double): Aabb2D {
-    return Aabb2D(minX, minY, maxX, maxY)
-}
+func aabb2d(minX: Double, minY: Double, maxX: Double, maxY: Double): Aabb2D = .(minX, minY, maxX, maxY)
 
 /** The box of [size] centred on [center]. */
 func aabbAround(center: Vec2, size: Vec2): Aabb2D {
     fin hx = size.x * 0.5
     fin hy = size.y * 0.5
-    return Aabb2D(center.x - hx, center.y - hy, center.x + hx, center.y + hy)
+    return .(center.x - hx, center.y - hy, center.x + hx, center.y + hy)
 }
 
 /** The box with its top-left corner at ([x], [y]). */
-func aabbAt(x: Double, y: Double, width: Double, height: Double): Aabb2D {
-    return Aabb2D(x, y, x + width, y + height)
-}
+func aabbAt(x: Double, y: Double, width: Double, height: Double): Aabb2D = .(x, y, x + width, y + height)
 
 impl Aabb2D {
-    func &.width(): Double {
-        return self.maxX - self.minX
-    }
+    func &.width(): Double = self.maxX - self.minX
 
-    func &.height(): Double {
-        return self.maxY - self.minY
-    }
+    func &.height(): Double = self.maxY - self.minY
 
-    func &.center(): Vec2 {
-        return Vec2((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
-    }
+    func &.center(): Vec2 = .((self.minX + self.maxX) * 0.5, (self.minY + self.maxY) * 0.5)
 
-    func &.halfExtents(): Vec2 {
-        return Vec2(self.width() * 0.5, self.height() * 0.5)
-    }
+    func &.halfExtents(): Vec2 = .(self.width() * 0.5, self.height() * 0.5)
 
     func &.overlaps(other: Aabb2D): Bool {
         return self.minX < other.maxX && other.minX < self.maxX &&
@@ -212,29 +200,25 @@ impl Aabb2D {
             point.y >= self.minY && point.y <= self.maxY
     }
 
-    func &.translate(delta: Vec2): Aabb2D {
-        return Aabb2D(self.minX + delta.x, self.minY + delta.y, self.maxX + delta.x, self.maxY + delta.y)
-    }
+    func &.translate(delta: Vec2): Aabb2D = .(self.minX + delta.x, self.minY + delta.y, self.maxX + delta.x, self.maxY + delta.y)
 
-    func &.expand(x: Double, y: Double): Aabb2D {
-        return Aabb2D(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
-    }
+    func &.expand(x: Double, y: Double): Aabb2D = .(self.minX - x, self.minY - y, self.maxX + x, self.maxY + y)
 
     /** The box covering this one and where it would be after [motion]. */
     func &.sweptBy(motion: Vec2): Aabb2D {
         return Aabb2D(
-            realMinOf(self.minX, self.minX + motion.x),
-            realMinOf(self.minY, self.minY + motion.y),
-            realMaxOf(self.maxX, self.maxX + motion.x),
+            realMinOf(self.minX, self.minX + motion.x)
+            realMinOf(self.minY, self.minY + motion.y)
+            realMaxOf(self.maxX, self.maxX + motion.x)
             realMaxOf(self.maxY, self.maxY + motion.y)
         )
     }
 
     func &.union(other: Aabb2D): Aabb2D {
         return Aabb2D(
-            realMinOf(self.minX, other.minX),
-            realMinOf(self.minY, other.minY),
-            realMaxOf(self.maxX, other.maxX),
+            realMinOf(self.minX, other.minX)
+            realMinOf(self.minY, other.minY)
+            realMaxOf(self.maxX, other.maxX)
             realMaxOf(self.maxY, other.maxY)
         )
     }
@@ -248,23 +232,19 @@ impl Aabb2D {
 }
 
 /** A box collider with the given half extents. */
-func boxCollider(halfExtents: Vec2): Collider2D {
-    return Collider2D(ColliderShape2D.Box, halfExtents, 0.0, vec2Zero(), allLayers(), false)
-}
+func boxCollider(halfExtents: Vec2): Collider2D = .(.Box, halfExtents, 0.0, vec2Zero(), allLayers(), false)
 
 /** A circle collider of [radius]. */
-func circleCollider(radius: Double): Collider2D {
-    return Collider2D(ColliderShape2D.Circle, Vec2(radius, radius), radius, vec2Zero(), allLayers(), false)
-}
+func circleCollider(radius: Double): Collider2D = .(.Circle, Vec2(radius, radius), radius, vec2Zero(), allLayers(), false)
 
 /** A vertical capsule [halfHeight] tall through the centre, with caps of [radius]. */
 func capsuleCollider(radius: Double, halfHeight: Double): Collider2D {
     return Collider2D(
-        ColliderShape2D.Capsule,
-        Vec2(radius, halfHeight),
-        radius,
-        vec2Zero(),
-        allLayers(),
+        ColliderShape2D.Capsule
+        Vec2(radius, halfHeight)
+        radius
+        vec2Zero()
+        allLayers()
         false
     )
 }
@@ -272,11 +252,11 @@ func capsuleCollider(radius: Double, halfHeight: Double): Collider2D {
 /** [collider] moved to sit at [offset] from its body. */
 func colliderAt(collider: Collider2D, offset: Vec2): Collider2D {
     return Collider2D(
-        collider.shape,
-        collider.halfExtents,
-        collider.radius,
-        offset,
-        collider.layers,
+        collider.shape
+        collider.halfExtents
+        collider.radius
+        offset
+        collider.layers
         collider.sensor
     )
 }
@@ -284,11 +264,11 @@ func colliderAt(collider: Collider2D, offset: Vec2): Collider2D {
 /** [collider] restricted to the given layers. */
 func colliderOn(collider: Collider2D, layers: CollisionLayers): Collider2D {
     return Collider2D(
-        collider.shape,
-        collider.halfExtents,
-        collider.radius,
-        collider.offset,
-        layers,
+        collider.shape
+        collider.halfExtents
+        collider.radius
+        collider.offset
+        layers
         collider.sensor
     )
 }
@@ -296,11 +276,11 @@ func colliderOn(collider: Collider2D, layers: CollisionLayers): Collider2D {
 /** [collider] turned into a trigger volume that reports but does not resolve. */
 func colliderAsSensor(collider: Collider2D): Collider2D {
     return Collider2D(
-        collider.shape,
-        collider.halfExtents,
-        collider.radius,
-        collider.offset,
-        collider.layers,
+        collider.shape
+        collider.halfExtents
+        collider.radius
+        collider.offset
+        collider.layers
         true
     )
 }
@@ -309,33 +289,25 @@ func colliderAsSensor(collider: Collider2D): Collider2D {
 func colliderBounds(collider: Collider2D, position: Vec2): Aabb2D {
     fin center = position + collider.offset
     fin half = when collider.shape {
-        ColliderShape2D.Box -> collider.halfExtents
-        ColliderShape2D.Circle -> Vec2(collider.radius, collider.radius)
+        .Box -> collider.halfExtents
+        .Circle -> Vec2(collider.radius, collider.radius)
         else -> Vec2(collider.radius, collider.halfExtents.y + collider.radius)
     }
-    return Aabb2D(center.x - half.x, center.y - half.y, center.x + half.x, center.y + half.y)
+    return .(center.x - half.x, center.y - half.y, center.x + half.x, center.y + half.y)
 }
 
-func transform2d(position: Vec2): Transform2D {
-    return Transform2D(position, 0.0, Vec2(1.0, 1.0))
-}
+func transform2d(position: Vec2): Transform2D = .(position, 0.0, Vec2(1.0, 1.0))
 
-func velocity2d(linear: Vec2): Velocity2D {
-    return Velocity2D(linear, 0.0)
-}
+func velocity2d(linear: Vec2): Velocity2D = .(linear, 0.0)
 
-func forces2d(): Forces2D {
-    return Forces2D(vec2Zero(), 0.0)
-}
+func forces2d(): Forces2D = .(vec2Zero(), 0.0)
 
 /** A rigid body of [kind] and [mass], with inertia derived from [collider]. */
 func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: Double = 1.0, fixedRotation: Bool = false): RigidBody2D {
     fin inverseMass = inverseMassFor(kind, mass)
     var inverseInertia = 0.0
-    if inverseMass > 0.0 && !fixedRotation {
-        inverseInertia = 1.0 / inertiaOf(collider, mass)
-    }
-    return RigidBody2D(kind, inverseMass, inverseInertia, fixedRotation)
+    if inverseMass > 0.0 && !fixedRotation then inverseInertia = 1.0 / inertiaOf(collider, mass)
+    return .(kind, inverseMass, inverseInertia, fixedRotation)
 }
 
 /**
@@ -347,7 +319,7 @@ func rigidBody2d(kind: RigidBodyKind, collider: Collider2D, mass: Double = 1.0, 
  */
 func inertiaOf(collider: Collider2D, mass: Double): Double {
     return when collider.shape {
-        ColliderShape2D.Circle -> realMaxOf(0.5 * mass * collider.radius * collider.radius, 0.000001)
+        .Circle -> realMaxOf(0.5 * mass * collider.radius * collider.radius, 0.000001)
         else -> {
             fin w = collider.halfExtents.x * 2.0
             fin h = collider.halfExtents.y * 2.0
@@ -356,9 +328,7 @@ func inertiaOf(collider: Collider2D, mass: Double): Double {
     }
 }
 
-func gravity2d(value: Vec2 = Vec2(0.0, 900.0)): Gravity2D {
-    return Gravity2D(value)
-}
+func gravity2d(value: Vec2 = Vec2(0.0, 900.0)): Gravity2D = .(value)
 
 // ── Contacts ────────────────────────────────────────────────────────────
 
@@ -375,9 +345,7 @@ func boxContact(centerA: Vec2, halfA: Vec2, centerB: Vec2, halfB: Vec2): Overlap
     fin overlapX = halfA.x + halfB.x - absReal(dx)
     fin overlapY = halfA.y + halfB.y - absReal(dy)
 
-    if overlapX <= 0.0 || overlapY <= 0.0 {
-        return Overlap2D.Separate
-    }
+    if overlapX <= 0.0 || overlapY <= 0.0 then return Overlap2D.Separate
 
     fin normal = if overlapX < overlapY {
         Vec2(realSign(dx), 0.0)
@@ -394,15 +362,11 @@ func boxContact(centerA: Vec2, halfA: Vec2, centerB: Vec2, halfB: Vec2): Overlap
 func circleContact(centerA: Vec2, radiusA: Double, centerB: Vec2, radiusB: Double): Overlap2D {
     fin delta = centerA - centerB
     fin reach = radiusA + radiusB
-    fin distanceSquared = delta.lengthSquared()
-    if distanceSquared >= reach * reach {
-        return Overlap2D.Separate
-    }
+    fin distanceSquared = delta.lengthSquared
+    if distanceSquared >= reach * reach then return Overlap2D.Separate
     // Perfectly coincident centres have no direction to separate along, so one
     // is chosen rather than dividing by zero.
-    if distanceSquared < 0.0000001 {
-        return Overlap2D.Touching(Contact2D(Vec2(1.0, 0.0), centerA, reach, false))
-    }
+    if distanceSquared < 0.0000001 then return Overlap2D.Touching(.(.(1.0, 0.0), centerA, reach, false))
     fin distance = sqrt(distanceSquared)
     fin normal = delta.scale(1.0 / distance)
     return Overlap2D.Touching(
@@ -413,19 +377,15 @@ func circleContact(centerA: Vec2, radiusA: Double, centerB: Vec2, radiusB: Doubl
 /** The contact between a circle and a box, or [Overlap2D.Separate]. */
 func circleBoxContact(circleCenter: Vec2, radius: Double, boxCenter: Vec2, boxHalf: Vec2): Overlap2D {
     fin closest = Vec2(
-        realClampTo(circleCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x),
+        realClampTo(circleCenter.x, boxCenter.x - boxHalf.x, boxCenter.x + boxHalf.x)
         realClampTo(circleCenter.y, boxCenter.y - boxHalf.y, boxCenter.y + boxHalf.y)
     )
     fin delta = circleCenter - closest
-    fin distanceSquared = delta.lengthSquared()
-    if distanceSquared >= radius * radius {
-        return Overlap2D.Separate
-    }
+    fin distanceSquared = delta.lengthSquared
+    if distanceSquared >= radius * radius then return Overlap2D.Separate
     // A centre inside the box has no closest surface point to push from, so the
     // box-box axis test takes over.
-    if distanceSquared < 0.0000001 {
-        return boxContact(circleCenter, Vec2(radius, radius), boxCenter, boxHalf)
-    }
+    if distanceSquared < 0.0000001 then return boxContact(circleCenter, .(radius, radius), boxCenter, boxHalf)
     fin distance = sqrt(distanceSquared)
     return Overlap2D.Touching(
         Contact2D(delta.scale(1.0 / distance), closest, radius - distance, false)
@@ -435,24 +395,22 @@ func circleBoxContact(circleCenter: Vec2, radius: Double, boxCenter: Vec2, boxHa
 /** The contact between two colliders on bodies at [positionA] and [positionB]. */
 func colliderContact(
     positionA: Vec2
-    colliderA: Collider2D
+    colliderA: Collider2D&
     positionB: Vec2
-    colliderB: Collider2D
+    colliderB: Collider2D&
 ): Overlap2D {
-    if !layersInteract(colliderA.layers, colliderB.layers) {
-        return Overlap2D.Separate
-    }
+    if !layersInteract(colliderA.layers, colliderB.layers) then return Overlap2D.Separate
     fin centerA = positionA + colliderA.offset
     fin centerB = positionB + colliderB.offset
     fin sensor = colliderA.sensor || colliderB.sensor
 
     fin found = when colliderA.shape {
-        ColliderShape2D.Circle -> when colliderB.shape {
-            ColliderShape2D.Circle -> circleContact(centerA, colliderA.radius, centerB, colliderB.radius)
+        .Circle -> when colliderB.shape {
+            .Circle -> circleContact(centerA, colliderA.radius, centerB, colliderB.radius)
             else -> circleBoxContact(centerA, colliderA.radius, centerB, boxHalfOf(colliderB))
         }
         else -> when colliderB.shape {
-            ColliderShape2D.Circle -> flipOverlap(
+            .Circle -> flipOverlap(
                 circleBoxContact(centerB, colliderB.radius, centerA, boxHalfOf(colliderA))
             )
             else -> boxContact(centerA, boxHalfOf(colliderA), centerB, boxHalfOf(colliderB))
@@ -462,17 +420,17 @@ func colliderContact(
 }
 
 /** The box half-extents a collider is treated as for a box-vs-box test. */
-func boxHalfOf(collider: Collider2D): Vec2 {
+func boxHalfOf(collider: Collider2D&): Vec2 {
     return when collider.shape {
-        ColliderShape2D.Capsule -> Vec2(collider.radius, collider.halfExtents.y + collider.radius)
+        .Capsule -> Vec2(collider.radius, collider.halfExtents.y + collider.radius)
         else -> collider.halfExtents
     }
 }
 
 /** [overlap] with its normal reversed, for a test performed the other way round. */
-func flipOverlap(overlap: Overlap2D): Overlap2D {
+func flipOverlap(overlap: Overlap2D&): Overlap2D {
     return when overlap {
-        Overlap2D.Touching(contact) -> Overlap2D.Touching(
+        .Touching(contact) -> Overlap2D.Touching(
             Contact2D(contact.normal.scale(-1.0), contact.point, contact.penetration, contact.sensor)
         )
         else -> Overlap2D.Separate
@@ -480,9 +438,9 @@ func flipOverlap(overlap: Overlap2D): Overlap2D {
 }
 
 /** [overlap] tagged as a sensor contact. */
-func markSensor(overlap: Overlap2D, sensor: Bool): Overlap2D {
+func markSensor(overlap: Overlap2D&, sensor: Bool): Overlap2D {
     return when overlap {
-        Overlap2D.Touching(contact) -> Overlap2D.Touching(
+        .Touching(contact) -> Overlap2D.Touching(
             Contact2D(contact.normal, contact.point, contact.penetration, sensor)
         )
         else -> Overlap2D.Separate
@@ -490,9 +448,9 @@ func markSensor(overlap: Overlap2D, sensor: Bool): Overlap2D {
 }
 
 /** True when [overlap] found a contact. */
-func overlapTouching(overlap: Overlap2D): Bool {
+func overlapTouching(overlap: Overlap2D&): Bool {
     return when overlap {
-        Overlap2D.Touching(contact) -> true
+        .Touching(contact) -> true
         else -> false
     }
 }
@@ -500,7 +458,7 @@ func overlapTouching(overlap: Overlap2D): Bool {
 /** The contact of [overlap], or a zero contact when the shapes were apart. */
 func overlapContact(overlap: Overlap2D): Contact2D {
     return when overlap {
-        Overlap2D.Touching(contact) -> contact
+        .Touching(contact) -> contact
         else -> Contact2D(vec2Zero(), vec2Zero(), 0.0, false)
     }
 }
@@ -519,16 +477,12 @@ func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
     // Already overlapping: there is no entry time to find, and reporting a
     // sweep of zero would wedge the body instead of letting the solver push it
     // out along the contact normal.
-    if moving.overlaps(target) {
-        return Sweep2D.Clear
-    }
+    if moving.overlaps(target) then return Sweep2D.Clear
 
     var entryX = 0.0
     var exitX = 1.0
     if motion.x == 0.0 {
-        if moving.maxX <= target.minX || moving.minX >= target.maxX {
-            return Sweep2D.Clear
-        }
+        if moving.maxX <= target.minX || moving.minX >= target.maxX then return Sweep2D.Clear
     } else {
         fin near = (target.minX - moving.maxX) / motion.x
         fin far = (target.maxX - moving.minX) / motion.x
@@ -539,9 +493,7 @@ func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
     var entryY = 0.0
     var exitY = 1.0
     if motion.y == 0.0 {
-        if moving.maxY <= target.minY || moving.minY >= target.maxY {
-            return Sweep2D.Clear
-        }
+        if moving.maxY <= target.minY || moving.minY >= target.maxY then return Sweep2D.Clear
     } else {
         fin near = (target.minY - moving.maxY) / motion.y
         fin far = (target.maxY - moving.minY) / motion.y
@@ -557,15 +509,13 @@ func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
     // on a floor and jumping upward must not immediately hit that floor as a
     // ceiling. Motion into the same touching surface still has `exit > 0` and
     // remains blocked at `entry == 0`.
-    if entry > exit || exit <= 0.0 || entry < 0.0 || entry > 1.0 {
-        return Sweep2D.Clear
-    }
+    if entry > exit || exit <= 0.0 || entry < 0.0 || entry > 1.0 then return Sweep2D.Clear
 
     // The axis that entered last is the face that was struck.
     fin normal = if entryX > entryY {
-        Vec2(0.0 - realSign(motion.x), 0.0)
+        Vec2(-realSign(motion.x), 0.0)
     } else {
-        Vec2(0.0, 0.0 - realSign(motion.y))
+        Vec2(0.0, -realSign(motion.y))
     }
     fin contactPoint = moving.center() + motion.scale(entry)
     return Sweep2D.Blocked(entry, normal, contactPoint)
@@ -574,7 +524,7 @@ func sweepBox(moving: Aabb2D, motion: Vec2, target: Aabb2D): Sweep2D {
 /** True when [sweep] was interrupted. */
 func sweepBlocked(sweep: Sweep2D): Bool {
     return when sweep {
-        Sweep2D.Blocked(t, normal, point) -> true
+        .Blocked(t, normal, point) -> true
         else -> false
     }
 }
@@ -582,7 +532,7 @@ func sweepBlocked(sweep: Sweep2D): Bool {
 /** The safe fraction of the motion [sweep] permits. */
 func sweepFraction(sweep: Sweep2D): Double {
     return when sweep {
-        Sweep2D.Blocked(t, normal, point) -> t
+        .Blocked(t, normal, point) -> t
         else -> 1.0
     }
 }
@@ -590,7 +540,7 @@ func sweepFraction(sweep: Sweep2D): Double {
 /** The surface normal [sweep] struck, or zero. */
 func sweepNormal(sweep: Sweep2D): Vec2 {
     return when sweep {
-        Sweep2D.Blocked(t, normal, point) -> normal
+        .Blocked(t, normal, point) -> normal
         else -> vec2Zero()
     }
 }
@@ -602,8 +552,8 @@ func sweepNormal(sweep: Sweep2D): Vec2 {
  * A to B is `rayBox(a, b - a, target)` with no length to compute.
  */
 func rayBox(origin: Vec2, direction: Vec2, target: Aabb2D): RayHit2D {
-    return when sweepBox(Aabb2D(origin.x, origin.y, origin.x, origin.y), direction, target) {
-        Sweep2D.Blocked(t, normal, point) -> RayHit2D.Hit(t, normal, origin + direction.scale(t))
+    return when sweepBox(.(origin.x, origin.y, origin.x, origin.y), direction, target) {
+        .Blocked(t, normal, point) -> RayHit2D.Hit(t, normal, origin + direction.scale(t))
         else -> RayHit2D.Miss
     }
 }
@@ -611,7 +561,7 @@ func rayBox(origin: Vec2, direction: Vec2, target: Aabb2D): RayHit2D {
 /** True when [hit] met something. */
 func rayHit(hit: RayHit2D): Bool {
     return when hit {
-        RayHit2D.Hit(t, normal, point) -> true
+        .Hit(t, normal, point) -> true
         else -> false
     }
 }
@@ -619,7 +569,7 @@ func rayHit(hit: RayHit2D): Bool {
 /** The fraction of the ray travelled before the hit, or `-1`. */
 func rayFraction(hit: RayHit2D): Double {
     return when hit {
-        RayHit2D.Hit(t, normal, point) -> t
+        .Hit(t, normal, point) -> t
         else -> -1.0
     }
 }
@@ -634,19 +584,13 @@ func rayFraction(hit: RayHit2D): Double {
  */
 func slide(velocity: Vec2, normal: Vec2): Vec2 {
     fin into = velocity.dot(normal)
-    if into >= 0.0 {
-        return velocity
-    }
-    return velocity - normal.scale(into)
+    return if into >= 0.0 then velocity else velocity - normal.scale(into)
 }
 
 /** The velocity left after bouncing off [normal] with the given restitution. */
 func bounce(velocity: Vec2, normal: Vec2, restitution: Double): Vec2 {
     fin into = velocity.dot(normal)
-    if into >= 0.0 {
-        return velocity
-    }
-    return velocity - normal.scale(into * (1.0 + realClamp01(restitution)))
+    return if into >= 0.0 then velocity else velocity - normal.scale(into * (1.0 + realClamp01(restitution)))
 }
 
 /**
@@ -656,19 +600,19 @@ func bounce(velocity: Vec2, normal: Vec2, restitution: Double): Vec2 {
  * already computes, so both dimensions agree on what an impulse means.
  */
 func applyToVelocity(velocity: Velocity2D, amount: Vec2, mode: ForceMode, inverseMass: Double, dt: Double) {
-    velocity.linear = velocity.linear + amount.scale(forceScale(mode, inverseMass, dt))
+    velocity.linear += amount.scale(forceScale(mode, inverseMass, dt))
 }
 
 /** Applies gravity to [velocity] for one substep. */
 func applyGravity(velocity: Velocity2D, gravity: Gravity2D, scale: GravityScale, dt: Double) {
-    velocity.linear = velocity.linear + gravity.value.scale(scale.value * dt)
+    velocity.linear += gravity.value.scale(scale.value * dt)
 }
 
 /** Decays [velocity] by [drag] over one substep. */
 func applyDamping(velocity: Velocity2D, drag: Damping, dt: Double) {
     fin keep = realClamp01(1.0 - drag.linear * dt)
     velocity.linear = velocity.linear.scale(keep)
-    velocity.angular = velocity.angular * realClamp01(1.0 - drag.angular * dt)
+    velocity.angular *= realClamp01(1.0 - drag.angular * dt)
 }
 
 /**
@@ -687,9 +631,7 @@ func resolvePenetration(
     settings: PhysicsSettings
 ): Vec2 {
     fin total = inverseMassA + inverseMassB
-    if total <= 0.0 || contact.sensor {
-        return positionA
-    }
+    if total <= 0.0 || contact.sensor then return positionA
     fin depth = realMaxOf(contact.penetration - settings.contactSlop, 0.0)
     fin push = depth * settings.correctionRate / total
     return positionA + contact.normal.scale(push * inverseMassA)
@@ -697,27 +639,27 @@ func resolvePenetration(
 
 test "box contacts resolve along the shallowest axis" {
     // Overlapping by 2 horizontally and 8 vertically: the horizontal axis wins.
-    when boxContact(Vec2(0.0, 0.0), Vec2(5.0, 5.0), Vec2(8.0, 2.0), Vec2(5.0, 5.0)) {
-        Overlap2D.Touching(contact) -> {
+    when boxContact(.(0.0, 0.0), .(5.0, 5.0), .(8.0, 2.0), .(5.0, 5.0)) {
+        .Touching(contact) -> {
             assert contact.normal.x < 0.0 && contact.normal.y == 0.0 panic "the shallowest axis must be the one resolved along"
             assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "the penetration must be the overlap on that axis"
         }
-        Overlap2D.Separate() -> { assert false panic "overlapping boxes must report a contact" }
+        .Separate() -> { assert false panic "overlapping boxes must report a contact" }
     }
 
-    assert !overlapTouching(boxContact(Vec2(0.0, 0.0), Vec2(1.0, 1.0), Vec2(50.0, 0.0), Vec2(1.0, 1.0))) panic "boxes far apart must not report a contact"
+    assert !overlapTouching(boxContact(.(0.0, 0.0), .(1.0, 1.0), .(50.0, 0.0), .(1.0, 1.0))) panic "boxes far apart must not report a contact"
 }
 
 test "circle contacts measure from the surfaces" {
-    when circleContact(Vec2(0.0, 0.0), 5.0, Vec2(8.0, 0.0), 5.0) {
-        Overlap2D.Touching(contact) -> {
+    when circleContact(.(0.0, 0.0), 5.0, .(8.0, 0.0), 5.0) {
+        .Touching(contact) -> {
             assert contact.penetration > 1.99 && contact.penetration < 2.01 panic "two 5-radius circles 8 apart overlap by 2"
             assert contact.normal.x < -0.99 panic "the normal must separate A from B"
         }
-        Overlap2D.Separate() -> { assert false panic "overlapping circles must report a contact" }
+        .Separate() -> { assert false panic "overlapping circles must report a contact" }
     }
-    assert !overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(9.0, 0.0), 1.0)) panic "circles further apart than their radii must be separate"
-    assert overlapTouching(circleContact(Vec2(0.0, 0.0), 1.0, Vec2(0.0, 0.0), 1.0)) panic "coincident circles must still produce a contact rather than dividing by zero"
+    assert !overlapTouching(circleContact(.(0.0, 0.0), 1.0, .(9.0, 0.0), 1.0)) panic "circles further apart than their radii must be separate"
+    assert overlapTouching(circleContact(.(0.0, 0.0), 1.0, .(0.0, 0.0), 1.0)) panic "coincident circles must still produce a contact rather than dividing by zero"
 }
 
 test "a sweep stops a fast box at the first thing it meets" {
@@ -725,16 +667,16 @@ test "a sweep stops a fast box at the first thing it meets" {
     fin wall = aabbAt(100.0, 0.0, 10.0, 100.0)
 
     // A single step of 1000 units — a hundred times the body's own width.
-    when sweepBox(body, Vec2(1000.0, 0.0), wall) {
-        Sweep2D.Blocked(t, normal, point) -> {
+    when sweepBox(body, .(1000.0, 0.0), wall) {
+        .Blocked(t, normal, point) -> {
             assert t > 0.089 && t < 0.091 panic "the box must stop where the wall is, not where it aimed"
             assert normal.x < -0.99 panic "the normal must face back along the motion"
         }
-        Sweep2D.Clear() -> { assert false panic "a fast box must not tunnel through a wall" }
+        .Clear() -> { assert false panic "a fast box must not tunnel through a wall" }
     }
 
-    assert !sweepBlocked(sweepBox(body, Vec2(0.0, 1000.0), wall)) panic "a sweep that misses the wall must be clear"
-    assert sweepFraction(sweepBox(body, Vec2(20.0, 0.0), wall)) == 1.0 panic "a motion that stops short must permit the whole distance"
+    assert !sweepBlocked(sweepBox(body, .(0.0, 1000.0), wall)) panic "a sweep that misses the wall must be clear"
+    assert sweepFraction(sweepBox(body, .(20.0, 0.0), wall)) == 1.0 panic "a motion that stops short must permit the whole distance"
 }
 
 test "a sweep permits motion away from a touching surface" {
@@ -742,33 +684,33 @@ test "a sweep permits motion away from a touching surface" {
     fin floor = aabbAt(0.0, 10.0, 40.0, 10.0)
     fin wall = aabbAt(10.0, 0.0, 10.0, 40.0)
 
-    assert !sweepBlocked(sweepBox(body, Vec2(0.0, -8.0), floor)) panic "jumping away from a touching floor must not report a ceiling"
-    assert sweepBlocked(sweepBox(body, Vec2(0.0, 8.0), floor)) panic "moving into a touching floor must remain blocked"
-    assert !sweepBlocked(sweepBox(body, Vec2(-8.0, 0.0), wall)) panic "moving away from a touching wall must be clear"
-    assert sweepBlocked(sweepBox(body, Vec2(8.0, 0.0), wall)) panic "moving into a touching wall must remain blocked"
+    assert !sweepBlocked(sweepBox(body, .(0.0, -8.0), floor)) panic "jumping away from a touching floor must not report a ceiling"
+    assert sweepBlocked(sweepBox(body, .(0.0, 8.0), floor)) panic "moving into a touching floor must remain blocked"
+    assert !sweepBlocked(sweepBox(body, .(-8.0, 0.0), wall)) panic "moving away from a touching wall must be clear"
+    assert sweepBlocked(sweepBox(body, .(8.0, 0.0), wall)) panic "moving into a touching wall must remain blocked"
 }
 
 test "rays report the face they struck" {
     fin wall = aabbAt(50.0, 0.0, 10.0, 100.0)
-    when rayBox(Vec2(0.0, 50.0), Vec2(100.0, 0.0), wall) {
-        RayHit2D.Hit(t, normal, point) -> {
+    when rayBox(.(0.0, 50.0), .(100.0, 0.0), wall) {
+        .Hit(t, normal, point) -> {
             assert t > 0.49 && t < 0.51 panic "the ray must hit halfway along its direction"
             assert normal.x < -0.99 panic "the normal must face the ray"
             assert point.x > 49.9 && point.x < 50.1 panic "the hit point must be on the near face"
         }
-        RayHit2D.Miss() -> { assert false panic "a ray into a wall must hit" }
+        .Miss() -> { assert false panic "a ray into a wall must hit" }
     }
-    assert !rayHit(rayBox(Vec2(0.0, 200.0), Vec2(100.0, 0.0), wall)) panic "a ray passing above the wall must miss"
+    assert !rayHit(rayBox(.(0.0, 200.0), .(100.0, 0.0), wall)) panic "a ray passing above the wall must miss"
 }
 
 test "sliding keeps the tangent and bouncing reverses the normal" {
-    fin wall = Vec2(-1.0, 0.0)
-    fin slid = slide(Vec2(10.0, 4.0), wall)
+    fin wall: Vec2 = .(-1.0, 0.0)
+    fin slid = slide(.(10.0, 4.0), wall)
     assert slid.x == 0.0 && slid.y == 4.0 panic "sliding must remove only the component into the surface"
 
-    fin bounced = bounce(Vec2(10.0, 4.0), wall, 1.0)
+    fin bounced = bounce(.(10.0, 4.0), wall, 1.0)
     assert bounced.x < -9.9 panic "a perfectly elastic bounce must reverse the normal component"
     assert bounced.y == 4.0 panic "a bounce must leave the tangent alone"
 
-    assert slide(Vec2(-10.0, 0.0), wall).x == -10.0 panic "a velocity already leaving the surface must be untouched"
+    assert slide(.(-10.0, 0.0), wall).x == -10.0 panic "a velocity already leaving the surface must be untouched"
 }

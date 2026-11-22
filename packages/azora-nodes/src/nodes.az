@@ -57,16 +57,16 @@ func drawNodeGrid(app: App!, rect: ViewRect&, camera: NodeCamera&, style: NodeSt
     while x < rect.x + rect.width {
         fin color = if i % 4 == 0 then style.major else style.grid
         app.uiRect(x, rect.y, 1.0, rect.height, color.r, color.g, color.b, color.a)
-        i = i + 1
-        x = x + step
+        i++
+        x += step
     }
     i = -floor(oy)
     var y = rect.y + camera.y + (i as Double) * step
     while y < rect.y + rect.height {
         fin color = if i % 4 == 0 then style.major else style.grid
         app.uiRect(rect.x, y, rect.width, 1.0, color.r, color.g, color.b, color.a)
-        i = i + 1
-        y = y + step
+        i++
+        y += step
     }
 }
 
@@ -88,14 +88,12 @@ func drawNodeSocket(app: App!, p: NodePoint&, color: Rgba, fill: Bool, zoom: Dou
 func drawNodeLink(app: App!, from: NodePoint&, to: NodePoint&, color: Rgba) {
     fin bend = clampValue(absValue(to.x - from.x) * 0.45, 28.0, 185.0)
     var last = from.clone()
-    var segment = 1
-    while segment <= 14 {
+    for segment: Int in 1..14 {
         fin t = (segment as Double) / 14.0
         fin u = 1.0 - t
         fin x = u*u*u*from.x + 3.0*u*u*t*(from.x+bend) + 3.0*u*t*t*(to.x-bend) + t*t*t*to.x
         fin y = u*u*u*from.y + 3.0*u*u*t*from.y + 3.0*u*t*t*to.y + t*t*t*to.y
         app.uiLine(last.x, last.y, x, y, 2.0, color.r, color.g, color.b, color.a)
         last = NodePoint(x, y)
-        segment = segment + 1
     }
 }

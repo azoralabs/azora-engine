@@ -40,7 +40,7 @@ import engine.ecs
 import engine.tilemap.types
 
 /** The default chunk edge, as a power-of-two shift: 16 x 16 cells. */
-fin tileChunkShift = 4
+inline fin tileChunkShift = 4
 
 // Writes are checked rather than clamped: silently dropping an off-map write is
 // how a level generator's off-by-one goes unnoticed until a level looks subtly
@@ -132,7 +132,7 @@ func tileChunksNew(size: TilemapSize, shift: Int): TileChunks {
     fin span = 1 << edge
     fin width = intMax((size.x + span - 1) / span, 0)
     fin height = intMax((size.y + span - 1) / span, 0)
-    return TileChunks(edge, width, height, intGridFill(width, height, 0))
+    return .(edge, width, height, intGridFill(width, height, 0))
 }
 
 impl TileChunks {
@@ -140,46 +140,36 @@ impl TileChunks {
     func &.countAt(x: Int, y: Int): Int {
         fin cx = x >> self.shift
         fin cy = y >> self.shift
-        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
-            return 0
-        }
-        return self.counts[cy * self.width + cx]
+        return if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height then 0 else self.counts[cy * self.width + cx]
     }
 
     /** Adds [delta] to the count of the chunk containing cell ([x], [y]). */
     func !.adjust(x: Int, y: Int, delta: Int) {
         fin cx = x >> self.shift
         fin cy = y >> self.shift
-        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
-            return
-        }
+        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height then return
         fin at = cy * self.width + cx
         self.counts[at] = intMax(self.counts[at] + delta, 0)
     }
 
     /** The number of tiles in chunk ([cx], [cy]). */
     func &.count(cx: Int, cy: Int): Int {
-        if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height {
-            return 0
-        }
-        return self.counts[cy * self.width + cx]
+        return if cx < 0 || cy < 0 || cx >= self.width || cy >= self.height then 0 else self.counts[cy * self.width + cx]
     }
 
     /** The cells chunk ([cx], [cy]) covers. */
     func &.rect(cx: Int, cy: Int): TileRect {
         fin span = 1 << self.shift
-        return TileRect(cx * span, cy * span, cx * span + span - 1, cy * span + span - 1)
+        return .(cx * span, cy * span, cx * span + span - 1, cy * span + span - 1)
     }
 
     /** The chunks overlapping a rectangle of cells. */
     func &.rectOf(cells: TileRect): TileRect {
-        if cells.isEmpty() {
-            return tileRectEmpty()
-        }
+        if cells.isEmpty() then return tileRectEmpty()
         return TileRect(
-            cells.minX >> self.shift,
-            cells.minY >> self.shift,
-            cells.maxX >> self.shift,
+            cells.minX >> self.shift
+            cells.minY >> self.shift
+            cells.maxX >> self.shift
             cells.maxY >> self.shift
         )
     }
@@ -189,22 +179,22 @@ impl TileChunks {
 
 /** An empty layer of [size], with every cell clear and every plane sparse. */
 func tileLayerNew(name: String, size: TilemapSize): TileLayer {
-    var empty: Array<Int> = Array<Int>()
+    var empty: Array<Int> = []
     return TileLayer(
-        name,
-        size,
-        intGridFill(size.x, size.y, tileEmpty),
-        empty,
-        empty,
-        true,
-        1.0,
-        tileColorWhite(),
-        1.0,
-        1.0,
-        0.0,
-        0.0,
-        0,
-        Long(0),
+        name
+        size
+        intGridFill(size.x, size.y, tileEmpty)
+        empty
+        empty
+        true
+        1.0
+        tileColorWhite()
+        1.0
+        1.0
+        0.0
+        0.0
+        0
+        0
         tileChunksNew(size, tileChunkShift)
     )
 }
@@ -218,89 +208,59 @@ func tileLayerFilled(name: String, size: TilemapSize, index: Int): TileLayer {
 
 impl TileLayer {
     /** True when [pos] addresses a cell of this layer. */
-    func &.contains(pos: TilePos): Bool {
-        return self.size.contains(pos)
-    }
+    func &.contains(pos: TilePos): Bool = self.size.contains(pos)
 
     /** The row-major offset of [pos], or `-1` when it is off the layer. */
-    func &.offsetOf(pos: TilePos): Int {
-        if !self.size.contains(pos) {
-            return -1
-        }
-        return pos.y * self.size.x + pos.x
-    }
+    func &.offsetOf(pos: TilePos): Int = if !self.size.contains(pos) then -1 else pos.y * self.size.x + pos.x
 
     /** Allocates the flag plane if it is still sparse. */
     func !.ensureFlags() {
-        if self.flags.size == 0 && self.size.isValid {
-            self.flags = intGridFill(self.size.x, self.size.y, 0)
-        }
+        if self.flags.size == 0 && self.size.isValid then self.flags = intGridFill(self.size.x, self.size.y, 0)
     }
 
     /** Allocates the tint plane if it is still sparse. */
     func !.ensureTints() {
-        if self.tints.size == 0 && self.size.isValid {
-            self.tints = intGridFill(self.size.x, self.size.y, tileTintNone)
-        }
+        if self.tints.size == 0 && self.size.isValid then self.tints = intGridFill(self.size.x, self.size.y, tileTintNone)
     }
 
     func !.touch() {
-        self.revision = self.revision + 1
+        self.revision++
     }
 }
 
 /** The tile index at [pos], or [tileEmpty] when empty or off the layer. */
 func layerIndexAt(layer: TileLayer&, pos: TilePos): Int {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return tileEmpty
-    }
-    return layer.indices[at]
+    return if at < 0 then tileEmpty else layer.indices[at]
 }
 
 /** The cell flags at [pos], or `0` when the plane is sparse or [pos] is off the layer. */
 func layerFlagsAt(layer: TileLayer&, pos: TilePos): Int {
     fin at = layer.offsetOf(pos)
-    if at < 0 || layer.flags.size == 0 {
-        return 0
-    }
-    return layer.flags[at]
+    return if at < 0 || layer.flags.size == 0 then 0 else layer.flags[at]
 }
 
 /** The packed tint at [pos], or [tileTintNone] when untinted. */
 func layerTintAt(layer: TileLayer&, pos: TilePos): Int {
     fin at = layer.offsetOf(pos)
-    if at < 0 || layer.tints.size == 0 {
-        return tileTintNone
-    }
-    return layer.tints[at]
+    return if at < 0 || layer.tints.size == 0 then tileTintNone else layer.tints[at]
 }
 
 /** Everything about the cell at [pos] in one read. */
 func layerLookup(layer: TileLayer&, pos: TilePos): TileLookup {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return TileLookup.OutOfBounds
-    }
+    if at < 0 then return TileLookup.OutOfBounds
     fin index = layer.indices[at]
-    if index == tileEmpty {
-        return TileLookup.Empty
-    }
+    if index == tileEmpty then return TileLookup.Empty
     var flags = 0
-    if layer.flags.size > 0 {
-        flags = layer.flags[at]
-    }
+    if layer.flags.size > 0 then flags = layer.flags[at]
     var tint = tileTintNone
-    if layer.tints.size > 0 {
-        tint = layer.tints[at]
-    }
+    if layer.tints.size > 0 then tint = layer.tints[at]
     return TileLookup.Tile(index, flags, tint)
 }
 
 /** True when [pos] holds a tile. */
-func layerHasTile(layer: TileLayer&, pos: TilePos): Bool {
-    return layerIndexAt(layer, pos) != tileEmpty
-}
+func layerHasTile(layer: TileLayer&, pos: TilePos): Bool = layerIndexAt(layer, pos) != tileEmpty
 
 /** True when [pos] is on the layer and holds no tile. */
 func layerIsEmptyAt(layer: TileLayer&, pos: TilePos): Bool {
@@ -316,9 +276,7 @@ func layerIsEmptyAt(layer: TileLayer&, pos: TilePos): Bool {
  * next time something is written there.
  */
 func layerSet(layer: TileLayer!, pos: TilePos, index: Int): Unit ?! TilemapFault {
-    if layer.offsetOf(pos) < 0 {
-        return .OutOfBounds
-    }
+    if layer.offsetOf(pos) < 0 then return .OutOfBounds
     layerPut(layer, pos, index)
 }
 
@@ -331,57 +289,35 @@ func layerSet(layer: TileLayer!, pos: TilePos, index: Int): Unit ?! TilemapFault
  */
 func layerPut(layer: TileLayer!, pos: TilePos, index: Int) {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return
-    }
+    if at < 0 then return
 
     fin was = layer.indices[at]
-    if was == tileEmpty && index != tileEmpty {
-        layer.chunks.adjust(pos.x, pos.y, 1)
-    }
-    if was != tileEmpty && index == tileEmpty {
-        layer.chunks.adjust(pos.x, pos.y, -1)
-    }
+    if was == tileEmpty && index != tileEmpty then layer.chunks.adjust(pos.x, pos.y, 1)
+    if was != tileEmpty && index == tileEmpty then layer.chunks.adjust(pos.x, pos.y, -1)
 
     layer.indices[at] = index
     if index == tileEmpty {
-        if layer.flags.size > 0 {
-            layer.flags[at] = 0
-        }
-        if layer.tints.size > 0 {
-            layer.tints[at] = tileTintNone
-        }
+        if layer.flags.size > 0 then layer.flags[at] = 0
+        if layer.tints.size > 0 then layer.tints[at] = tileTintNone
     }
     layer.touch()
 }
 
 /** Writes an index, its cell flags and its packed tint in one call. */
 func layerSetFull(layer: TileLayer!, pos: TilePos, index: Int, flags: Int, tint: Int): Unit ?! TilemapFault {
-    if layer.offsetOf(pos) < 0 {
-        return .OutOfBounds
-    }
+    if layer.offsetOf(pos) < 0 then return .OutOfBounds
     layerPutFull(layer, pos, index, flags, tint)
 }
 
 /** [layerSetFull] for a position already known to be on the layer. */
 func layerPutFull(layer: TileLayer!, pos: TilePos, index: Int, flags: Int, tint: Int) {
     layerPut(layer, pos, index)
-    if index == tileEmpty {
-        return
-    }
+    if index == tileEmpty then return
     fin at = layer.offsetOf(pos)
-    if flags != 0 {
-        layer.ensureFlags()
-    }
-    if layer.flags.size > 0 {
-        layer.flags[at] = flags
-    }
-    if tint != tileTintNone {
-        layer.ensureTints()
-    }
-    if layer.tints.size > 0 {
-        layer.tints[at] = tint
-    }
+    if flags != 0 then layer.ensureFlags()
+    if layer.flags.size > 0 then layer.flags[at] = flags
+    if tint != tileTintNone then layer.ensureTints()
+    if layer.tints.size > 0 then layer.tints[at] = tint
 }
 
 /** Clears the cell at [pos]. */
@@ -392,12 +328,8 @@ func layerClear(layer: TileLayer!, pos: TilePos): Unit ?! TilemapFault {
 /** Replaces the cell flags at [pos]. */
 func layerSetFlags(layer: TileLayer!, pos: TilePos, flags: Int): Unit ?! TilemapFault {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return .OutOfBounds
-    }
-    if flags == 0 && layer.flags.size == 0 {
-        return
-    }
+    if at < 0 then return .OutOfBounds
+    if flags == 0 && layer.flags.size == 0 then return
     layer.ensureFlags()
     layer.flags[at] = flags
     layer.touch()
@@ -410,32 +342,22 @@ func layerSetFlip(layer: TileLayer!, pos: TilePos, mirrors: TileFlip): Unit ?! T
 }
 
 /** The mirrors of the cell at [pos]. */
-func layerFlipAt(layer: TileLayer&, pos: TilePos): TileFlip {
-    return tileFlipFromFlags(layerFlagsAt(layer, pos))
-}
+func layerFlipAt(layer: TileLayer&, pos: TilePos): TileFlip = tileFlipFromFlags(layerFlagsAt(layer, pos))
 
 /** Shows or hides one cell without clearing it. */
 func layerSetHidden(layer: TileLayer!, pos: TilePos, hidden: Bool): Unit ?! TilemapFault {
     var flags = layerFlagsAt(layer, pos)
-    if hidden {
-        flags = flagsSet(flags, cellHidden)
-    } else {
-        flags = flagsClear(flags, cellHidden)
-    }
+    if hidden then flags = flagsSet(flags, cellHidden) else flags = flagsClear(flags, cellHidden)
     try layerSetFlags(layer, pos, flags)
 }
 
 /** True when the cell at [pos] holds a tile the renderer will draw. */
-func layerIsDrawable(layer: TileLayer&, pos: TilePos): Bool {
-    return layerHasTile(layer, pos) && !flagsAny(layerFlagsAt(layer, pos), cellHidden)
-}
+func layerIsDrawable(layer: TileLayer&, pos: TilePos): Bool = layerHasTile(layer, pos) && !flagsAny(layerFlagsAt(layer, pos), cellHidden)
 
 /** Tints the cell at [pos]; pass [tileColorWhite] to leave the art unchanged. */
 func layerSetTint(layer: TileLayer!, pos: TilePos, color: TileColor): Unit ?! TilemapFault {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return .OutOfBounds
-    }
+    if at < 0 then return .OutOfBounds
     layer.ensureTints()
     layer.tints[at] = tileColorPack(color)
     layer.touch()
@@ -444,9 +366,7 @@ func layerSetTint(layer: TileLayer!, pos: TilePos, color: TileColor): Unit ?! Ti
 /** Removes any individual tint from the cell at [pos]. */
 func layerClearTint(layer: TileLayer!, pos: TilePos): Unit ?! TilemapFault {
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return .OutOfBounds
-    }
+    if at < 0 then return .OutOfBounds
     if layer.tints.size > 0 {
         layer.tints[at] = tileTintNone
         layer.touch()
@@ -458,17 +378,11 @@ func layerClearTint(layer: TileLayer!, pos: TilePos): Unit ?! TilemapFault {
 /** Sets every cell of the layer to [index]; returns the number of cells written. */
 func layerFill(layer: TileLayer!, index: Int): Int {
     intGridClear(layer.indices, index)
-    if layer.flags.size > 0 {
-        intGridClear(layer.flags, 0)
-    }
-    if layer.tints.size > 0 {
-        intGridClear(layer.tints, tileTintNone)
-    }
+    if layer.flags.size > 0 then intGridClear(layer.flags, 0)
+    if layer.tints.size > 0 then intGridClear(layer.tints, tileTintNone)
 
     var perChunk = 0
-    if index != tileEmpty {
-        perChunk = 1
-    }
+    if index != tileEmpty then perChunk = 1
     // Rebuild rather than adjust: a full fill touches every chunk anyway.
     var cy = 0
     while cy < layer.chunks.height {
@@ -476,35 +390,27 @@ func layerFill(layer: TileLayer!, index: Int): Int {
         while cx < layer.chunks.width {
             fin cells = layer.chunks.rect(cx, cy).clampTo(layer.size)
             layer.chunks.counts[cy * layer.chunks.width + cx] = cells.area() * perChunk
-            cx = cx + 1
+            cx++
         }
-        cy = cy + 1
+        cy++
     }
     layer.touch()
     return layer.size.count()
 }
 
 /** Clears every cell of the layer. */
-func layerClearAll(layer: TileLayer!): Int {
-    return layerFill(layer, tileEmpty)
-}
+func layerClearAll(layer: TileLayer!): Int = layerFill(layer, tileEmpty)
 
 /** Sets every cell of [rect] that lies on the layer; returns how many were written. */
 func layerFillRect(layer: TileLayer!, rect: TileRect, index: Int): Int {
     fin clipped = rect.clampTo(layer.size)
-    if clipped.isEmpty() {
-        return 0
-    }
+    if clipped.isEmpty() then return 0
     var written = 0
-    var y = clipped.minY
-    while y <= clipped.maxY {
-        var x = clipped.minX
-        while x <= clipped.maxX {
-            layerPut(layer, TilePos(x, y), index)
-            written = written + 1
-            x = x + 1
+    for y in clipped.minY..clipped.maxY {
+        for x in clipped.minX..clipped.maxX {
+            layerPut(layer, .(x, y), index)
+            written++
         }
-        y = y + 1
     }
     return written
 }
@@ -512,49 +418,41 @@ func layerFillRect(layer: TileLayer!, rect: TileRect, index: Int): Int {
 /** Fills [rect] with [index] and tints every cell it writes. */
 func layerFillRectColor(layer: TileLayer!, rect: TileRect, index: Int, color: TileColor): Int {
     fin clipped = rect.clampTo(layer.size)
-    if clipped.isEmpty() {
-        return 0
-    }
+    if clipped.isEmpty() then return 0
     fin packed = tileColorPack(color)
     var written = 0
-    var y = clipped.minY
-    while y <= clipped.maxY {
-        var x = clipped.minX
-        while x <= clipped.maxX {
-            layerPutFull(layer, TilePos(x, y), index, 0, packed)
-            written = written + 1
-            x = x + 1
+    for y in clipped.minY..clipped.maxY {
+        for x in clipped.minX..clipped.maxX {
+            layerPutFull(layer, .(x, y), index, 0, packed)
+            written++
         }
-        y = y + 1
     }
     return written
 }
 
 /** Draws the outline of [rect] with [index]; returns how many cells were written. */
 func layerOutlineRect(layer: TileLayer!, rect: TileRect, index: Int): Int {
-    if rect.isEmpty() {
-        return 0
-    }
+    if rect.isEmpty() then return 0
     var written = 0
     var x = rect.minX
     while x <= rect.maxX {
-        layerPut(layer, TilePos(x, rect.minY), index)
-        written = written + 1
+        layerPut(layer, .(x, rect.minY), index)
+        written++
         if rect.maxY != rect.minY {
-            layerPut(layer, TilePos(x, rect.maxY), index)
-            written = written + 1
+            layerPut(layer, .(x, rect.maxY), index)
+            written++
         }
-        x = x + 1
+        x++
     }
     var y = rect.minY + 1
     while y <= rect.maxY - 1 {
-        layerPut(layer, TilePos(rect.minX, y), index)
-        written = written + 1
+        layerPut(layer, .(rect.minX, y), index)
+        written++
         if rect.maxX != rect.minX {
-            layerPut(layer, TilePos(rect.maxX, y), index)
-            written = written + 1
+            layerPut(layer, .(rect.maxX, y), index)
+            written++
         }
-        y = y + 1
+        y++
     }
     return written
 }
@@ -566,14 +464,14 @@ func layerReplace(layer: TileLayer!, from: Int, to: Int): Int {
     while y < layer.size.y {
         var x = 0
         while x < layer.size.x {
-            fin pos = TilePos(x, y)
+            fin pos: TilePos = .(x, y)
             if layerIndexAt(layer, pos) == from {
                 layerPut(layer, pos, to)
-                changed = changed + 1
+                changed++
             }
-            x = x + 1
+            x++
         }
-        y = y + 1
+        y++
     }
     return changed
 }
@@ -586,29 +484,23 @@ func layerReplace(layer: TileLayer!, from: Int, to: Int): Int {
  */
 func layerCopyRect(source: TileLayer&, rect: TileRect, target: TileLayer!, at: TilePos): Int {
     fin clipped = rect.clampTo(source.size)
-    if clipped.isEmpty() {
-        return 0
-    }
+    if clipped.isEmpty() then return 0
     var written = 0
-    var y = clipped.minY
-    while y <= clipped.maxY {
-        var x = clipped.minX
-        while x <= clipped.maxX {
-            fin from = TilePos(x, y)
-            fin to = TilePos(at.x + x - clipped.minX, at.y + y - clipped.minY)
+    for y in clipped.minY..clipped.maxY {
+        for x in clipped.minX..clipped.maxX {
+            fin from: TilePos = .(x, y)
+            fin to: TilePos = .(at.x + x - clipped.minX, at.y + y - clipped.minY)
             if target.size.contains(to) {
                 layerPutFull(
-                    target,
-                    to,
-                    layerIndexAt(source, from),
-                    layerFlagsAt(source, from),
+                    target
+                    to
+                    layerIndexAt(source, from)
+                    layerFlagsAt(source, from)
                     layerTintAt(source, from)
                 )
-                written = written + 1
+                written++
             }
-            x = x + 1
         }
-        y = y + 1
     }
     return written
 }
@@ -616,39 +508,25 @@ func layerCopyRect(source: TileLayer&, rect: TileRect, target: TileLayer!, at: T
 /** The number of cells of the layer that hold a tile. */
 func layerCount(layer: TileLayer&): Int {
     var total = 0
-    var i = 0
-    while i < layer.chunks.counts.size {
-        total = total + layer.chunks.counts[i]
-        i = i + 1
-    }
+    for i: Int in 0..<layer.chunks.counts.size then total += layer.chunks.counts[i]
     return total
 }
 
 /** The number of cells of [rect] that hold a tile. */
 func layerCountIn(layer: TileLayer&, rect: TileRect): Int {
     fin clipped = rect.clampTo(layer.size)
-    if clipped.isEmpty() {
-        return 0
-    }
+    if clipped.isEmpty() then return 0
     var total = 0
-    var y = clipped.minY
-    while y <= clipped.maxY {
-        var x = clipped.minX
-        while x <= clipped.maxX {
-            if layerHasTile(layer, TilePos(x, y)) {
-                total = total + 1
-            }
-            x = x + 1
+    for y in clipped.minY..clipped.maxY {
+        for x in clipped.minX..clipped.maxX {
+            if layerHasTile(layer, .(x, y)) then total++
         }
-        y = y + 1
     }
     return total
 }
 
 /** True when no cell of the chunk containing [pos] holds a tile. */
-func layerChunkEmptyAt(layer: TileLayer&, pos: TilePos): Bool {
-    return layer.chunks.countAt(pos.x, pos.y) == 0
-}
+func layerChunkEmptyAt(layer: TileLayer&, pos: TilePos): Bool = layer.chunks.countAt(pos.x, pos.y) == 0
 
 /** Recomputes the chunk occupancy counts from the tile plane. */
 func layerRebuildChunks(layer: TileLayer!) {
@@ -657,12 +535,10 @@ func layerRebuildChunks(layer: TileLayer!) {
     while y < layer.size.y {
         var x = 0
         while x < layer.size.x {
-            if layer.indices[y * layer.size.x + x] != tileEmpty {
-                layer.chunks.adjust(x, y, 1)
-            }
-            x = x + 1
+            if layer.indices[y * layer.size.x + x] != tileEmpty then layer.chunks.adjust(x, y, 1)
+            x++
         }
-        y = y + 1
+        y++
     }
 }
 
@@ -674,40 +550,26 @@ func layerRebuildChunks(layer: TileLayer!) {
  * dropped, so the copy happens here.
  */
 func layerResize(layer: TileLayer!, size: TilemapSize): Unit ?! TilemapFault {
-    if !size.isValid {
-        return .EmptySize
-    }
+    if !size.isValid then return .EmptySize
     fin hadFlags = layer.flags.size > 0
     fin hadTints = layer.tints.size > 0
 
     var indices = intGridFill(size.x, size.y, tileEmpty)
-    var flags: Array<Int> = Array<Int>()
-    var tints: Array<Int> = Array<Int>()
-    if hadFlags {
-        flags = intGridFill(size.x, size.y, 0)
-    }
-    if hadTints {
-        tints = intGridFill(size.x, size.y, tileTintNone)
-    }
+    var flags: Array<Int> = []
+    var tints: Array<Int> = []
+    if hadFlags then flags = intGridFill(size.x, size.y, 0)
+    if hadTints then tints = intGridFill(size.x, size.y, tileTintNone)
 
     fin copyX = intMin(size.x, layer.size.x)
     fin copyY = intMin(size.y, layer.size.y)
-    var y = 0
-    while y < copyY {
-        var x = 0
-        while x < copyX {
+    for y: Int in 0..<copyY {
+        for x: Int in 0..<copyX {
             fin from = y * layer.size.x + x
             fin to = y * size.x + x
             indices[to] = layer.indices[from]
-            if hadFlags {
-                flags[to] = layer.flags[from]
-            }
-            if hadTints {
-                tints[to] = layer.tints[from]
-            }
-            x = x + 1
+            if hadFlags then flags[to] = layer.flags[from]
+            if hadTints then tints[to] = layer.tints[from]
         }
-        y = y + 1
     }
 
     layer.size = size
@@ -722,26 +584,14 @@ func layerResize(layer: TileLayer!, size: TilemapSize): Unit ?! TilemapFault {
 /** An independent copy of [layer], sharing nothing with it. */
 func layerClone(layer: TileLayer&, name: String): TileLayer {
     var copy = tileLayerNew(name, layer.size)
-    var i = 0
-    while i < layer.indices.size {
-        copy.indices[i] = layer.indices[i]
-        i = i + 1
-    }
+    for i: Int in 0..<layer.indices.size then copy.indices[i] = layer.indices[i]
     if layer.flags.size > 0 {
         copy.ensureFlags()
-        var f = 0
-        while f < layer.flags.size {
-            copy.flags[f] = layer.flags[f]
-            f = f + 1
-        }
+        for f: Int in 0..<layer.flags.size then copy.flags[f] = layer.flags[f]
     }
     if layer.tints.size > 0 {
         copy.ensureTints()
-        var t = 0
-        while t < layer.tints.size {
-            copy.tints[t] = layer.tints[t]
-            t = t + 1
-        }
+        for t: Int in 0..<layer.tints.size then copy.tints[t] = layer.tints[t]
     }
     copy.visible = layer.visible
     copy.opacity = layer.opacity
@@ -771,14 +621,11 @@ func layerUsedRect(layer: TileLayer&): TileRect {
                 maxX = intMax(maxX, x)
                 maxY = intMax(maxY, y)
             }
-            x = x + 1
+            x++
         }
-        y = y + 1
+        y++
     }
-    if maxX < 0 {
-        return tileRectEmpty()
-    }
-    return TileRect(minX, minY, maxX, maxY)
+    return if maxX < 0 then tileRectEmpty() else .(minX, minY, maxX, maxY)
 }
 
 // ── Entity storage ──────────────────────────────────────────────────────
@@ -786,56 +633,40 @@ func layerUsedRect(layer: TileLayer&): TileRect {
 /** A cell-to-entity index over a map of [size], with every cell unbound. */
 func tileStorageNew(size: TilemapSize): TileStorage {
     return TileStorage(
-        size,
-        intGridFill(size.x, size.y, -1),
-        intGridFill(size.x, size.y, 0),
+        size
+        intGridFill(size.x, size.y, -1)
+        intGridFill(size.x, size.y, 0)
         0
     )
 }
 
 impl TileStorage {
-    func &.offsetOf(pos: TilePos): Int {
-        if !self.size.contains(pos) {
-            return -1
-        }
-        return pos.y * self.size.x + pos.x
-    }
+    func &.offsetOf(pos: TilePos): Int = if !self.size.contains(pos) then -1 else pos.y * self.size.x + pos.x
 }
 
 /** What the cell at [pos] is bound to. */
 func tileStorageGet(storage: TileStorage&, pos: TilePos): TileEntity {
     fin at = storage.offsetOf(pos)
-    if at < 0 {
-        return TileEntity.OutOfBounds
-    }
+    if at < 0 then return TileEntity.OutOfBounds
     fin id = storage.ids[at]
-    if id < 0 {
-        return TileEntity.Unbound
-    }
-    return TileEntity.Bound(Entity(id, storage.generations[at]))
+    return if id < 0 then TileEntity.Unbound else TileEntity.Bound(.(id, storage.generations[at]))
 }
 
 /** The entity bound to [pos], or an invalid entity when the cell is unbound. */
 func tileStorageEntity(storage: TileStorage&, pos: TilePos): Entity {
     when tileStorageGet(storage, pos) {
-        TileEntity.Bound(entity) -> { return entity }
+        .Bound(entity) -> { return entity }
         else -> { return Entity::invalid }
     }
-    return Entity::invalid
+    return ::invalid
 }
 
 /** Binds [pos] to [entity], replacing whatever it held. */
 func tileStorageSet(storage: TileStorage!, pos: TilePos, entity: Entity): Unit ?! TilemapFault {
     fin at = storage.offsetOf(pos)
-    if at < 0 {
-        return .OutOfBounds
-    }
-    if storage.ids[at] < 0 && entity.isValid {
-        storage.count = storage.count + 1
-    }
-    if storage.ids[at] >= 0 && !entity.isValid {
-        storage.count = storage.count - 1
-    }
+    if at < 0 then return .OutOfBounds
+    if storage.ids[at] < 0 && entity.isValid then storage.count++
+    if storage.ids[at] >= 0 && !entity.isValid then storage.count--
     if entity.isValid {
         storage.ids[at] = entity.id
         storage.generations[at] = entity.generation
@@ -847,7 +678,7 @@ func tileStorageSet(storage: TileStorage!, pos: TilePos, entity: Entity): Unit ?
 
 /** Unbinds [pos], leaving the entity itself alone. */
 func tileStorageRemove(storage: TileStorage!, pos: TilePos): Unit ?! TilemapFault {
-    try tileStorageSet(storage, pos, Entity::invalid)
+    try tileStorageSet(storage, pos, ::invalid)
 }
 
 /** Unbinds every cell. */
@@ -860,7 +691,7 @@ func tileStorageClear(storage: TileStorage!) {
 /** True when [pos] is bound to a live entity of [world]. */
 func tileStorageIsAlive(storage: TileStorage&, world: World&, pos: TilePos): Bool {
     when tileStorageGet(storage, pos) {
-        TileEntity.Bound(entity) -> { return world.isAlive(entity) }
+        .Bound(entity) -> { return world.isAlive(entity) }
         else -> { return false }
     }
     return false
@@ -878,15 +709,15 @@ func tileStorageDespawnAll(storage: TileStorage!, world: World!): Int {
     while i < storage.ids.size {
         fin id = storage.ids[i]
         if id >= 0 {
-            fin entity = Entity(id, storage.generations[i])
+            fin entity: Entity = .(id, storage.generations[i])
             if world.isAlive(entity) {
                 world.despawn(entity)
-                removed = removed + 1
+                removed++
             }
             storage.ids[i] = -1
             storage.generations[i] = 0
         }
-        i = i + 1
+        i++
     }
     storage.count = 0
     return removed
@@ -904,41 +735,41 @@ func tileStorageSweep(storage: TileStorage!, world: World&): Int {
     var i = 0
     while i < storage.ids.size {
         fin id = storage.ids[i]
-        if id >= 0 && !world.isAlive(Entity(id, storage.generations[i])) {
+        if id >= 0 && !world.isAlive(.(id, storage.generations[i])) {
             storage.ids[i] = -1
             storage.generations[i] = 0
-            storage.count = storage.count - 1
-            swept = swept + 1
+            storage.count--
+            swept++
         }
-        i = i + 1
+        i++
     }
     return swept
 }
 
 test "writing and clearing a cell keeps the chunk counts honest" {
-    var layer = tileLayerNew("ground", TilemapSize(40, 40))
+    var layer = tileLayerNew("ground", .(40, 40))
     assert layerCount(layer) == 0 panic "a new layer holds no tiles"
 
-    layerPut(layer, TilePos(3, 3), 7)
-    layerPut(layer, TilePos(20, 20), 9)
+    layerPut(layer, .(3, 3), 7)
+    layerPut(layer, .(20, 20), 9)
     assert layerCount(layer) == 2 panic "two writes must register as two tiles"
-    assert !layerChunkEmptyAt(layer, TilePos(3, 3)) panic "an occupied chunk must not read as empty"
-    assert layerChunkEmptyAt(layer, TilePos(3, 35)) panic "an untouched chunk must read as empty"
+    assert !layerChunkEmptyAt(layer, .(3, 3)) panic "an occupied chunk must not read as empty"
+    assert layerChunkEmptyAt(layer, .(3, 35)) panic "an untouched chunk must read as empty"
 
-    layerPut(layer, TilePos(3, 3), 8)
+    layerPut(layer, .(3, 3), 8)
     assert layerCount(layer) == 2 panic "overwriting a tile must not change the count"
 
-    layerPut(layer, TilePos(3, 3), tileEmpty)
+    layerPut(layer, .(3, 3), tileEmpty)
     assert layerCount(layer) == 1 panic "clearing a cell must decrement the count"
-    assert layerChunkEmptyAt(layer, TilePos(3, 3)) panic "the chunk must fall back to empty"
+    assert layerChunkEmptyAt(layer, .(3, 3)) panic "the chunk must fall back to empty"
 }
 
 test "an off-map write is refused rather than dropped" {
-    var layer = tileLayerNew("ground", TilemapSize(8, 8))
+    var layer = tileLayerNew("ground", .(8, 8))
 
     var refused = false
     try {
-        layerSet(layer, TilePos(9, 0), 1)
+        layerSet(layer, .(9, 0), 1)
     } catch {
         refused = true
     }
@@ -946,7 +777,7 @@ test "an off-map write is refused rather than dropped" {
 
     var accepted = true
     try {
-        layerSet(layer, TilePos(7, 7), 1)
+        layerSet(layer, .(7, 7), 1)
     } catch {
         accepted = false
     }
@@ -954,39 +785,39 @@ test "an off-map write is refused rather than dropped" {
 }
 
 test "the flag and tint planes stay sparse until they are used" {
-    var layer = tileLayerNew("ground", TilemapSize(16, 16))
+    var layer = tileLayerNew("ground", .(16, 16))
     layerFill(layer, 4)
     assert layer.flags.size == 0 && layer.tints.size == 0 panic "a plain filled layer must not allocate flags or tints"
-    assert layerFlagsAt(layer, TilePos(2, 2)) == 0 panic "a sparse flag plane must read as zero"
-    assert layerTintAt(layer, TilePos(2, 2)) == tileTintNone panic "a sparse tint plane must read as untinted"
+    assert layerFlagsAt(layer, .(2, 2)) == 0 panic "a sparse flag plane must read as zero"
+    assert layerTintAt(layer, .(2, 2)) == tileTintNone panic "a sparse tint plane must read as untinted"
 
-    layerSetFlip(layer, TilePos(2, 2), tileFlip(true, false, false)) catch { }
+    layerSetFlip(layer, .(2, 2), tileFlip(true, false, false)) catch { }
     assert layer.flags.size > 0 panic "writing a mirror must allocate the flag plane"
-    assert layerFlipAt(layer, TilePos(2, 2)).x panic "the mirror must survive the round trip"
-    assert !layerFlipAt(layer, TilePos(3, 2)).x panic "a neighbouring cell must be unaffected"
+    assert layerFlipAt(layer, .(2, 2)).x panic "the mirror must survive the round trip"
+    assert !layerFlipAt(layer, .(3, 2)).x panic "a neighbouring cell must be unaffected"
 }
 
 test "bulk fills and copies move every plane" {
-    var source = tileLayerNew("source", TilemapSize(8, 8))
+    var source = tileLayerNew("source", .(8, 8))
     layerFillRectColor(source, tileRect(0, 0, 3, 3), 5, tileColor(1.0, 0.0, 0.0, 1.0))
-    layerSetFlip(source, TilePos(1, 1), tileFlip(true, true, false)) catch { }
+    layerSetFlip(source, .(1, 1), tileFlip(true, true, false)) catch { }
     assert layerCountIn(source, tileRect(0, 0, 3, 3)) == 16 panic "a 4x4 fill must write 16 cells"
 
-    var target = tileLayerNew("target", TilemapSize(8, 8))
-    layerCopyRect(source, tileRect(0, 0, 3, 3), target, TilePos(4, 4))
-    assert layerIndexAt(target, TilePos(4, 4)) == 5 panic "the copy must carry the tile index"
-    assert layerFlipAt(target, TilePos(5, 5)).x panic "the copy must carry the cell flags"
-    assert layerTintAt(target, TilePos(4, 4)) != tileTintNone panic "the copy must carry the tint"
+    var target = tileLayerNew("target", .(8, 8))
+    layerCopyRect(source, tileRect(0, 0, 3, 3), target, .(4, 4))
+    assert layerIndexAt(target, .(4, 4)) == 5 panic "the copy must carry the tile index"
+    assert layerFlipAt(target, .(5, 5)).x panic "the copy must carry the cell flags"
+    assert layerTintAt(target, .(4, 4)) != tileTintNone panic "the copy must carry the tint"
     assert layerCount(target) == 16 panic "the copy must register in the chunk counts"
 }
 
 test "resizing preserves the content that still fits" {
-    var layer = tileLayerNew("ground", TilemapSize(8, 8))
+    var layer = tileLayerNew("ground", .(8, 8))
     layerFill(layer, 3)
-    layerPut(layer, TilePos(7, 7), 9)
-    layerResize(layer, TilemapSize(4, 12)) catch { }
+    layerPut(layer, .(7, 7), 9)
+    layerResize(layer, .(4, 12)) catch { }
     assert layer.size.x == 4 && layer.size.y == 12 panic "the layer must adopt the new size"
-    assert layerIndexAt(layer, TilePos(3, 7)) == 3 panic "content inside the new extent must survive"
-    assert layerIndexAt(layer, TilePos(3, 9)) == tileEmpty panic "new rows must start empty"
+    assert layerIndexAt(layer, .(3, 7)) == 3 panic "content inside the new extent must survive"
+    assert layerIndexAt(layer, .(3, 9)) == tileEmpty panic "new rows must start empty"
     assert layerCount(layer) == 32 panic "the chunk counts must be rebuilt for the new size"
 }

@@ -7,22 +7,22 @@ import engine.scene.io
 import engine.foliage
 
 func main() {
-    fin text = foliageStampText(FoliageStamp(grassFoliage,-0.025,0.033,18.0,2.35,0.42)) +
-        foliageStampText(FoliageStamp(grassFoliage,-0.025,0.033,3.0,0.0,0.42))
+    fin text = foliageStampText(.(grassFoliage,-0.025,0.033,18.0,2.35,0.42)) +
+        foliageStampText(.(grassFoliage,-0.025,0.033,3.0,0.0,0.42))
     fin marks = foliageStamps(text)
     assert marks.size == 2 && absValue(marks[0].height-0.42) < 0.001 panic "both painting operations decode"
-    var cover = FoliageCoverage()
+    var cover: FoliageCoverage = .()
     foliageCover(cover,marks,-0.025,0.033,200.0,200.0,0.8,0.31)
     assert cover.density == 0.0 panic "later erase stamp clears grass"
     foliageCover(cover,marks,-0.060,0.033,200.0,200.0,0.8,0.31)
     assert cover.density > 2.0 panic "the non-erased area keeps the grass"
-    var world = World()
+    var world: World = .()
     fin ground = world.spawn()
-    storageInsert<FoliagePaint>(ensureStorage<FoliagePaint>(world),ground,FoliagePaint(grassDensity: 1.3,strokes: text))
+    storageInsert<FoliagePaint>(ensureStorage(world),ground,.(grassDensity: 1.3,strokes: text))
     fin scene = writeScene(world)
-    var reopened = World()
+    var reopened: World = .()
     assert readScene(reopened,scene) == 1 panic "the painted scene reopens"
-    fin saved = storageValueAt<FoliagePaint>(ensureStorage<FoliagePaint>(reopened),0)
+    fin saved = storageValueAt<FoliagePaint>(ensureStorage(reopened),0)
     assert saved.strokes == text && absValue(saved.grassDensity-1.3) < 0.001 panic "density and both stamps survive a round trip"
     println("foliage paint erase and round trip ok")
 }

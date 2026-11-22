@@ -178,9 +178,7 @@ pack Time {
 
 /** Creates a clock with a 60 Hz fixed timestep. */
 @Experimental(since: "0.1")
-func timeInit(): Time {
-    return Time(0.0, 0.0, 1.0 / 60.0, Long(0))
-}
+func timeInit(): Time = .(0.0, 0.0, 1.0 / 60.0, 0)
 
 impl Time {
     /**
@@ -191,22 +189,17 @@ impl Time {
      */
     func !.advance(deltaSecs: Double) {
         var clamped = deltaSecs
-        if clamped < 0.0 {
-            clamped = 0.0
-        }
-        if clamped > 0.25 {
-            clamped = 0.25
-        }
+        if clamped < 0.0 then clamped = 0.0
+        if clamped > 0.25 then clamped = 0.25
         self.deltaSecs = clamped
-        self.elapsedSecs = self.elapsedSecs + clamped
-        self.frame = self.frame + 1
+        self.elapsedSecs += clamped
+        self.frame++
     }
 
     /** Replaces the deterministic fixed timestep. */
-    func !.setFixedDelta(seconds: Double) {
-        assert seconds > 0.0 panic "fixed timestep must be positive"
-        self.fixedDeltaSecs = seconds
-    }
+    func !.setFixedDelta(seconds: Double)
+    in assert seconds > 0.0 panic "fixed timestep must be positive"
+    scope self.fixedDeltaSecs = seconds
 }
 
 /**
@@ -221,26 +214,18 @@ pack Signal<T> {
     var revision: Long
 }
 
-func<T> signalInit(value: T): Signal<T> {
-    return .(value, Long(0))
-}
+func<T> signalInit(value: T): Signal<T> = .(value, 0)
 
-func<T> signalGet(signal: Signal<T>&): T {
-    return signal.value
-}
+func<T> signalGet(signal: Signal<T>&): T = signal.value
 
 func<T> signalSet(signal: Signal<T>!, value: T) {
     signal.value = value
-    signal.revision = signal.revision + 1
+    signal.revision++
 }
 
-func<T> signalVersion(signal: Signal<T>&): Long {
-    return signal.revision
-}
+func<T> signalVersion(signal: Signal<T>&): Long = signal.revision
 
-func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool {
-    return signal.revision != version
-}
+func<T> signalChangedSince(signal: Signal<T>&, version: Long): Bool = signal.revision != version
 
 /**
  * Shared engine registry provided by the default dependency-injection wrap.
@@ -256,15 +241,15 @@ solo pack EngineRegistry {
 
 impl EngineRegistry {
     func !.markModuleLoaded() {
-        self.loadedModules = self.loadedModules + 1
+        self.loadedModules++
     }
 
     func !.nextFrame() {
-        self.frameIndex = self.frameIndex + 1
+        self.frameIndex++
     }
 
     func !.markWorldChanged() {
-        self.worldRevision = self.worldRevision + 1
+        self.worldRevision++
     }
 }
 
@@ -311,9 +296,7 @@ func exit() {
 
 /** Whether `exit()` has been called. The frame loop's stop condition. */
 @Experimental(since: "0.1")
-func exitRequested(): Bool {
-    return azExitRequested() != Long(0)
-}
+func exitRequested(): Bool = azExitRequested() != 0
 
 /**
  * A colour with straight alpha, each channel 0..1.
@@ -330,7 +313,5 @@ pack Rgba derives (Copy, Clone) {
 
 impl Rgba {
     /** The same colour at [alpha] opacity. */
-    func &.withAlpha(alpha: Double): Rgba {
-        return Rgba(self.r, self.g, self.b, alpha)
-    }
+    func &.withAlpha(alpha: Double): Rgba = .(self.r, self.g, self.b, alpha)
 }

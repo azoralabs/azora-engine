@@ -59,8 +59,8 @@ variant enum LayerPick {
 
 /** An empty map on [geometry], drawing from [tiles]. */
 func tilemapNew(name: String, geometry: TilemapGeometry, tiles: TileSet): Tilemap {
-    var layers: Array<TileLayer> = Array<TileLayer>()
-    return Tilemap(name, geometry, layers, 0, tiles, true, 1.0, tileColorWhite())
+    var layers: Array<TileLayer> = []
+    return .(name, geometry, layers, 0, tiles, true, 1.0, tileColorWhite())
 }
 
 /** A square map of [width] x [height] tiles with one empty layer. */
@@ -73,28 +73,21 @@ func tilemapSquare(
     tiles: TileSet
 ): Tilemap {
     var map = tilemapNew(name, squareGeometry(width, height, tileWidth, tileHeight), take tiles)
-    tilemapAddLayer(map, tileLayerNew("main", TilemapSize(width, height)))
+    tilemapAddLayer(map, tileLayerNew("main", .(width, height)))
     return map
 }
 
 impl Tilemap {
     /** The map's extent in tiles. */
-    func &.size(): TilemapSize {
-        return self.geometry.size
-    }
+    func &.size(): TilemapSize = self.geometry.size
 
     /** The layer at [index], or an empty one-cell layer when the index is unknown. */
     func &.layerAt(index: Int): TileLayer {
-        if index < 0 || index >= self.count {
-            return tileLayerNew("", TilemapSize(0, 0))
-        }
-        return self.layers[index]
+        return if index < 0 || index >= self.count then tileLayerNew("", .(0, 0)) else self.layers[index]
     }
 
     /** True when [index] names a layer of this map. */
-    func &.hasLayer(index: Int): Bool {
-        return index >= 0 && index < self.count
-    }
+    func &.hasLayer(index: Int): Bool = index >= 0 && index < self.count
 }
 
 /**
@@ -106,38 +99,28 @@ impl Tilemap {
  * subtly wrong.
  */
 func tilemapAddLayer(map: Tilemap!, layer: TileLayer): Int {
-    if layer.size.x != map.geometry.size.x || layer.size.y != map.geometry.size.y {
-        return -1
-    }
+    if layer.size.x != map.geometry.size.x || layer.size.y != map.geometry.size.y then return -1
     if map.count >= map.layers.size {
         fin room = intMax(map.layers.size * 2, 4)
         var grown: Array<TileLayer> = Array::fill<TileLayer>(room)
-        var i = 0
-        while i < map.count {
-            grown[i] = map.layers[i]
-            i = i + 1
-        }
+        for i: Int in 0..<map.count then grown[i] = map.layers[i]
         map.layers = grown
     }
     layer.order = map.count
     map.layers[map.count] = layer
-    map.count = map.count + 1
+    map.count++
     return map.count - 1
 }
 
 /** Creates and appends an empty layer sized to the map. */
-func tilemapNewLayer(map: Tilemap!, name: String): Int {
-    return tilemapAddLayer(map, tileLayerNew(name, map.geometry.size))
-}
+func tilemapNewLayer(map: Tilemap!, name: String): Int = tilemapAddLayer(map, tileLayerNew(name, map.geometry.size))
 
 /** The layer called [name]. */
 func tilemapFindLayer(map: Tilemap&, name: String): LayerPick {
     var i = 0
     while i < map.count {
-        if map.layers[i].name == name {
-            return LayerPick.Found(i, map.layers[i])
-        }
-        i = i + 1
+        if map.layers[i].name == name then return LayerPick.Found(i, map.layers[i])
+        i++
     }
     return LayerPick.Absent
 }
@@ -145,7 +128,7 @@ func tilemapFindLayer(map: Tilemap&, name: String): LayerPick {
 /** The index of the layer called [name], or `-1`. */
 func tilemapLayerIndex(map: Tilemap&, name: String): Int {
     when tilemapFindLayer(map, name) {
-        LayerPick.Found(index, layer) -> { return index }
+        .Found(index, layer) -> { return index }
         else -> { return -1 }
     }
     return -1
@@ -153,19 +136,13 @@ func tilemapLayerIndex(map: Tilemap&, name: String): Int {
 
 /** Removes the layer at [index], keeping the order of the rest. */
 func tilemapRemoveLayer(map: Tilemap!, index: Int): Bool {
-    if index < 0 || index >= map.count {
-        return false
-    }
-    var i = index
-    while i < map.count - 1 {
-        map.layers[i] = map.layers[i + 1]
-        i = i + 1
-    }
-    map.count = map.count - 1
+    if index < 0 || index >= map.count then return false
+    for i in index..<map.count - 1 then map.layers[i] = map.layers[i + 1]
+    map.count--
     var order = 0
     while order < map.count {
         map.layers[order].order = order
-        order = order + 1
+        order++
     }
     return true
 }
@@ -178,16 +155,14 @@ func tilemapRemoveLayer(map: Tilemap!, index: Int): Bool {
  * scene flicker.
  */
 func tilemapSortLayers(map: Tilemap!) {
-    var i = 1
-    while i < map.count {
+    for i: Int in 1..<map.count {
         fin moving = map.layers[i]
         var j = i - 1
         while j >= 0 && map.layers[j].order > moving.order {
             map.layers[j + 1] = map.layers[j]
-            j = j - 1
+            j--
         }
         map.layers[j + 1] = moving
-        i = i + 1
     }
 }
 
@@ -195,25 +170,17 @@ func tilemapSortLayers(map: Tilemap!) {
 
 /** The cell at [pos] of layer [index]. */
 func tilemapLookup(map: Tilemap&, index: Int, pos: TilePos): TileLookup {
-    if !map.hasLayer(index) {
-        return TileLookup.OutOfBounds
-    }
-    return layerLookup(map.layers[index], pos)
+    return if !map.hasLayer(index) then TileLookup.OutOfBounds else layerLookup(map.layers[index], pos)
 }
 
 /** The tile index at [pos] of layer [index], or [tileEmpty]. */
 func tilemapIndexAt(map: Tilemap&, index: Int, pos: TilePos): Int {
-    if !map.hasLayer(index) {
-        return tileEmpty
-    }
-    return layerIndexAt(map.layers[index], pos)
+    return if !map.hasLayer(index) then tileEmpty else layerIndexAt(map.layers[index], pos)
 }
 
 /** Writes [tile] at [pos] of layer [index]. */
 func tilemapSet(map: Tilemap!, index: Int, pos: TilePos, tile: Int): Unit ?! TilemapFault {
-    if !map.hasLayer(index) {
-        return .OutOfBounds
-    }
+    if !map.hasLayer(index) then return .OutOfBounds
     try layerSet(map.layers[index], pos, tile)
 }
 
@@ -231,10 +198,8 @@ func tilemapClear(map: Tilemap!, index: Int, pos: TilePos): Unit ?! TilemapFault
 func tilemapTopLayerAt(map: Tilemap&, pos: TilePos): Int {
     var i = map.count - 1
     while i >= 0 {
-        if layerHasTile(map.layers[i], pos) {
-            return i
-        }
-        i = i - 1
+        if layerHasTile(map.layers[i], pos) then return i
+        i--
     }
     return -1
 }
@@ -243,10 +208,7 @@ func tilemapTopLayerAt(map: Tilemap&, pos: TilePos): Int {
 func tilemapTopTileAt(map: Tilemap&, pos: TilePos): TileLookup {
     fin index = tilemapTopLayerAt(map, pos)
     if index < 0 {
-        if map.geometry.size.contains(pos) {
-            return TileLookup.Empty
-        }
-        return TileLookup.OutOfBounds
+        return if map.geometry.size.contains(pos) then TileLookup.Empty else TileLookup.OutOfBounds
     }
     return layerLookup(map.layers[index], pos)
 }
@@ -257,10 +219,8 @@ func tilemapTraitsAt(map: Tilemap&, pos: TilePos): Int {
     var i = 0
     while i < map.count {
         fin tile = layerIndexAt(map.layers[i], pos)
-        if tile != tileEmpty {
-            traits = traits | map.tiles.traitsOf(tile)
-        }
-        i = i + 1
+        if tile != tileEmpty then traits = traits | map.tiles.traitsOf(tile)
+        i++
     }
     return traits
 }
@@ -268,48 +228,31 @@ func tilemapTraitsAt(map: Tilemap&, pos: TilePos): Int {
 /** The trait bits of the tile at [pos] on layer [index]. */
 func tilemapLayerTraitsAt(map: Tilemap&, index: Int, pos: TilePos): Int {
     fin tile = tilemapIndexAt(map, index, pos)
-    if tile == tileEmpty {
-        return 0
-    }
-    return map.tiles.traitsOf(tile)
+    return if tile == tileEmpty then 0 else map.tiles.traitsOf(tile)
 }
 
 /** True when any layer's tile at [pos] carries any bit of [mask]. */
-func tilemapHasTrait(map: Tilemap&, pos: TilePos, mask: Int): Bool {
-    return flagsAny(tilemapTraitsAt(map, pos), mask)
-}
+func tilemapHasTrait(map: Tilemap&, pos: TilePos, mask: Int): Bool = flagsAny(tilemapTraitsAt(map, pos), mask)
 
 // ── Geometry passthrough ────────────────────────────────────────────────
 
 /** The world-space centre of tile [pos]. */
-func tilemapTileCenter(map: Tilemap&, pos: TilePos): WorldPos {
-    return tileCenter(map.geometry, pos)
-}
+func tilemapTileCenter(map: Tilemap&, pos: TilePos): WorldPos = tileCenter(map.geometry, pos)
 
 /** The rectangle tile [pos] is drawn into. */
-func tilemapTileQuad(map: Tilemap&, pos: TilePos): WorldRect {
-    return tileQuad(map.geometry, pos)
-}
+func tilemapTileQuad(map: Tilemap&, pos: TilePos): WorldRect = tileQuad(map.geometry, pos)
 
 /** The tile containing the world point [point]. */
-func tilemapWorldToTile(map: Tilemap&, point: WorldPos): TilePos {
-    return worldToTile(map.geometry, point)
-}
+func tilemapWorldToTile(map: Tilemap&, point: WorldPos): TilePos = worldToTile(map.geometry, point)
 
 /** Where [point] falls, distinguishing a cell of the map from one beyond it. */
-func tilemapPick(map: Tilemap&, point: WorldPos): TilePick {
-    return pickTile(map.geometry, point)
-}
+func tilemapPick(map: Tilemap&, point: WorldPos): TilePick = pickTile(map.geometry, point)
 
 /** The map's world-space bounding box. */
-func tilemapBounds(map: Tilemap&): WorldRect {
-    return map.geometry.bounds
-}
+func tilemapBounds(map: Tilemap&): WorldRect = map.geometry.bounds
 
 /** The tiles a view rectangle can possibly show. */
-func tilemapVisibleTiles(map: Tilemap&, view: WorldRect): TileRect {
-    return visibleTiles(map.geometry, view)
-}
+func tilemapVisibleTiles(map: Tilemap&, view: WorldRect): TileRect = visibleTiles(map.geometry, view)
 
 /** Moves the map and refreshes its cached geometry. */
 func tilemapSetOrigin(map: Tilemap!, origin: WorldPos) {
@@ -329,13 +272,11 @@ func tilemapSetAnchor(map: Tilemap!, anchor: TilemapAnchor) {
  * keeps them in step.
  */
 func tilemapResize(map: Tilemap!, size: TilemapSize): Unit ?! TilemapFault {
-    if !size.isValid {
-        return .EmptySize
-    }
+    if !size.isValid then return .EmptySize
     var i = 0
     while i < map.count {
         try layerResize(map.layers[i], size)
-        i = i + 1
+        i++
     }
     geometrySetSize(map.geometry, size)
 }
@@ -345,8 +286,8 @@ func tilemapTileCount(map: Tilemap&): Int {
     var total = 0
     var i = 0
     while i < map.count {
-        total = total + layerCount(map.layers[i])
-        i = i + 1
+        total += layerCount(map.layers[i])
+        i++
     }
     return total
 }
@@ -360,8 +301,8 @@ test "layers must agree using the map about their size" {
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
 
-    assert tilemapAddLayer(map, tileLayerNew("ground", TilemapSize(8, 8))) == 0 panic "a matching layer must be accepted as the first layer"
-    assert tilemapAddLayer(map, tileLayerNew("wrong", TilemapSize(4, 4))) == -1 panic "a layer of the wrong size must be refused, not resized"
+    assert tilemapAddLayer(map, tileLayerNew("ground", .(8, 8))) == 0 panic "a matching layer must be accepted as the first layer"
+    assert tilemapAddLayer(map, tileLayerNew("wrong", .(4, 4))) == -1 panic "a layer of the wrong size must be refused, not resized"
     assert map.count == 1 panic "the refused layer must not have been added"
 }
 
@@ -371,13 +312,13 @@ test "the topmost tile wins a stacked lookup" {
     tilemapNewLayer(map, "ground")
     tilemapNewLayer(map, "walls")
 
-    tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
-    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 0 panic "only the ground holds a tile so far"
+    tilemapSet(map, 0, .(2, 2), 3) catch { }
+    assert tilemapTopLayerAt(map, .(2, 2)) == 0 panic "only the ground holds a tile so far"
 
-    tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
-    assert tilemapTopLayerAt(map, TilePos(2, 2)) == 1 panic "the wall layer must win once it has a tile"
-    assert tileLookupIndex(tilemapTopTileAt(map, TilePos(2, 2))) == 9 panic "the topmost tile must be the one reported"
-    assert tileLookupOffMap(tilemapTopTileAt(map, TilePos(99, 99))) panic "a lookup outside the map must say so"
+    tilemapSet(map, 1, .(2, 2), 9) catch { }
+    assert tilemapTopLayerAt(map, .(2, 2)) == 1 panic "the wall layer must win once it has a tile"
+    assert tileLookupIndex(tilemapTopTileAt(map, .(2, 2))) == 9 panic "the topmost tile must be the one reported"
+    assert tileLookupOffMap(tilemapTopTileAt(map, .(99, 99))) panic "a lookup outside the map must say so"
 }
 
 test "traits gather across the whole stack" {
@@ -388,13 +329,13 @@ test "traits gather across the whole stack" {
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "ground")
     tilemapNewLayer(map, "walls")
-    tilemapSet(map, 0, TilePos(2, 2), 3) catch { }
-    tilemapSet(map, 1, TilePos(2, 2), 9) catch { }
+    tilemapSet(map, 0, .(2, 2), 3) catch { }
+    tilemapSet(map, 1, .(2, 2), 9) catch { }
 
-    assert tilemapHasTrait(map, TilePos(2, 2), traitWater) panic "the ground's trait must be visible"
-    assert tilemapHasTrait(map, TilePos(2, 2), traitSolid) panic "the wall's trait must be visible"
-    assert tilemapLayerTraitsAt(map, 0, TilePos(2, 2)) == traitWater panic "a single-layer query must not pick up the layer above"
-    assert !tilemapHasTrait(map, TilePos(5, 5), traitSolid) panic "an empty cell carries no traits"
+    assert tilemapHasTrait(map, .(2, 2), traitWater) panic "the ground's trait must be visible"
+    assert tilemapHasTrait(map, .(2, 2), traitSolid) panic "the wall's trait must be visible"
+    assert tilemapLayerTraitsAt(map, 0, .(2, 2)) == traitWater panic "a single-layer query must not pick up the layer above"
+    assert !tilemapHasTrait(map, .(5, 5), traitSolid) panic "an empty cell carries no traits"
 }
 
 test "resizing a map carries every layer using it" {
@@ -402,21 +343,21 @@ test "resizing a map carries every layer using it" {
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "ground")
     tilemapNewLayer(map, "walls")
-    tilemapSet(map, 0, TilePos(1, 1), 4) catch { }
+    tilemapSet(map, 0, .(1, 1), 4) catch { }
 
     var resized = true
     try {
-        tilemapResize(map, TilemapSize(16, 4))
+        tilemapResize(map, .(16, 4))
     } catch {
         resized = false
     }
     assert resized panic "a positive resize must succeed"
     assert map.geometry.size.x == 16 && map.geometry.size.y == 4 panic "the geometry must adopt the size"
     assert map.layers[1].size.x == 16 panic "every layer must be resized, not just the first"
-    assert tilemapIndexAt(map, 0, TilePos(1, 1)) == 4 panic "surviving content must keep its place"
+    assert tilemapIndexAt(map, 0, .(1, 1)) == 4 panic "surviving content must keep its place"
     var refused = false
     try {
-        tilemapResize(map, TilemapSize(0, 4))
+        tilemapResize(map, .(0, 4))
     } catch {
         refused = true
     }

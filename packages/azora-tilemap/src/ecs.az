@@ -107,13 +107,13 @@ pack TileEntities {
 /** Empty stores and a cell index sized to [size]. */
 func tileEntitiesNew(size: TilemapSize): TileEntities {
     return TileEntities(
-        storageInit(TilePosition(TilePos(0, 0))),
-        storageInit(TileTextureIndex(tileEmpty)),
-        storageInit(TileTint(tileColorWhite())),
-        storageInit(TileVisibility(true)),
-        storageInit(TileMirror(tileFlipNone())),
-        storageInit(TileLayerIndex(0)),
-        storageInit(TilemapId(Entity::invalid)),
+        storageInit(.(.(0, 0)))
+        storageInit(.(tileEmpty))
+        storageInit(.(tileColorWhite()))
+        storageInit(.(true))
+        storageInit(.(tileFlipNone()))
+        storageInit(.(0))
+        storageInit(.(::invalid))
         tileStorageNew(size)
     )
 }
@@ -133,19 +133,15 @@ func spawnTile(
     index: Int
     owner: Entity
 ): Entity ?! TilemapFault {
-    if !map.hasLayer(layer) {
-        return .OutOfBounds
-    }
-    if !map.geometry.size.contains(pos) {
-        return .OutOfBounds
-    }
+    if !map.hasLayer(layer) then return .OutOfBounds
+    if !map.geometry.size.contains(pos) then return .OutOfBounds
 
     fin entity = world.spawn()
-    storageInsert(entities.positions, entity, TilePosition(pos))
-    storageInsert(entities.indices, entity, TileTextureIndex(index))
-    storageInsert(entities.visibility, entity, TileVisibility(true))
-    storageInsert(entities.layers, entity, TileLayerIndex(layer))
-    storageInsert(entities.owners, entity, TilemapId(owner))
+    storageInsert(entities.positions, entity, .(pos))
+    storageInsert(entities.indices, entity, .(index))
+    storageInsert(entities.visibility, entity, .(true))
+    storageInsert(entities.layers, entity, .(layer))
+    storageInsert(entities.owners, entity, .(owner))
     try tileStorageSet(entities.bindings, pos, entity)
     layerPut(map.layers[layer], pos, index)
     return entity
@@ -170,28 +166,26 @@ func spawnTileOrNone(
 }
 
 /** The entity bound to [pos], or an invalid entity. */
-func tileEntityAt(entities: TileEntities&, pos: TilePos): Entity {
-    return tileStorageEntity(entities.bindings, pos)
-}
+func tileEntityAt(entities: TileEntities&, pos: TilePos): Entity = tileStorageEntity(entities.bindings, pos)
 
 /** Gives [entity] a tint, creating the component if it has none. */
 func setTileTint(entities: TileEntities!, entity: Entity, color: TileColor) {
-    storageInsert(entities.tints, entity, TileTint(color))
+    storageInsert(entities.tints, entity, .(color))
 }
 
 /** Gives [entity] a mirroring, creating the component if it has none. */
 func setTileMirror(entities: TileEntities!, entity: Entity, mirrors: TileFlip) {
-    storageInsert(entities.mirrors, entity, TileMirror(mirrors))
+    storageInsert(entities.mirrors, entity, .(mirrors))
 }
 
 /** Shows or hides [entity] without clearing its cell. */
 func setTileVisible(entities: TileEntities!, entity: Entity, visible: Bool) {
-    storageInsert(entities.visibility, entity, TileVisibility(visible))
+    storageInsert(entities.visibility, entity, .(visible))
 }
 
 /** Changes the tile [entity] draws. */
 func setTileIndex(entities: TileEntities!, entity: Entity, index: Int) {
-    storageInsert(entities.indices, entity, TileTextureIndex(index))
+    storageInsert(entities.indices, entity, .(index))
 }
 
 /**
@@ -202,13 +196,9 @@ func setTileIndex(entities: TileEntities!, entity: Entity, index: Int) {
  */
 func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: TilePos): Bool {
     fin entity = tileEntityAt(entities, pos)
-    if !entity.isValid {
-        return false
-    }
-    fin layer = storageGetOrDefault(entities.layers, entity, TileLayerIndex(0)).layer
-    if map.hasLayer(layer) {
-        layerPut(map.layers[layer], pos, tileEmpty)
-    }
+    if !entity.isValid then return false
+    fin layer = storageGetOrDefault(entities.layers, entity, .(0)).layer
+    if map.hasLayer(layer) then layerPut(map.layers[layer], pos, tileEmpty)
     tileStorageRemove(entities.bindings, pos) catch { }
     world.despawn(entity)
     return true
@@ -231,44 +221,38 @@ func despawnTile(world: World!, entities: TileEntities!, map: Tilemap!, pos: Til
  */
 func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): Int {
     var written = 0
-    var i = 0
-    while i < storageLength(entities.positions) {
+    for i: Int in 0..<storageLength(entities.positions) {
         fin entity = storageEntityAt(entities.positions, i)
         if entity.isValid && world.isAlive(entity) {
             fin pos = storageValueAt(entities.positions, i).pos
-            fin layer = storageGetOrDefault(entities.layers, entity, TileLayerIndex(0)).layer
+            fin layer = storageGetOrDefault(entities.layers, entity, .(0)).layer
             if map.hasLayer(layer) {
                 fin index = storageGetOrDefault(
-                    entities.indices,
-                    entity,
+                    entities.indices
+                    entity
                     TileTextureIndex(tileEmpty)
                 ).index
                 fin visible = storageGetOrDefault(
-                    entities.visibility,
-                    entity,
+                    entities.visibility
+                    entity
                     TileVisibility(true)
                 ).visible
                 fin mirrors = storageGetOrDefault(
-                    entities.mirrors,
-                    entity,
+                    entities.mirrors
+                    entity
                     TileMirror(tileFlipNone())
                 ).mirrors
 
                 var flags = tileFlipToFlags(mirrors)
-                if !visible {
-                    flags = flagsSet(flags, cellHidden)
-                }
+                if !visible then flags = flagsSet(flags, cellHidden)
 
                 var tint = tileTintNone
-                if storageHas(entities.tints, entity) {
-                    tint = tileColorPack(storageGet(entities.tints, entity).color)
-                }
+                if storageHas(entities.tints, entity) then tint = tileColorPack(storageGet(entities.tints, entity).color)
 
                 layerPutFull(map.layers[layer], pos, index, flags, tint)
-                written = written + 1
+                written++
             }
         }
-        i = i + 1
     }
     return written
 }
@@ -280,69 +264,65 @@ func syncTilesToLayers(world: World&, entities: TileEntities&, map: Tilemap!): I
  * the world has since recycled, which is how a door starts answering for a
  * crate. Belongs in `.Last`, after everything that can despawn a tile.
  */
-func sweepTileEntities(world: World&, entities: TileEntities!): Int {
-    return tileStorageSweep(entities.bindings, world)
-}
+func sweepTileEntities(world: World&, entities: TileEntities!): Int = tileStorageSweep(entities.bindings, world)
 
 /** Despawns every tile entity and unbinds every cell. */
-func clearTileEntities(world: World!, entities: TileEntities!): Int {
-    return tileStorageDespawnAll(entities.bindings, world)
-}
+func clearTileEntities(world: World!, entities: TileEntities!): Int = tileStorageDespawnAll(entities.bindings, world)
 
 test "a tile entity writes its own cell and can be found again" {
-    var world = World()
+    var world: World = .()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(2, 3), 5, Entity::invalid)
+    fin entity = spawnTileOrNone(world, entities, map, 0, .(2, 3), 5, ::invalid)
     assert entity.isValid panic "spawning inside the map must succeed"
-    assert tileEntityAt(entities, TilePos(2, 3)).id == entity.id panic "the cell must resolve to its entity"
-    assert layerIndexAt(map.layers[0], TilePos(2, 3)) == 5 panic "spawning must write the tile immediately, not on the next sync"
+    assert tileEntityAt(entities, .(2, 3)).id == entity.id panic "the cell must resolve to its entity"
+    assert layerIndexAt(map.layers[0], .(2, 3)) == 5 panic "spawning must write the tile immediately, not on the next sync"
 
-    assert !spawnTileOrNone(world, entities, map, 0, TilePos(99, 0), 5, Entity::invalid).isValid panic "spawning outside the map must be refused"
+    assert !spawnTileOrNone(world, entities, map, 0, .(99, 0), 5, ::invalid).isValid panic "spawning outside the map must be refused"
 }
 
 test "syncing carries appearance from components into the layer" {
-    var world = World()
+    var world: World = .()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    fin entity = spawnTileOrNone(world, entities, map, 0, TilePos(1, 1), 3, Entity::invalid)
+    fin entity = spawnTileOrNone(world, entities, map, 0, .(1, 1), 3, ::invalid)
     setTileIndex(entities, entity, 9)
     setTileMirror(entities, entity, tileFlip(true, false, false))
     setTileTint(entities, entity, tileColor(1.0, 0.0, 0.0, 1.0))
 
     assert syncTilesToLayers(world, entities, map) == 1 panic "the one live tile entity must be written"
-    assert layerIndexAt(map.layers[0], TilePos(1, 1)) == 9 panic "the new index must reach the layer"
-    assert layerFlipAt(map.layers[0], TilePos(1, 1)).x panic "the mirror must reach the layer"
-    assert layerTintAt(map.layers[0], TilePos(1, 1)) != tileTintNone panic "the tint must reach the layer"
+    assert layerIndexAt(map.layers[0], .(1, 1)) == 9 panic "the new index must reach the layer"
+    assert layerFlipAt(map.layers[0], .(1, 1)).x panic "the mirror must reach the layer"
+    assert layerTintAt(map.layers[0], .(1, 1)) != tileTintNone panic "the tint must reach the layer"
 
     setTileVisible(entities, entity, false)
     syncTilesToLayers(world, entities, map)
-    assert !layerIsDrawable(map.layers[0], TilePos(1, 1)) panic "hiding must stop the cell being drawn"
-    assert layerHasTile(map.layers[0], TilePos(1, 1)) panic "hiding must not clear the cell"
+    assert !layerIsDrawable(map.layers[0], .(1, 1)) panic "hiding must stop the cell being drawn"
+    assert layerHasTile(map.layers[0], .(1, 1)) panic "hiding must not clear the cell"
 }
 
 test "despawning clears the cell and sweeping unbinds dead handles" {
-    var world = World()
+    var world: World = .()
     var tiles = tileSetFromAtlas("terrain", tileAtlasSimple(Long(1), 64, 64, 16, 16))
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), take tiles)
     tilemapNewLayer(map, "walls")
     var entities = tileEntitiesNew(map.geometry.size)
 
-    spawnTileOrNone(world, entities, map, 0, TilePos(4, 4), 7, Entity::invalid)
-    assert despawnTile(world, entities, map, TilePos(4, 4)) panic "despawning a bound cell must succeed"
-    assert layerIndexAt(map.layers[0], TilePos(4, 4)) == tileEmpty panic "despawning must clear the cell"
-    assert !tileEntityAt(entities, TilePos(4, 4)).isValid panic "the cell must no longer be bound"
-    assert !despawnTile(world, entities, map, TilePos(4, 4)) panic "despawning an empty cell must report nothing done"
+    spawnTileOrNone(world, entities, map, 0, .(4, 4), 7, ::invalid)
+    assert despawnTile(world, entities, map, .(4, 4)) panic "despawning a bound cell must succeed"
+    assert layerIndexAt(map.layers[0], .(4, 4)) == tileEmpty panic "despawning must clear the cell"
+    assert !tileEntityAt(entities, .(4, 4)).isValid panic "the cell must no longer be bound"
+    assert !despawnTile(world, entities, map, .(4, 4)) panic "despawning an empty cell must report nothing done"
 
     // A tile entity killed behind the tilemap's back must still be swept up.
-    fin orphan = spawnTileOrNone(world, entities, map, 0, TilePos(5, 5), 2, Entity::invalid)
+    fin orphan = spawnTileOrNone(world, entities, map, 0, .(5, 5), 2, ::invalid)
     world.despawn(orphan)
     assert sweepTileEntities(world, entities) == 1 panic "the dead handle must be swept"
-    assert !tileEntityAt(entities, TilePos(5, 5)).isValid panic "the swept cell must be unbound"
+    assert !tileEntityAt(entities, .(5, 5)).isValid panic "the swept cell must be unbound"
 }

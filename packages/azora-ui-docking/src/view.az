@@ -53,14 +53,14 @@ pack DockStyle derives Clone {
     var tabHeight: Double = 32.0
     var radius: Double = 8.0
     var fontSize: Double = 12.5
-    var panel: Rgba = Rgba(0.11, 0.11, 0.12, 1.0)
-    var strip: Rgba = Rgba(0.11, 0.11, 0.12, 1.0)
-    var tabHover: Rgba = Rgba(1.0, 1.0, 1.0, 0.05)
-    var text: Rgba = Rgba(0.85, 0.85, 0.86, 1.0)
-    var muted: Rgba = Rgba(0.55, 0.55, 0.57, 1.0)
-    var accent: Rgba = Rgba(0.357, 0.639, 0.816, 1.0)
-    var hairline: Rgba = Rgba(1.0, 1.0, 1.0, 0.06)
-    var splitterHover: Rgba = Rgba(0.357, 0.639, 0.816, 0.55)
+    var panel: Rgba = .(0.11, 0.11, 0.12, 1.0)
+    var strip: Rgba = .(0.11, 0.11, 0.12, 1.0)
+    var tabHover: Rgba = .(1.0, 1.0, 1.0, 0.05)
+    var text: Rgba = .(0.85, 0.85, 0.86, 1.0)
+    var muted: Rgba = .(0.55, 0.55, 0.57, 1.0)
+    var accent: Rgba = .(0.357, 0.639, 0.816, 1.0)
+    var hairline: Rgba = .(1.0, 1.0, 1.0, 0.06)
+    var splitterHover: Rgba = .(0.357, 0.639, 0.816, 0.55)
 }
 
 // ── Interaction markers on composed nodes ───────────────────────────────
@@ -68,57 +68,57 @@ pack DockStyle derives Clone {
 /** The node a tab is drawn as. */
 @Component
 pack DockTabHandle derives Clone {
-    var tab: Entity = Entity::invalid
+    var tab: Entity = ::invalid
 }
 
 /** A tab's close button. */
 @Component
 pack DockTabClose derives Clone {
-    var tab: Entity = Entity::invalid
+    var tab: Entity = ::invalid
 }
 
 /** The bar between a split's children; dragging it moves the split. */
 @Component
 pack DockSplitHandle derives Clone {
-    var split: Entity = Entity::invalid
+    var split: Entity = ::invalid
     /** The row or column the split is composed as, whose rectangle the ratio is of. */
-    var container: Entity = Entity::invalid
+    var container: Entity = ::invalid
 }
 
 /** A tab group's whole area, where a dragged tab can land. */
 @Component
 pack DockDropArea derives Clone {
-    var tabs: Entity = Entity::invalid
+    var tabs: Entity = ::invalid
 }
 
 /** A floating window's title bar; dragging it moves the window. */
 @Component
 pack DockFloatHandle derives Clone {
-    var root: Entity = Entity::invalid
+    var root: Entity = ::invalid
 }
 
 /** A floating window's corner grip; dragging it resizes the window. */
 @Component
 pack DockFloatResize derives Clone {
-    var root: Entity = Entity::invalid
+    var root: Entity = ::invalid
 }
 
 /** A group's content host and the panel it shows. */
 pack DockHost derives Clone {
-    var node: Entity = Entity::invalid
+    var node: Entity = ::invalid
     var panel: String = ""
 }
 
 // ── Composition ─────────────────────────────────────────────────────────
 
 func dockTabTitle(pass: Composition!, tab: Entity): String {
-    fin data = storageGetOrDefault<DockTab>(store<DockTab>(pass), tab, DockTab())
+    fin data = storageGetOrDefault<DockTab>(store(pass), tab, DockTab())
     return if data.title == "" then dockPanelTitle(data.panel) else data.title
 }
 
 /** Reserves space for the close button so the strip stays still when a tab is selected. */
 func dockTabWidth(pass: Composition!, tab: Entity, style: DockStyle&, app: App&): Double {
-    fin panel = storageGetOrDefault<DockTab>(store<DockTab>(pass), tab, DockTab()).panel
+    fin panel = storageGetOrDefault<DockTab>(store(pass), tab, DockTab()).panel
     fin text = app.uiTextWidthFont(dockTabTitle(pass, tab), style.fontSize, uiFontRegular)
     fin width = text + (if dockPanelClosable(panel) then 36.0 else 24.0)
     return if width > 175.0 then 175.0 else width
@@ -126,31 +126,31 @@ func dockTabWidth(pass: Composition!, tab: Entity, style: DockStyle&, app: App&)
 
 /** One tab: its caption, and a close button while it is the one showing. */
 react func (anchor: Anchor!).dockTab(tab: Entity, active: Bool, style: DockStyle&, width: Double) {
-    fin data = storageGetOrDefault<DockTab>(store<DockTab>(anchor.pass), tab, DockTab())
+    fin data = storageGetOrDefault<DockTab>(store(anchor.pass), tab, DockTab())
     fin title = dockTabTitle(anchor.pass, tab)
     fin closable = active && dockPanelClosable(data.panel)
     fin node = Column(modifier: Modifier::width(width).fillMaxHeight().hoverFill(style.tabHover).rounded(5.0).clip(), key: "tab-${tab.id}") {
         Row(modifier: Modifier::fillMaxWidth().weight(1.0).padding(start: 8.0, end: 3.0), verticalAlignment: .Center, key: "label") {
             Row(modifier: Modifier::weight(1.0).fillMaxHeight().clip(), key: "title-slot") {
-                Text(title, modifier: Modifier::fillMaxSize().fontSize(style.fontSize).ink(if active { style.text } else { style.muted }).textAlign(.Start), key: "title")
+                Text(title, modifier: Modifier::fillMaxSize().fontSize(style.fontSize).ink(if active then style.text else style.muted).textAlign(.Start), key: "title")
             }
             if closable {
                 fin close = Row(modifier: Modifier::size(18.0, 18.0).fill(style.tabHover.withAlpha(0.0)).hoverFill(style.tabHover).rounded(4.0),
                     horizontalArrangement: .Center, verticalAlignment: .Center, key: "close") {
                     Icon("x", style.muted, size: 12.0, key: "x")
                 }
-                storageInsert<DockTabClose>(store<DockTabClose>(anchor.pass), close, DockTabClose(tab))
+                storageInsert<DockTabClose>(store(anchor.pass), close, .(tab))
             }
         }
-        Shape(modifier: Modifier::fillMaxWidth().height(2.0).fill(if active { style.accent } else { style.accent.withAlpha(0.0) }), key: "underline")
+        Shape(modifier: Modifier::fillMaxWidth().height(2.0).fill(if active then style.accent else style.accent.withAlpha(0.0)), key: "underline")
     }
-    storageInsert<DockTabHandle>(store<DockTabHandle>(anchor.pass), node, DockTabHandle(tab))
+    storageInsert<DockTabHandle>(store(anchor.pass), node, .(tab))
 }
 
 /** [node]'s subtree, taking [weight] of its parent's room; groups' hosts are added to [hosts]. */
 react func (anchor: Anchor!).dockTree(node: Entity, style: DockStyle&, app: App&, hosts: Array<DockHost>!, weight: Double, availableWidth: Double) {
     if dockIsSplit(anchor.pass.world, node) {
-        fin split = storageGetOrDefault<DockSplit>(store<DockSplit>(anchor.pass), node, DockSplit())
+        fin split = storageGetOrDefault<DockSplit>(store(anchor.pass), node, .())
         fin children = dockChildren(anchor.pass.world, node)
         fin key = "split-${node.id}"
         fin look = Modifier::fillMaxSize().weight(weight)
@@ -165,22 +165,22 @@ react func (anchor: Anchor!).dockTree(node: Entity, style: DockStyle&, app: App&
         fin share = if split.vertical then availableWidth else availableWidth - style.gap
         fin firstWidth = if split.vertical then share else share * split.ratio
         fin lastWidth = if split.vertical then share else share * (1.0 - split.ratio)
-        if children.size > 0 { inner.dockTree(children[0], style, app, hosts, split.ratio, firstWidth) }
+        if children.size > 0 then inner.dockTree(children[0], style, app, hosts, split.ratio, firstWidth)
         using inner {
-            fin bar = if split.vertical { Modifier::fillMaxWidth().height(style.gap) } else { Modifier::width(style.gap).fillMaxHeight() }
+            fin bar = if split.vertical then Modifier::fillMaxWidth().height(style.gap) else Modifier::width(style.gap).fillMaxHeight()
             fin handle = Shape(modifier: bar.fill(style.splitterHover.withAlpha(0.0)).hoverFill(style.splitterHover).rounded(2.0), key: "bar")
-            storageInsert<DockSplitHandle>(store<DockSplitHandle>(anchor.pass), handle, DockSplitHandle(node, container))
+            storageInsert<DockSplitHandle>(store(anchor.pass), handle, .(node, container))
         }
-        if children.size > 1 { inner.dockTree(children[1], style, app, hosts, 1.0 - split.ratio, lastWidth) }
+        if children.size > 1 then inner.dockTree(children[1], style, app, hosts, 1.0 - split.ratio, lastWidth)
         return
     }
     if dockIsTabs(anchor.pass.world, node) {
-        fin group = storageGetOrDefault<DockTabs>(store<DockTabs>(anchor.pass), node, DockTabs())
+        fin group = storageGetOrDefault<DockTabs>(store(anchor.pass), node, .())
         fin tabs = dockChildren(anchor.pass.world, node)
-        fin active = if group.active >= 0 && group.active < tabs.size { group.active } else { 0 }
+        fin active = if group.active >= 0 && group.active < tabs.size then group.active else 0
         fin area = anchor.pass.column(anchor.parent, "group-${node.id}",
             Modifier::fillMaxSize().weight(weight).fill(style.panel).rounded(style.radius).clip(), .Start, .Start, 0.0)
-        storageInsert<DockDropArea>(store<DockDropArea>(anchor.pass), area, DockDropArea(node))
+        storageInsert<DockDropArea>(store(anchor.pass), area, .(node))
         using anchor.inside(area) {
             Row(modifier: Modifier::fillMaxWidth().height(style.tabHeight).fill(style.strip).padding(start: 4.0, end: 6.0), spacing: 2.0, verticalAlignment: .Center, key: "strip") {
                 var widths: Array<Double> = []
@@ -188,20 +188,20 @@ react func (anchor: Anchor!).dockTree(node: Entity, style: DockStyle&, app: App&
                 for tab in tabs {
                     fin width = dockTabWidth(anchor.pass, tab, style, app)
                     widths.add(width)
-                    total = total + width
+                    total += width
                 }
                 fin room = availableWidth - 10.0 - ((tabs.size - 1) as Double) * 2.0
                 fin scale = if room <= 0.0 then 0.0 else if total > room then room / total else 1.0
                 var index = 0
                 while index < tabs.size && scale > 0.0 {
                     dockTab(tabs[index], index == active, style, widths[index] * scale)
-                    index = index + 1
+                    index++
                 }
             }
             Shape(modifier: Modifier::fillMaxWidth().height(1.0).fill(style.hairline), key: "rule")
             fin host = Column(modifier: Modifier::fillMaxWidth().weight(1.0).clip(), key: "host") { }
             if tabs.size > 0 {
-                fin panel = storageGetOrDefault<DockTab>(store<DockTab>(anchor.pass), tabs[active], DockTab()).panel
+                fin panel = storageGetOrDefault<DockTab>(store(anchor.pass), tabs[active], DockTab()).panel
                 hosts.add(DockHost(host, panel))
             }
         }
@@ -222,34 +222,32 @@ impl DockSpace {
         key: String = ""
         content: inline react Anchor!.(String) -> Unit
     ): Entity {
-        fin floating = storageGetOrDefault<DockRoot>(store<DockRoot>(anchor.pass), root, DockRoot()).floating
+        fin floating = storageGetOrDefault<DockRoot>(store(anchor.pass), root, .()).floating
         fin id = if key == "" { "dock-${root.id}" } else { key }
-        fin node = anchor.pass.column(anchor.parent, id, Modifier::fillMaxSize(), .Start, .Start, 0.0)
-        var hosts: Array<DockHost> = Array<DockHost>()
+        fin node = anchor.pass.column(anchor.parent, id, ::fillMaxSize(), .Start, .Start, 0.0)
+        var hosts: Array<DockHost> = []
         fin top = dockChildren(anchor.pass.world, root)
         var inner = anchor.inside(node)
         using inner {
             if floating {
                 fin bar = Shape(modifier: Modifier::fillMaxWidth().height(14.0).fill(style.strip).rounded(style.radius), key: "float-bar")
-                storageInsert<DockFloatHandle>(store<DockFloatHandle>(anchor.pass), bar, DockFloatHandle(root))
+                storageInsert<DockFloatHandle>(store(anchor.pass), bar, .(root))
             }
         }
-        if top.size > 0 { inner.dockTree(top[0], style, app, hosts, 1.0, availableWidth) }
+        if top.size > 0 then inner.dockTree(top[0], style, app, hosts, 1.0, availableWidth)
         if floating {
             using inner {
                 Row(modifier: Modifier::fillMaxWidth().height(12.0), key: "float-foot") {
                     Shape(modifier: Modifier::weight(1.0).fill(style.strip.withAlpha(0.0)), key: "float-gap")
                     fin grip = Shape(modifier: Modifier::size(12.0, 12.0).fill(style.hairline).rounded(3.0), key: "float-grip")
-                    storageInsert<DockFloatResize>(store<DockFloatResize>(anchor.pass), grip, DockFloatResize(root))
+                    storageInsert<DockFloatResize>(store(anchor.pass), grip, .(root))
                 }
             }
         }
         var index = 0
         while index < hosts.size {
-            using anchor.inside(hosts[index].node) {
-                content(hosts[index].panel)
-            }
-            index = index + 1
+            using anchor.inside(hosts[index].node) then content(hosts[index].panel)
+            index++
         }
         return node
     }
@@ -259,7 +257,7 @@ impl DockSpace {
 
 /** Where over [rect] a tab dropped at ([x], [y]) lands. */
 func dockZoneAt(rect: Rect&, x: Double, y: Double, stripHeight: Double): DockZone {
-    if y < rect.y + stripHeight { return .Center }
+    if y < rect.y + stripHeight then return .Center
     fin left = (x - rect.x) / rect.width
     fin right = 1.0 - left
     fin top = (y - rect.y) / rect.height
@@ -272,7 +270,7 @@ func dockZoneAt(rect: Rect&, x: Double, y: Double, stripHeight: Double): DockZon
         zone = .Top }
     if bottom < nearest { nearest = bottom
         zone = .Bottom }
-    return if nearest < 0.26 { zone } else { .Center }
+    return if nearest < 0.26 then zone else .Center
 }
 
 /**
@@ -303,10 +301,10 @@ func dockPointer(
             state.resizing = Entity::invalid
             return true
         }
-        var root = storageGetOrDefault<DockRoot>(store<DockRoot>(pass), state.resizing, DockRoot())
-        root.width = if root.width + dx < 220.0 { 220.0 } else { root.width + dx }
-        root.height = if root.height + dy < 140.0 { 140.0 } else { root.height + dy }
-        storageInsert<DockRoot>(store<DockRoot>(pass), state.resizing, take root)
+        var root = storageGetOrDefault<DockRoot>(store(pass), state.resizing, .())
+        root.width = if root.width + dx < 220.0 then 220.0 else root.width + dx
+        root.height = if root.height + dy < 140.0 then 140.0 else root.height + dy
+        storageInsert<DockRoot>(store(pass), state.resizing, take root)
         state.changed()
         return true
     }
@@ -315,54 +313,52 @@ func dockPointer(
             state.splitting = Entity::invalid
             return true
         }
-        fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), state.splitContainer, Rect())
-        fin split = storageGetOrDefault<DockSplit>(store<DockSplit>(pass), state.splitting, DockSplit())
-        var ratio = if split.vertical { (y - rect.y) / rect.height } else { (x - rect.x) / rect.width }
-        if ratio < 0.06 { ratio = 0.06 }
-        if ratio > 0.94 { ratio = 0.94 }
+        fin rect = storageGetOrDefault<Rect>(store(pass), state.splitContainer, .())
+        fin split = storageGetOrDefault<DockSplit>(store(pass), state.splitting, .())
+        var ratio = if split.vertical then (y - rect.y) / rect.height else (x - rect.x) / rect.width
+        if ratio < 0.06 then ratio = 0.06
+        if ratio > 0.94 then ratio = 0.94
         if absValue(ratio - split.ratio) > 0.0005 {
-            storageInsert<DockSplit>(store<DockSplit>(pass), state.splitting, DockSplit(split.vertical, ratio))
+            storageInsert<DockSplit>(store(pass), state.splitting, .(split.vertical, ratio))
             state.changed()
         }
         return true
     }
     if pass.world.isAlive(state.pressedTab) {
-        if !state.dragging && (absValue(x - state.pressX) > 6.0 || absValue(y - state.pressY) > 6.0) {
-            state.dragging = true
-        }
+        if !state.dragging && (absValue(x - state.pressX) > 6.0 || absValue(y - state.pressY) > 6.0) then state.dragging = true
         if state.dragging {
-            fin area = dockHit<DockDropArea>(front, back, store<DockDropArea>(pass), x, y)
+            fin area = dockHit<DockDropArea>(front, back, store(pass), x, y)
             state.dropTarget = Entity::invalid
             state.dropZone = .None
             state.dropSlot = -1
             if pass.world.isAlive(area) {
-                fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), area, Rect())
-                state.dropTarget = storageGetOrDefault<DockDropArea>(store<DockDropArea>(pass), area, DockDropArea()).tabs
+                fin rect = storageGetOrDefault<Rect>(store(pass), area, .())
+                state.dropTarget = storageGetOrDefault<DockDropArea>(store(pass), area, .()).tabs
                 state.dropZone = dockZoneAt(rect, x, y, style.tabHeight)
                 state.dropX = rect.x
                 state.dropY = rect.y
                 state.dropWidth = rect.width
                 state.dropHeight = rect.height
                 if y < rect.y + style.tabHeight {
-                    fin hovered = dockHit<DockTabHandle>(front, back, store<DockTabHandle>(pass), x, y)
+                    fin hovered = dockHit<DockTabHandle>(front, back, store(pass), x, y)
                     if pass.world.isAlive(hovered) {
-                        fin tab = storageGet<DockTabHandle>(store<DockTabHandle>(pass), hovered).tab
-                        fin tabRect = storageGet<Rect>(store<Rect>(pass), hovered)
+                        fin tab = storageGet<DockTabHandle>(store(pass), hovered).tab
+                        fin tabRect = storageGet<Rect>(store(pass), hovered)
                         fin after = x >= tabRect.x + tabRect.width * 0.5
-                        state.dropSlot = storageGet<DockNode>(store<DockNode>(pass), tab).slot + (if after then 1 else 0)
+                        state.dropSlot = storageGet<DockNode>(store(pass), tab).slot + (if after then 1 else 0)
                         state.dropX = if after then tabRect.x + tabRect.width - 4.0 else tabRect.x
                         state.dropWidth = 10.0
                         state.dropHeight = style.tabHeight
                     }
                 }
                 when state.dropZone {
-                    DockZone.Left -> { state.dropWidth = rect.width * 0.5 }
-                    DockZone.Right -> {
+                    .Left -> { state.dropWidth = rect.width * 0.5 }
+                    .Right -> {
                         state.dropX = rect.x + rect.width * 0.5
                         state.dropWidth = rect.width * 0.5
                     }
-                    DockZone.Top -> { state.dropHeight = rect.height * 0.5 }
-                    DockZone.Bottom -> {
+                    .Top -> { state.dropHeight = rect.height * 0.5 }
+                    .Bottom -> {
                         state.dropY = rect.y + rect.height * 0.5
                         state.dropHeight = rect.height * 0.5
                     }
@@ -377,7 +373,7 @@ func dockPointer(
                     dockMove(pass.world, tab, state.dropTarget, state.dropZone, state.dropSlot)
                 } else {
                     // Dropped where no group is: the panel floats there.
-                    fin data = storageGetOrDefault<DockTab>(store<DockTab>(pass), tab, DockTab()).clone()
+                    fin data = storageGetOrDefault<DockTab>(store(pass), tab, DockTab()).clone()
                     dockClose(pass.world, tab)
                     dockFloat(pass.world, data.panel, x - 80.0, y - 16.0, 460.0, 340.0, data.title)
                 }
@@ -392,43 +388,43 @@ func dockPointer(
     }
     if pass.world.isAlive(state.splitContainer) && down && !pressed {
         // A floating window being dragged by its bar: splitContainer holds its root.
-        if storageHas<DockRoot>(store<DockRoot>(pass), state.splitContainer) {
-            var root = storageGetOrDefault<DockRoot>(store<DockRoot>(pass), state.splitContainer, DockRoot())
-            root.x = root.x + dx
-            root.y = root.y + dy
-            storageInsert<DockRoot>(store<DockRoot>(pass), state.splitContainer, take root)
+        if storageHas<DockRoot>(store(pass), state.splitContainer) {
+            var root = storageGetOrDefault<DockRoot>(store(pass), state.splitContainer, .())
+            root.x += dx
+            root.y += dy
+            storageInsert<DockRoot>(store(pass), state.splitContainer, take root)
             state.changed()
             return true
         }
     }
-    if !down { state.splitContainer = Entity::invalid }
-    if !pressed { return false }
-    fin close = dockHit<DockTabClose>(front, back, store<DockTabClose>(pass), x, y)
+    if !down then state.splitContainer = Entity::invalid
+    if !pressed then return false
+    fin close = dockHit<DockTabClose>(front, back, store(pass), x, y)
     if pass.world.isAlive(close) {
-        dockClose(pass.world, storageGetOrDefault<DockTabClose>(store<DockTabClose>(pass), close, DockTabClose()).tab)
+        dockClose(pass.world, storageGetOrDefault<DockTabClose>(store(pass), close, .()).tab)
         state.changed()
         return true
     }
-    fin handle = dockHit<DockSplitHandle>(front, back, store<DockSplitHandle>(pass), x, y)
+    fin handle = dockHit<DockSplitHandle>(front, back, store(pass), x, y)
     if pass.world.isAlive(handle) {
-        fin link = storageGetOrDefault<DockSplitHandle>(store<DockSplitHandle>(pass), handle, DockSplitHandle())
+        fin link = storageGetOrDefault<DockSplitHandle>(store(pass), handle, .())
         state.splitting = link.split
         state.splitContainer = link.container
         return true
     }
-    fin grip = dockHit<DockFloatResize>(front, back, store<DockFloatResize>(pass), x, y)
+    fin grip = dockHit<DockFloatResize>(front, back, store(pass), x, y)
     if pass.world.isAlive(grip) {
-        state.resizing = storageGetOrDefault<DockFloatResize>(store<DockFloatResize>(pass), grip, DockFloatResize()).root
+        state.resizing = storageGetOrDefault<DockFloatResize>(store(pass), grip, .()).root
         return true
     }
-    fin floatBar = dockHit<DockFloatHandle>(front, back, store<DockFloatHandle>(pass), x, y)
+    fin floatBar = dockHit<DockFloatHandle>(front, back, store(pass), x, y)
     if pass.world.isAlive(floatBar) {
-        state.splitContainer = storageGetOrDefault<DockFloatHandle>(store<DockFloatHandle>(pass), floatBar, DockFloatHandle()).root
+        state.splitContainer = storageGetOrDefault<DockFloatHandle>(store(pass), floatBar, .()).root
         return true
     }
-    fin tabNode = dockHit<DockTabHandle>(front, back, store<DockTabHandle>(pass), x, y)
+    fin tabNode = dockHit<DockTabHandle>(front, back, store(pass), x, y)
     if pass.world.isAlive(tabNode) {
-        fin tab = storageGetOrDefault<DockTabHandle>(store<DockTabHandle>(pass), tabNode, DockTabHandle()).tab
+        fin tab = storageGetOrDefault<DockTabHandle>(store(pass), tabNode, .()).tab
         dockActivate(pass.world, tab)
         state.pressedTab = tab
         state.pressX = x
@@ -446,35 +442,30 @@ func dockPointer(
  */
 func <T> dockHit(front: PaintList&, back: PaintList&, store: Storage<T>&, x: Double, y: Double): Entity {
     fin hit = front.topmost<T>(store, x, y)
-    if hit.isValid || paintCovers(front, x, y) {
-        return hit
-    }
-    return back.topmost<T>(store, x, y)
+    return if hit.isValid || paintCovers(front, x, y) then hit else back.topmost<T>(store, x, y)
 }
 
 /** Whether anything in [paint] was drawn under ([x], [y]). */
 func paintCovers(paint: PaintList&, x: Double, y: Double): Bool {
-    var index = paint.pointerFloor
-    while index < paint.pointerEnd() {
-        fin node = paint.nodes[index]
+    for i in paint.pointerFloor..<paint.pointerEnd() {
+        fin node = paint.nodes[i]
         if node.width > 0.0 && x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height && x >= node.clipLeft && x < node.clipRight && y >= node.clipTop && y < node.clipBottom {
             return true
         }
-        index = index + 1
     }
     return false
 }
 
 /** The drop preview and the dragged tab, drawn over everything else. */
 func dockOverlay(app: App!, state: DockState&, pass: Composition!, style: DockStyle&) {
-    if !state.dragging { return }
+    if !state.dragging then return
     if pass.world.isAlive(state.dropTarget) {
         app.uiRoundRect(state.dropX + 3.0, state.dropY + 3.0, state.dropWidth - 6.0, state.dropHeight - 6.0, style.radius,
             style.accent.r, style.accent.g, style.accent.b, 0.16)
         app.uiRoundRectStroke(state.dropX + 3.0, state.dropY + 3.0, state.dropWidth - 6.0, state.dropHeight - 6.0, style.radius, 2.0,
             style.accent.r, style.accent.g, style.accent.b, 0.85)
     }
-    fin data = storageGetOrDefault<DockTab>(store<DockTab>(pass), state.pressedTab, DockTab())
+    fin data = storageGetOrDefault<DockTab>(store(pass), state.pressedTab, DockTab())
     fin title = if data.title == "" then dockPanelTitle(data.panel) else data.title
     fin width = app.uiTextWidth(title, style.fontSize) + 28.0
     app.uiRoundRect(state.pointerX + 10.0, state.pointerY + 8.0, width, style.tabHeight - 4.0, 6.0, style.strip.r, style.strip.g, style.strip.b, 0.96)

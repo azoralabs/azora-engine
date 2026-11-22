@@ -11,8 +11,8 @@ import engine.weather.components
 import engine.weather.presets
 
 /** Drops heard at once on each side, and the numbers each one keeps (amplitude, phase, pitch, glide, decay, click). */
-fin dropVoices: Int = 24
-fin dropFields: Int = 6
+inline fin dropVoices: Int = 24
+inline fin dropFields: Int = 6
 
 /**
  * The weather's own sound. Rain is thousands of tiny impacts a second, each a
@@ -58,13 +58,9 @@ impl AetherSound {
 }
 
 func aetherSound(): AetherSound {
-    var sound = AetherSound()
+    var sound: AetherSound = .()
     sound.drops = sampleBuffer(dropVoices * dropFields * 2)
-    var i = 0
-    while i < dropVoices * dropFields * 2 {
-        setSample(sound.drops, i, 0.0)
-        i += 1
-    }
+    for i: Int in 0..<dropVoices * dropFields * 2 then setSample(sound.drops, i, 0.0)
     return take sound
 }
 
@@ -84,8 +80,7 @@ func startDrop(sound: AetherSound!, base: Int, loud: Double) {
 /** One side's drops for one sample: a decaying click into a decaying, upward-gliding sine. */
 func dropSample(sound: AetherSound!, side: Int, rate: Double, ring: Double): Double {
     var total: Double = 0.0
-    var v = 0
-    while v < dropVoices {
+    for v: Int in 0..<dropVoices {
         fin base = (side * dropVoices + v) * dropFields
         fin amplitude = sample(sound.drops, base)
         if amplitude > 0.0005 {
@@ -98,7 +93,6 @@ func dropSample(sound: AetherSound!, side: Int, rate: Double, ring: Double): Dou
             setSample(sound.drops, base, amplitude * sample(sound.drops, base + 4))
             setSample(sound.drops, base + 5, click * 0.82)
         }
-        v += 1
     }
     return total
 }
@@ -107,14 +101,12 @@ func dropSample(sound: AetherSound!, side: Int, rate: Double, ring: Double): Dou
 func pickDrop(sound: AetherSound!, side: Int, loud: Double) {
     var quietest = 0
     var level: Double = 1000.0
-    var v = 0
-    while v < dropVoices {
+    for v: Int in 0..<dropVoices {
         fin amplitude = sample(sound.drops, (side * dropVoices + v) * dropFields)
         if amplitude < level {
             level = amplitude
             quietest = v
         }
-        v += 1
     }
     startDrop(sound, (side * dropVoices + quietest) * dropFields, loud)
 }
@@ -149,8 +141,7 @@ func mixWeather(sound: AetherSound!, state: AetherState&, audio: AetherAudio&, m
     fin dropRate = 260.0 * targetRain
     fin ring = 0.35 + 0.65 * weatherClamp(wetness, 0.0, 1.0)
     fin glide = 1.0 / (rate * 0.6)
-    var i = 0
-    while i < frames {
+    for i: Int in 0..<frames {
         sound.rain += (targetRain - sound.rain) * glide
         sound.wind += (targetWind - sound.wind) * glide
         sound.gust += (state.gust - sound.gust) * glide
@@ -183,6 +174,5 @@ func mixWeather(sound: AetherSound!, state: AetherState&, audio: AetherAudio&, m
         right += (sound.windBandRight.process(sound.windRight.next()) * body + sound.whistleRight.process(sound.windRight.next()) * whistle + rumble) * windLevel
         addSample(mix, i * 2, left)
         addSample(mix, i * 2 + 1, right)
-        i += 1
     }
 }

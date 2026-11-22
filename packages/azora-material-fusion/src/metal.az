@@ -37,8 +37,7 @@ func metalError(address: Long, message: String): String {
 func fusionReadText(path: String, limit: Int = 262144): String {
     var blob = readFile(path)
     defer { blob.release() }
-    if blob.size > limit || !blob.ok() then return ""
-    return blob.text(0, blob.size)
+    return if blob.size > limit || !blob.ok() then "" else blob.text(0, blob.size)
 }
 
 func buildFusionPipeline(device: Long, source: String, standard: Int, compiled: String): FusionPipeline {
@@ -76,7 +75,7 @@ func buildFusionPipeline(device: Long, source: String, standard: Int, compiled: 
     azPoke64(diagnostic, 0, 0)
     fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, diagnostic)
     if pipeline == 0 then return FusionPipeline(0, standard, baked, metalError(diagnostic, "Metal pipeline creation failed"))
-    return FusionPipeline(pipeline, standard, baked, "")
+    return .(pipeline, standard, baked, "")
 }
 
 /** Prepares once per asset or edit. Falls back to MSL 2.0 on Metal 2 devices or a failed Metal 3 pipeline. */
@@ -99,10 +98,8 @@ Metal 2: ${classic.diagnostic}")
 
 impl FusionLibrary {
     func &.index(key: String): Int {
-        var index = 0
-        while index < self.items.size {
-            if self.items[index].key == key then return index
-            index = index + 1
+        for i: Int in 0..<self.items.size {
+            if self.items[i].key == key then return i
         }
         return -1
     }
@@ -117,7 +114,7 @@ impl FusionLibrary {
                 if !loadFusionTextureSet(device, self.queue, "${self.root}/${asset}", built.textures) {
                     send0(built.handle, sel("release"))
                     built.handle = 0
-                    for texture in built.textures { send0(texture, sel("release")) }
+                    for texture in built.textures then send0(texture, sel("release"))
                     built.textures.clear()
                     built.diagnostic = "Could not load ${asset}"
                     break
@@ -129,7 +126,7 @@ impl FusionLibrary {
             self.items.add(FusionPipelineEntry(key, built.clone()))
         } else if built.handle != 0 {
             fin old = self.items[index].pipeline.handle
-            for texture in self.items[index].pipeline.textures { send0(texture, sel("release")) }
+            for texture in self.items[index].pipeline.textures then send0(texture, sel("release"))
             self.items[index].pipeline = built.clone()
             if old != 0 then send0(old, sel("release"))
         }
@@ -145,17 +142,14 @@ impl FusionLibrary {
     func !.resolve(device: Long, path: String): Long {
         if !fusionAssetPath(path) then return 0
         fin index = self.index(path)
-        if index >= 0 then return self.items[index].pipeline.handle
-        return self.reload(device, path).handle
+        return if index >= 0 then self.items[index].pipeline.handle else self.reload(device, path).handle
     }
 
     func &.bindTextures(encoder: Long, pipeline: Long) {
         for item in self.items {
             if item.pipeline.handle == pipeline {
-                var slot = 0
-                while slot < item.pipeline.textures.size {
+                for slot: Int in 0..<item.pipeline.textures.size {
                     send2(encoder, sel("setFragmentTexture:atIndex:"), item.pipeline.textures[slot], slot as Long)
-                    slot += 1
                 }
                 return
             }
@@ -163,12 +157,10 @@ impl FusionLibrary {
     }
 
     func !.release() {
-        var index = 0
-        while index < self.items.size {
-            fin handle = self.items[index].pipeline.handle
-            for texture in self.items[index].pipeline.textures { send0(texture, sel("release")) }
+        for i: Int in 0..<self.items.size {
+            fin handle = self.items[i].pipeline.handle
+            for texture in self.items[i].pipeline.textures then send0(texture, sel("release"))
             if handle != 0 then send0(handle, sel("release"))
-            index = index + 1
         }
         self.items.clear()
     }
@@ -193,7 +185,7 @@ func loadFusionTextureSet(device: Long, queue: Long, path: String, handles: Arra
         azSendRegion(texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
             0, 0, 0, width, height, 1, 0, blob.data + 12 + (i as Long)*imageBytes, width*4)
         handles.add(texture)
-        i += 1
+        i++
     }
     if queue != 0 {
         fin command = send0(queue, sel("commandBuffer"))
@@ -201,7 +193,7 @@ func loadFusionTextureSet(device: Long, queue: Long, path: String, handles: Arra
         i = from
         while i < handles.size {
             send1(blit, sel("generateMipmapsForTexture:"), handles[i])
-            i += 1
+            i++
         }
         send0(blit, sel("endEncoding"))
         send0(command, sel("commit"))
@@ -220,7 +212,7 @@ func send4TextureDescriptor(format: Long, width: Long, height: Long, mip: Long):
         var levels: Long = 1
         while size > 1 {
             size /= 2
-            levels += 1
+            levels++
         }
         send1(descriptor, sel("setMipmapLevelCount:"), levels)
     }

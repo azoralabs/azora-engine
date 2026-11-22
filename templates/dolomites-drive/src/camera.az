@@ -21,8 +21,8 @@ pack ChaseCamera {
 }
 
 func attachChaseCamera(frame: Game!, player: Entity) {
-    fin controller = storageGet<PlayerController>(ensureStorage<PlayerController>(frame.world), player)
-    fin vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(frame.world), player)
+    fin controller = storageGet<PlayerController>(ensureStorage(frame.world), player)
+    fin vehicle = storageGet<Vehicle>(ensureStorage(frame.world), player)
     fin position = presentedPosition(frame.world, player)
     fin pitch = -atan2(controller.cameraHeight, controller.cameraDistance) / degreesToRadians
     frame.camera = EditorCamera(target: position.clone(), yaw: vehicle.yaw / degreesToRadians,
@@ -40,7 +40,7 @@ func followVehicle(frame: Game!, cameras: @query [ChaseCamera!, Vehicle&, Course
         fin position = presentedPosition(frame.world, player)
         chase.focus = chase.focus.add(position.subtract(chase.focus).scale(vehicleClamp(dt * 12.0, 0.0, 1.0)))
         frame.camera.yaw = chase.heading / degreesToRadians
-        frame.camera.target = chase.focus.add(Vec3(0.0, 0.55, 0.0)).add(vehicleForward(chase.heading).scale(1.6))
+        frame.camera.target = chase.focus.add(.(0.0, 0.55, 0.0)).add(vehicleForward(chase.heading).scale(1.6))
         // Rising quickly enough never to sink into the slope, settling back slowly enough never to bob.
         fin needed = liftOverGround(frame.camera, chase.pitch, course.terrain)
         fin rate = if needed > chase.lift then 14.0 else 2.5
@@ -52,7 +52,7 @@ func followVehicle(frame: Game!, cameras: @query [ChaseCamera!, Vehicle&, Course
 /** Metres between the eye and the ground straight below it; far when there is none. */
 func clearance(camera: EditorCamera&, terrain: Array<CollisionSurface>&): Double {
     fin eye = camera.position()
-    fin below = castLandscape(terrain, Vec3(eye.x, eye.y + 30.0, eye.z), Vec3(0.0, -1.0, 0.0), 60.0)
+    fin below = castLandscape(terrain, .(eye.x, eye.y + 30.0, eye.z), .(0.0, -1.0, 0.0), 60.0)
     return if below.hit then eye.y - below.py else 1000.0
 }
 
@@ -61,19 +61,17 @@ func clearance(camera: EditorCamera&, terrain: Array<CollisionSurface>&): Double
  * [groundGap] metres over the ground below it: found by halving, so it moves
  * continuously with the slope instead of in steps.
  */
-fin groundGap: Double = 0.9
+inline fin groundGap: Double = 0.9
 
 func liftOverGround(camera: EditorCamera!, pitch: Double, terrain: Array<CollisionSurface>&): Double {
     camera.pitch = pitch
     if clearance(camera, terrain) >= groundGap then return 0.0
     var low: Double = 0.0
     var high: Double = 45.0
-    var step = 0
-    while step < 9 {
+    for step: Int in 0..<9 {
         fin middle = (low + high) * 0.5
         camera.pitch = pitch - middle
         if clearance(camera, terrain) >= groundGap then high = middle else low = middle
-        step += 1
     }
     camera.pitch = pitch
     return high

@@ -27,7 +27,7 @@ func geometryIndex(world: World!, name: String): Int {
     var i = 0
     while i < storageLength<GeometryAsset>(assets) {
         if assets.values[i].name == name then return i
-        i += 1
+        i++
     }
     return -1
 }
@@ -35,7 +35,7 @@ func geometryIndex(world: World!, name: String): Int {
 func registerGeometry(world: World!, name: String, vertices: Array<Double>) {
     if vertices.size == 0 || vertices.size % 18 != 0 || geometryIndex(world,name) >= 0 then return
     fin entity = world.spawnResource(name)
-    storageInsert<GeometryAsset>(ensureStorage<GeometryAsset>(world),entity,GeometryAsset(name,take vertices))
+    storageInsert<GeometryAsset>(ensureStorage(world),entity,.(name,take vertices))
 }
 
 func sceneGeometry(world: World!, device: Long, name: String): Mesh {
@@ -47,13 +47,9 @@ func sceneGeometry(world: World!, device: Long, name: String): Mesh {
         fin bytes = azAlloc((asset.vertices.size as Long)*4)
         if bytes == 0 then return Mesh(0,0)
         defer { azFree(bytes) }
-        var v = 0
-        while v < asset.vertices.size {
-            azPokeF32(bytes,(v as Long)*4,asset.vertices[v])
-            v += 1
-        }
+        for v: Int in 0..<asset.vertices.size then azPokeF32(bytes,(v as Long)*4,asset.vertices[v])
         asset.buffer = send3(device,sel("newBufferWithBytes:length:options:"),bytes,(asset.vertices.size as Long)*4,0)
         asset.count = asset.vertices.size/6
     }
-    return Mesh(asset.buffer,asset.count)
+    return .(asset.buffer,asset.count)
 }

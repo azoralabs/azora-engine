@@ -15,7 +15,7 @@ import engine.audio.dsp
 // Per sample only Doubles: the voice keeps its state in place.
 
 /** Crank degrees a cylinder's exhaust pulse lasts. */
-fin pulseDegrees: Double = 160.0
+inline fin pulseDegrees: Double = 160.0
 
 pack EngineVoice {
     var rate: Double = 48000.0
@@ -58,11 +58,11 @@ pack EngineVoice {
  * waits 450°: its loping beat).
  */
 func engineVoice(motorcycle: Bool, rate: Double): EngineVoice {
-    var voice = EngineVoice(rate: rate, motorcycle: motorcycle, noise: noise(if motorcycle then 271 else 113), hiss: noise(997))
+    var voice: EngineVoice = .(rate: rate, motorcycle: motorcycle, noise: noise(if motorcycle then 271 else 113), hiss: noise(997))
     voice.firing = if motorcycle then [0.0, 270.0] else [0.0, 180.0, 360.0, 540.0]
     // Header lengths differ a little, so pulses meet the collector unevenly.
     fin headers: Array<Double> = if motorcycle then [0.0011, 0.00135] else [0.0016, 0.0019, 0.0017, 0.00205]
-    for seconds in headers { voice.header.add(seconds * rate) }
+    for seconds in headers then voice.header.add(seconds * rate)
     for angle in voice.firing {
         voice.age.add(-1.0)
         voice.strength.add(0.0)
@@ -120,12 +120,11 @@ func EngineVoice!.render(into: Long, frames: Int, rpm: Double, load: Double, thr
         self.crank += advance
         if self.crank >= 720.0 {
             self.crank -= 720.0
-            self.cycles += 1
+            self.cycles++
         }
         // A cylinder whose firing angle the crank just passed opens its exhaust.
         var exhaust: Double = 0.0
-        var c = 0
-        while c < cylinders {
+        for c: Int in 0..<cylinders {
             fin angle = self.firing[c]
             fin crossed = if self.crank >= before then before < angle && self.crank >= angle else before < angle || self.crank >= angle
             if crossed {
@@ -139,11 +138,10 @@ func EngineVoice!.render(into: Long, frames: Int, rpm: Double, load: Double, thr
                 self.age[c] = 0.0
                 self.strength[c] = power
             } else if self.age[c] >= 0.0 {
-                self.age[c] = self.age[c] + advance
+                self.age[c] += advance
                 if self.age[c] >= pulseDegrees then self.age[c] = -1.0
             }
             exhaust += self.strength[c] * pulseShape(self.age[c])
-            c += 1
         }
         // Headers: each cylinder's pulse arrives after its own length (approximated on the summed signal by two taps).
         self.headers.push(exhaust)
@@ -172,7 +170,7 @@ func EngineVoice!.render(into: Long, frames: Int, rpm: Double, load: Double, thr
             sound += sin(self.whistle) * self.boost * 0.012
         }
         addSample(into, i, self.tailpipe.process(sound) * self.gain)
-        i += 1
+        i++
     }
     self.rpm = rpm
     self.load = load
@@ -203,9 +201,9 @@ pack HornVoice {
 }
 
 func hornVoice(motorcycle: Bool, rate: Double): HornVoice {
-    var horn = HornVoice(rate: rate, harmonics: if motorcycle then 14 else 10)
+    var horn: HornVoice = .(rate: rate, harmonics: if motorcycle then 14 else 10)
     horn.pitches = if motorcycle then [400.0] else [420.0, 500.0]
-    for pitch in horn.pitches { horn.phases.add(0.0) }
+    for pitch in horn.pitches then horn.phases.add(0.0)
     horn.bell.peak(if motorcycle then 2600.0 else 2100.0, 1.5, 6.0, rate)
     horn.body.highpass(180.0, 0.7, rate)
     return take horn
@@ -221,15 +219,14 @@ func HornVoice!.render(into: Long, frames: Int, held: Bool) {
         if self.level <= 0.0 {
             // Silent: keep the filters still, so the next press starts clean.
             addSample(into, i, 0.0)
-            i += 1
+            i++
             continue
         }
         self.vibrato += 2.0 * PI * 5.5 / self.rate
         if self.vibrato > 2.0 * PI then self.vibrato -= 2.0 * PI
         fin wobble = 1.0 + 0.003 * sin(self.vibrato)
         var buzz: Double = 0.0
-        var p = 0
-        while p < self.pitches.size {
+        for p: Int in 0..<self.pitches.size {
             fin pitch = self.pitches[p] * wobble
             var phase = self.phases[p] + 2.0 * PI * pitch / self.rate
             if phase > 2.0 * PI then phase -= 2.0 * PI
@@ -237,14 +234,13 @@ func HornVoice!.render(into: Long, frames: Int, held: Bool) {
             var n = 1
             while n <= self.harmonics && (n as Double) * pitch < 9000.0 {
                 buzz += sin(phase * (n as Double)) / (n as Double)
-                n += 1
+                n++
             }
-            p += 1
         }
         fin shaped = self.bell.process(self.body.process(buzz * 0.35))
         // The diaphragm saturates: a soft clip.
         fin clipped = shaped / (1.0 + (if shaped < 0.0 then -shaped else shaped))
         addSample(into, i, clipped * self.level * 0.6)
-        i += 1
+        i++
     }
 }

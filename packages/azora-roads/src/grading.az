@@ -47,7 +47,7 @@ func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&)
     fin dz = (image.rows-1) as Double
     fin clearance = sqrt((model.m00*model.m00+model.m20*model.m20)/(dx*dx) +
         (model.m02*model.m02+model.m22*model.m22)/(dz*dz))
-    var grade = RoadGrade()
+    var grade: RoadGrade = .()
     var z = 0
     while z < image.rows {
         fin v = (z as Double)/dz-0.5
@@ -62,9 +62,7 @@ func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&)
             fin bucket = network.grid[roadBucketAt(roadBucketCoordinate(wx),roadBucketCoordinate(wz))].&
             grade.weight = 0.0
             grade.distance = 1.0e9
-            for index in bucket.spans {
-                considerRoadGrade(grade,wx,wz,network.spans[index],clearance)
-            }
+            for index in bucket.spans then considerRoadGrade(grade,wx,wz,network.spans[index],clearance)
             for site in network.junctions {
                 fin x0 = wx-site.center.x
                 fin z0 = wz-site.center.z
@@ -81,8 +79,8 @@ func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&)
                 fin height = wy + (grade.target-wy)*grade.weight
                 azPokeF64(image.samples,((z*image.columns+x) as Long)*8,terrainClamp((height-base)/model.m11,-0.5,0.5))
             }
-            x += 1
+            x++
         }
-        z += 1
+        z++
     }
 }

@@ -32,7 +32,7 @@ func orderFusion(document: FusionGraph&, index: Int, marks: Array<Int>!, order: 
             fin diagnostic = orderFusion(document, source, marks, order)
             if diagnostic != "" then return diagnostic
         }
-        pin = pin + 1
+        pin++
     }
     marks[index] = 2
     order.add(index)
@@ -83,10 +83,10 @@ func fusionAlbedo(document: FusionGraph&, order: Array<Int>&): Rgba {
             blue[index] = blue[a] * (1.0 - weight) + blue[b] * weight
         } else if node.kind == "output" {
             fin source = document.indexOfNode(node.a)
-            return Rgba(red[source], green[source], blue[source], 1.0)
+            return .(red[source], green[source], blue[source], 1.0)
         }
     }
-    return Rgba(0.8, 0.8, 0.82, 1.0)
+    return .(0.8, 0.8, 0.82, 1.0)
 }
 
 /** Compiles the typed document into a Metal vertex/fragment pair with the Engine mesh ABI. */
@@ -98,7 +98,7 @@ func compileFusionGraph(document: FusionGraph&): FusionProgram {
     var order: Array<Int> = []
     fin diagnostic = orderFusion(document, root, marks, order)
     if diagnostic != "" then return FusionProgram("", diagnostic)
-    var source = StringBuilder()
+    var source: StringBuilder = .()
     source.append(fusionMetalPrelude())
     source.append(fusionTexturePrelude())
     source.append("fragment float4 fusion_fragment(Vertex in [[stage_in]], constant Uniforms& u [[buffer(1)]], const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]], constant float4* detailLight [[buffer(4)]], constant float4* spots [[buffer(5)]], constant float4* env [[buffer(6)]], depth2d<float> detail [[texture(30)]], texture2d<float> clouds [[texture(31)]]")
@@ -127,12 +127,12 @@ func compileFusionGraph(document: FusionGraph&): FusionProgram {
         fin node = document.nodes[index].clone()
         var slot = 0
         if node.kind == "texture" {
-            while slot < sets.size && sets[slot] != node.textureSet { slot += 1 }
+            while slot < sets.size && sets[slot] != node.textureSet then slot += 1
         }
         source.append(emitFusionNode(node, slot))
     }
     source.append("}\n")
-    return FusionProgram(source.build(), "", fusionAlbedo(document, order), take sets)
+    return .(source.build(), "", fusionAlbedo(document, order), take sets)
 }
 
 /** Stable key for cached shader libraries; source equality is checked before use. */
@@ -141,7 +141,7 @@ func fusionSourceKey(source: String): Long {
     var index = 0
     while index < stringLength(source) {
         key = key * 16777619 + ((charAt(source, index) as Int) as Long)
-        index = index + 1
+        index++
     }
     return key
 }

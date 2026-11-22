@@ -45,9 +45,9 @@ func terrainToken(blob: Blob&, reader: TerrainCursor!): Int {
     while reader.cursor < blob.size {
         fin byte = blob.u8(reader.cursor)
         if byte == 35 {
-            while reader.cursor < blob.size && blob.u8(reader.cursor) != 10 { reader.cursor += 1 }
+            while reader.cursor < blob.size && blob.u8(reader.cursor) != 10 then reader.cursor += 1
         } else if byte <= 32 {
-            reader.cursor += 1
+            reader.cursor++
         } else {
             break
         }
@@ -59,8 +59,8 @@ func terrainToken(blob: Blob&, reader: TerrainCursor!): Int {
         if byte < 48 || byte > 57 then break
         total = total * 10 + byte - 48
         if total > 65535 then return -1
-        reader.cursor += 1
-        digits += 1
+        reader.cursor++
+        digits++
     }
     return if digits > 0 then total else -1
 }
@@ -70,7 +70,7 @@ func readTerrainImage(path: String): TerrainImage {
     defer { blob.release() }
     fin binary = blob.matches(0, "P5")
     if blob.size > 8400000 || (!binary && !blob.matches(0, "P2")) then return TerrainImage()
-    var reader = TerrainCursor()
+    var reader: TerrainCursor = .()
     fin columns = terrainToken(blob, reader)
     fin rows = terrainToken(blob, reader)
     fin peak = terrainToken(blob, reader)
@@ -81,36 +81,32 @@ func readTerrainImage(path: String): TerrainImage {
     if binary {
         if reader.cursor >= blob.size || blob.u8(reader.cursor) > 32 then return TerrainImage()
         fin carriageReturn = blob.u8(reader.cursor) == 13
-        reader.cursor += 1
+        reader.cursor++
         if carriageReturn && reader.cursor < blob.size && blob.u8(reader.cursor) == 10 && blob.size-reader.cursor == columns*rows*stride+1 {
-            reader.cursor += 1
+            reader.cursor++
         }
         if blob.size-reader.cursor != columns*rows*stride then return TerrainImage()
     }
     fin bytes = azAlloc((columns as Long) * (rows as Long) * 8)
     if bytes == 0 then return TerrainImage()
-    var index = 0
-    while index < columns * rows {
+    for i: Int in 0..<columns * rows {
         var value = 0
         if binary {
-            fin at = reader.cursor + index*stride
+            fin at = reader.cursor + i*stride
             value = if narrow then blob.u8(at) else blob.u8(at)*256 + blob.u8(at+1)
         } else {
             value = terrainToken(blob, reader)
         }
         if value < 0 || value > peak {
             azFree(bytes)
-            return TerrainImage()
+            return .()
         }
-        azPokeF64(bytes, (index as Long) * 8, (value as Double) / (peak as Double) - 0.5)
-        index += 1
+        azPokeF64(bytes, (i as Long) * 8, (value as Double) / (peak as Double) - 0.5)
     }
-    return TerrainImage(columns, rows, bytes)
+    return .(columns, rows, bytes)
 }
 
-func terrainHeight(image: TerrainImage&, x: Int, z: Int): Double {
-    return azPeekF64(image.samples, ((z * image.columns + x) as Long) * 8)
-}
+func terrainHeight(image: TerrainImage&, x: Int, z: Int): Double = azPeekF64(image.samples, ((z * image.columns + x) as Long) * 8)
 
 func sampleTerrain(image: TerrainImage&, x: Double, z: Double): Double {
     fin u = terrainClamp(x + 0.5, 0.0, 1.0) * ((image.columns - 1) as Double)
@@ -127,13 +123,12 @@ func sampleTerrain(image: TerrainImage&, x: Double, z: Double): Double {
     if (i+j)%2 == 0 {
         return if s >= t then a + s*(b-a) + t*(d-b) else a + t*(c-a) + s*(d-c)
     }
-    if s + t <= 1.0 then return a + s*(b-a) + t*(c-a)
-    return d + (1.0-s)*(c-d) + (1.0-t)*(b-d)
+    return if s + t <= 1.0 then a + s*(b-a) + t*(c-a) else d + (1.0-s)*(c-d) + (1.0-t)*(b-d)
 }
 
 func terrainClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
 
 func heightfieldMatrix(world: World!, entity: Entity, surface: HeightfieldTerrain&): Mat4 =
     mat4Mul(worldMatrix(world, entity), mat4Scale(
-        terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0),
+        terrainClamp(surface.width, 1.0, 100000.0), terrainClamp(surface.elevation, 0.1, 10000.0)
         terrainClamp(surface.length, 1.0, 100000.0)))

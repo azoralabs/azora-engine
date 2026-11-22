@@ -15,13 +15,13 @@ func report(name: String, passed: Bool, value: Double) {
 /** A view from (0, 10, 0) looking straight down, 64 x 64 pixels; the matrices live at [block] (current, previous, inverse). */
 func downView(block: Long, commands: Long, depth: Long, dt: Double, time: Double): ParticleView {
     fin projection = mat4Perspective(60.0, 1.0, 0.1, 100.0)
-    fin view = Mat4(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, -10.0, 0.0, 0.0, 0.0, 1.0)
+    fin view: Mat4 = .(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, -10.0, 0.0, 0.0, 0.0, 1.0)
     fin clip = mat4Mul(projection, view)
     pokeMat4(block, 0, clip)
     pokeMat4(block, 64, clip)
     pokeMat4(block, 128, mat4Inverse(clip))
     return ParticleView(commands: commands, viewProj: block, previousViewProj: block + 64, previousInverse: block + 128, depth: depth,
-        eyeX: 0.0, eyeY: 10.0, eyeZ: 0.0, time: time, delta: dt, fullWidth: 64.0, fullHeight: 64.0, depthWidth: 64.0, depthHeight: 64.0,
+        eyeX: 0.0, eyeY: 10.0, eyeZ: 0.0, time: time, delta: dt, fullWidth: 64.0, fullHeight: 64.0, depthWidth: 64.0, depthHeight: 64.0
         near: 0.1, far: 100.0, focal: 55.0)
 }
 
@@ -50,27 +50,21 @@ func main() {
     fin queue = send0(device, sel("newCommandQueue"))
     var pipes = makeParticlePipelines(device)
     fin block = azAlloc(192)
-    fin origin = Vec3(0.0, 0.0, 0.0)
+    fin origin: Vec3 = .(0.0, 0.0, 0.0)
 
     // CPU: 100 a second for one second, living ten: a hundred alive.
-    var rate = ParticleEmitter(simulation: 0, capacity: 500, rate: 100.0, lifeMin: 10.0, lifeMax: 10.0, spread: 0.0, gravity: 0.0, drag: 0.0)
+    var rate: ParticleEmitter = .(simulation: 0, capacity: 500, rate: 100.0, lifeMin: 10.0, lifeMax: 10.0, spread: 0.0, gravity: 0.0, drag: 0.0)
     var cpu = particleSystem(device, queue, 500, false)
     var view = downView(block, 0, 0, 0.1, 0.0)
-    var i = 0
-    while i < 10 {
-        cpu.simulate(pipes, rate, view, origin)
-        i += 1
-    }
+    for i: Int in 0..<10 then cpu.simulate(pipes, rate, view, origin)
     var alive = 0
-    i = 0
-    while i < 500 {
+    for i: Int in 0..<500 {
         if azPeekF64(cpu.state, (i as Long) * 64 + 48) < azPeekF64(cpu.state, (i as Long) * 64 + 56) then alive += 1
-        i += 1
     }
     report("cpuRateSpawn", alive == 100, alive as Double)
 
     // CPU: one particle thrown up at 5 m/s under gravity, stepped like the GPU (velocity, then position).
-    var thrown = ParticleEmitter(simulation: 0, capacity: 1, rate: 10.0, lifeMin: 10.0, lifeMax: 10.0, velocity: Vec3(0.0, 5.0, 0.0),
+    var thrown = ParticleEmitter(simulation: 0, capacity: 1, rate: 10.0, lifeMin: 10.0, lifeMax: 10.0, velocity: .(0.0, 5.0, 0.0),
         spread: 0.0, gravity: 9.81, drag: 0.0, wind: 0.0)
     var one = particleSystem(device, queue, 1, false)
     view = downView(block, 0, 0, 0.1, 0.0)
@@ -81,12 +75,10 @@ func main() {
     expectedV -= 9.81 * 0.1
     expectedY += expectedV * 0.1
     thrown.rate = 0.0
-    i = 0
-    while i < 9 {
+    for i: Int in 0..<9 {
         one.simulate(pipes, thrown, view, origin)
         expectedV -= 9.81 * 0.1
         expectedY += expectedV * 0.1
-        i += 1
     }
     fin cpuY = azPeekF64(one.state, 8)
     report("cpuGravityExact", absValue(cpuY - expectedY) < 1e-9, cpuY - expectedY)
@@ -97,18 +89,14 @@ func main() {
     view = downView(block, 0, 0, 0.1, 0.0)
     step(queue, gpu, pipes, thrown, view, origin)
     thrown.rate = 0.0
-    i = 0
-    while i < 9 {
-        step(queue, gpu, pipes, thrown, view, origin)
-        i += 1
-    }
+    for i: Int in 0..<9 then step(queue, gpu, pipes, thrown, view, origin)
     fin back = readBack(queue, device, gpu.particles, 32)
     fin gpuY = peekFloat32(send0(back, sel("contents")), 4)
     send0(back, sel("release"))
     report("gpuMatchesCpu", pipes.ready && absValue(gpuY - expectedY) < 0.001, gpuY - expectedY)
 
     // GPU camera box: after the eye moves 100 m east every drop is around it.
-    var rain = ParticleEmitter(simulation: 1, capacity: 4096, spawn: 3, extent: Vec3(9.0, 9.0, 9.0), lifeMin: 1.0, lifeMax: 1.0,
+    var rain = ParticleEmitter(simulation: 1, capacity: 4096, spawn: 3, extent: .(9.0, 9.0, 9.0), lifeMin: 1.0, lifeMax: 1.0,
         spread: 0.0, terminalSpeed: 8.0, drag: 20.0, wind: 1.0, collision: 0)
     var drops = particleSystem(device, queue, 4096, true)
     view = downView(block, 0, 0, 1.0 / 60.0, 0.0)
@@ -118,11 +106,9 @@ func main() {
     fin pool = readBack(queue, device, drops.particles, 4096 * 32)
     fin contents = send0(pool, sel("contents"))
     var inside = 0
-    i = 0
-    while i < 4096 {
+    for i: Int in 0..<4096 {
         fin x = peekFloat32(contents, (i as Long) * 32)
         if absValue(x - 100.0) <= 9.01 then inside += 1
-        i += 1
     }
     send0(pool, sel("release"))
     report("cameraBoxFollowsEye", inside == 4096, inside as Double)
@@ -141,7 +127,7 @@ func main() {
     send1(attachment, sel("setTexture:"), depth)
     send1(attachment, sel("setLoadAction:"), 2)
     send1(attachment, sel("setStoreAction:"), 1)
-    fin cleared = azSendF1(attachment, sel("setClearDepth:"), groundDepth)
+    azSendF1(attachment, sel("setClearDepth:"), groundDepth)
     send0(send1(clearing, sel("renderCommandEncoderWithDescriptor:"), pass), sel("endEncoding"))
     send0(clearing, sel("commit"))
     send0(clearing, sel("waitUntilCompleted"))
@@ -155,7 +141,7 @@ func main() {
     while frames < 90 && hits == 0 {
         step(queue, falling, pipes, rain, view, origin)
         hits = azPeek32(send0(falling.counters, sel("contents")), 4)
-        frames += 1
+        frames++
     }
     if hits > 0 {
         fin events = readBack(queue, device, falling.events, 32)
@@ -165,7 +151,7 @@ func main() {
     report("depthHitsRecorded", hits > 0 && absValue(hitY) < 0.05, hitY)
 
     // Those hits become splashes: a ring and droplets for each.
-    var splash = ParticleEmitter(simulation: 1, capacity: 8192, lifeMin: 0.3, lifeMax: 0.3, gravity: 9.81, drag: 0.0, wind: 0.0, sizeStart: 0.02)
+    var splash: ParticleEmitter = .(simulation: 1, capacity: 8192, lifeMin: 0.3, lifeMax: 0.3, gravity: 9.81, drag: 0.0, wind: 0.0, sizeStart: 0.02)
     var splashes = particleSystem(device, queue, 8192, true)
     fin commands = send0(queue, sel("commandBuffer"))
     view.commands = commands

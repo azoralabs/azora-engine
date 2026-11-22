@@ -33,13 +33,13 @@ import engine.math
 import engine.audio.dsp
 
 /** Seconds of sound kept queued ahead of the speakers: a late frame fits in it, and it is short enough not to lag. */
-fin audioLead: Double = 0.040
+inline fin audioLead: Double = 0.040
 
 /** The most frames one block holds: a quarter second at 48 kHz. */
-fin audioCapacity: Int = 12000
+inline fin audioCapacity: Int = 12000
 
 /** Seconds of sound AZORA_AUDIO_CAPTURE records at most. */
-fin captureSeconds: Int = 120
+inline fin captureSeconds: Int = 120
 
 pack AudioOutput {
     var engine: Long = 0
@@ -75,7 +75,7 @@ pack AudioOutput {
 
 /** Opens the default output device; a failed open gives an output whose blocks are always empty. */
 func audioOutputOpen(rate: Int = 48000): AudioOutput {
-    var output = AudioOutput(rate: rate, capacity: audioCapacity)
+    var output: AudioOutput = .(rate: rate, capacity: audioCapacity)
     output.mix = sampleBuffer(audioCapacity * 2)
     fin engine = send0(send0(cls("AVAudioEngine"), sel("alloc")), sel("init"))
     if engine == 0 then return take output
@@ -136,7 +136,7 @@ func AudioOutput!.beginBlock(): Int {
     var i = 0
     while i < self.frames * 2 {
         setSample(self.mix, i, 0.0)
-        i += 1
+        i++
     }
     return self.frames
 }
@@ -146,12 +146,10 @@ func AudioOutput!.mixMono(source: Long, frames: Int, gain: Double, pan: Double) 
     fin left = gain * equalPowerLeft(pan)
     fin right = gain * equalPowerRight(pan)
     fin count = if frames < self.frames then frames else self.frames
-    var i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin x = sample(source, i)
         addSample(self.mix, i * 2, x * left)
         addSample(self.mix, i * 2 + 1, x * right)
-        i += 1
     }
 }
 
@@ -169,7 +167,7 @@ func AudioOutput!.endBlock() {
     while i < self.frames {
         azPokeF32(left, (i as Long) * 4, sample(self.mix, i * 2))
         azPokeF32(right, (i as Long) * 4, sample(self.mix, i * 2 + 1))
-        i += 1
+        i++
     }
     send2(self.player, sel("scheduleBuffer:completionHandler:"), buffer, 0)
     send0(buffer, sel("release"))
@@ -180,8 +178,8 @@ func AudioOutput!.endBlock() {
             fin at = (44 + self.captured * 4) as Long
             pokeSample16(self.capture, at, sample(self.mix, frame * 2))
             pokeSample16(self.capture, at + 2, sample(self.mix, frame * 2 + 1))
-            self.captured += 1
-            frame += 1
+            self.captured++
+            frame++
         }
     }
 }
@@ -240,7 +238,7 @@ func AudioOutput!.close() {
     }
     if self.capture != 0 {
         waveHeader(self.capture, self.captured, self.rate)
-        fin unused = saveBytes(self.capture, self.captured * 4 + 44, self.capturePath)
+        saveBytes(self.capture, self.captured * 4 + 44, self.capturePath)
         azFree(self.capture)
         self.capture = 0
     }

@@ -87,11 +87,11 @@ pack VideoOpenOptions {
 /** Defaults favour the fastest provider and audio-led movie playback. */
 func videoOpenOptions(): VideoOpenOptions {
     return VideoOpenOptions(
-        ProviderPreference.Automatic,
-        SyncPolicy.AudioMaster,
-        8,
-        VideoQueuePolicy.DropOldest,
-        false,
+        ProviderPreference.Automatic
+        SyncPolicy.AudioMaster
+        8
+        VideoQueuePolicy.DropOldest
+        false
         1.0
     )
 }
@@ -102,9 +102,7 @@ pack VideoPlayer {
 }
 
 /** A player value that owns no provider session. */
-func videoPlayerInvalid(): VideoPlayer {
-    return VideoPlayer(Long(0))
-}
+func videoPlayerInvalid(): VideoPlayer = .(0)
 
 /**
  * One decoded picture ready for presentation.
@@ -128,14 +126,14 @@ pack VideoFrame {
 /** A harmless frame used to initialise preallocated queue storage. */
 func videoFrameEmpty(): VideoFrame {
     return VideoFrame(
-        StreamId(-1),
+        StreamId(-1)
+        mediaTimeZero()
         mediaTimeZero(),
-        mediaTimeZero(),
-        -Long(1),
-        Long(0),
-        0,
-        0,
-        Long(0),
+        -1
+        0
+        0
+        0
+        0
         false
     )
 }
@@ -154,51 +152,45 @@ pack VideoFrameQueue {
 /** Allocates queue storage once; pushing and popping do not grow it. */
 func videoFrameQueue(capacity: Int, policy: VideoQueuePolicy): VideoFrameQueue {
     var room = capacity
-    if room < 1 { room = 1 }
+    if room < 1 then room = 1
     var frames: Array<VideoFrame> = Array::fill<VideoFrame>(room)
-    var index = 0
-    while index < room {
-        frames[index] = videoFrameEmpty()
-        index = index + 1
-    }
-    return VideoFrameQueue(frames, room, 0, 0, Long(1), Long(0), policy)
+    for i: Int in 0..<room then frames[i] = videoFrameEmpty()
+    return .(frames, room, 0, 0, 1, 0, policy)
 }
 
 impl VideoFrameQueue {
     /** Offers a frame without blocking a decoder worker. */
     func !.push(frame: VideoFrame): VideoQueuePush {
         if frame.generation != self.generation {
-            self.dropped = self.dropped + Long(1)
+            self.dropped += 1
             return VideoQueuePush.RejectedStale
         }
         if self.count >= self.capacity {
-            if self.policy == VideoQueuePolicy.RejectNewest {
-                self.dropped = self.dropped + Long(1)
+            if self.policy == .RejectNewest {
+                self.dropped += 1
                 return VideoQueuePush.RejectedFull
             }
             self.head = (self.head + 1) % self.capacity
-            self.count = self.count - 1
-            self.dropped = self.dropped + Long(1)
+            self.count--
+            self.dropped += 1
             fin at = (self.head + self.count) % self.capacity
             self.frames[at] = frame
-            self.count = self.count + 1
+            self.count++
             return VideoQueuePush.DroppedOldest
         }
         fin at = (self.head + self.count) % self.capacity
         self.frames[at] = frame
-        self.count = self.count + 1
+        self.count++
         return VideoQueuePush.Accepted
     }
 
     /** Removes the oldest decoded frame. */
     func !.pop(): VideoFrameRead {
-        if self.count <= 0 {
-            return VideoFrameRead.Empty
-        }
+        if self.count <= 0 then return VideoFrameRead.Empty
         fin frame = self.frames[self.head]
         self.frames[self.head] = videoFrameEmpty()
         self.head = (self.head + 1) % self.capacity
-        self.count = self.count - 1
+        self.count--
         return VideoFrameRead.Frame(frame)
     }
 
@@ -236,42 +228,36 @@ pack VideoSession {
 
 /** Finds the first stream id of [kind], or `-1` when none exists. */
 func videoFirstStream(info: MediaInfo&, kind: MediaStreamKind): StreamId {
-    var index = 0
-    while index < info.streams.size {
-        if info.streams[index].kind == kind {
-            return StreamId(info.streams[index].id.value)
-        }
-        index = index + 1
+    for i: Int in 0..<info.streams.size {
+        if info.streams[i].kind == kind then return .(info.streams[i].id.value)
     }
-    return StreamId(-1)
+    return .(-1)
 }
 
 /** Builds a ready session from provider metadata. */
 func videoSession(info: MediaInfo, options: VideoOpenOptions): VideoSession ?! VideoError {
-    fin video = videoFirstStream(info, MediaStreamKind.Video)
-    if video.value < 0 {
-        return .NoVideoStream
-    }
-    fin audio = videoFirstStream(info, MediaStreamKind.Audio)
-    fin subtitle = videoFirstStream(info, MediaStreamKind.Subtitle)
+    fin video = videoFirstStream(info, .Video)
+    if video.value < 0 then return .NoVideoStream
+    fin audio = videoFirstStream(info, .Audio)
+    fin subtitle = videoFirstStream(info, .Subtitle)
     var rate = options.playbackRate
-    if rate <= 0.0 { rate = 1.0 }
+    if rate <= 0.0 then rate = 1.0
     return VideoSession(
-        VideoState.Ready,
-        info,
-        mediaTimeZero(),
-        MediaTime(info.duration.ticks, info.duration.timeBaseNum, info.duration.timeBaseDen),
-        video,
-        audio,
-        subtitle,
-        audio.value >= 0,
-        subtitle.value >= 0,
-        rate,
-        options.looping,
-        false,
-        Long(1),
-        videoFrameQueue(options.frameQueueCapacity, options.frameQueuePolicy),
-        Long(0)
+        VideoState.Ready
+        info
+        mediaTimeZero()
+        MediaTime(info.duration.ticks, info.duration.timeBaseNum, info.duration.timeBaseDen)
+        video
+        audio
+        subtitle
+        audio.value >= 0
+        subtitle.value >= 0
+        rate
+        options.looping
+        false
+        1
+        videoFrameQueue(options.frameQueueCapacity, options.frameQueuePolicy)
+        0
     )
 }
 
@@ -279,21 +265,21 @@ func videoSession(info: MediaInfo, options: VideoOpenOptions): VideoSession ?! V
 func videoSessionEmpty(): VideoSession {
     fin info = mediaInfoEmpty()
     return VideoSession(
-        VideoState.Closed,
-        info,
-        mediaTimeZero(),
-        mediaTimeZero(),
-        StreamId(-1),
-        StreamId(-1),
-        StreamId(-1),
-        false,
-        false,
-        1.0,
-        false,
-        false,
-        Long(1),
-        videoFrameQueue(1, VideoQueuePolicy.RejectNewest),
-        Long(0)
+        VideoState.Closed
+        info
+        mediaTimeZero()
+        mediaTimeZero()
+        StreamId(-1)
+        StreamId(-1)
+        StreamId(-1)
+        false
+        false
+        1.0
+        false
+        false
+        1
+        videoFrameQueue(1, .RejectNewest)
+        0
     )
 }
 
@@ -310,16 +296,14 @@ func videoOpenWith(
 impl VideoSession {
     /** Starts or resumes playback. */
     func !.play() ?! VideoError {
-        if self.state == VideoState.Closed || self.state == VideoState.Opening || self.state == VideoState.Failed {
-            return .InvalidState
-        }
-        if self.state == VideoState.Seeking {
+        if self.state == .Closed || self.state == .Opening || self.state == .Failed then return .InvalidState
+        if self.state == .Seeking {
             self.resumeAfterSeek = true
             return
         }
-        if self.state == VideoState.Ended {
+        if self.state == .Ended {
             self.position = mediaTimeZero()
-            self.generation = self.generation + Long(1)
+            self.generation += 1
             self.frames.flush(self.generation)
         }
         self.state = VideoState.Playing
@@ -327,64 +311,50 @@ impl VideoSession {
 
     /** Pauses while retaining decoded frames. */
     func !.pause() ?! VideoError {
-        if self.state != VideoState.Playing && self.state != VideoState.Buffering {
-            return .InvalidState
-        }
+        if self.state != .Playing && self.state != .Buffering then return .InvalidState
         self.state = VideoState.Paused
     }
 
     /** Rewinds and invalidates decoder work without closing the provider. */
     func !.stop() {
-        if self.state == VideoState.Closed { return }
+        if self.state == .Closed then return
         self.position = mediaTimeZero()
         self.state = VideoState.Ready
         self.resumeAfterSeek = false
-        self.generation = self.generation + Long(1)
+        self.generation += 1
         self.frames.flush(self.generation)
     }
 
     /** Starts an asynchronous seek and invalidates old decoder output. */
     func !.seek(target: MediaTime&) ?! VideoError {
-        if self.state == VideoState.Closed || self.state == VideoState.Opening || self.state == VideoState.Failed {
-            return .InvalidState
-        }
-        if !self.info.seekable {
-            return .NotSeekable
-        }
-        self.resumeAfterSeek = self.state == VideoState.Playing || self.state == VideoState.Buffering
+        if self.state == .Closed || self.state == .Opening || self.state == .Failed then return .InvalidState
+        if !self.info.seekable then return .NotSeekable
+        self.resumeAfterSeek = self.state == .Playing || self.state == .Buffering
         self.position = mediaTimeClamp(target, mediaTimeZero(), self.duration)
         self.state = VideoState.Seeking
-        self.generation = self.generation + Long(1)
+        self.generation += 1
         self.frames.flush(self.generation)
     }
 
     /** Completes a provider seek after its first usable frame has been decoded. */
     func !.finishSeek() ?! VideoError {
-        if self.state != VideoState.Seeking {
-            return .InvalidState
-        }
-        if self.resumeAfterSeek {
-            self.state = VideoState.Playing
-        } else {
-            self.state = VideoState.Paused
-        }
+        if self.state != .Seeking then return .InvalidState
+        if self.resumeAfterSeek then self.state = VideoState.Playing else self.state = VideoState.Paused
         self.resumeAfterSeek = false
     }
 
     /** Advances the selected clock; decode and presentation remain separate. */
     func !.tick(elapsedSeconds: Double) {
-        if self.state != VideoState.Playing || elapsedSeconds <= 0.0 {
-            return
-        }
+        if self.state != .Playing || elapsedSeconds <= 0.0 then return
         fin next = mediaTimeAdd(self.position, mediaTimeSeconds(elapsedSeconds * self.playbackRate))
         if mediaTimeCompare(next, self.duration) < 0 {
             self.position = next
             return
         }
-        if self.looping && self.duration.ticks > Long(0) {
+        if self.looping && self.duration.ticks > 0 {
             fin overflow = mediaTimeAsSeconds(next) - mediaTimeAsSeconds(self.duration)
             self.position = mediaTimeSeconds(overflow)
-            self.generation = self.generation + Long(1)
+            self.generation += 1
             self.frames.flush(self.generation)
             return
         }
@@ -396,17 +366,13 @@ impl VideoSession {
     func !.presentNext(): VideoFrameRead {
         fin read = self.frames.pop()
         when read {
-            VideoFrameRead.Frame(frame) -> {
+            .Frame(frame) -> {
                 self.position = MediaTime(frame.pts.ticks, frame.pts.timeBaseNum, frame.pts.timeBaseDen)
-                self.presentedFrames = self.presentedFrames + Long(1)
-                if self.state == VideoState.Buffering {
-                    self.state = VideoState.Playing
-                }
+                self.presentedFrames += 1
+                if self.state == .Buffering then self.state = VideoState.Playing
             }
-            VideoFrameRead.Empty() -> {
-                if self.state == VideoState.Playing {
-                    self.state = VideoState.Buffering
-                }
+            .Empty() -> {
+                if self.state == .Playing then self.state = VideoState.Buffering
             }
         }
         return read
@@ -414,7 +380,7 @@ impl VideoSession {
 
     /** Closes a session and invalidates every outstanding frame. */
     func !.close() {
-        self.generation = self.generation + Long(1)
+        self.generation += 1
         self.frames.flush(self.generation)
         self.position = mediaTimeZero()
         self.state = VideoState.Closed
@@ -425,38 +391,38 @@ impl VideoSession {
 /** Test frame in [generation] at [seconds]. */
 func fakeVideoFrame(sequence: Long, generation: Long, seconds: Double): VideoFrame {
     return VideoFrame(
-        StreamId(10),
-        mediaTimeSeconds(seconds),
-        mediaTimeSeconds(1.0 / 24.0),
-        sequence,
-        generation,
-        1920,
-        1080,
-        sequence,
-        sequence % Long(24) == Long(0)
+        StreamId(10)
+        mediaTimeSeconds(seconds)
+        mediaTimeSeconds(1.0 / 24.0)
+        sequence
+        generation
+        1920
+        1080
+        sequence
+        sequence % 24 == 0
     )
 }
 
 test "a full frame queue drops deterministically and retains order" {
-    var queue = videoFrameQueue(2, VideoQueuePolicy.DropOldest)
-    assert queue.push(fakeVideoFrame(Long(1), Long(1), 0.0)) == VideoQueuePush.Accepted panic "the first frame must fit"
-    assert queue.push(fakeVideoFrame(Long(2), Long(1), 0.04)) == VideoQueuePush.Accepted panic "the second frame must fit"
-    assert queue.push(fakeVideoFrame(Long(3), Long(1), 0.08)) == VideoQueuePush.DroppedOldest panic "a live decoder must not block behind an obsolete frame"
+    var queue = videoFrameQueue(2, .DropOldest)
+    assert queue.push(fakeVideoFrame(1, 1, 0.0)) == VideoQueuePush.Accepted panic "the first frame must fit"
+    assert queue.push(fakeVideoFrame(2, 1, 0.04)) == VideoQueuePush.Accepted panic "the second frame must fit"
+    assert queue.push(fakeVideoFrame(3, 1, 0.08)) == VideoQueuePush.DroppedOldest panic "a live decoder must not block behind an obsolete frame"
     when queue.pop() {
-        VideoFrameRead.Frame(frame) -> { assert frame.sequence == Long(2) panic "the oldest frame must have been dropped" }
-        VideoFrameRead.Empty() -> { assert false panic "two frames must remain queued" }
+        .Frame(frame) -> { assert frame.sequence == 2 panic "the oldest frame must have been dropped" }
+        .Empty() -> { assert false panic "two frames must remain queued" }
     }
 }
 
 test "a seek invalidates queued and in-flight frames by generation" {
     var session = videoSession(fakeMovieInfo(), videoOpenOptions()) catch videoSessionEmpty()
     session.play() catch { }
-    session.frames.push(fakeVideoFrame(Long(1), session.generation, 0.0))
+    session.frames.push(fakeVideoFrame(1, session.generation, 0.0))
     fin oldGeneration = session.generation
     session.seek(mediaTimeSeconds(40.0)) catch { }
     assert session.state == VideoState.Seeking panic "seek must be visible until the provider catches up"
     assert session.frames.count == 0 panic "frames from the old timeline must be flushed"
-    assert session.frames.push(fakeVideoFrame(Long(2), oldGeneration, 0.04)) == VideoQueuePush.RejectedStale panic "late decoder work must not cross a seek boundary"
+    assert session.frames.push(fakeVideoFrame(2, oldGeneration, 0.04)) == VideoQueuePush.RejectedStale panic "late decoder work must not cross a seek boundary"
     session.finishSeek() catch { }
     assert session.state == VideoState.Playing panic "a playing session must resume after seek"
 }
@@ -469,5 +435,5 @@ test "playback reaches the exact end and can restart" {
     assert mediaTimeCompare(session.position, session.duration) == 0 panic "the end position must be exact"
     session.play() catch { }
     assert session.state == VideoState.Playing panic "playing an ended session must restart it"
-    assert session.position.ticks == Long(0) panic "restart must rewind"
+    assert session.position.ticks == 0 panic "restart must rewind"
 }

@@ -8,8 +8,8 @@ import engine.scene
 
 /** [entity]'s own transform as a matrix (identity when it has none). */
 func localMatrix(world: World!, entity: Entity): Mat4 {
-    if !storageHas<Transform>(ensureStorage<Transform>(world), entity) { return mat4Identity() }
-    fin t = storageGet<Transform>(ensureStorage<Transform>(world), entity).clone()
+    if !storageHas<Transform>(ensureStorage(world), entity) then return mat4Identity()
+    fin t = storageGet<Transform>(ensureStorage(world), entity).clone()
     return trsMatrix(t.translation, t.rotation, t.scale)
 }
 
@@ -21,7 +21,7 @@ func worldMatrix(world: World!, entity: Entity): Mat4 {
     while world.isAlive(parent) && depth < 64 {
         matrix = mat4Mul(localMatrix(world, parent), matrix)
         parent = world.getParent(parent)
-        depth = depth + 1
+        depth++
     }
     return matrix
 }
@@ -29,7 +29,7 @@ func worldMatrix(world: World!, entity: Entity): Mat4 {
 /** [entity]'s position in the world. */
 func worldPosition(world: World!, entity: Entity): Vec3 {
     fin m = worldMatrix(world, entity)
-    return Vec3(m.m03, m.m13, m.m23)
+    return .(m.m03, m.m13, m.m23)
 }
 
 /** Whether [entity] and every parent are visible. */
@@ -37,10 +37,10 @@ func visibleInWorld(world: World!, entity: Entity): Bool {
     var current = entity
     var depth = 0
     while world.isAlive(current) && depth < 64 {
-        if storageHas<Visibility>(ensureStorage<Visibility>(world), current) &&
-            !storageGet<Visibility>(ensureStorage<Visibility>(world), current).visible { return false }
+        if storageHas<Visibility>(ensureStorage(world), current) &&
+            !storageGet<Visibility>(ensureStorage(world), current).visible { return false }
         current = world.getParent(current)
-        depth = depth + 1
+        depth++
     }
     return true
 }

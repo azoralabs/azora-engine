@@ -37,20 +37,16 @@ pack Quat {
 }
 
 /** The rotation that does nothing. */
-func quatIdentity(): Quat {
-    return Quat(0.0, 0.0, 0.0, 1.0)
-}
+func quatIdentity(): Quat = .(0.0, 0.0, 0.0, 1.0)
 
-func quat(x: Double, y: Double, z: Double, w: Double): Quat {
-    return Quat(x, y, z, w)
-}
+func quat(x: Double, y: Double, z: Double, w: Double): Quat = .(x, y, z, w)
 
 /** The rotation of [radians] about [axis], which need not be normalised. */
 func quatAxisAngle(axis: Vec3, radians: Double): Quat {
     fin unit = axis.normalized catch vec3Zero()
     fin half = radians * 0.5
     fin s = sin(half)
-    return Quat(unit.x * s, unit.y * s, unit.z * s, cos(half))
+    return .(unit.x * s, unit.y * s, unit.z * s, cos(half))
 }
 
 /** The rotation of an X-then-Y-then-Z Euler triple, in radians. */
@@ -62,56 +58,43 @@ func quatEuler(pitch: Double, yaw: Double, roll: Double): Quat {
     fin cr = cos(roll * 0.5)
     fin sr = sin(roll * 0.5)
     return Quat(
-        sp * cy * cr - cp * sy * sr,
-        cp * sy * cr + sp * cy * sr,
-        cp * cy * sr - sp * sy * cr,
+        sp * cy * cr - cp * sy * sr
+        cp * sy * cr + sp * cy * sr
+        cp * cy * sr - sp * sy * cr
         cp * cy * cr + sp * sy * sr
     )
 }
 
 impl Quat {
-    func &.dot(o: Quat): Double {
-        return self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
-    }
+    func &.dot(o: Quat): Double = self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
 
-    func &.length(): Double {
-        return sqrt(self.dot(self))
-    }
+    func &.length(): Double = sqrt(self.dot(self))
 
-    func &.scale(k: Double): Quat {
-        return Quat(self.x * k, self.y * k, self.z * k, self.w * k)
-    }
+    func &.scale(k: Double): Quat = .(self.x * k, self.y * k, self.z * k, self.w * k)
 
-    func &.plus(o: Quat): Quat {
-        return Quat(self.x + o.x, self.y + o.y, self.z + o.z, self.w + o.w)
-    }
+    func &.plus(o: Quat): Quat = .(self.x + o.x, self.y + o.y, self.z + o.z, self.w + o.w)
 
     /** The inverse rotation, for a unit quaternion. */
-    func &.conjugate(): Quat {
-        return Quat(0.0 - self.x, 0.0 - self.y, 0.0 - self.z, self.w)
-    }
+    func &.conjugate(): Quat = .(-self.x, -self.y, -self.z, self.w)
 
-    prop  &.normalized: Quat {
+    prop &.normalized: Quat {
         fin len = self.length()
-        if len < 0.000001 {
-            return quatIdentity()
-        }
-        return self.scale(1.0 / len)
+        return if len < 0.000001 then quatIdentity() else self.scale(1.0 / len)
     }
 
     /** `self` then [o] — the composition, applied right to left as usual. */
     func &.times(o: Quat): Quat {
         return Quat(
-            self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
-            self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
-            self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w,
+            self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y
+            self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x
+            self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w
             self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z
         )
     }
 
     /** [point] rotated by this quaternion. */
     func &.rotate(point: Vec3): Vec3 {
-        fin u = Vec3(self.x, self.y, self.z)
+        fin u: Vec3 = .(self.x, self.y, self.z)
         fin uv = u.cross(point)
         fin uuv = u.cross(uv)
         return point.add(uv.scale(2.0 * self.w)).add(uuv.scale(2.0))
@@ -129,9 +112,9 @@ impl Quat {
         fin wy = self.w * self.y
         fin wz = self.w * self.z
         return Mat4(
-            1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0,
-            2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0,
-            2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0,
+            1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0
+            2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0
+            2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0
             0.0, 0.0, 0.0, 1.0
         )
     }
@@ -146,7 +129,7 @@ impl Quat {
  * without it a blend can take the long way round.
  */
 func quatNlerp(a: Quat, b: Quat, t: Double): Quat {
-    fin target = if a.dot(b) < 0.0 { b.scale(-1.0) } else { b }
+    fin target = if a.dot(b) < 0.0 then b.scale(-1.0) else b
     return a.scale(1.0 - t).plus(target.scale(t)).normalized
 }
 
@@ -163,11 +146,9 @@ func quatSlerp(a: Quat, b: Quat, t: Double): Quat {
     var target = b
     if cosine < 0.0 {
         target = b.scale(-1.0)
-        cosine = 0.0 - cosine
+        cosine = -cosine
     }
-    if cosine > 0.9995 {
-        return quatNlerp(a, target, t)
-    }
+    if cosine > 0.9995 then return quatNlerp(a, target, t)
     fin angle = acos(cosine)
     fin s = sin(angle)
     fin fromWeight = sin((1.0 - t) * angle) / s

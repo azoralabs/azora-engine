@@ -16,15 +16,15 @@ import engine.weather.presets
 import engine.atmosphere.skyrender
 
 /** Strikes alive at once (their flash, then their thunder), segments a bolt may have, and the thunder's arrival bins. */
-fin strikeSlots: Int = 3
-fin boltSegments: Int = 192
-fin thunderBins: Int = 700
-fin thunderBin: Double = 0.02
+inline fin strikeSlots: Int = 3
+inline fin boltSegments: Int = 192
+inline fin thunderBins: Int = 700
+inline fin thunderBin: Double = 0.02
 /** Doubles kept per strike (see [AetherStorm.strikes]). */
-fin strikeFields: Int = 24
+inline fin strikeFields: Int = 24
 /** Bytes of one segment for drawing: two float4, its ends with its width and glow. */
-fin segmentBytes: Long = 32
-fin speedOfSound: Double = 343.0
+inline fin segmentBytes: Long = 32
+inline fin speedOfSound: Double = 343.0
 
 /**
  * A thunderstorm's lightning and thunder. Strikes come as a Poisson process
@@ -146,13 +146,9 @@ func stormPipeline(device: Long): Long {
 }
 
 func aetherStorm(device: Long, rate: Double): AetherStorm {
-    var storm = AetherStorm()
+    var storm: AetherStorm = .()
     storm.strikes = sampleBuffer(strikeSlots * strikeFields)
-    var i = 0
-    while i < strikeSlots * strikeFields {
-        setSample(storm.strikes, i, 0.0)
-        i += 1
-    }
+    for i: Int in 0..<strikeSlots * strikeFields then setSample(storm.strikes, i, 0.0)
     storm.envelopes = sampleBuffer(strikeSlots * thunderBins)
     storm.bus = sampleBuffer(24000 * 2)
     storm.block = azAlloc(128)
@@ -207,7 +203,7 @@ func makeChannel(storm: AetherStorm!, slot: Int, x: Double, top: Double, z: Doub
         }
         if ground && (step == steps - 1 || ny < bottom) then ny = bottom
         writeSegment(storm, slot, count, px, py, pz, nx, ny, nz, 2.2, 1.0)
-        count += 1
+        count++
         // A branch now and then, fainter, reaching out and down and stopping in the air.
         if stormRandom(storm) < 0.16 && count < boltSegments - 14 {
             var bx = nx
@@ -222,18 +218,18 @@ func makeChannel(storm: AetherStorm!, slot: Int, x: Double, top: Double, z: Doub
                 fin cz = bz + sin(outward) * drop * 0.55 + (stormRandom(storm) - 0.5) * drop
                 if cy < bottom + 20.0 then break
                 writeSegment(storm, slot, count, bx, yb, bz, cx, cy, cz, 1.0, 0.45 * (1.0 - (b as Double) / (length as Double)))
-                count += 1
+                count++
                 bx = cx
                 yb = cy
                 bz = cz
-                b += 1
+                b++
             }
         }
         px = nx
         py = ny
         pz = nz
         if ground && py <= bottom then break
-        step += 1
+        step++
     }
     return count
 }
@@ -243,11 +239,9 @@ func flashOf(storm: AetherStorm&, slot: Int, age: Double): Double {
     if age < 0.0 || age > 1.5 then return 0.0
     var total: Double = 0.0
     fin strokes = field(storm, slot, 7) as Int
-    var k = 0
-    while k < strokes {
+    for k: Int in 0..<strokes {
         fin since = age - field(storm, slot, 8 + k)
         if since >= 0.0 then total += (if k == 0 then 1.0 else 0.7) * exp(-since / 0.045)
-        k += 1
     }
     if field(storm, slot, 5) > 0.5 then total += 0.25 * exp(-age / 0.25)
     return total
@@ -261,10 +255,8 @@ func flashOf(storm: AetherStorm&, slot: Int, age: Double): Double {
 func strike(storm: AetherStorm!, now: Double, ex: Double, ez: Double, base: Double, eyeY: Double, aimed: Bool = false,
             towardX: Double = 0.0, towardZ: Double = 1.0) {
     var slot = -1
-    var s = 0
-    while s < strikeSlots {
+    for s: Int in 0..<strikeSlots {
         if field(storm, s, 0) < 0.5 && slot < 0 then slot = s
-        s += 1
     }
     if slot < 0 then return
     fin r = stormRandom(storm)
@@ -283,34 +275,25 @@ func strike(storm: AetherStorm!, now: Double, ex: Double, ez: Double, base: Doub
     fin strokes = 2 + ((stormRandom(storm) * 2.99) as Int)
     setField(storm, slot, 7, strokes as Double)
     var t: Double = 0.0
-    var k = 0
-    while k < 4 {
+    for k: Int in 0..<4 {
         setField(storm, slot, 8 + k, t)
         t += 0.05 + 0.09 * stormRandom(storm)
-        k += 1
     }
     fin count = makeChannel(storm, slot, x, base, z, if ground then 0.0 else base, ground)
     setField(storm, slot, 12, count as Double)
     // The thunder: every segment's shock wave arriving at its own distance.
     var nearest: Double = 1000000000.0
-    var i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin at = send0(storm.segments, sel("contents")) + ((slot * boltSegments + i) as Long) * segmentBytes
         fin mx = (peekFloat32(at, 0) + peekFloat32(at, 16)) * 0.5 - ex
         fin my = (peekFloat32(at, 4) + peekFloat32(at, 20)) * 0.5 - eyeY
         fin mz = (peekFloat32(at, 8) + peekFloat32(at, 24)) * 0.5 - ez
         fin d = sqrt(mx * mx + my * my + mz * mz)
         if d < nearest then nearest = d
-        i += 1
     }
     fin bins = storm.envelopes + ((slot * thunderBins) as Long) * 8
-    var b = 0
-    while b < thunderBins {
-        azPokeF64(bins, (b as Long) * 8, 0.0)
-        b += 1
-    }
-    i = 0
-    while i < count {
+    for b: Int in 0..<thunderBins then azPokeF64(bins, (b as Long) * 8, 0.0)
+    for i: Int in 0..<count {
         fin at = send0(storm.segments, sel("contents")) + ((slot * boltSegments + i) as Long) * segmentBytes
         fin ax = peekFloat32(at, 0)
         fin ay = peekFloat32(at, 4)
@@ -329,22 +312,17 @@ func strike(storm: AetherStorm!, now: Double, ex: Double, ez: Double, base: Doub
             fin at2 = bins + (bin as Long) * 8
             azPokeF64(at2, 0, azPeekF64(at2, 0) + span * peekFloat32(at, 28) / d)
         }
-        i += 1
     }
     // Each arrival rolls on: smeared forward by the air and the valley.
     var held: Double = 0.0
     var peakValue: Double = 0.0
-    b = 0
-    while b < thunderBins {
+    for b: Int in 0..<thunderBins {
         held = held * 0.9 + azPeekF64(bins, (b as Long) * 8)
         azPokeF64(bins, (b as Long) * 8, held)
         if held > peakValue then peakValue = held
-        b += 1
     }
-    b = 0
-    while b < thunderBins {
+    for b: Int in 0..<thunderBins {
         azPokeF64(bins, (b as Long) * 8, if peakValue > 0.0 then azPeekF64(bins, (b as Long) * 8) / peakValue else 0.0)
-        b += 1
     }
     setField(storm, slot, 13, now + nearest / speedOfSound)
     setField(storm, slot, 14, 0.0)
@@ -366,8 +344,7 @@ func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, 
     var brightest: Double = 0.0
     var bx: Double = 0.0
     var bz: Double = 0.0
-    var s = 0
-    while s < strikeSlots {
+    for s: Int in 0..<strikeSlots {
         if field(storm, s, 0) > 0.5 {
             fin age = now - field(storm, s, 1)
             fin d = field(storm, s, 6)
@@ -390,7 +367,6 @@ func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, 
             // Over once its flash has faded and its thunder has rolled away.
             if age > 1.5 && field(storm, s, 14) > 0.5 && field(storm, s, 16) > field(storm, s, 17) then setField(storm, s, 0, 0.0)
         }
-        s += 1
     }
     return Vec3(bx, flash, bz)
 }
@@ -398,14 +374,9 @@ func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, 
 /** Adds the thunder of every strike that has arrived into [mix] (stereo, interleaved), [frames] long, echoed by the valley. */
 func mixThunder(storm: AetherStorm!, mix: Long, frames: Int, rate: Double, volume: Double) {
     if frames <= 0 || frames > 24000 then return
-    var i = 0
-    while i < frames * 2 {
-        setSample(storm.bus, i, 0.0)
-        i += 1
-    }
+    for i: Int in 0..<frames * 2 then setSample(storm.bus, i, 0.0)
     var any = false
-    var s = 0
-    while s < strikeSlots {
+    for s: Int in 0..<strikeSlots {
         if field(storm, s, 0) > 0.5 && field(storm, s, 14) > 0.5 && field(storm, s, 16) <= field(storm, s, 17) {
             any = true
             fin d = field(storm, s, 18)
@@ -424,8 +395,7 @@ func mixThunder(storm: AetherStorm!, mix: Long, frames: Int, rate: Double, volum
             fin crack = field(storm, s, 19)
             var t = field(storm, s, 16)
             fin bins = storm.envelopes + ((s * thunderBins) as Long) * 8
-            var f = 0
-            while f < frames {
+            for f: Int in 0..<frames {
                 fin position = t / thunderBin
                 fin bin = position as Int
                 var envelope: Double = 0.0
@@ -445,19 +415,13 @@ func mixThunder(storm: AetherStorm!, mix: Long, frames: Int, rate: Double, volum
                 addSample(storm.bus, f * 2, x * left)
                 addSample(storm.bus, f * 2 + 1, x * right)
                 t += 1.0 / rate
-                f += 1
             }
             setField(storm, s, 16, t)
         }
-        s += 1
     }
     if !any then return
     storm.echo.process(storm.bus, frames, 0.35)
-    i = 0
-    while i < frames * 2 {
-        addSample(mix, i, sample(storm.bus, i))
-        i += 1
-    }
+    for i: Int in 0..<frames * 2 then addSample(mix, i, sample(storm.bus, i))
 }
 
 /** A ground strike now, a kilometre or two ahead of the eye: for trying the storm (the demo's L key). */
@@ -466,8 +430,8 @@ func lightningNow(world: World!, now: Double, eye: Vec3&, forward: Vec3&) {
     var i = 0
     while i < storageLength<AetherStorm>(storms) {
         fin owner = storageEntityAt<AetherStorm>(storms, i)
-        fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage<AetherClouds>(world), owner, AetherClouds())
+        fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage(world), owner, .())
         strike(storms.values[i], now, eye.x, eye.z, clouds.baseAltitude, eye.y, true, forward.x, forward.z)
-        i += 1
+        i++
     }
 }

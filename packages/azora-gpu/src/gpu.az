@@ -236,18 +236,16 @@ pack Mesh {
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-func gpuFailed(): AzGpu {
-    return AzGpu(false, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), false, -1, Long(0), Long(0), 1.0, 0.5, 0.8, 0.3, 0.35)
-}
+func gpuFailed(): AzGpu = .(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, -1, 0, 0, 1.0, 0.5, 0.8, 0.3, 0.35)
 
 func gpuInit(scale: Double): AzGpu {
     fin device = MTLCreateSystemDefaultDevice()
-    if device == Long(0) {
+    if device == 0 {
         println("azora-engine: no Metal device")
         return gpuFailed()
     }
     fin queue = send0(device, sel("newCommandQueue"))
-    if queue == Long(0) {
+    if queue == 0 {
         send0(device, sel("release"))
         println("azora-engine: command queue creation failed")
         return gpuFailed()
@@ -256,12 +254,12 @@ func gpuInit(scale: Double): AzGpu {
     // CAMetalLayer (attached to the window's content view by the platform layer).
     fin layer = send0(cls("CAMetalLayer"), sel("layer"))
     send1(layer, sel("setDevice:"), device)
-    send1(layer, sel("setPixelFormat:"), Long(80))
-    fin unused0 = azSendF1(layer, sel("setContentsScale:"), scale)
+    send1(layer, sel("setPixelFormat:"), 80)
+    azSendF1(layer, sel("setContentsScale:"), scale)
 
     // Shader library from MSL source.
     fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), Long(0), Long(0))
-    if lib == Long(0) {
+    if lib == 0 {
         println("azora-engine: shader compilation failed")
         send0(queue, sel("release"))
         send0(device, sel("release"))
@@ -280,10 +278,10 @@ func gpuInit(scale: Double): AzGpu {
     send1(d3, sel("setVertexFunction:"), v3)
     send1(d3, sel("setFragmentFunction:"), f3)
     fin ca3 = send1(send0(d3, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
-    send1(ca3, sel("setPixelFormat:"), Long(80))
-    send1(d3, sel("setDepthAttachmentPixelFormat:"), Long(252))
+    send1(ca3, sel("setPixelFormat:"), 80)
+    send1(d3, sel("setDepthAttachmentPixelFormat:"), 252)
     fin pipe3d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d3, Long(0))
-    if pipe3d == Long(0) {
+    if pipe3d == 0 {
         println("azora-engine: 3D pipeline failed")
         send0(queue, sel("release"))
         send0(device, sel("release"))
@@ -300,15 +298,15 @@ func gpuInit(scale: Double): AzGpu {
     send1(d2, sel("setVertexFunction:"), v2)
     send1(d2, sel("setFragmentFunction:"), f2)
     fin ca2 = send1(send0(d2, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
-    send1(ca2, sel("setPixelFormat:"), Long(80))
-    send1(ca2, sel("setBlendingEnabled:"), Long(1))
-    send1(ca2, sel("setSourceRGBBlendFactor:"), Long(4))
-    send1(ca2, sel("setDestinationRGBBlendFactor:"), Long(5))
-    send1(ca2, sel("setSourceAlphaBlendFactor:"), Long(4))
-    send1(ca2, sel("setDestinationAlphaBlendFactor:"), Long(5))
-    send1(d2, sel("setDepthAttachmentPixelFormat:"), Long(252))
+    send1(ca2, sel("setPixelFormat:"), 80)
+    send1(ca2, sel("setBlendingEnabled:"), 1)
+    send1(ca2, sel("setSourceRGBBlendFactor:"), 4)
+    send1(ca2, sel("setDestinationRGBBlendFactor:"), 5)
+    send1(ca2, sel("setSourceAlphaBlendFactor:"), 4)
+    send1(ca2, sel("setDestinationAlphaBlendFactor:"), 5)
+    send1(d2, sel("setDepthAttachmentPixelFormat:"), 252)
     fin pipe2d = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), d2, Long(0))
-    if pipe2d == Long(0) {
+    if pipe2d == 0 {
         println("azora-engine: 2D pipeline failed")
         send0(pipe3d, sel("release"))
         send0(queue, sel("release"))
@@ -319,31 +317,31 @@ func gpuInit(scale: Double): AzGpu {
     // Depth-stencil states: compare Less + write for 3D, Always for UI.
     fin dsOn = newObject("MTLDepthStencilDescriptor")
     defer { send0(dsOn, sel("release")) }
-    send1(dsOn, sel("setDepthCompareFunction:"), Long(1))
-    send1(dsOn, sel("setDepthWriteEnabled:"), Long(1))
+    send1(dsOn, sel("setDepthCompareFunction:"), 1)
+    send1(dsOn, sel("setDepthWriteEnabled:"), 1)
     fin depthOn = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOn)
 
     fin dsOff = newObject("MTLDepthStencilDescriptor")
     defer { send0(dsOff, sel("release")) }
-    send1(dsOff, sel("setDepthCompareFunction:"), Long(7))
-    send1(dsOff, sel("setDepthWriteEnabled:"), Long(0))
+    send1(dsOff, sel("setDepthCompareFunction:"), 7)
+    send1(dsOff, sel("setDepthWriteEnabled:"), 0)
     fin depthOff = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOff)
 
     // Linear sampler for text textures.
     fin sd = newObject("MTLSamplerDescriptor")
     defer { send0(sd, sel("release")) }
-    send1(sd, sel("setMinFilter:"), Long(1))
-    send1(sd, sel("setMagFilter:"), Long(1))
+    send1(sd, sel("setMinFilter:"), 1)
+    send1(sd, sel("setMagFilter:"), 1)
     fin sampler = send1(device, sel("newSamplerStateWithDescriptor:"), sd)
 
     var gpu = AzGpu(
-        true, device, queue, layer,
-        pipe3d, pipe2d, depthOn, depthOff, sampler,
-        Long(0), Long(0), Long(0),
-        Long(0), Long(0), Long(0), false, -1,
-        azAlloc(Long(128)),
-        azAlloc(Long(4096)),
-        scale,
+        true, device, queue, layer
+        pipe3d, pipe2d, depthOn, depthOff, sampler
+        0, 0, 0
+        0, 0, 0, false, -1
+        azAlloc(128)
+        azAlloc(4096)
+        scale
         0.5, 0.8, 0.3, 0.35
     )
     gpu.skyPipeline = makeSkyPipeline(device, lib)
@@ -353,11 +351,7 @@ func gpuInit(scale: Double): AzGpu {
     gpu.detailLight = azAlloc(80)
     gpu.localLights = azAlloc(528)
     gpu.environment = azAlloc(64)
-    var zero = 0
-    while zero < 16 {
-        azPokeF32(gpu.environment, (zero * 4) as Long, 0.0)
-        zero += 1
-    }
+    for zero: Int in 0..<16 then azPokeF32(gpu.environment, (zero * 4) as Long, 0.0)
     gpu.whiteTexture = whiteTexel(device)
     gpu.velocityPipeline = makeVelocityPipeline(device, lib)
     fin nearer = newObject("MTLDepthStencilDescriptor")
@@ -423,49 +417,45 @@ func gpuShutdown(gpu: AzGpu!) {
         gpu.photonBuffer = 0
     }
     releasePhotonCache(gpu.photonCache)
-    if gpu.depthTex != Long(0) { send0(gpu.depthTex, sel("release")) }
-    if gpu.sampler != Long(0) { send0(gpu.sampler, sel("release")) }
-    if gpu.depthOff != Long(0) { send0(gpu.depthOff, sel("release")) }
-    if gpu.depthOn != Long(0) { send0(gpu.depthOn, sel("release")) }
-    if gpu.pipe2d != Long(0) { send0(gpu.pipe2d, sel("release")) }
-    if gpu.pipe3d != Long(0) { send0(gpu.pipe3d, sel("release")) }
-    if gpu.queue != Long(0) { send0(gpu.queue, sel("release")) }
-    if gpu.device != Long(0) { send0(gpu.device, sel("release")) }
-    if gpu.viewProj != Long(0) { azFree(gpu.viewProj) }
-    if gpu.scratch != Long(0) { azFree(gpu.scratch) }
+    if gpu.depthTex != 0 then send0(gpu.depthTex, sel("release"))
+    if gpu.sampler != 0 then send0(gpu.sampler, sel("release"))
+    if gpu.depthOff != 0 then send0(gpu.depthOff, sel("release"))
+    if gpu.depthOn != 0 then send0(gpu.depthOn, sel("release"))
+    if gpu.pipe2d != 0 then send0(gpu.pipe2d, sel("release"))
+    if gpu.pipe3d != 0 then send0(gpu.pipe3d, sel("release"))
+    if gpu.queue != 0 then send0(gpu.queue, sel("release"))
+    if gpu.device != 0 then send0(gpu.device, sel("release"))
+    if gpu.viewProj != 0 then azFree(gpu.viewProj)
+    if gpu.scratch != 0 then azFree(gpu.scratch)
     if gpu.localLights != 0 then azFree(gpu.localLights)
     gpu.localLights = 0
     if gpu.environment != 0 then azFree(gpu.environment)
     gpu.environment = 0
     if gpu.whiteTexture != 0 then send0(gpu.whiteTexture, sel("release"))
     gpu.whiteTexture = 0
-    gpu.depthTex = Long(0)
-    gpu.sampler = Long(0)
-    gpu.depthOff = Long(0)
-    gpu.depthOn = Long(0)
-    gpu.pipe2d = Long(0)
-    gpu.pipe3d = Long(0)
-    gpu.queue = Long(0)
-    gpu.device = Long(0)
-    gpu.layer = Long(0)
-    gpu.viewProj = Long(0)
-    gpu.scratch = Long(0)
-    gpu.drawable = Long(0)
-    gpu.cmd = Long(0)
-    gpu.enc = Long(0)
+    gpu.depthTex = 0
+    gpu.sampler = 0
+    gpu.depthOff = 0
+    gpu.depthOn = 0
+    gpu.pipe2d = 0
+    gpu.pipe3d = 0
+    gpu.queue = 0
+    gpu.device = 0
+    gpu.layer = 0
+    gpu.viewProj = 0
+    gpu.scratch = 0
+    gpu.drawable = 0
+    gpu.cmd = 0
+    gpu.enc = 0
     gpu.hasEncoder = false
     gpu.ok = false
 }
 
 func pokeIdentity(buf: Long) {
-    var i = 0
-    while i < 16 {
+    for i: Int in 0..<16 {
         var v: Double = 0.0
-        if i == 0 || i == 5 || i == 10 || i == 15 {
-            v = 1.0
-        }
+        if i == 0 || i == 5 || i == 10 || i == 15 then v = 1.0
         azPokeF32(buf, (i * 4) as Long, v)
-        i = i + 1
     }
 }
 
@@ -476,44 +466,42 @@ func copyMat4(m: Mat4&): Mat4 = Mat4(m.m00, m.m01, m.m02, m.m03, m.m10, m.m11, m
 
 func pokeMat4(buf: Long, offset: Long, m: Mat4&) {
     azPokeF32(buf, offset, m.m00)
-    azPokeF32(buf, offset + Long(4), m.m10)
-    azPokeF32(buf, offset + Long(8), m.m20)
-    azPokeF32(buf, offset + Long(12), m.m30)
-    azPokeF32(buf, offset + Long(16), m.m01)
-    azPokeF32(buf, offset + Long(20), m.m11)
-    azPokeF32(buf, offset + Long(24), m.m21)
-    azPokeF32(buf, offset + Long(28), m.m31)
-    azPokeF32(buf, offset + Long(32), m.m02)
-    azPokeF32(buf, offset + Long(36), m.m12)
-    azPokeF32(buf, offset + Long(40), m.m22)
-    azPokeF32(buf, offset + Long(44), m.m32)
-    azPokeF32(buf, offset + Long(48), m.m03)
-    azPokeF32(buf, offset + Long(52), m.m13)
-    azPokeF32(buf, offset + Long(56), m.m23)
-    azPokeF32(buf, offset + Long(60), m.m33)
+    azPokeF32(buf, offset + 4, m.m10)
+    azPokeF32(buf, offset + 8, m.m20)
+    azPokeF32(buf, offset + 12, m.m30)
+    azPokeF32(buf, offset + 16, m.m01)
+    azPokeF32(buf, offset + 20, m.m11)
+    azPokeF32(buf, offset + 24, m.m21)
+    azPokeF32(buf, offset + 28, m.m31)
+    azPokeF32(buf, offset + 32, m.m02)
+    azPokeF32(buf, offset + 36, m.m12)
+    azPokeF32(buf, offset + 40, m.m22)
+    azPokeF32(buf, offset + 44, m.m32)
+    azPokeF32(buf, offset + 48, m.m03)
+    azPokeF32(buf, offset + 52, m.m13)
+    azPokeF32(buf, offset + 56, m.m23)
+    azPokeF32(buf, offset + 60, m.m33)
 }
 
 /** The column-major float4x4 at [offset] in [buf], as [pokeMat4] wrote it. */
 func peekMat4(buf: Long, offset: Long): Mat4 = Mat4(
-    peekFloat32(buf, offset), peekFloat32(buf, offset + 16), peekFloat32(buf, offset + 32), peekFloat32(buf, offset + 48),
-    peekFloat32(buf, offset + 4), peekFloat32(buf, offset + 20), peekFloat32(buf, offset + 36), peekFloat32(buf, offset + 52),
-    peekFloat32(buf, offset + 8), peekFloat32(buf, offset + 24), peekFloat32(buf, offset + 40), peekFloat32(buf, offset + 56),
+    peekFloat32(buf, offset), peekFloat32(buf, offset + 16), peekFloat32(buf, offset + 32), peekFloat32(buf, offset + 48)
+    peekFloat32(buf, offset + 4), peekFloat32(buf, offset + 20), peekFloat32(buf, offset + 36), peekFloat32(buf, offset + 52)
+    peekFloat32(buf, offset + 8), peekFloat32(buf, offset + 24), peekFloat32(buf, offset + 40), peekFloat32(buf, offset + 56)
     peekFloat32(buf, offset + 12), peekFloat32(buf, offset + 28), peekFloat32(buf, offset + 44), peekFloat32(buf, offset + 60))
 
 func releaseTerrains(gpu: AzGpu!) {
     releaseRoadBuffers(gpu.roads)
     gpu.roads = RoadRenderCache()
-    for terrain in gpu.terrains { releaseTerrainMesh(terrain) }
+    for terrain in gpu.terrains then releaseTerrainMesh(terrain)
     gpu.terrains.clear()
     releaseTerrainIndices(gpu.terrainIndices)
 }
 
 impl AzGpu {
     func !.terrainIndex(path: String): Int {
-        var i = 0
-        while i < self.terrains.size {
+        for i: Int in 0..<self.terrains.size {
             if self.terrains[i].path == path && self.terrains[i].cacheKey == "" then return i
-            i += 1
         }
         if self.terrainIndices.buffers.size == 0 then self.terrainIndices = buildTerrainIndices(self.device)
         self.terrains.add(loadTerrainMesh(self.device, self.fusion.root, path))
@@ -602,8 +590,8 @@ func gatherPhotonIrradiance(gpu: AzGpu!, buffer: Long, samples: Int) {
 }
 
 /** Scene mesh draws a frame can record for motion, and the bytes of one record (buffer, count, model). */
-fin motionCapacity: Int = 1024
-fin motionRecord: Long = 96
+inline fin motionCapacity: Int = 1024
+inline fin motionRecord: Long = 96
 
 /** Each moving object's screen motion, tested against the scene's depth so only what is visible writes. */
 func makeVelocityPipeline(device: Long, library: Long): Long {
@@ -625,7 +613,7 @@ func makeVelocityPipeline(device: Long, library: Long): Long {
 }
 
 /** Texels across the sharp shadow cascade. */
-fin detailResolution: Long = 2048
+inline fin detailResolution: Long = 2048
 
 /** Depth only, with the 3D vertex stage: what a shadow map needs of a mesh. */
 func makeDepthPipeline(device: Long, library: Long): Long {
@@ -647,7 +635,7 @@ func whiteTexel(device: Long): Long {
     if texture == 0 then return 0
     fin texel = azAlloc(16)
     azPoke8(texel, 0, 255)
-    fin unused = azSendRegion(texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, 1, 1, 1, 0, texel, 1)
+    azSendRegion(texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, 1, 1, 1, 0, texel, 1)
     azFree(texel)
     return texture
 }
@@ -720,8 +708,8 @@ func halton(index: Int, base: Int): Double {
     var rest = index
     while rest > 0 {
         result += fraction * ((rest % base) as Double)
-        rest = rest / base
-        fraction = fraction / (base as Double)
+        rest /= base
+        fraction /= (base as Double)
     }
     return result
 }
@@ -742,12 +730,12 @@ func beginScenePass(gpu: AzGpu!) {
     send1(color, sel("setLoadAction:"), 2)
     send1(color, sel("setStoreAction:"), 1)
     // Transparent where nothing is drawn, so what lies beneath the view survives the resolve.
-    fin cleared = azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
+    azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
     fin depth = send0(pass, sel("depthAttachment"))
     send1(depth, sel("setTexture:"), gpu.scenePass.depth)
     send1(depth, sel("setLoadAction:"), 2)
     send1(depth, sel("setStoreAction:"), 1)
-    fin far = azSendF1(depth, sel("setClearDepth:"), 1.0)
+    azSendF1(depth, sel("setClearDepth:"), 1.0)
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
     gpu.mode = -1
     gpu.meshPipeline = 0
@@ -811,7 +799,7 @@ func drawMotion(gpu: AzGpu!): Bool {
     send1(color, sel("setTexture:"), gpu.scenePass.velocity)
     send1(color, sel("setLoadAction:"), 2)
     send1(color, sel("setStoreAction:"), 1)
-    fin still = azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
+    azSendQuad(color, sel("setClearColor:"), 0.0, 0.0, 0.0, 0.0)
     fin depth = send0(pass, sel("depthAttachment"))
     send1(depth, sel("setTexture:"), gpu.scenePass.depth)
     send1(depth, sel("setLoadAction:"), 1)
@@ -823,19 +811,17 @@ func drawMotion(gpu: AzGpu!): Bool {
     pokeMat4(uniforms, 0, gpu.scenePass.jittered)
     pokeMat4(uniforms, 64, gpu.scenePass.viewProj)
     pokeMat4(uniforms, 128, gpu.scenePass.previous)
-    var index = 0
-    while index < count {
-        fin record = gpu.motionCurrent + (index as Long) * motionRecord
-        fin before = gpu.motionPrevious + (index as Long) * motionRecord
+    for i: Int in 0..<count {
+        fin record = gpu.motionCurrent + (i as Long) * motionRecord
+        fin before = gpu.motionPrevious + (i as Long) * motionRecord
         // The same mesh at the same place in the draw order was this object last frame.
-        fin same = index < gpu.motionPreviousCount && azPeek64(before, 0) == azPeek64(record, 0) &&
+        fin same = i < gpu.motionPreviousCount && azPeek64(before, 0) == azPeek64(record, 0) &&
             azPeek64(before, 8) == azPeek64(record, 8)
         azCopy(uniforms + 192, record + 16, 64)
         azCopy(uniforms + 256, (if same then before else record) + 16, 64)
         send3(encoder, sel("setVertexBuffer:offset:atIndex:"), azPeek64(record, 0), 0, 0)
         send3(encoder, sel("setVertexBytes:length:atIndex:"), uniforms, 320, 1)
         send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, azPeek64(record, 8))
-        index += 1
     }
     send0(encoder, sel("endEncoding"))
     return true
@@ -918,7 +904,7 @@ func resolveScenePass(gpu: AzGpu!) {
     send1(depth, sel("setTexture:"), gpu.depthTex)
     send1(depth, sel("setLoadAction:"), 2)
     send1(depth, sel("setStoreAction:"), 0)
-    fin far = azSendF1(depth, sel("setClearDepth:"), 1.0)
+    azSendF1(depth, sel("setClearDepth:"), 1.0)
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), next)
     gpu.mode = -1
     gpu.meshPipeline = 0
@@ -926,5 +912,5 @@ func resolveScenePass(gpu: AzGpu!) {
     gpu.scenePass.readA = !gpu.scenePass.readA
     if viewed then gpu.scenePass.previous = copyMat4(gpu.scenePass.viewProj)
     gpu.scenePass.historyValid = viewed && gpu.upscale
-    gpu.scenePass.frame += 1
+    gpu.scenePass.frame++
 }

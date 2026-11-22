@@ -57,7 +57,7 @@ func neighborsNew(capacity: Int): Neighbors {
     fin room = intMax(capacity, 0)
     var xs: Array<Int> = Array::fill<Int>(room)
     var ys: Array<Int> = Array::fill<Int>(room)
-    return Neighbors(xs, ys, 0)
+    return .(xs, ys, 0)
 }
 
 impl Neighbors {
@@ -69,25 +69,16 @@ impl Neighbors {
         }
         self.xs[self.count] = pos.x
         self.ys[self.count] = pos.y
-        self.count = self.count + 1
+        self.count++
     }
 
     /** The neighbour at [index], or the origin when out of range. */
-    func &.at(index: Int): TilePos {
-        if index < 0 || index >= self.count {
-            return TilePos(0, 0)
-        }
-        return TilePos(self.xs[index], self.ys[index])
-    }
+    func &.at(index: Int): TilePos = if index < 0 || index >= self.count then .(0, 0) else .(self.xs[index], self.ys[index])
 
     /** True when [pos] is among the neighbours. */
     func &.contains(pos: TilePos): Bool {
-        var i = 0
-        while i < self.count {
-            if self.xs[i] == pos.x && self.ys[i] == pos.y {
-                return true
-            }
-            i = i + 1
+        for i: Int in 0..<self.count {
+            if self.xs[i] == pos.x && self.ys[i] == pos.y then return true
         }
         return false
     }
@@ -102,29 +93,29 @@ impl Neighbors {
 /** The step [direction] takes, in tile coordinates. */
 func squareDelta(direction: SquareDirection): TilePos {
     when direction {
-        SquareDirection.North -> { return TilePos(0, -1) }
-        SquareDirection.NorthEast -> { return TilePos(1, -1) }
-        SquareDirection.East -> { return TilePos(1, 0) }
-        SquareDirection.SouthEast -> { return TilePos(1, 1) }
-        SquareDirection.South -> { return TilePos(0, 1) }
-        SquareDirection.SouthWest -> { return TilePos(-1, 1) }
-        SquareDirection.West -> { return TilePos(-1, 0) }
-        SquareDirection.NorthWest -> { return TilePos(-1, -1) }
+        .North -> { return TilePos(0, -1) }
+        .NorthEast -> { return TilePos(1, -1) }
+        .East -> { return TilePos(1, 0) }
+        .SouthEast -> { return TilePos(1, 1) }
+        .South -> { return TilePos(0, 1) }
+        .SouthWest -> { return TilePos(-1, 1) }
+        .West -> { return TilePos(-1, 0) }
+        .NorthWest -> { return TilePos(-1, -1) }
     }
-    return TilePos(0, 0)
+    return .(0, 0)
 }
 
 /** The direction facing the other way. */
 func squareOpposite(direction: SquareDirection): SquareDirection {
     when direction {
-        SquareDirection.North -> { return SquareDirection.South }
-        SquareDirection.NorthEast -> { return SquareDirection.SouthWest }
-        SquareDirection.East -> { return SquareDirection.West }
-        SquareDirection.SouthEast -> { return SquareDirection.NorthWest }
-        SquareDirection.South -> { return SquareDirection.North }
-        SquareDirection.SouthWest -> { return SquareDirection.NorthEast }
-        SquareDirection.West -> { return SquareDirection.East }
-        SquareDirection.NorthWest -> { return SquareDirection.SouthEast }
+        .North -> { return SquareDirection.South }
+        .NorthEast -> { return SquareDirection.SouthWest }
+        .East -> { return SquareDirection.West }
+        .SouthEast -> { return SquareDirection.NorthWest }
+        .South -> { return SquareDirection.North }
+        .SouthWest -> { return SquareDirection.NorthEast }
+        .West -> { return SquareDirection.East }
+        .NorthWest -> { return SquareDirection.SouthEast }
     }
     return direction
 }
@@ -132,10 +123,10 @@ func squareOpposite(direction: SquareDirection): SquareDirection {
 /** True when [direction] crosses a corner rather than an edge. */
 func squareIsDiagonal(direction: SquareDirection): Bool {
     when direction {
-        SquareDirection.NorthEast -> { return true }
-        SquareDirection.SouthEast -> { return true }
-        SquareDirection.SouthWest -> { return true }
-        SquareDirection.NorthWest -> { return true }
+        .NorthEast -> { return true }
+        .SouthEast -> { return true }
+        .SouthWest -> { return true }
+        .NorthWest -> { return true }
         else -> { return false }
     }
     return false
@@ -144,7 +135,7 @@ func squareIsDiagonal(direction: SquareDirection): Bool {
 /** The neighbour of [pos] in [direction]. */
 func squareNeighbor(pos: TilePos, direction: SquareDirection): TilePos {
     fin delta = squareDelta(direction)
-    return TilePos(pos.x + delta.x, pos.y + delta.y)
+    return .(pos.x + delta.x, pos.y + delta.y)
 }
 
 /**
@@ -155,28 +146,16 @@ func squareNeighbor(pos: TilePos, direction: SquareDirection): TilePos {
  */
 func squareDirectionAt(index: Int): SquareDirection {
     fin i = tileFloorMod(index, 8)
-    if i == 0 {
-        return SquareDirection.North
+    return when {
+        i == 0 -> SquareDirection.North
+        i == 1 -> SquareDirection.NorthEast
+        i == 2 -> SquareDirection.East
+        i == 3 -> SquareDirection.SouthEast
+        i == 4 -> SquareDirection.South
+        i == 5 -> SquareDirection.SouthWest
+        i == 6 -> SquareDirection.West
+        else -> SquareDirection.NorthWest
     }
-    if i == 1 {
-        return SquareDirection.NorthEast
-    }
-    if i == 2 {
-        return SquareDirection.East
-    }
-    if i == 3 {
-        return SquareDirection.SouthEast
-    }
-    if i == 4 {
-        return SquareDirection.South
-    }
-    if i == 5 {
-        return SquareDirection.SouthWest
-    }
-    if i == 6 {
-        return SquareDirection.West
-    }
-    return SquareDirection.NorthWest
 }
 
 // ── Lattice-aware neighbours ────────────────────────────────────────────
@@ -184,12 +163,9 @@ func squareDirectionAt(index: Int): SquareDirection {
 /** How many neighbours a cell of this lattice has. */
 func neighborCount(geo: TilemapGeometry, includeDiagonals: Bool): Int {
     when geo.kind {
-        TilemapKind.Hexagon(system) -> { return 6 }
+        .Hexagon(system) -> { return 6 }
         else -> {
-            if includeDiagonals {
-                return 8
-            }
-            return 4
+            return if includeDiagonals then 8 else 4
         }
     }
     return 4
@@ -204,13 +180,11 @@ func neighborCount(geo: TilemapGeometry, includeDiagonals: Bool): Int {
  */
 func neighborAt(geo: TilemapGeometry, pos: TilePos, index: Int, includeDiagonals: Bool): TilePos {
     when geo.kind {
-        TilemapKind.Hexagon(system) -> {
+        .Hexagon(system) -> {
             return hexNeighborAt(pos, system, index)
         }
         else -> {
-            if includeDiagonals {
-                return squareNeighbor(pos, squareDirectionAt(index))
-            }
+            if includeDiagonals then return squareNeighbor(pos, squareDirectionAt(index))
             return squareNeighbor(pos, squareDirectionAt(tileFloorMod(index, 4) * 2))
         }
     }
@@ -224,7 +198,7 @@ func neighborsOf(geo: TilemapGeometry, pos: TilePos, includeDiagonals: Bool): Ne
     var i = 0
     while i < total {
         found.add(neighborAt(geo, pos, i, includeDiagonals))
-        i = i + 1
+        i++
     }
     return found
 }
@@ -236,10 +210,8 @@ func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: Bool)
     var i = 0
     while i < total {
         fin candidate = neighborAt(geo, pos, i, includeDiagonals)
-        if geo.size.contains(candidate) {
-            found.add(candidate)
-        }
-        i = i + 1
+        if geo.size.contains(candidate) then found.add(candidate)
+        i++
     }
     return found
 }
@@ -252,14 +224,11 @@ func neighborsWithin(geo: TilemapGeometry, pos: TilePos, includeDiagonals: Bool)
  */
 func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiagonals: Bool): Int {
     when geo.kind {
-        TilemapKind.Hexagon(system) -> {
+        .Hexagon(system) -> {
             return hexDistanceBetween(from, to, system)
         }
         else -> {
-            if includeDiagonals {
-                return from.chebyshev(to)
-            }
-            return from.manhattan(to)
+            return if includeDiagonals then from.chebyshev(to) else from.manhattan(to)
         }
     }
     return from.manhattan(to)
@@ -267,10 +236,7 @@ func tileDistance(geo: TilemapGeometry, from: TilePos, to: TilePos, includeDiago
 
 /** True when [a] and [b] touch on this lattice. */
 func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonals: Bool): Bool {
-    if a.same(b) {
-        return false
-    }
-    return neighborsOf(geo, a, includeDiagonals).contains(b)
+    return if a.same(b) then false else neighborsOf(geo, a, includeDiagonals).contains(b)
 }
 
 /**
@@ -281,19 +247,15 @@ func tilesAdjacent(geo: TilemapGeometry, a: TilePos, b: TilePos, includeDiagonal
  */
 func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: Int, includeDiagonals: Bool): Neighbors {
     var found = neighborsNew(intMax(radius, 0) * 8 + 1)
-    if radius < 0 {
-        return found
-    }
+    if radius < 0 then return found
     when geo.kind {
-        TilemapKind.Hexagon(system) -> {
+        .Hexagon(system) -> {
             fin range = hexRange(center, system, radius)
             var i = 0
             while i < range.count {
                 fin candidate = range.posAt(i, system)
-                if geo.size.contains(candidate) {
-                    found.add(candidate)
-                }
-                i = i + 1
+                if geo.size.contains(candidate) then found.add(candidate)
+                i++
             }
             return found
         }
@@ -302,14 +264,12 @@ func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: Int, includeDiag
             while y <= center.y + radius {
                 var x = center.x - radius
                 while x <= center.x + radius {
-                    fin candidate = TilePos(x, y)
+                    fin candidate: TilePos = .(x, y)
                     fin steps = tileDistance(geo, center, candidate, includeDiagonals)
-                    if steps <= radius && geo.size.contains(candidate) {
-                        found.add(candidate)
-                    }
-                    x = x + 1
+                    if steps <= radius && geo.size.contains(candidate) then found.add(candidate)
+                    x++
                 }
-                y = y + 1
+                y++
             }
             return found
         }
@@ -319,34 +279,32 @@ func tilesWithin(geo: TilemapGeometry, center: TilePos, radius: Int, includeDiag
 
 test "square neighbours step the way the compass says" {
     fin geo = squareGeometry(8, 8, 16.0, 16.0)
-    fin center = TilePos(3, 3)
+    fin center: TilePos = .(3, 3)
 
-    assert squareNeighbor(center, SquareDirection.North).same(TilePos(3, 2)) panic "north must decrease y in the engine's y-down space"
-    assert squareNeighbor(center, SquareDirection.SouthEast).same(TilePos(4, 4)) panic "a corner direction must step on both axes"
-    assert squareOpposite(SquareDirection.NorthWest) == SquareDirection.SouthEast panic "opposite directions must cancel"
+    assert squareNeighbor(center, .North).same(.(3, 2)) panic "north must decrease y in the engine's y-down space"
+    assert squareNeighbor(center, .SouthEast).same(.(4, 4)) panic "a corner direction must step on both axes"
+    assert squareOpposite(.NorthWest) == SquareDirection.SouthEast panic "opposite directions must cancel"
 
     assert neighborsOf(geo, center, false).count == 4 panic "an edge-only square cell has four neighbours"
     assert neighborsOf(geo, center, true).count == 8 panic "a square cell has eight neighbours in all"
-    assert !neighborsOf(geo, center, false).contains(TilePos(4, 4)) panic "excluding diagonals must exclude the corners"
+    assert !neighborsOf(geo, center, false).contains(.(4, 4)) panic "excluding diagonals must exclude the corners"
 }
 
 test "neighbours are clipped to the map at its edges" {
     fin geo = squareGeometry(8, 8, 16.0, 16.0)
-    assert neighborsWithin(geo, TilePos(0, 0), true).count == 3 panic "a corner cell has three neighbours on the map"
-    assert neighborsWithin(geo, TilePos(0, 3), false).count == 3 panic "an edge cell has three edge neighbours on the map"
-    assert neighborsWithin(geo, TilePos(3, 3), true).count == 8 panic "an interior cell keeps all eight"
+    assert neighborsWithin(geo, .(0, 0), true).count == 3 panic "a corner cell has three neighbours on the map"
+    assert neighborsWithin(geo, .(0, 3), false).count == 3 panic "an edge cell has three edge neighbours on the map"
+    assert neighborsWithin(geo, .(3, 3), true).count == 8 panic "an interior cell keeps all eight"
 }
 
 test "a hex lattice answers using six neighbours and hex distance" {
-    fin geo = hexGeometry(HexCoordSystem.RowOdd, 8, 8, 32.0, 36.0)
-    fin center = TilePos(3, 3)
+    fin geo = hexGeometry(.RowOdd, 8, 8, 32.0, 36.0)
+    fin center: TilePos = .(3, 3)
     fin around = neighborsOf(geo, center, true)
 
     assert around.count == 6 panic "a hexagon has six neighbours whatever the diagonal flag says"
-    var i = 0
-    while i < around.count {
+    for i: Int in 0..<around.count {
         assert tileDistance(geo, center, around.at(i), true) == 1 panic "every hex neighbour must be one step away"
-        i = i + 1
     }
     assert tilesAdjacent(geo, center, around.at(0), true) panic "a neighbour must read as adjacent"
     assert !tilesAdjacent(geo, center, center, true) panic "a cell is not its own neighbour"
@@ -354,9 +312,9 @@ test "a hex lattice answers using six neighbours and hex distance" {
 
 test "ranges cover the shape the metric implies" {
     fin square = squareGeometry(16, 16, 16.0, 16.0)
-    assert tilesWithin(square, TilePos(8, 8), 1, true).count == 9 panic "a radius-1 box holds the centre and eight neighbours"
-    assert tilesWithin(square, TilePos(8, 8), 1, false).count == 5 panic "a radius-1 diamond holds the centre and four edge neighbours"
+    assert tilesWithin(square, .(8, 8), 1, true).count == 9 panic "a radius-1 box holds the centre and eight neighbours"
+    assert tilesWithin(square, .(8, 8), 1, false).count == 5 panic "a radius-1 diamond holds the centre and four edge neighbours"
 
-    fin hexes = hexGeometry(HexCoordSystem.RowOdd, 16, 16, 32.0, 36.0)
-    assert tilesWithin(hexes, TilePos(8, 8), 2, true).count == 19 panic "a radius-2 hex range holds nineteen cells"
+    fin hexes = hexGeometry(.RowOdd, 16, 16, 32.0, 36.0)
+    assert tilesWithin(hexes, .(8, 8), 2, true).count == 19 panic "a radius-2 hex range holds nineteen cells"
 }

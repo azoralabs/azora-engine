@@ -5,7 +5,7 @@ import engine.audio.dsp
 
 // Each check prints "<name> ok" or "<name> FAIL <value>".
 
-fin rate: Double = 48000.0
+inline fin rate: Double = 48000.0
 
 func report(name: String, passed: Bool, value: Double) {
     println(if passed then "${name} ok" else "${name} FAIL ${value}")
@@ -14,11 +14,7 @@ func report(name: String, passed: Bool, value: Double) {
 /** [frames] samples of a sine of [hz] at [gain]. */
 func sine(frames: Int, hz: Double, gain: Double): Long {
     fin buffer = sampleBuffer(frames)
-    var i = 0
-    while i < frames {
-        setSample(buffer, i, gain * sin(2.0 * PI * hz * (i as Double) / rate))
-        i += 1
-    }
+    for i: Int in 0..<frames then setSample(buffer, i, gain * sin(2.0 * PI * hz * (i as Double) / rate))
     return buffer
 }
 
@@ -26,12 +22,10 @@ func whiteNoiseBounded() {
     var source = noise(7)
     var inside = true
     var sum: Double = 0.0
-    var i = 0
-    while i < 48000 {
+    for i: Int in 0..<48000 {
         fin x = source.white()
         if x < -1.0 || x >= 1.0 then inside = false
         sum += if x < 0.0 then -x else x
-        i += 1
     }
     fin mean = sum / 48000.0
     report("whiteNoiseBounded", inside && mean > 0.45 && mean < 0.55, mean)
@@ -45,14 +39,12 @@ func pinkNoiseLowHeavy() {
     high.highpass(5000.0, 0.707, rate)
     var lowEnergy: Double = 0.0
     var highEnergy: Double = 0.0
-    var i = 0
-    while i < 96000 {
+    for i: Int in 0..<96000 {
         fin x = source.next()
         fin a = low.process(x)
         fin b = high.process(x)
         lowEnergy += a * a
         highEnergy += b * b
-        i += 1
     }
     fin ratio = sqrt(lowEnergy / highEnergy)
     report("pinkNoiseLowHeavy", ratio > 1.2, ratio)
@@ -61,11 +53,7 @@ func pinkNoiseLowHeavy() {
 /** RMS of [buffer] after [filter], over its second half (past the transient). */
 func filteredRatio(filter: Biquad!, buffer: Long, frames: Int): Double {
     fin filtered = sampleBuffer(frames)
-    var i = 0
-    while i < frames {
-        setSample(filtered, i, filter.process(sample(buffer, i)))
-        i += 1
-    }
+    for i: Int in 0..<frames then setSample(filtered, i, filter.process(sample(buffer, i)))
     fin half = frames / 2
     fin ratio = rms(filtered + (half as Long) * 8, half) / rms(buffer + (half as Long) * 8, half)
     azFree(filtered)
@@ -92,11 +80,7 @@ func bandpassPassesCentre() {
 
 func delayReadsBack() {
     var line = delayLine(256)
-    var i = 0
-    while i < 100 {
-        line.push(i as Double)
-        i += 1
-    }
+    for i: Int in 0..<100 then line.push(i as Double)
     fin whole = line.read(10.0)
     fin between = line.read(10.5)
     line.release()
@@ -106,12 +90,10 @@ func delayReadsBack() {
 func limiterHoldsCeiling() {
     fin frames = 48000
     fin stereo = sampleBuffer(frames * 2)
-    var i = 0
-    while i < frames {
+    for i: Int in 0..<frames {
         fin x = 2.0 * sin(2.0 * PI * 220.0 * (i as Double) / rate)
         setSample(stereo, i * 2, x)
         setSample(stereo, i * 2 + 1, x)
-        i += 1
     }
     var limiter: Limiter = .()
     limiter.process(stereo, frames, 0.9)

@@ -30,12 +30,12 @@ import engine.ui.node
 import engine.ui.compose
 
 func main() {
-    var world = World()
+    var world: World = .()
     var pass = Composition::of(world, "test")
 
     // First pass: two children under the root.
     pass.begin()
-    fin rootA = pass.claim(Entity::invalid, "root")
+    fin rootA = pass.claim(::invalid, "root")
     fin oneA = pass.claim(rootA, "one")
     fin twoA = pass.claim(rootA, "two")
     fin removedA = pass.commit()
@@ -43,7 +43,7 @@ func main() {
 
     // Second pass over the same description: the same entities answer.
     pass.begin()
-    fin rootB = pass.claim(Entity::invalid, "root")
+    fin rootB = pass.claim(::invalid, "root")
     fin oneB = pass.claim(rootB, "one")
     fin twoB = pass.claim(rootB, "two")
     fin removedB = pass.commit()
@@ -51,16 +51,16 @@ func main() {
     println("second removed=${removedB} nodes=${pass.nodeCount()}")
 
     // A component on a node, to see it go when the node does.
-    storageInsert<TagI>(store<TagI>(pass), twoB, TagI(7))
-    println("tagged=${storageHas<TagI>(store<TagI>(pass), twoB)}")
+    storageInsert<TagI>(store(pass), twoB, .(7))
+    println("tagged=${storageHas<TagI>(store(pass), twoB)}")
 
     // Third pass claims only one child: the other is unclaimed and swept.
     pass.begin()
-    fin rootC = pass.claim(Entity::invalid, "root")
+    fin rootC = pass.claim(::invalid, "root")
     fin oneC = pass.claim(rootC, "one")
     fin removedC = pass.commit()
     println("third removed=${removedC} nodes=${pass.nodeCount()}")
-    println("still tagged=${storageHas<TagI>(store<TagI>(pass), twoB)}")
+    println("still tagged=${storageHas<TagI>(store(pass), twoB)}")
     println("kept one=${oneA.id == oneC.id}")
 
     // A pass that describes nothing says nothing about the tree, so the tree

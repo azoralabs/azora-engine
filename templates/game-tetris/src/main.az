@@ -34,9 +34,9 @@ bridge .C {
     func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
-fin boardW = 10
-fin boardH = 20
-fin CELL: Double = 26.0
+inline fin boardW = 10
+inline fin boardH = 20
+inline fin CELL: Double = 26.0
 
 /// The 4 rotation bitmasks of the 7 tetrominoes (4x4 grid, row-wise from the,
 /// top, most significant bit = top-left).
@@ -61,43 +61,29 @@ func pieceCell(masks: Array<Int>&, p: Int, r: Int, i: Int, j: Int): Bool {
 
 /// True when the piece at (x, y) would overlap the walls, floor or stack.
 func collides(board: Long, masks: Array<Int>&, p: Int, r: Int, x: Int, y: Int): Bool {
-    var j = 0
-    while j < 4 {
-        var i = 0
-        while i < 4 {
+    for j: Int in 0..<4 {
+        for i: Int in 0..<4 {
             if pieceCell(masks, p, r, i, j) {
                 fin bx = x + i
                 fin bj = y + j
-                if bx < 0 || bx >= boardW || bj >= boardH {
-                    return true
-                }
+                if bx < 0 || bx >= boardW || bj >= boardH then return true
                 if bj >= 0 {
-                    if azPeek8(board, (bj * boardW + bx) as Long) != 0 {
-                        return true
-                    }
+                    if azPeek8(board, (bj * boardW + bx) as Long) != 0 then return true
                 }
             }
-            i = i + 1
         }
-        j = j + 1
     }
     return false
 }
 
 func lockPiece(board: Long, masks: Array<Int>&, p: Int, r: Int, x: Int, y: Int) {
-    var j = 0
-    while j < 4 {
-        var i = 0
-        while i < 4 {
+    for j: Int in 0..<4 {
+        for i: Int in 0..<4 {
             if pieceCell(masks, p, r, i, j) {
                 fin bj = y + j
-                if bj >= 0 {
-                    azPoke8(board, (bj * boardW + x + i) as Long, p + 1)
-                }
+                if bj >= 0 then azPoke8(board, (bj * boardW + x + i) as Long, p + 1)
             }
-            i = i + 1
         }
-        j = j + 1
     }
 }
 
@@ -107,47 +93,33 @@ func clearLines(board: Long): Int {
     var j = boardH - 1
     while j >= 0 {
         var full = true
-        var i = 0
-        while i < boardW {
-            if azPeek8(board, (j * boardW + i) as Long) == 0 {
-                full = false
-            }
-            i = i + 1
+        for i: Int in 0..<boardW {
+            if azPeek8(board, (j * boardW + i) as Long) == 0 then full = false
         }
         if full {
-            cleared = cleared + 1
+            cleared++
             // Shift everything above row j down by one.
             var k = j
             while k > 0 {
-                var i2 = 0
-                while i2 < boardW {
+                for i2: Int in 0..<boardW {
                     fin above = azPeek8(board, ((k - 1) * boardW + i2) as Long)
                     azPoke8(board, (k * boardW + i2) as Long, above)
-                    i2 = i2 + 1
                 }
-                k = k - 1
+                k--
             }
-            var i3 = 0
-            while i3 < boardW {
-                azPoke8(board, i3 as Long, 0)
-                i3 = i3 + 1
-            }
+            for i3: Int in 0..<boardW then azPoke8(board, i3 as Long, 0)
         } else {
-            j = j - 1
+            j--
         }
     }
     return cleared
 }
 
 func clearBoard(board: Long) {
-    var k = 0
-    while k < boardW * boardH {
-        azPoke8(board, k as Long, 0)
-        k = k + 1
-    }
+    for k: Int in 0..<boardW * boardH then azPoke8(board, k as Long, 0)
 }
 
-func drawCell(app: App, ox: Double, oy: Double, i: Int, j: Int, colors: Array<Double>&, c: Int) {
+func drawCell(app: App!, ox: Double, oy: Double, i: Int, j: Int, colors: Array<Double>&, c: Int) {
     fin x = ox + (i as Double) * CELL
     fin y = oy + (j as Double) * CELL
     fin r = colors[c * 3]
@@ -158,9 +130,7 @@ func drawCell(app: App, ox: Double, oy: Double, i: Int, j: Int, colors: Array<Do
 
 func main() {
     var app = appInit("__AZORA_PROJECT_NAME__ — Tetris", 560, 620)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
     app.setClearColor(0.08, 0.08, 0.11)
 
     fin masks = pieceMasks()
@@ -196,54 +166,42 @@ func main() {
         if !gameOver {
             // ── Input ──
             if app.keyPressed(.Left) {
-                if !collides(board, masks, piece, rot, px - 1, py) {
-                    px = px - 1
-                }
+                if !collides(board, masks, piece, rot, px - 1, py) then px--
             }
             if app.keyPressed(.Right) {
-                if !collides(board, masks, piece, rot, px + 1, py) {
-                    px = px + 1
-                }
+                if !collides(board, masks, piece, rot, px + 1, py) then px++
             }
             if app.keyPressed(.Up) {
                 fin nr = (rot + 1) % 4
-                if !collides(board, masks, piece, nr, px, py) {
-                    rot = nr
-                }
+                if !collides(board, masks, piece, nr, px, py) then rot = nr
             }
             if app.keyPressed(.Space) {
                 while !collides(board, masks, piece, rot, px, py + 1) {
-                    py = py + 1
-                    score = score + 2
+                    py++
+                    score += 2
                 }
                 dropTimer = 10.0 // lock immediately
             }
 
             // ── Gravity ──
             var interval: Double = 0.55 - (lines as Double) * 0.02
-            if interval < 0.1 {
-                interval = 0.1
-            }
-            if app.keyDown(.Down) {
-                interval = 0.04
-            }
-            dropTimer = dropTimer + dt
+            if interval < 0.1 then interval = 0.1
+            if app.keyDown(.Down) then interval = 0.04
+            dropTimer += dt
             if dropTimer >= interval {
                 dropTimer = 0.0
                 if collides(board, masks, piece, rot, px, py + 1) {
                     lockPiece(board, masks, piece, rot, px, py)
                     fin cleared = clearLines(board)
-                    lines = lines + cleared
-                    score = score + cleared * cleared * 100
+                    lines += cleared
+                    score += cleared * cleared * 100
                     piece = arc4randomUniform(7)
                     rot = 0
                     px = 3
                     py = -1
-                    if collides(board, masks, piece, rot, px, py) {
-                        gameOver = true
-                    }
+                    if collides(board, masks, piece, rot, px, py) then gameOver = true
                 } else {
-                    py = py + 1
+                    py++
                 }
             }
         } else {
@@ -265,41 +223,25 @@ func main() {
         app.uiRect(ox - 4.0, oy - 4.0, bw + 8.0, bh + 8.0, 0.18, 0.19, 0.24, 1.0)
         app.uiRect(ox, oy, bw, bh, 0.05, 0.05, 0.07, 1.0)
 
-        var j = 0
-        while j < boardH {
-            var i = 0
-            while i < boardW {
+        for j: Int in 0..<boardH {
+            for i: Int in 0..<boardW {
                 fin c = azPeek8(board, (j * boardW + i) as Long)
-                if c != 0 {
-                    drawCell(app, ox, oy, i, j, colors, c)
-                }
-                i = i + 1
+                if c != 0 then drawCell(app, ox, oy, i, j, colors, c)
             }
-            j = j + 1
         }
 
         if !gameOver {
-            var pj = 0
-            while pj < 4 {
-                var pi = 0
-                while pi < 4 {
-                    if pieceCell(masks, piece, rot, pi, pj) && py + pj >= 0 {
-                        drawCell(app, ox, oy, px + pi, py + pj, colors, piece + 1)
-                    }
-                    pi = pi + 1
+            for pj: Int in 0..<4 {
+                for pi: Int in 0..<4 {
+                    if pieceCell(masks, piece, rot, pi, pj) && py + pj >= 0 then drawCell(app, ox, oy, px + pi, py + pj, colors, piece + 1)
                 }
-                pj = pj + 1
             }
         }
 
         app.uiText("Score ${score}   Lines ${lines}", ox, 12.0, 15.0)
-        if gameOver {
-            app.uiTitle("GAME OVER — press ENTER", oy + bh * 0.45, 22.0)
-        }
+        if gameOver then app.uiTitle("GAME OVER — press ENTER", oy + bh * 0.45, 22.0)
 
-        if app.keyPressed(.Escape) {
-            app.quit()
-        }
+        if app.keyPressed(.Escape) then app.quit()
         app.present()
     }
 

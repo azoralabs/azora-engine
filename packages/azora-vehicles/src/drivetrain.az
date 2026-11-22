@@ -41,21 +41,21 @@ func drivetrainSpec(motorcycle: Bool, sport: Bool = false): DrivetrainSpec {
     if sport {
         if motorcycle {
             return DrivetrainSpec(idleRpm: 1450.0,limitRpm: 13900.0,inertia: 0.027,torqueStep: 1000.0,
-                torque: [35.0,39.0,48.0,56.0,62.0,69.0,73.0,75.0,77.0,77.0,76.0,74.0,69.0,65.0,60.0],
-                ratios: [2.68,1.98,1.59,1.32,1.125,0.98],finalDrive: 6.15,reverse: 2.60,
+                torque: [35.0,39.0,48.0,56.0,62.0,69.0,73.0,75.0,77.0,77.0,76.0,74.0,69.0,65.0,60.0]
+                ratios: [2.68,1.98,1.59,1.32,1.125,0.98],finalDrive: 6.15,reverse: 2.60
                 upRpm: 13200.0,lightUpRpm: 4400.0,launchRpm: 4250.0,shiftTime: 0.12,dragAtLimit: 22.0)
         }
         return DrivetrainSpec(limitRpm: 7850.0,
-            torque: [105.0,139.0,176.0,208.0,246.0,270.0,291.0,304.0,315.0,320.0,318.0,314.0,308.0,297.0,284.0,270.0,252.0],
-            ratios: [3.52,2.40,1.78,1.41,1.16,0.99],finalDrive: 3.66,upRpm: 7480.0,
+            torque: [105.0,139.0,176.0,208.0,246.0,270.0,291.0,304.0,315.0,320.0,318.0,314.0,308.0,297.0,284.0,270.0,252.0]
+            ratios: [3.52,2.40,1.78,1.41,1.16,0.99],finalDrive: 3.66,upRpm: 7480.0
             lightUpRpm: 2600.0,launchRpm: 2400.0,shiftTime: 0.105,inertia: 0.13)
     }
     if !motorcycle then return DrivetrainSpec(
-        torque: [120.0, 140.0, 175.0, 210.0, 240.0, 255.0, 262.0, 266.0, 268.0, 268.0, 266.0, 262.0, 255.0, 245.0, 228.0, 205.0],
+        torque: [120.0, 140.0, 175.0, 210.0, 240.0, 255.0, 262.0, 266.0, 268.0, 268.0, 266.0, 262.0, 255.0, 245.0, 228.0, 205.0]
         ratios: [3.55, 2.30, 1.70, 1.38, 1.17, 1.00])
     return DrivetrainSpec(idleRpm: 1300.0, limitRpm: 11500.0, inertia: 0.035,
-        torque: [30.0, 34.0, 45.0, 55.0, 61.0, 65.0, 68.0, 70.0, 70.0, 68.0, 64.0, 58.0, 50.0], torqueStep: 1000.0,
-        ratios: [2.60, 1.90, 1.50, 1.25, 1.05], reverse: 2.6, finalDrive: 6.5, upRpm: 11000.0, lightUpRpm: 4000.0,
+        torque: [30.0, 34.0, 45.0, 55.0, 61.0, 65.0, 68.0, 70.0, 70.0, 68.0, 64.0, 58.0, 50.0], torqueStep: 1000.0
+        ratios: [2.60, 1.90, 1.50, 1.25, 1.05], reverse: 2.6, finalDrive: 6.5, upRpm: 11000.0, lightUpRpm: 4000.0
         dragAtLimit: 18.0, launchRpm: 2500.0)
 }
 
@@ -76,9 +76,11 @@ func engineTorque(train: DrivetrainSpec&, rpm: Double, throttle: Double): Double
 
 /** Gearbox and final drive together for [gear]: negative in reverse, 0 in neutral. */
 func overallRatio(train: DrivetrainSpec&, gear: Int): Double {
-    if gear == -1 then return -train.reverse * train.finalDrive
-    if gear < 1 || gear > train.ratios.size then return 0.0
-    return train.ratios[gear - 1] * train.finalDrive
+    return when {
+        gear == -1 -> -train.reverse * train.finalDrive
+        gear < 1 || gear > train.ratios.size -> 0.0
+        else -> train.ratios[gear - 1] * train.finalDrive
+    }
 }
 
 func upShiftRpm(train: DrivetrainSpec&, throttle: Double): Double {
@@ -100,7 +102,9 @@ func nextGear(train: DrivetrainSpec&, gear: Int, rpm: Double, throttle: Double, 
     if gear < 1 then return 1
     if gearAge < train.holdTime then return gear
     fin up = upShiftRpm(train, throttle)
-    if gear < train.ratios.size && rpm > up then return gear + 1
-    if gear > 1 && rpm < up * train.downShare then return gear - 1
-    return gear
+    return when {
+        gear < train.ratios.size && rpm > up -> gear + 1
+        gear > 1 && rpm < up * train.downShare -> gear - 1
+        else -> gear
+    }
 }

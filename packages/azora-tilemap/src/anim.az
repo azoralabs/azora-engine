@@ -63,21 +63,17 @@ pack TileAnimationSet {
     var byTile: Array<Int>
 }
 
-func tileAnimation(first: Int, last: Int, fps: Double, mode: TileAnimationMode): TileAnimation {
-    return TileAnimation(first, last, fps, mode)
-}
+func tileAnimation(first: Int, last: Int, fps: Double, mode: TileAnimationMode): TileAnimation = .(first, last, fps, mode)
 
 /** An animation set covering tile indices `0 .. tileCount - 1`. */
 func tileAnimationSetNew(tileCount: Int): TileAnimationSet {
-    var animations: Array<TileAnimation> = Array<TileAnimation>()
-    return TileAnimationSet(animations, 0, intGridFill(intMax(tileCount, 0), 1, -1))
+    var animations: Array<TileAnimation> = []
+    return .(animations, 0, intGridFill(intMax(tileCount, 0), 1, -1))
 }
 
 impl TileAnimation {
     /** The number of frames in the run. */
-    func &.frameCount(): Int {
-        return intMax(self.last - self.first + 1, 1)
-    }
+    func &.frameCount(): Int = intMax(self.last - self.first + 1, 1)
 
     /**
      * The tile index to draw at [seconds].
@@ -87,26 +83,21 @@ impl TileAnimation {
      */
     func &.frameAt(seconds: Double): Int {
         fin frames = self.frameCount()
-        if frames <= 1 || self.fps <= 0.0 || seconds <= 0.0 {
-            return self.first
-        }
+        if frames <= 1 || self.fps <= 0.0 || seconds <= 0.0 then return self.first
         fin ticks = realFloorToInt(seconds * self.fps)
         when self.mode {
-            TileAnimationMode.Repeat -> {
+            .Repeat -> {
                 return self.first + tileFloorMod(ticks, frames)
             }
-            TileAnimationMode.Once -> {
+            .Once -> {
                 return self.first + intMin(ticks, frames - 1)
             }
-            TileAnimationMode.PingPong -> {
+            .PingPong -> {
                 // A ping-pong cycle is twice the run minus the two frames that
                 // would otherwise be shown twice at the turning points.
                 fin period = intMax(frames * 2 - 2, 1)
                 fin phase = tileFloorMod(ticks, period)
-                if phase < frames {
-                    return self.first + phase
-                }
-                return self.first + (period - phase)
+                return if phase < frames then self.first + phase else self.first + (period - phase)
             }
         }
         return self.first
@@ -126,72 +117,47 @@ impl TileAnimationSet {
         if self.count >= self.animations.size {
             fin room = intMax(self.animations.size * 2, 4)
             var grown: Array<TileAnimation> = Array::fill<TileAnimation>(room)
-            var i = 0
-            while i < self.count {
-                grown[i] = self.animations[i]
-                i = i + 1
-            }
+            for i: Int in 0..<self.count then grown[i] = self.animations[i]
             self.animations = grown
         }
         fin id = self.count
         self.animations[id] = animation
-        self.count = self.count + 1
+        self.count++
         self.bindTile(animation.first, id)
         return id
     }
 
     /** Binds the tile index [index] to the animation [id]. */
     func !.bindTile(index: Int, id: Int) {
-        if index < 0 || index >= self.byTile.size {
-            return
-        }
+        if index < 0 || index >= self.byTile.size then return
         self.byTile[index] = id
     }
 
     /** Binds every frame of [id]'s run, so any authored frame animates. */
     func !.bindRange(id: Int): Int {
-        if id < 0 || id >= self.count {
-            return 0
-        }
+        if id < 0 || id >= self.count then return 0
         fin animation = self.animations[id]
         var bound = 0
-        var index = animation.first
-        while index <= animation.last {
-            self.bindTile(index, id)
-            bound = bound + 1
-            index = index + 1
+        for i in animation.first..animation.last {
+            self.bindTile(i, id)
+            bound++
         }
         return bound
     }
 
     /** The animation id bound to [index], or `-1`. */
-    func &.idOf(index: Int): Int {
-        if index < 0 || index >= self.byTile.size {
-            return -1
-        }
-        return self.byTile[index]
-    }
+    func &.idOf(index: Int): Int = if index < 0 || index >= self.byTile.size then -1 else self.byTile[index]
 
     /** True when [index] animates. */
-    func &.animates(index: Int): Bool {
-        return self.idOf(index) >= 0
-    }
+    func &.animates(index: Int): Bool = self.idOf(index) >= 0
 
     /** The animation with id [id]; a still frame when the id is unknown. */
-    func &.at(id: Int): TileAnimation {
-        if id < 0 || id >= self.count {
-            return TileAnimation(0, 0, 0.0, TileAnimationMode.Once)
-        }
-        return self.animations[id]
-    }
+    func &.at(id: Int): TileAnimation = if id < 0 || id >= self.count then .(0, 0, 0.0, .Once) else self.animations[id]
 
     /** The tile index to draw for [index] at [seconds]. */
     func !.resolve(index: Int, seconds: Double): Int {
         fin id = self.idOf(index)
-        if id < 0 {
-            return index
-        }
-        return self.animations[id].frameAt(seconds)
+        return if id < 0 then index else self.animations[id].frameAt(seconds)
     }
 
     /**
@@ -203,18 +169,13 @@ impl TileAnimationSet {
      */
     func &.resolvePhased(index: Int, seconds: Double, phase: Double): Int {
         fin id = self.idOf(index)
-        if id < 0 {
-            return index
-        }
-        return self.animations[id].frameAt(seconds + phase)
+        return if id < 0 then index else self.animations[id].frameAt(seconds + phase)
     }
 
     /** Resolves [index] with a phase derived from the cell [pos]. */
     func &.resolveAt(index: Int, seconds: Double, pos: TilePos): Int {
         fin id = self.idOf(index)
-        if id < 0 {
-            return index
-        }
+        if id < 0 then return index
         fin animation = self.animations[id]
         return animation.frameAt(seconds + tilePhase(pos, animation.frameCount(), animation.fps))
     }
@@ -228,31 +189,29 @@ impl TileAnimationSet {
  * makes a field of animated tiles look scattered instead of rippling.
  */
 func tilePhase(pos: TilePos, frames: Int, fps: Double): Double {
-    if frames <= 1 || fps <= 0.0 {
-        return 0.0
-    }
+    if frames <= 1 || fps <= 0.0 then return 0.0
     fin mixed = tileFloorMod(pos.x * 73856093 ^ pos.y * 19349663, intMax(frames, 1))
     return (mixed as Double) / fps
 }
 
 test "each mode walks its run the way its name promises" {
-    fin repeat = tileAnimation(10, 13, 4.0, TileAnimationMode.Repeat)
+    fin repeat = tileAnimation(10, 13, 4.0, .Repeat)
     assert repeat.frameCount() == 4 panic "10..13 inclusive is four frames"
     assert repeat.frameAt(0.0) == 10 panic "an animation starts on its first frame"
     assert repeat.frameAt(0.30) == 11 panic "a quarter-second at 4fps is one frame in"
     assert repeat.frameAt(1.05) == 10 panic "a full cycle must return to the first frame"
 
-    fin once = tileAnimation(10, 13, 4.0, TileAnimationMode.Once)
+    fin once = tileAnimation(10, 13, 4.0, .Once)
     assert once.frameAt(100.0) == 13 panic "a one-shot animation must hold its last frame"
 
-    fin pingPong = tileAnimation(0, 2, 1.0, TileAnimationMode.PingPong)
+    fin pingPong = tileAnimation(0, 2, 1.0, .PingPong)
     assert pingPong.frameAt(0.0) == 0 && pingPong.frameAt(1.5) == 1 && pingPong.frameAt(2.5) == 2 panic "a ping-pong must climb to its last frame"
     assert pingPong.frameAt(3.5) == 1 && pingPong.frameAt(4.5) == 0 panic "a ping-pong must walk back down without repeating the turning frames"
 }
 
 test "an animation set leaves still tiles alone" {
     var set = tileAnimationSetNew(64)
-    fin id = set.add(tileAnimation(20, 23, 8.0, TileAnimationMode.Repeat))
+    fin id = set.add(tileAnimation(20, 23, 8.0, .Repeat))
 
     assert set.animates(20) panic "the first frame must trigger the animation"
     assert !set.animates(21) panic "a later frame must stay a still picture until it is bound"
@@ -265,18 +224,14 @@ test "an animation set leaves still tiles alone" {
 }
 
 test "phase spreads identical tiles across the cycle" {
-    fin animation = tileAnimation(0, 7, 8.0, TileAnimationMode.Repeat)
+    fin animation = tileAnimation(0, 7, 8.0, .Repeat)
     var set = tileAnimationSetNew(16)
     set.add(animation)
 
     var differs = false
-    var x = 0
-    while x < 8 {
-        if set.resolveAt(0, 0.0, TilePos(x, 0)) != set.resolveAt(0, 0.0, TilePos(0, 0)) {
-            differs = true
-        }
-        x = x + 1
+    for x: Int in 0..<8 {
+        if set.resolveAt(0, 0.0, .(x, 0)) != set.resolveAt(0, 0.0, .(0, 0)) then differs = true
     }
     assert differs panic "neighbouring cells must not all show the same frame"
-    assert set.resolveAt(0, 0.0, TilePos(3, 3)) == set.resolveAt(0, 0.0, TilePos(3, 3)) panic "a cell's phase must be stable across calls"
+    assert set.resolveAt(0, 0.0, .(3, 3)) == set.resolveAt(0, 0.0, .(3, 3)) panic "a cell's phase must be stable across calls"
 }

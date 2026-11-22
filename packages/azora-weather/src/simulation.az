@@ -11,8 +11,8 @@ import engine.weather.storm
 
 /** Supplies the atmospheric renderer with the current weather. */
 func previewWeather(world: World!, owner: Entity, state: AetherState!, elapsed: Double, dt: Double, eye: Vec3&, right: Vec3&) {
-    fin weather = storageGetOrDefault<AetherWeather>(ensureStorage<AetherWeather>(world), owner, AetherWeather(enabled: false))
-    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage<AetherClouds>(world), owner, AetherClouds(enabled: false))
+    fin weather = storageGetOrDefault<AetherWeather>(ensureStorage(world), owner, .(enabled: false))
+    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage(world), owner, .(enabled: false))
     fin windy = world.isAlive(sceneWindEntity(world))
     fin blowing = sceneWind(world, elapsed)
     stepWeather(state, if weather.enabled then weather else AetherWeather(), dt, windy, blowing.x, blowing.z)
@@ -36,5 +36,5 @@ func previewWeather(world: World!, owner: Entity, state: AetherState!, elapsed: 
     air.snow = state.snowCover
     air.windX = state.windX
     air.windZ = state.windZ
-    storageInsert<AtmosphereConditions>(ensureStorage<AtmosphereConditions>(world), owner, take air)
+    storageInsert<AtmosphereConditions>(ensureStorage(world), owner, take air)
 }

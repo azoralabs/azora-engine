@@ -58,58 +58,37 @@ bridge .C {
 
 // ── Message-send helpers ────────────────────────────────────────────────
 
-func cls(name: String): Long {
-    return objcGetClass(name)
-}
+func cls(name: String): Long = objcGetClass(name)
 
-func sel(name: String): Long {
-    return selRegisterName(name)
-}
+func sel(name: String): Long = selRegisterName(name)
 
-func send0(o: Long, s: Long): Long {
-    return objcMsgSend(o, s, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
-}
+func send0(o: Long, s: Long): Long = objcMsgSend(o, s, 0, 0, 0, 0, 0, 0, 0, 0)
 
-func send1(o: Long, s: Long, a: Long): Long {
-    return objcMsgSend(o, s, a, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
-}
+func send1(o: Long, s: Long, a: Long): Long = objcMsgSend(o, s, a, 0, 0, 0, 0, 0, 0, 0)
 
-func send2(o: Long, s: Long, a: Long, b: Long): Long {
-    return objcMsgSend(o, s, a, b, Long(0), Long(0), Long(0), Long(0), Long(0), Long(0))
-}
+func send2(o: Long, s: Long, a: Long, b: Long): Long = objcMsgSend(o, s, a, b, 0, 0, 0, 0, 0, 0)
 
-func send3(o: Long, s: Long, a: Long, b: Long, c: Long): Long {
-    return objcMsgSend(o, s, a, b, c, Long(0), Long(0), Long(0), Long(0), Long(0))
-}
+func send3(o: Long, s: Long, a: Long, b: Long, c: Long): Long = objcMsgSend(o, s, a, b, c, 0, 0, 0, 0, 0)
 
-func send4(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long): Long {
-    return objcMsgSend(o, s, a, b, c, d, Long(0), Long(0), Long(0), Long(0))
-}
+func send4(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long): Long = objcMsgSend(o, s, a, b, c, d, 0, 0, 0, 0)
 
-func send5(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long, e: Long): Long {
-    return objcMsgSend(o, s, a, b, c, d, e, Long(0), Long(0), Long(0))
-}
+func send5(o: Long, s: Long, a: Long, b: Long, c: Long, d: Long, e: Long): Long = objcMsgSend(o, s, a, b, c, d, e, 0, 0, 0)
 
 /// `[[Cls alloc] init]`
-func newObject(className: String): Long {
-    return send0(send0(cls(className), sel("alloc")), sel("init"))
-}
+func newObject(className: String): Long = send0(send0(cls(className), sel("alloc")), sel("init"))
 
 /// An NSString from an Azora string (autoreleased).
-func nsString(text: String): Long {
-    return send1(cls("NSString"), sel("stringWithUTF8String:"), text as Long)
-}
+func nsString(text: String): Long = send1(cls("NSString"), sel("stringWithUTF8String:"), text as Long)
 
-/// The UTF-8 contents of an NSString as an Azora string.
+/// The UTF-8 contents of an NSString as an Azora string; "" for nil.
 func nsStringText(nsStr: Long): String {
-    return send0(nsStr, sel("UTF8String")) as String
+    // `UTF8String` answers a C string; read its bytes, not the pointer's value.
+    fin bytes = send0(nsStr, sel("UTF8String"))
+    return if bytes == 0 then "" else azCstring(bytes, 0)
 }
 
 /// Reads an exported object constant (e.g. NSDefaultRunLoopMode).
 func globalObject(symbolName: String): Long {
     fin addr = azSym(symbolName)
-    if addr == Long(0) {
-        return Long(0)
-    }
-    return azPeek64(addr, Long(0))
+    return if addr == 0 then 0 else azPeek64(addr, 0)
 }

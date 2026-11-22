@@ -8,7 +8,7 @@ import engine.lighting.photon
 import engine.scene.terrain
 import engine.scene.io
 import engine.ecs
-import engine.sky
+import engine.atmosphere.legacy
 
 func main() {
     var material = newFusionGraph()
@@ -30,31 +30,37 @@ func main() {
     assert compileFusionGraph(material).diagnostic != "" panic "missing reachable input was accepted"
     assert !fusionAssetPath("../Material.azfusion") && fusionAssetPath("Materials/Material.azfusion") panic "asset path validation"
 
-    fin light = PhotonLight()
+    fin light: PhotonLight = .()
     fin basis = photonBasis(light.direction)
-    fin target = Vec3(0.0, 0.0, 0.0)
+    fin target: Vec3 = .(0.0, 0.0, 0.0)
     var casters: Array<PhotonCaster> = []
-    fin cube = photonCaster(0, mat4Identity(), Rgba(0.9, 0.1, 0.1, 1.0), basis)
-    fin ray = photonRay(cube, Vec3(0.0, 2.0, 0.0), Vec3(0.0, -1.0, 0.0))
+    fin cube = photonCaster(0, mat4Identity(), .(0.9, 0.1, 0.1, 1.0), basis)
+    fin ray = photonRay(cube, .(0.0, 2.0, 0.0), .(0.0, -1.0, 0.0))
     assert photonAbs(ray.t - 1.5) < 0.00001 panic "directional depth on the cube"
     casters.add(take cube)
-    fin pages = buildPhotonField(PhotonField(), light, basis, target, casters)
+    var cache: PhotonPageCache = .()
+    fin pages = buildPhotonField(.(), light, basis, target, casters, cache)
+    assert pages.complete && pages.traced == pages.pages panic "an uncapped build traces every page"
     assert pages.pages > 0 && pages.pages < 25 && pages.size > 0 panic "virtual page allocation is not sparse"
     assert azPeek32(pages.bytes, 0) == 1065353216 panic "page buffer header"
     azFree(pages.bytes)
-    var world = World()
+    fin again = buildPhotonField(.(), light, basis, target, casters, cache)
+    assert again.complete && again.traced == 0 && again.pages == pages.pages panic "unchanged pages are copied from the cache"
+    azFree(again.bytes)
+    releasePhotonCache(cache)
+    var world: World = .()
     fin entity = world.spawn()
-    storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world), entity, HeightfieldTerrain(image: "Terrain/demo.pgm"))
-    storageInsert<SkyEnvironment>(ensureStorage<SkyEnvironment>(world), entity, SkyEnvironment(hour: 1.25))
-    storageInsert<PhotonField>(ensureStorage<PhotonField>(world), entity, PhotonField())
+    storageInsert<HeightfieldTerrain>(ensureStorage(world), entity, .(image: "Terrain/demo.pgm"))
+    storageInsert<SkyEnvironment>(ensureStorage(world), entity, .(hour: 1.25))
+    storageInsert<PhotonField>(ensureStorage(world), entity, .())
     fin scene = writeScene(world)
-    var reloaded = World()
+    var reloaded: World = .()
     assert readScene(reloaded, scene) == 1 panic "could not read scene"
     fin copy = reloaded.entityAt(0)
-    fin facts = storageGet<SkyEnvironment>(ensureStorage<SkyEnvironment>(reloaded), copy)
+    fin facts = storageGet<SkyEnvironment>(ensureStorage(reloaded), copy)
     assert facts.hour == 1.25 panic "sky hour round trip"
-    assert storageGet<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(reloaded), copy).image == "Terrain/demo.pgm" panic "height image round trip"
-    assert storageHas<PhotonField>(ensureStorage<PhotonField>(reloaded), copy) panic "photon data round trip"
-    assert sampleSky(facts, 0.0).daylight < sampleSky(SkyEnvironment(hour: 12.0), 0.0).daylight panic "day-night environment"
+    assert storageGet<HeightfieldTerrain>(ensureStorage(reloaded), copy).image == "Terrain/demo.pgm" panic "height image round trip"
+    assert storageHas<PhotonField>(ensureStorage(reloaded), copy) panic "photon data round trip"
+    assert sampleSky(facts, 0.0).daylight < sampleSky(.(hour: 12.0), 0.0).daylight panic "day-night environment"
     println("material fusion graph and photon field passed")
 }

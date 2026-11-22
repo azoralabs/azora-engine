@@ -33,7 +33,7 @@ import engine.platform
 import engine.gpu.draw
 
 /** Number of character codes a font can map. */
-fin charCodes = 128
+inline fin charCodes = 128
 
 /**
  * Palette index reserved as the colour key.
@@ -42,7 +42,7 @@ fin charCodes = 128
  * alpha channel; in this artwork it is the light blue at the top of the
  * palette. Keying the wrong index leaves every glyph sitting on an opaque block.
  */
-fin colorKeyIndex = 255
+inline fin colorKeyIndex = 255
 
 /**
  * A loaded bitmap font.
@@ -63,9 +63,7 @@ pack BitmapFont {
 
 /** The font returned when loading fails; drawing with it is a no-op. */
 @Experimental(since: "0.1")
-func fontEmpty(): BitmapFont {
-    return BitmapFont(imageEmpty(), Long(0), 0, 0, 0, Array<Int>(), false)
-}
+func fontEmpty(): BitmapFont = .(imageEmpty(), 0, 0, 0, 0, Array<Int>(), false)
 
 /**
  * Reads the value of `*key:` from a font manifest.
@@ -76,15 +74,11 @@ func fontEmpty(): BitmapFont {
 func manifestValue(text: String, key: String): String {
     fin marker = "*" + key + ":"
     fin at = strIndexOf(text, marker)
-    if at < 0 {
-        return ""
-    }
+    if at < 0 then return ""
     fin from = at + strLength(marker)
     var end = from
     fin total = strLength(text)
-    while end < total && strSlice(text, end, end + 1) != "\n" {
-        end = end + 1
-    }
+    while end < total && strSlice(text, end, end + 1) != "\n" then end++
     return trimBlanks(strSlice(text, from, end))
 }
 
@@ -97,53 +91,36 @@ func manifestValue(text: String, key: String): String {
 func trimBlanks(text: String): String {
     fin length = strLength(text)
     var start = 0
-    while start < length && isBlank(strSlice(text, start, start + 1)) {
-        start = start + 1
-    }
+    while start < length && isBlank(strSlice(text, start, start + 1)) then start++
     var end = length
-    while end > start && isBlank(strSlice(text, end - 1, end)) {
-        end = end - 1
-    }
+    while end > start && isBlank(strSlice(text, end - 1, end)) then end--
     return strSlice(text, start, end)
 }
 
 /// Whether a one-character string is a space, tab or carriage return.
-func isBlank(ch: String): Bool {
-    return ch == " " || ch == "\t" || ch == "\r"
-}
+func isBlank(ch: String): Bool = ch == " " || ch == "\t" || ch == "\r"
 
 /** Reads a numeric manifest value, or [fallback] when absent or malformed. */
 func manifestInt(text: String, key: String, fallback: Int): Int {
     fin raw = manifestValue(text, key)
-    if raw == "" {
-        return fallback
-    }
+    if raw == "" then return fallback
     var digits = 0
     var i = 0
     fin length = strLength(raw)
     while i < length {
         fin ch = strSlice(raw, i, i + 1)
         fin code = asciiCodeOf(ch)
-        if code < 48 || code > 57 {
-            return digits
-        }
+        if code < 48 || code > 57 then return digits
         digits = digits * 10 + (code - 48)
-        i = i + 1
+        i++
     }
-    if length == 0 {
-        return fallback
-    }
-    return digits
+    return if length == 0 then fallback else digits
 }
 
 /** The ASCII code of a one-character string, or -1. */
 func asciiCodeOf(ch: String): Int {
-    var code = 32
-    while code < 127 {
-        if asciiChar(code) == ch {
-            return code
-        }
-        code = code + 1
+    for code: Int in 32..<127 {
+        if asciiChar(code) == ch then return code
     }
     return -1
 }
@@ -157,14 +134,12 @@ func manifestByteValueStart(blob: Blob, key: String): Int {
             var value = at + strLength(marker)
             while value < blob.size &&
                 (blob.u8(value) == 32 || blob.u8(value) == 9) {
-                value = value + 1
+                value++
             }
             return value
         }
-        while at < blob.size && blob.u8(at) != 10 {
-            at = at + 1
-        }
-        at = at + 1
+        while at < blob.size && blob.u8(at) != 10 then at++
+        at++
     }
     return -1
 }
@@ -180,9 +155,7 @@ func manifestByteValueStart(blob: Blob, key: String): Int {
 @Experimental(since: "0.1")
 func loadBitmapFont(app: App, directory: String, manifestFile: String): BitmapFont {
     var manifestBlob = readFile(directory + "/" + manifestFile)
-    if !manifestBlob.ok() {
-        return fontEmpty()
-    }
+    if !manifestBlob.ok() then return fontEmpty()
     fin manifest = manifestBlob.text(0, manifestBlob.size)
 
     fin imageName = manifestValue(manifest, "image")
@@ -212,11 +185,7 @@ func loadBitmapFont(app: App, directory: String, manifestFile: String): BitmapFo
 
     fin texture = app.newTexture(image.width, image.height, image.pixels)
     var offsets: Array<Int> = Array::fill<Int>(charCodes)
-    var code = 0
-    while code < charCodes {
-        offsets[code] = -1
-        code = code + 1
-    }
+    for code: Int in 0..<charCodes then offsets[code] = -1
 
     // The original manifests are byte-oriented and may contain legacy
     // Scandinavian glyphs between ASCII letters and digits. Walk the raw
@@ -231,29 +200,23 @@ func loadBitmapFont(app: App, directory: String, manifestFile: String): BitmapFo
         fin offset = imageX + glyph * cellWidth
         if letterCode >= 0 && letterCode < charCodes {
             offsets[letterCode] = offset
-            if letterCode >= 65 && letterCode <= 90 {
-                offsets[letterCode + 32] = offset
-            }
-            if letterCode >= 97 && letterCode <= 122 {
-                offsets[letterCode - 32] = offset
-            }
+            if letterCode >= 65 && letterCode <= 90 then offsets[letterCode + 32] = offset
+            if letterCode >= 97 && letterCode <= 122 then offsets[letterCode - 32] = offset
         }
-        glyph = glyph + 1
-        letterAt = letterAt + 1
+        glyph++
+        letterAt++
     }
     manifestBlob.release()
 
     return BitmapFont(
-        image, texture, cellWidth, cellHeight, imageY, offsets, texture != Long(0)
+        image, texture, cellWidth, cellHeight, imageY, offsets, texture != 0
     )
 }
 
 impl BitmapFont {
 
     /** The width in pixels [text] occupies at scale 1. */
-    func &.measure(text: String): Int {
-        return strLength(text) * self.cellWidth
-    }
+    func &.measure(text: String): Int = strLength(text) * self.cellWidth
 
     /**
      * Draws [text] with its top-left corner at (`x`, `y`), scaled by [scale].
@@ -262,9 +225,7 @@ impl BitmapFont {
      * and unsupported punctuation keep the layout aligned.
      */
     func &.draw(app: App, text: String, x: Double, y: Double, scale: Double) {
-        if !self.ready {
-            return
-        }
+        if !self.ready then return
         fin width = (self.cellWidth as Double) * scale
         fin height = (self.cellHeight as Double) * scale
         var cursor = x
@@ -272,22 +233,22 @@ impl BitmapFont {
         fin length = strLength(text)
         while i < length {
             fin code = asciiCodeOf(strSlice(text, i, i + 1))
-            i = i + 1
+            i++
             if code < 0 || code >= charCodes {
-                cursor = cursor + width
+                cursor += width
                 continue
             }
             fin offset = self.offsets[code]
             if offset < 0 {
-                cursor = cursor + width
+                cursor += width
                 continue
             }
             app.drawSpriteRegion(
-                self.texture, self.image.width, self.image.height,
-                offset, self.sourceY, self.cellWidth, self.cellHeight,
+                self.texture, self.image.width, self.image.height
+                offset, self.sourceY, self.cellWidth, self.cellHeight
                 cursor, y, width, height
             )
-            cursor = cursor + width
+            cursor += width
         }
     }
 
@@ -301,7 +262,7 @@ impl BitmapFont {
     func !.release(app: App) {
         app.releaseTexture(self.texture)
         self.image.release()
-        self.texture = Long(0)
+        self.texture = 0
         self.ready = false
     }
 }

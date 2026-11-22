@@ -33,20 +33,16 @@ bridge .C {
     func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
-fin platformCount = 12
-fin playerSize: Double = 34.0
+inline fin platformCount = 12
+inline fin playerSize: Double = 34.0
 
 /// Re-seeds platform [i] to start after [prevEnd], stepping from [prevY].
 func regenPlatform(px: Array<Double>!, py: Array<Double>!, pw: Array<Double>!, i: Int, prevEnd: Double, prevY: Double) {
     fin gap: Double = 50.0 + (arc4randomUniform(70) as Double)
     fin w: Double = 130.0 + (arc4randomUniform(150) as Double)
     var y = prevY + (arc4randomUniform(170) as Double) - 85.0
-    if y < 240.0 {
-        y = 240.0
-    }
-    if y > 500.0 {
-        y = 500.0
-    }
+    if y < 240.0 then y = 240.0
+    if y > 500.0 then y = 500.0
     px[i] = prevEnd + gap
     py[i] = y
     pw[i] = w
@@ -57,18 +53,12 @@ func resetLevel(px: Array<Double>!, py: Array<Double>!, pw: Array<Double>!) {
     px[0] = -100.0
     py[0] = 440.0
     pw[0] = 480.0
-    var i = 1
-    while i < platformCount {
-        regenPlatform(px, py, pw, i, px[i - 1] + pw[i - 1], py[i - 1])
-        i = i + 1
-    }
+    for i: Int in 1..<platformCount then regenPlatform(px, py, pw, i, px[i - 1] + pw[i - 1], py[i - 1])
 }
 
 func main() {
     var app = appInit("__AZORA_PROJECT_NAME__ — Side Scroller", 1100, 640)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
     app.setClearColor(0.36, 0.56, 0.78) // sky
 
     var px: Array<Double> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -91,23 +81,18 @@ func main() {
         if alive {
             // ── Controls ──
             var target: Double = 0.0
-            if app.keyDown(.D) || app.keyDown(.Right) {
-                target = 250.0
-            }
-            if app.keyDown(.A) || app.keyDown(.Left) {
-                target = -180.0
-            }
-            velX = velX + (target - velX) * 10.0 * dt
+            if app.keyDown(.D) || app.keyDown(.Right) then target = 250.0
+            if app.keyDown(.A) || app.keyDown(.Left) then target = -180.0
+            velX += (target - velX) * 10.0 * dt
 
             // ── Physics ──
-            velY = velY + 1500.0 * dt
-            playerX = playerX + velX * dt
-            playerY = playerY + velY * dt
+            velY += 1500.0 * dt
+            playerX += velX * dt
+            playerY += velY * dt
 
             // Land on platforms (only while falling).
             var grounded = false
-            var i = 0
-            while i < platformCount {
+            for i: Int in 0..<platformCount {
                 fin bottom = playerY + playerSize
                 if velY >= 0.0 && bottom >= py[i] - 2.0 && bottom <= py[i] + 16.0 {
                     if playerX + playerSize > px[i] && playerX < px[i] + pw[i] {
@@ -116,41 +101,28 @@ func main() {
                         grounded = true
                     }
                 }
-                i = i + 1
             }
 
-            if grounded && (app.keyPressed(.Space) || app.keyPressed(.Up)) {
-                velY = -620.0
-            }
+            if grounded && (app.keyPressed(.Space) || app.keyPressed(.Up)) then velY = -620.0
 
             // Fell off the world.
-            if playerY > h + 80.0 {
-                alive = false
-            }
+            if playerY > h + 80.0 then alive = false
 
             // ── Recycle platforms that scrolled far behind ──
             fin camLeft = playerX - 260.0
             var rightmost: Double = 0.0
-            var j = 0
-            while j < platformCount {
-                if px[j] + pw[j] > rightmost {
-                    rightmost = px[j] + pw[j]
-                }
-                j = j + 1
+            for j: Int in 0..<platformCount {
+                if px[j] + pw[j] > rightmost then rightmost = px[j] + pw[j]
             }
-            var k = 0
-            while k < platformCount {
+            for k: Int in 0..<platformCount {
                 if px[k] + pw[k] < camLeft - 80.0 {
                     regenPlatform(px, py, pw, k, rightmost, py[k])
                     rightmost = px[k] + pw[k]
                 }
-                k = k + 1
             }
 
             fin dist = (playerX / 10.0) as Int
-            if dist > best {
-                best = dist
-            }
+            if dist > best then best = dist
         } else {
             if app.keyPressed(.Enter) {
                 resetLevel(px, py, pw)
@@ -167,29 +139,23 @@ func main() {
         fin camX = playerX - 260.0
 
         // Parallax clouds.
-        var c = 0
-        while c < 4 {
+        for c: Int in 0..<4 {
             fin span = w + 320.0
             var cx = (c as Double) * 330.0 + 60.0 - camX * 0.35
-            cx = cx - (((cx / span) as Int) as Double) * span
-            if cx < 0.0 {
-                cx = cx + span
-            }
+            cx -= (((cx / span) as Int) as Double) * span
+            if cx < 0.0 then cx += span
             fin cy: Double = 60.0 + (c as Double) * 42.0
             app.uiRect(cx - 160.0, cy, 120.0, 26.0, 1.0, 1.0, 1.0, 0.55)
             app.uiRect(cx - 130.0, cy - 14.0, 60.0, 20.0, 1.0, 1.0, 1.0, 0.45)
-            c = c + 1
         }
 
         // Platforms: grass top + earth body.
-        var d = 0
-        while d < platformCount {
+        for d: Int in 0..<platformCount {
             fin sx = px[d] - camX
             if sx < w && sx + pw[d] > 0.0 {
                 app.uiRect(sx, py[d], pw[d], 14.0, 0.30, 0.72, 0.35, 1.0)
                 app.uiRect(sx, py[d] + 14.0, pw[d], h - py[d], 0.42, 0.30, 0.22, 1.0)
             }
-            d = d + 1
         }
 
         // Player.
@@ -204,9 +170,7 @@ func main() {
             app.uiTitle("YOU FELL — press ENTER to try again", h * 0.42, 24.0)
         }
 
-        if app.keyPressed(.Escape) {
-            app.quit()
-        }
+        if app.keyPressed(.Escape) then app.quit()
         app.present()
     }
 

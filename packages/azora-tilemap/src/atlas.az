@@ -93,9 +93,7 @@ variant enum AtlasPick {
 // ── Construction ────────────────────────────────────────────────────────
 
 /** The sheet returned by every failure path; drawing from it is a no-op. */
-func tileAtlasEmpty(): TileAtlas {
-    return TileAtlas(Long(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-}
+func tileAtlasEmpty(): TileAtlas = .(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 /**
  * A sheet over an existing texture.
@@ -125,17 +123,17 @@ func tileAtlasNew(
         rows = intMax(usableY / (tileHeight + spacingY), 0)
     }
     return TileAtlas(
-        texture,
-        texWidth,
-        texHeight,
-        tileWidth,
-        tileHeight,
-        columns,
-        rows,
-        spacingX,
-        spacingY,
-        marginX,
-        marginY,
+        texture
+        texWidth
+        texHeight
+        tileWidth
+        tileHeight
+        columns
+        rows
+        spacingX
+        spacingY
+        marginX
+        marginY
         firstIndex
     )
 }
@@ -162,26 +160,20 @@ func tileAtlasFromImage(
     marginX: Int
     marginY: Int
 ): TileAtlas ?! TilemapFault {
-    if !picture.ok() {
-        return .MissingTexture
-    }
-    if tileWidth <= 0 || tileHeight <= 0 {
-        return .EmptySize
-    }
+    if !picture.ok() then return .MissingTexture
+    if tileWidth <= 0 || tileHeight <= 0 then return .EmptySize
     fin texture = app.newTexture(picture.width, picture.height, picture.pixels)
-    if texture == Long(0) {
-        return .MissingTexture
-    }
+    if texture == 0 then return .MissingTexture
     return tileAtlasNew(
-        texture,
-        picture.width,
-        picture.height,
-        tileWidth,
-        tileHeight,
-        spacingX,
-        spacingY,
-        marginX,
-        marginY,
+        texture
+        picture.width
+        picture.height
+        tileWidth
+        tileHeight
+        spacingX
+        spacingY
+        marginX
+        marginY
         0
     )
 }
@@ -194,9 +186,7 @@ func tileAtlasFromImage(
  */
 func tileAtlasLoad(app: App, path: String, tileWidth: Int, tileHeight: Int): TileAtlas ?! TilemapFault {
     var blob = readFile(path)
-    if !blob.ok() {
-        return .IoFailed
-    }
+    if !blob.ok() then return .IoFailed
     var picture = decode(blob)
     blob.release()
     if !picture.ok() {
@@ -213,10 +203,7 @@ func tileAtlasLoad(app: App, path: String, tileWidth: Int, tileHeight: Int): Til
         failed = true
     }
     picture.release()
-    if failed {
-        return .MissingTexture
-    }
-    return sheet
+    return if failed then .MissingTexture else sheet
 }
 
 /**
@@ -226,17 +213,15 @@ func tileAtlasLoad(app: App, path: String, tileWidth: Int, tileHeight: Int): Til
  * texture keeps that to one upload instead of an allocate-and-free per frame.
  */
 func tileAtlasRefresh(app: App, atlas: TileAtlas, picture: Image) {
-    if atlas.texture == Long(0) || !picture.ok() {
-        return
-    }
+    if atlas.texture == 0 || !picture.ok() then return
     app.updateTexture(atlas.texture, picture.width, picture.height, picture.pixels)
 }
 
 /** Releases the sheet's GPU texture. */
 func tileAtlasRelease(app: App, atlas: TileAtlas) {
-    if atlas.texture != Long(0) {
+    if atlas.texture != 0 {
         app.releaseTexture(atlas.texture)
-        atlas.texture = Long(0)
+        atlas.texture = 0
     }
 }
 
@@ -244,24 +229,16 @@ func tileAtlasRelease(app: App, atlas: TileAtlas) {
 
 impl TileAtlas {
     /** True when the sheet has a usable texture and at least one tile. */
-    func &.ok(): Bool {
-        return self.texture != Long(0) && self.columns > 0 && self.rows > 0
-    }
+    func &.ok(): Bool = self.texture != 0 && self.columns > 0 && self.rows > 0
 
     /** The number of tiles on the sheet. */
-    func &.count(): Int {
-        return self.columns * self.rows
-    }
+    func &.count(): Int = self.columns * self.rows
 
     /** The global index just past this sheet's last tile. */
-    func &.endIndex(): Int {
-        return self.firstIndex + self.count()
-    }
+    func &.endIndex(): Int = self.firstIndex + self.count()
 
     /** True when [index] is a global index this sheet owns. */
-    func &.owns(index: Int): Bool {
-        return index >= self.firstIndex && index < self.endIndex()
-    }
+    func &.owns(index: Int): Bool = index >= self.firstIndex && index < self.endIndex()
 
     /**
      * The source rectangle of the sheet-local tile [local].
@@ -270,29 +247,25 @@ impl TileAtlas {
      * whatever pixels happen to follow the sheet.
      */
     func &.rectOf(local: Int): AtlasRect {
-        if local < 0 || local >= self.count() || self.columns <= 0 {
-            return AtlasRect(0, 0, 0, 0)
-        }
+        if local < 0 || local >= self.count() || self.columns <= 0 then return .(0, 0, 0, 0)
         fin column = local % self.columns
         fin row = local / self.columns
         return AtlasRect(
-            self.marginX + column * (self.tileWidth + self.spacingX),
-            self.marginY + row * (self.tileHeight + self.spacingY),
-            self.tileWidth,
+            self.marginX + column * (self.tileWidth + self.spacingX)
+            self.marginY + row * (self.tileHeight + self.spacingY)
+            self.tileWidth
             self.tileHeight
         )
     }
 
     /** The source rectangle of the global tile [index]. */
-    func &.rectOfGlobal(index: Int): AtlasRect {
-        return self.rectOf(index - self.firstIndex)
-    }
+    func &.rectOfGlobal(index: Int): AtlasRect = self.rectOf(index - self.firstIndex)
 }
 
 /** An empty set with room for [capacity] sheets. */
 func tileAtlasSetNew(capacity: Int): TileAtlasSet {
     var sheets: Array<TileAtlas> = Array::fill<TileAtlas>(intMax(capacity, 0))
-    return TileAtlasSet(sheets, 0)
+    return .(sheets, 0)
 }
 
 impl TileAtlasSet {
@@ -307,32 +280,22 @@ impl TileAtlasSet {
         if self.count >= self.atlases.size {
             fin room = intMax(self.atlases.size * 2, 4)
             var grown: Array<TileAtlas> = Array::fill<TileAtlas>(room)
-            var i = 0
-            while i < self.count {
-                grown[i] = self.atlases[i]
-                i = i + 1
-            }
+            for i: Int in 0..<self.count then grown[i] = self.atlases[i]
             self.atlases = grown
         }
         var next = 0
-        if self.count > 0 {
-            next = self.atlases[self.count - 1].endIndex()
-        }
+        if self.count > 0 then next = self.atlases[self.count - 1].endIndex()
         atlas.firstIndex = next
         self.atlases[self.count] = atlas
-        self.count = self.count + 1
+        self.count++
         return next
     }
 
     /** The sheet owning the global tile [index]. */
     func &.find(index: Int): AtlasPick {
-        var i = 0
-        while i < self.count {
+        for i: Int in 0..<self.count {
             fin atlas = self.atlases[i]
-            if atlas.owns(index) {
-                return AtlasPick.Found(atlas, index - atlas.firstIndex)
-            }
-            i = i + 1
+            if atlas.owns(index) then return AtlasPick.Found(atlas, index - atlas.firstIndex)
         }
         return AtlasPick.Missing
     }
@@ -340,21 +303,12 @@ impl TileAtlasSet {
     /** The total number of tiles across every sheet. */
     func &.total(): Int {
         var sum = 0
-        var i = 0
-        while i < self.count {
-            sum = sum + self.atlases[i].count()
-            i = i + 1
-        }
+        for i: Int in 0..<self.count then sum += self.atlases[i].count()
         return sum
     }
 
     /** The sheet at [index] in the set, or an empty sheet. */
-    func &.at(index: Int): TileAtlas {
-        if index < 0 || index >= self.count {
-            return tileAtlasEmpty()
-        }
-        return self.atlases[index]
-    }
+    func &.at(index: Int): TileAtlas = if index < 0 || index >= self.count then tileAtlasEmpty() else self.atlases[index]
 }
 
 // The `when` arms over a `TilemapTexture` below call through these rather than
@@ -364,40 +318,25 @@ impl TileAtlasSet {
 
 /** The sheet owning [index], when the sheet is asked directly. */
 func atlasFindIn(atlas: TileAtlas, index: Int): AtlasPick {
-    if atlas.owns(index) {
-        return AtlasPick.Found(atlas, index - atlas.firstIndex)
-    }
-    return AtlasPick.Missing
+    return if atlas.owns(index) then AtlasPick.Found(atlas, index - atlas.firstIndex) else AtlasPick.Missing
 }
 
 /** The number of tiles on [atlas]. */
-func atlasTileCount(atlas: TileAtlas): Int {
-    return atlas.count()
-}
+func atlasTileCount(atlas: TileAtlas): Int = atlas.count()
 
 /** True when [atlas] has usable artwork. */
-func atlasUsable(atlas: TileAtlas): Bool {
-    return atlas.ok()
-}
+func atlasUsable(atlas: TileAtlas): Bool = atlas.ok()
 
 /** The sheet owning the global tile [index]. */
-func atlasSetFind(sheets: TileAtlasSet&, index: Int): AtlasPick {
-    return sheets.find(index)
-}
+func atlasSetFind(sheets: TileAtlasSet&, index: Int): AtlasPick = sheets.find(index)
 
 /** The total number of tiles across every sheet of [sheets]. */
-func atlasSetTotal(sheets: TileAtlasSet&): Int {
-    return sheets.total()
-}
+func atlasSetTotal(sheets: TileAtlasSet&): Int = sheets.total()
 
 /** True when any sheet of [sheets] has usable artwork. */
 func atlasSetOk(sheets: TileAtlasSet&): Bool {
-    var i = 0
-    while i < sheets.count {
-        if sheets.at(i).ok() {
-            return true
-        }
-        i = i + 1
+    for i: Int in 0..<sheets.count {
+        if sheets.at(i).ok() then return true
     }
     return false
 }
@@ -407,25 +346,21 @@ func atlasSetRelease(app: App, sheets: TileAtlasSet!) {
     var i = 0
     while i < sheets.count {
         tileAtlasRelease(app, sheets.atlases[i])
-        i = i + 1
+        i++
     }
 }
 
 /** A texture holding exactly one sheet. */
-func tilemapTextureSingle(atlas: TileAtlas): TilemapTexture {
-    return TilemapTexture.Single(atlas)
-}
+func tilemapTextureSingle(atlas: TileAtlas): TilemapTexture = TilemapTexture.Single(atlas)
 
 /** A texture holding several sheets in one index space. */
-func tilemapTextureVector(sheets: TileAtlasSet): TilemapTexture {
-    return TilemapTexture.Vector(sheets)
-}
+func tilemapTextureVector(sheets: TileAtlasSet): TilemapTexture = TilemapTexture.Vector(sheets)
 
 /** The sheet owning the global tile [index], whichever form [texture] takes. */
 func textureFind(texture: TilemapTexture&, index: Int): AtlasPick {
     when texture {
-        TilemapTexture.Single(atlas) -> { return atlasFindIn(atlas, index) }
-        TilemapTexture.Vector(sheets) -> {
+        .Single(atlas) -> { return atlasFindIn(atlas, index) }
+        .Vector(sheets) -> {
             return atlasSetFind(sheets, index)
         }
     }
@@ -435,8 +370,8 @@ func textureFind(texture: TilemapTexture&, index: Int): AtlasPick {
 /** The number of tiles [texture] can address. */
 func textureTileCount(texture: TilemapTexture&): Int {
     when texture {
-        TilemapTexture.Single(atlas) -> { return atlasTileCount(atlas) }
-        TilemapTexture.Vector(sheets) -> { return atlasSetTotal(sheets) }
+        .Single(atlas) -> { return atlasTileCount(atlas) }
+        .Vector(sheets) -> { return atlasSetTotal(sheets) }
     }
     return 0
 }
@@ -444,8 +379,8 @@ func textureTileCount(texture: TilemapTexture&): Int {
 /** True when [texture] has at least one usable sheet. */
 func textureOk(texture: TilemapTexture&): Bool {
     when texture {
-        TilemapTexture.Single(atlas) -> { return atlasUsable(atlas) }
-        TilemapTexture.Vector(sheets) -> { return atlasSetOk(sheets) }
+        .Single(atlas) -> { return atlasUsable(atlas) }
+        .Vector(sheets) -> { return atlasSetOk(sheets) }
     }
     return false
 }
@@ -453,8 +388,8 @@ func textureOk(texture: TilemapTexture&): Bool {
 /** Releases every GPU texture [texture] owns. */
 func textureRelease(app: App, texture: TilemapTexture!) {
     when texture {
-        TilemapTexture.Single(atlas) -> { tileAtlasRelease(app, atlas) }
-        TilemapTexture.Vector(sheets) -> { atlasSetRelease(app, sheets) }
+        .Single(atlas) -> { tileAtlasRelease(app, atlas) }
+        .Vector(sheets) -> { atlasSetRelease(app, sheets) }
     }
 }
 
@@ -490,18 +425,18 @@ test "a sheet's source rectangles account for margin and spacing" {
 
 test "a set chains sheets into one continuous index space" {
     var sheets = tileAtlasSetNew(2)
-    sheets.add(tileAtlasSimple(Long(1), 64, 64, 32, 32))
-    sheets.add(tileAtlasSimple(Long(2), 64, 32, 32, 32))
+    sheets.add(tileAtlasSimple(1, 64, 64, 32, 32))
+    sheets.add(tileAtlasSimple(2, 64, 32, 32, 32))
 
     assert sheets.total() == 6 panic "four tiles plus two tiles is six"
     assert sheets.at(1).firstIndex == 4 panic "the second sheet must start after the first"
 
     when sheets.find(5) {
-        AtlasPick.Found(atlas, local) -> {
-            assert atlas.texture == Long(2) panic "index 5 belongs to the second sheet"
+        .Found(atlas, local) -> {
+            assert atlas.texture == 2 panic "index 5 belongs to the second sheet"
             assert local == 1 panic "index 5 is the second tile of that sheet"
         }
-        AtlasPick.Missing() -> { assert false panic "index 5 must be found" }
+        .Missing() -> { assert false panic "index 5 must be found" }
     }
 
     assert !atlasPickFound(sheets.find(6)) panic "an index past the last tile must not resolve"
@@ -510,7 +445,7 @@ test "a set chains sheets into one continuous index space" {
 /** True when [pick] resolved to a sheet. */
 func atlasPickFound(pick: AtlasPick): Bool {
     when pick {
-        AtlasPick.Found(atlas, local) -> { return true }
+        .Found(atlas, local) -> { return true }
         else -> { return false }
     }
     return false

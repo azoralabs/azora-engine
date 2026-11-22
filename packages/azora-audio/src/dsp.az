@@ -49,11 +49,9 @@ func dspAbs(value: Double): Double = if value < 0.0 then -value else value
 /** The largest magnitude among the first [count] samples. */
 func peak(buffer: Long, count: Int): Double {
     var top: Double = 0.0
-    var i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin x = dspAbs(sample(buffer, i))
         if x > top then top = x
-        i += 1
     }
     return top
 }
@@ -61,11 +59,9 @@ func peak(buffer: Long, count: Int): Double {
 /** The largest step between neighbouring samples: a click shows up here. */
 func peakDelta(buffer: Long, count: Int): Double {
     var top: Double = 0.0
-    var i = 1
-    while i < count {
+    for i: Int in 1..<count {
         fin step = dspAbs(sample(buffer, i) - sample(buffer, i - 1))
         if step > top then top = step
-        i += 1
     }
     return top
 }
@@ -73,11 +69,9 @@ func peakDelta(buffer: Long, count: Int): Double {
 func rms(buffer: Long, count: Int): Double {
     if count <= 0 then return 0.0
     var sum: Double = 0.0
-    var i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin x = sample(buffer, i)
         sum += x * x
-        i += 1
     }
     return sqrt(sum / (count as Double))
 }
@@ -85,11 +79,9 @@ func rms(buffer: Long, count: Int): Double {
 /** Writes the 44-byte header of a 16-bit stereo PCM WAV holding [frames] frames at the start of [bytes]. */
 func waveHeader(bytes: Long, frames: Int, rate: Int) {
     fin tags = "RIFFWAVEfmt data"
-    var i = 0
-    while i < 16 {
+    for i: Int in 0..<16 {
         fin at = if i < 4 then i else if i < 12 then i + 4 else i + 24
         azPoke8(bytes, at as Long, ord(charAt(tags, i)))
-        i += 1
     }
     azPoke32(bytes, 4, frames * 4 + 36)
     azPoke32(bytes, 16, 16)
@@ -121,11 +113,7 @@ func writeWave(path: String, stereo: Long, frames: Int, rate: Int): Bool {
     fin bytes = azAlloc((frames * 4 + 44) as Long)
     if bytes == 0 then return false
     waveHeader(bytes, frames, rate)
-    var i = 0
-    while i < frames * 2 {
-        pokeSample16(bytes, (44 + i * 2) as Long, sample(stereo, i))
-        i += 1
-    }
+    for i: Int in 0..<frames * 2 then pokeSample16(bytes, (44 + i * 2) as Long, sample(stereo, i))
     fin written = saveBytes(bytes, frames * 4 + 44, path)
     azFree(bytes)
     return written
@@ -182,7 +170,7 @@ pack OnePole {
 }
 
 func onePole(cutoffHz: Double, rate: Double): OnePole {
-    var filter = OnePole()
+    var filter: OnePole = .()
     filter.tune(cutoffHz, rate)
     return take filter
 }
@@ -272,7 +260,7 @@ pack DelayLine {
 
 func delayLine(maxSamples: Int): DelayLine {
     fin size = if maxSamples > 2 then maxSamples else 2
-    return DelayLine(sampleBuffer(size), size, 0)
+    return .(sampleBuffer(size), size, 0)
 }
 
 func DelayLine!.push(x: Double) {
@@ -302,7 +290,7 @@ func DelayLine!.release() {
 /** Comb and all-pass lengths at 44.1 kHz (Jezar's Freeverb), scaled to the rate. */
 fin reverbCombs: Array<Int> = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
 fin reverbAllpasses: Array<Int> = [556, 441, 341, 225]
-fin reverbSpread: Int = 23
+inline fin reverbSpread: Int = 23
 
 /**
  * A room: eight damped feedback combs in parallel then four all-passes in
@@ -321,11 +309,10 @@ pack Reverb {
 }
 
 func reverb(rate: Double): Reverb {
-    var room = Reverb()
+    var room: Reverb = .()
     fin scale = rate / 44100.0
     var total = 0
-    var channel = 0
-    while channel < 2 {
+    for channel: Int in 0..<2 {
         fin extra = channel * reverbSpread
         for length in reverbCombs {
             fin size = (((length + extra) as Double) * scale) as Int
@@ -343,7 +330,6 @@ func reverb(rate: Double): Reverb {
             room.stores.add(0.0)
             total += size
         }
-        channel += 1
     }
     room.lines = sampleBuffer(total)
     return take room
@@ -365,8 +351,7 @@ func Reverb!.step(index: Int, input: Double): Double {
 
 /** Adds the room to [frames] interleaved stereo samples in place; [wet] 0 leaves them dry. */
 func Reverb!.process(stereo: Long, frames: Int, wet: Double) {
-    var frame = 0
-    while frame < frames {
+    for frame: Int in 0..<frames {
         fin left = sample(stereo, frame * 2)
         fin right = sample(stereo, frame * 2 + 1)
         fin input = (left + right) * 0.015
@@ -376,16 +361,15 @@ func Reverb!.process(stereo: Long, frames: Int, wet: Double) {
         while line < 8 {
             outLeft += self.step(line, input)
             outRight += self.step(line + 12, input)
-            line += 1
+            line++
         }
         while line < 12 {
             outLeft = self.step(line, outLeft)
             outRight = self.step(line + 12, outRight)
-            line += 1
+            line++
         }
         setSample(stereo, frame * 2, left * (1.0 - wet) + outLeft * wet * 3.0)
         setSample(stereo, frame * 2 + 1, right * (1.0 - wet) + outRight * wet * 3.0)
-        frame += 1
     }
 }
 
@@ -403,8 +387,7 @@ pack Limiter {
 
 func Limiter!.process(stereo: Long, frames: Int, ceiling: Double) {
     fin recovery = 1.0 - exp(-1.0 / (0.08 * 48000.0))
-    var frame = 0
-    while frame < frames {
+    for frame: Int in 0..<frames {
         fin left = sample(stereo, frame * 2)
         fin right = sample(stereo, frame * 2 + 1)
         fin loudest = if dspAbs(left) > dspAbs(right) then dspAbs(left) else dspAbs(right)
@@ -412,7 +395,6 @@ func Limiter!.process(stereo: Long, frames: Int, ceiling: Double) {
         if loudest * self.gain > ceiling then self.gain = ceiling / loudest
         setSample(stereo, frame * 2, left * self.gain)
         setSample(stereo, frame * 2 + 1, right * self.gain)
-        frame += 1
     }
 }
 

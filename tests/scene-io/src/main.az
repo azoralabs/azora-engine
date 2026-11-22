@@ -9,30 +9,30 @@ import engine.scene.io
 // fresh world and written again must be the same text.
 
 func main() {
-    var world = World()
+    var world: World = .()
     fin root = world.spawn()
-    storageInsert<Name>(ensureStorage<Name>(world), root, Name("Stage \"A\""))
-    storageInsert<Transform>(ensureStorage<Transform>(world), root, Transform())
+    storageInsert<Name>(ensureStorage(world), root, .("Stage \"A\""))
+    storageInsert<Transform>(ensureStorage(world), root, .())
     fin cube = world.spawn()
-    storageInsert<Name>(ensureStorage<Name>(world), cube, Name("Cube"))
-    var placed = Transform()
+    storageInsert<Name>(ensureStorage(world), cube, .("Cube"))
+    var placed: Transform = .()
     placed.translation.y = 1.25
     placed.rotation.z = -45.0
-    storageInsert<Transform>(ensureStorage<Transform>(world), cube, take placed)
-    storageInsert<Mesh3d>(ensureStorage<Mesh3d>(world), cube, Mesh3d(1, 2.0))
-    storageInsert<StandardMaterial>(ensureStorage<StandardMaterial>(world), cube, StandardMaterial())
+    storageInsert<Transform>(ensureStorage(world), cube, take placed)
+    storageInsert<Mesh3d>(ensureStorage(world), cube, .(1, 2.0))
+    storageInsert<StandardMaterial>(ensureStorage(world), cube, .())
     world.setParent(cube, root)
     fin light = world.spawn()
-    storageInsert<Name>(ensureStorage<Name>(world), light, Name("Sun"))
-    storageInsert<Light3d>(ensureStorage<Light3d>(world), light, Light3d())
+    storageInsert<Name>(ensureStorage(world), light, .("Sun"))
+    storageInsert<Light3d>(ensureStorage(world), light, .())
 
     fin first = writeScene(world)
-    var loaded = World()
+    var loaded: World = .()
     assert readScene(loaded, first) == 3 panic "scene did not read back three entities"
     fin second = writeScene(loaded)
     assert first == second panic "scene changed on a round trip:\n${first}\n${second}"
     assert loaded.getParent(loaded.entityAt(1)).id == 0 panic "parent was not restored"
-    assert storageGet<Transform>(ensureStorage<Transform>(loaded), loaded.entityAt(1)).translation.y == 1.25 panic "a field did not survive"
+    assert storageGet<Transform>(ensureStorage(loaded), loaded.entityAt(1)).translation.y == 1.25 panic "a field did not survive"
     assert readScene(loaded, "{\"format\": \"other\"}") == -1 panic "a foreign file was accepted"
     println("scene io passed")
 }

@@ -18,9 +18,9 @@ import engine.roads
 // ones it does, so the two meshes meet edge to edge with no cracks.
 
 /** Cells along a chunk's side; its vertex grid is one more. */
-fin terrainChunkCells: Int = 32
-fin terrainChunkSide: Int = 33
-fin terrainLevels: Int = 6
+inline fin terrainChunkCells: Int = 32
+inline fin terrainChunkSide: Int = 33
+inline fin terrainLevels: Int = 6
 
 pack TerrainChunk derives Clone {
     var buffer: Long = 0
@@ -105,12 +105,11 @@ func levelHeight(image: TerrainImage&, chunk: TerrainChunk&, step: Int, i: Int, 
 func loadTerrainMesh(device: Long, root: String, path: String): TerrainMesh {
     if !terrainFile(path) then return TerrainMesh(path)
     fin image = readTerrainImage("${root}/${path}")
-    if image.samples == 0 then return TerrainMesh(path)
-    return buildTerrainMesh(device, path, image)
+    return if image.samples == 0 then TerrainMesh(path) else buildTerrainMesh(device, path, image)
 }
 
 func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainMesh {
-    var mesh = TerrainMesh(path, image)
+    var mesh: TerrainMesh = .(path, image)
     mesh.chunksX = (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells
     mesh.chunksZ = (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells
     fin bytes = (terrainChunkSide * terrainChunkSide * 24) as Long
@@ -120,7 +119,7 @@ func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainM
     while cz < mesh.chunksZ {
         var cx = 0
         while cx < mesh.chunksX {
-            var chunk = TerrainChunk(column: cx * terrainChunkCells, row: cz * terrainChunkCells)
+            var chunk: TerrainChunk = .(column: cx * terrainChunkCells, row: cz * terrainChunkCells)
             chunk.low = 1000000.0
             chunk.high = -1000000.0
             var j = 0
@@ -133,9 +132,9 @@ func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainM
                     fin h = terrainHeight(image, x, z)
                     if h < chunk.low then chunk.low = h
                     if h > chunk.high then chunk.high = h
-                    i += 1
+                    i++
                 }
-                j += 1
+                j++
             }
             // Each level's error is the largest gap between the grid and what the level draws,
             // never smaller than a finer level's, so a coarser level is never thought closer.
@@ -146,23 +145,21 @@ func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainM
                 if level > 0 {
                     j = 0
                     while j < terrainChunkSide {
-                        var i = 0
-                        while i < terrainChunkSide {
+                        for i: Int in 0..<terrainChunkSide {
                             fin gap = absValue(chunkHeight(image, chunk, i, j) - levelHeight(image, chunk, step, i, j))
                             if gap > worst then worst = gap
-                            i += 1
                         }
-                        j += 1
+                        j++
                     }
                 }
                 chunk.errors.add(worst)
-                level += 1
+                level++
             }
             chunk.buffer = send3(device, sel("newBufferWithBytes:length:options:"), data, bytes, 0)
             mesh.chunks.add(take chunk)
-            cx += 1
+            cx++
         }
-        cz += 1
+        cz++
     }
     azFree(data)
     return take mesh
@@ -199,13 +196,10 @@ func buildTerrainIndices(device: Long): TerrainIndices {
     while level < terrainLevels {
         fin step = 1 << level
         fin cells = terrainChunkCells / step
-        var mask = 0
-        while mask < 16 {
+        for mask: Int in 0..<16 {
             var count = 0
-            var cj = 0
-            while cj < cells {
-                var ci = 0
-                while ci < cells {
+            for cj: Int in 0..<cells {
+                for ci: Int in 0..<cells {
                     fin p00 = foldedVertex(ci * step, cj * step, step, mask)
                     fin p10 = foldedVertex((ci + 1) * step, cj * step, step, mask)
                     fin p01 = foldedVertex(ci * step, (cj + 1) * step, step, mask)
@@ -217,15 +211,12 @@ func buildTerrainIndices(device: Long): TerrainIndices {
                         count = addTerrainTriangle(data, count, p00, p01, p10)
                         count = addTerrainTriangle(data, count, p10, p01, p11)
                     }
-                    ci += 1
                 }
-                cj += 1
             }
             indices.buffers.add(send3(device, sel("newBufferWithBytes:length:options:"), data, ((if count > 0 then count else 1) * 4) as Long, 0))
             indices.counts.add(count)
-            mask += 1
         }
-        level += 1
+        level++
     }
     azFree(data)
     return take indices

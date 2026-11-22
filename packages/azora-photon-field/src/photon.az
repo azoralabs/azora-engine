@@ -68,8 +68,8 @@ pack PhotonData {
     var traced: Int = 0
 }
 
-fin photonHeader: Int = 24
-fin photonSample: Int = 8
+inline fin photonHeader: Int = 24
+inline fin photonSample: Int = 8
 
 /**
  * Traced pages kept between builds, one block of samples each. A page whose
@@ -83,38 +83,29 @@ pack PhotonPageCache {
 }
 
 func releasePhotonCache(cache: PhotonPageCache!) {
-    for block in cache.blocks { azFree(block) }
+    for block in cache.blocks then azFree(block)
     cache.keys.clear()
     cache.blocks.clear()
 }
 
 /** The cached block of the page [key], or 0. */
 func PhotonPageCache&.block(key: Long): Long {
-    var look = 0
-    while look < self.keys.size {
-        if self.keys[look] == key then return self.blocks[look]
-        look += 1
-    }
-    return 0
+    return for look: Int in 0..<self.keys.size {
+        if self.keys[look] == key then break self.blocks[look]
+    } else 0
 }
 
 /** Frees every cached page that is not one of [wanted]. */
 func PhotonPageCache!.keepOnly(wanted: Array<Long>&) {
     var keys: Array<Long> = []
     var blocks: Array<Long> = []
-    var look = 0
-    while look < self.keys.size {
+    for look in 0..<self.keys.size {
         var kept = false
-        for key in wanted {
-            if key == self.keys[look] then kept = true
-        }
+        for key in wanted then if key == self.keys[look] then kept = true
         if kept {
             keys.add(self.keys[look])
             blocks.add(self.blocks[look])
-        } else {
-            azFree(self.blocks[look])
-        }
-        look += 1
+        } else azFree(self.blocks[look])
     }
     self.keys = take keys
     self.blocks = take blocks
@@ -148,7 +139,7 @@ func photonBasis(direction: Vec3&): PhotonBasis {
     fin z = photonUnit(direction)
     fin helper = if photonAbs(z.y) < 0.95 then Vec3(0.0, 1.0, 0.0) else Vec3(1.0, 0.0, 0.0)
     fin x = photonUnit(photonCross(helper, z))
-    return PhotonBasis(x, photonCross(z, x), z)
+    return .(x, photonCross(z, x), z)
 }
 
 func photonRadius(axis: Vec3&, x: Vec3&, y: Vec3&, z: Vec3&, flat: Bool): Double =
@@ -156,13 +147,13 @@ func photonRadius(axis: Vec3&, x: Vec3&, y: Vec3&, z: Vec3&, flat: Bool): Double
 
 /** Projects a transformed Engine primitive into the light's virtual page coordinates. */
 func photonCaster(shape: Int, model: Mat4&, color: Rgba&, basis: PhotonBasis&): PhotonCaster {
-    fin x = Vec3(model.m00, model.m10, model.m20)
-    fin y = Vec3(model.m01, model.m11, model.m21)
-    fin z = Vec3(model.m02, model.m12, model.m22)
+    fin x: Vec3 = .(model.m00, model.m10, model.m20)
+    fin y: Vec3 = .(model.m01, model.m11, model.m21)
+    fin z: Vec3 = .(model.m02, model.m12, model.m22)
     fin row = photonCross(y, z)
     fin det = photonDot(x, row)
     if photonAbs(det) < 0.000001 then return PhotonCaster(-1)
-    fin centre = Vec3(model.m03, model.m13, model.m23)
+    fin centre: Vec3 = .(model.m03, model.m13, model.m23)
     fin u = photonDot(centre, basis.x)
     fin v = photonDot(centre, basis.y)
     fin flat = shape == 3
@@ -180,9 +171,8 @@ pack PhotonHit {
 func photonBox(o: Vec3&, d: Vec3&): PhotonHit {
     var near: Double = -1000000.0
     var far: Double = 1000000.0
-    var normal = Vec3(0.0, 1.0, 0.0)
-    var i = 0
-    while i < 3 {
+    var normal: Vec3 = .(0.0, 1.0, 0.0)
+    for i: Int in 0..<3 {
         fin origin = if i == 0 then o.x else if i == 1 then o.y else o.z
         fin delta = if i == 0 then d.x else if i == 1 then d.y else d.z
         if photonAbs(delta) < 0.000001 {
@@ -199,17 +189,15 @@ func photonBox(o: Vec3&, d: Vec3&): PhotonHit {
             far = photonMin(far, photonMax(a, b))
         }
         if far < near then return PhotonHit()
-        i = i + 1
     }
-    return PhotonHit(near, normal)
+    return .(near, normal)
 }
 
 /** Intersects the sampled triangle surface inside its transformed light-space bounds. */
 func photonTerrainRay(image: TerrainImage&, o: Vec3&, d: Vec3&): PhotonHit {
     var low: Double = 0.0
     var high: Double = 1000000.0
-    var axis = 0
-    while axis < 3 {
+    for axis: Int in 0..<3 {
         fin origin = if axis == 0 then o.x else if axis == 1 then o.y else o.z
         fin slope = if axis == 0 then d.x else if axis == 1 then d.y else d.z
         if photonAbs(slope) < 0.0000001 {
@@ -221,7 +209,6 @@ func photonTerrainRay(image: TerrainImage&, o: Vec3&, d: Vec3&): PhotonHit {
             high = photonMin(high, photonMax(a,b))
         }
         if low > high then return PhotonHit()
-        axis += 1
     }
     fin speed = photonMax(photonAbs(d.x) * (image.columns as Double), photonAbs(d.z) * (image.rows as Double))
     fin step = photonMax(0.48 / photonMax(speed, 0.000001), (high-low)/512.0)
@@ -233,37 +220,35 @@ func photonTerrainRay(image: TerrainImage&, o: Vec3&, d: Vec3&): PhotonHit {
         if last >= 0.0 && height <= 0.0 {
             var a = previous
             var b = t
-            var round = 0
-            while round < 8 {
+            for round: Int in 0..<8 {
                 fin mid = (a+b)*0.5
                 if o.y+d.y*mid > sampleTerrain(image,o.x+d.x*mid,o.z+d.z*mid) then a = mid else b = mid
-                round += 1
             }
             fin x = o.x+d.x*b
             fin z = o.z+d.z*b
             fin hx = 1.0/((image.columns-1) as Double)
             fin hz = 1.0/((image.rows-1) as Double)
             return PhotonHit(b, Vec3(
-                (sampleTerrain(image,x-hx,z)-sampleTerrain(image,x+hx,z))/(2*hx),
-                1.0,
+                (sampleTerrain(image,x-hx,z)-sampleTerrain(image,x+hx,z))/(2*hx)
+                1.0
                 (sampleTerrain(image,x,z-hz)-sampleTerrain(image,x,z+hz))/(2*hz)))
         }
         previous = t
         last = height
     }
-    return PhotonHit()
+    return .()
 }
 
 func photonRay(caster: PhotonCaster&, source: Vec3&, againstLight: Vec3&): PhotonHit {
-    fin offset = Vec3(source.x-caster.center.x, source.y-caster.center.y, source.z-caster.center.z)
-    fin o = Vec3(photonDot(offset, caster.invX), photonDot(offset, caster.invY), photonDot(offset, caster.invZ))
-    fin d = Vec3(photonDot(againstLight, caster.invX), photonDot(againstLight, caster.invY), photonDot(againstLight, caster.invZ))
+    fin offset: Vec3 = .(source.x-caster.center.x, source.y-caster.center.y, source.z-caster.center.z)
+    fin o: Vec3 = .(photonDot(offset, caster.invX), photonDot(offset, caster.invY), photonDot(offset, caster.invZ))
+    fin d: Vec3 = .(photonDot(againstLight, caster.invX), photonDot(againstLight, caster.invY), photonDot(againstLight, caster.invZ))
     if caster.shape == 4 && caster.terrain.samples != 0 then return photonTerrainRay(caster.terrain, o, d)
     if caster.shape == 3 {
         if photonAbs(d.y) < 0.000001 then return PhotonHit()
         fin t = -o.y/d.y
         if photonAbs(o.x+d.x*t) > 0.5 || photonAbs(o.z+d.z*t) > 0.5 then return PhotonHit()
-        return PhotonHit(t, Vec3(0.0, if d.y < 0.0 then 1.0 else -1.0, 0.0))
+        return .(t, Vec3(0.0, if d.y < 0.0 then 1.0 else -1.0, 0.0))
     }
     if caster.shape == 1 {
         fin a = photonDot(d, d)
@@ -271,23 +256,23 @@ func photonRay(caster: PhotonCaster&, source: Vec3&, againstLight: Vec3&): Photo
         fin disc = b*b-a*(photonDot(o,o)-0.25)
         if disc < 0.0 || a < 0.000001 then return PhotonHit()
         fin t = (-b-sqrt(disc))/a
-        return PhotonHit(t, Vec3((o.x+d.x*t)*2.0, (o.y+d.y*t)*2.0, (o.z+d.z*t)*2.0))
+        return .(t, Vec3((o.x+d.x*t)*2.0, (o.y+d.y*t)*2.0, (o.z+d.z*t)*2.0))
     }
     if caster.shape == 2 {
-        var hit = PhotonHit()
+        var hit: PhotonHit = .()
         fin a = d.x*d.x+d.z*d.z
         fin b = o.x*d.x+o.z*d.z
         fin disc = b*b-a*(o.x*o.x+o.z*o.z-0.25)
         if a > 0.000001 && disc >= 0.0 {
             fin t = (-b-sqrt(disc))/a
-            if t >= 0.0 && photonAbs(o.y+d.y*t) <= 0.5 then hit = PhotonHit(t, Vec3((o.x+d.x*t)*2.0, 0.0, (o.z+d.z*t)*2.0))
+            if t >= 0.0 && photonAbs(o.y+d.y*t) <= 0.5 then hit = PhotonHit(t, .((o.x+d.x*t)*2.0, 0.0, (o.z+d.z*t)*2.0))
         }
         if photonAbs(d.y) > 0.000001 {
             fin y: Double = if d.y < 0.0 then 0.5 else -0.5
             fin t = (y-o.y)/d.y
             fin x = o.x+d.x*t
             fin z = o.z+d.z*t
-            if t >= 0.0 && x*x+z*z <= 0.25 && (hit.t < 0.0 || t < hit.t) then hit = PhotonHit(t, Vec3(0.0, y*2.0, 0.0))
+            if t >= 0.0 && x*x+z*z <= 0.25 && (hit.t < 0.0 || t < hit.t) then hit = PhotonHit(t, .(0.0, y*2.0, 0.0))
         }
         return hit
     }
@@ -329,9 +314,7 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
     var pages: Array<Int> = []
     var cursor = 0
     var top: Double = -1000000.0
-    for caster in casters {
-        if caster.shape >= 0 then top = photonMax(top, caster.top)
-    }
+    for caster in casters then if caster.shape >= 0 then top = photonMax(top, caster.top)
     while cursor < cellCount {
         fin x = ((minX + cursor % side) as Double) * size
         fin y = ((minY + cursor / side) as Double) * size
@@ -341,7 +324,7 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
                 break
             }
         }
-        cursor = cursor + 1
+        cursor++
     }
     if pages.size == 0 then return PhotonData()
     fin startDepth = top + 1.0
@@ -374,12 +357,12 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
     var page = 0
     while page < pages.size {
         if cache.block(keys[page]) != 0 {
-            page += 1
+            page++
             continue
         }
         if allowance >= 0 && traced >= allowance {
-            missing += 1
-            page += 1
+            missing++
+            page++
             continue
         }
         fin block = azAlloc((pageFloats as Long) * 4)
@@ -387,18 +370,16 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
         fin cell = pages[page]
         fin x = ((minX + cell % side) as Double) * size
         fin y = ((minY + cell / side) as Double) * size
-        var uy = 0
-        while uy < res {
-            var ux = 0
-            while ux < res {
+        for uy: Int in 0..<res {
+            for ux: Int in 0..<res {
                 fin sx = x + ((ux as Double)+0.5)*pixel
                 fin sy = y + ((uy as Double)+0.5)*pixel
                 fin world = Vec3(basis.x.x*sx+basis.y.x*sy+basis.z.x*startDepth,
                     basis.x.y*sx+basis.y.y*sy+basis.z.y*startDepth, basis.x.z*sx+basis.y.z*sy+basis.z.z*startDepth)
                 fin at = (uy*res+ux)*photonSample
                 var best: Double = 1000000.0
-                var radiance = Vec3(0.0, 0.0, 0.0)
-                var normal = Vec3(0.0, 0.0, 0.0)
+                var radiance: Vec3 = .(0.0, 0.0, 0.0)
+                var normal: Vec3 = .(0.0, 0.0, 0.0)
                 for caster in casters {
                     if caster.shape >= 0 && sx >= caster.lowX && sx <= caster.highX && sy >= caster.lowY && sy <= caster.highY {
                         fin hit = photonRay(caster, world, direction)
@@ -416,14 +397,12 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
                 photonStoreVec(block, at+1, radiance)
                 photonStoreVec(block, at+4, normal)
                 photonStore(block, at+7, if best < 1000000.0 then 1.0 else 0.0)
-                ux = ux + 1
             }
-            uy = uy + 1
         }
         cache.keys.add(keys[page])
         cache.blocks.add(block)
-        traced += 1
-        page += 1
+        traced++
+        page++
     }
     if missing > 0 then return PhotonData(pages: pages.size, complete: false, traced: traced)
 
@@ -446,18 +425,18 @@ func buildPhotonField(settings: PhotonField&, light: PhotonLight&, basis: Photon
     photonStoreVec(data, 13, basis.y)
     photonStoreVec(data, 16, basis.z)
     photonStore(data, 19, photonClamp(light.intensity, 0.0, 100.0))
-    photonStoreVec(data, 20, Vec3(light.color.r, light.color.g, light.color.b))
+    photonStoreVec(data, 20, .(light.color.r, light.color.g, light.color.b))
     photonStore(data, 23, 0.0)
     cursor = 0
     while cursor < cellCount {
         photonStore(data, photonHeader + cursor, -1.0)
-        cursor = cursor + 1
+        cursor++
     }
     page = 0
     while page < pages.size {
         photonStore(data, photonHeader + pages[page], page as Double)
         azCopy(data + ((first + page*pageFloats) as Long)*4, cache.block(keys[page]), (pageFloats as Long)*4)
-        page += 1
+        page++
     }
     cache.keepOnly(keys)
     return PhotonData(data, bytes, pages.size, true, traced)

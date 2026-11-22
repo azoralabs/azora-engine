@@ -60,16 +60,14 @@ pack EventReader {
 }
 
 /** A reader positioned at the start of whatever is currently buffered. */
-func eventReader(): EventReader {
-    return EventReader(Long(0))
-}
+func eventReader(): EventReader = .(0)
 
 /** An empty queue with room for [capacity] events per frame. */
 func<T> eventsNew(capacity: Int): Events<T> {
-    fin room = if capacity > 0 { capacity } else { 0 }
+    fin room = if capacity > 0 then capacity else 0
     var current: Array<T> = Array::fill<T>(room)
     var previous: Array<T> = Array::fill<T>(room)
-    return Events<T>(current, 0, previous, 0, Long(0))
+    return Events<T>(current, 0, previous, 0, 0)
 }
 
 /** The sequence number of the oldest event still readable. */
@@ -81,18 +79,14 @@ func<T> eventsOldest(events: Events<T>&): Long {
 /** Writes [event], giving it the next sequence number. */
 func<T> eventsSend(events: Events<T>!, event: T) {
     if events.currentCount >= events.current.size {
-        fin room = if events.current.size * 2 > 8 { events.current.size * 2 } else { 8 }
+        fin room = if events.current.size * 2 > 8 then events.current.size * 2 else 8
         var grown: Array<T> = Array::fill<T>(room)
-        var i = 0
-        while i < events.currentCount {
-            grown[i] = events.current[i]
-            i = i + 1
-        }
+        for i: Int in 0..<events.currentCount then grown[i] = events.current[i]
         events.current = grown
     }
     events.current[events.currentCount] = event
-    events.currentCount = events.currentCount + 1
-    events.sent = events.sent + Long(1)
+    events.currentCount++
+    events.sent += 1
 }
 
 /**
@@ -118,9 +112,7 @@ func<T> eventsClear(events: Events<T>!) {
 }
 
 /** The number of events currently buffered, across both frames. */
-func<T> eventsBuffered(events: Events<T>&): Int {
-    return events.currentCount + events.previousCount
-}
+func<T> eventsBuffered(events: Events<T>&): Int = events.currentCount + events.previousCount
 
 /**
  * The event with sequence number [sequence].
@@ -132,18 +124,11 @@ func<T> eventsBuffered(events: Events<T>&): Int {
  */
 func<T> eventsAt(events: Events<T>&, sequence: Long, fallback: T): T {
     fin oldest = eventsOldest<T>(events)
-    if events.sent <= oldest || sequence >= events.sent {
-        return fallback
-    }
-    fin offset = if sequence < oldest { 0 } else { (sequence - oldest) as Int }
-    if offset < events.previousCount {
-        return events.previous[offset]
-    }
+    if events.sent <= oldest || sequence >= events.sent then return fallback
+    fin offset = if sequence < oldest then 0 else (sequence - oldest) as Int
+    if offset < events.previousCount then return events.previous[offset]
     fin inCurrent = offset - events.previousCount
-    if inCurrent < events.currentCount {
-        return events.current[inCurrent]
-    }
-    return fallback
+    return if inCurrent < events.currentCount then events.current[inCurrent] else fallback
 }
 
 /**
@@ -155,17 +140,12 @@ func<T> eventsAt(events: Events<T>&, sequence: Long, fallback: T): T {
  */
 func<T> eventsUnread(events: Events<T>&, reader: EventReader&): Int {
     fin oldest = eventsOldest<T>(events)
-    fin from = if reader.next < oldest { oldest } else { reader.next }
-    if from >= events.sent {
-        return 0
-    }
-    return (events.sent - from) as Int
+    fin from = if reader.next < oldest then oldest else reader.next
+    return if from >= events.sent then 0 else (events.sent - from) as Int
 }
 
 /** True when [reader] has an event waiting. */
-func<T> eventsHasNext(events: Events<T>&, reader: EventReader&): Bool {
-    return eventsUnread<T>(events, reader) > 0
-}
+func<T> eventsHasNext(events: Events<T>&, reader: EventReader&): Bool = eventsUnread<T>(events, reader) > 0
 
 /**
  * The next event for [reader], advancing its cursor.
@@ -175,14 +155,10 @@ func<T> eventsHasNext(events: Events<T>&, reader: EventReader&): Bool {
  */
 func<T> eventsNext(events: Events<T>&, reader: EventReader!, fallback: T): T {
     fin oldest = eventsOldest<T>(events)
-    if reader.next < oldest {
-        reader.next = oldest
-    }
-    if reader.next >= events.sent {
-        return fallback
-    }
+    if reader.next < oldest then reader.next = oldest
+    if reader.next >= events.sent then return fallback
     fin value = eventsAt<T>(events, reader.next, fallback)
-    reader.next = reader.next + Long(1)
+    reader.next += 1
     return value
 }
 
@@ -263,11 +239,7 @@ test "skipping moves past everything without reading it" {
 test "the queue grows past its initial capacity" {
     var events = eventsNew<Int>(1)
     var reader = eventReader()
-    var i = 0
-    while i < 40 {
-        eventsSend<Int>(events, i)
-        i = i + 1
-    }
+    for i: Int in 0..<40 then eventsSend<Int>(events, i)
     assert eventsUnread<Int>(events, reader) == 40 panic "every event must be kept"
     assert eventsNext<Int>(events, reader, -1) == 0 panic "the first must still be first"
 }

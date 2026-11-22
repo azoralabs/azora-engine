@@ -20,26 +20,26 @@ pack Run {
 }
 
 func benchmark(bike: Bool, sport: Bool): Run {
-    var world = World()
+    var world: World = .()
     fin surface = world.spawn()
     storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world),surface,
         HeightfieldTerrain(image: "Terrain/flat.pgm",width: 4000.0,length: 18000.0,elevation: 1.0))
-    storageInsert<LandscapeCollision>(ensureStorage<LandscapeCollision>(world),surface,LandscapeCollision())
+    storageInsert<LandscapeCollision>(ensureStorage(world),surface,.())
     fin start = world.spawn()
-    storageInsert<PlayerStart>(ensureStorage<PlayerStart>(world),start,PlayerStart())
-    storageInsert<Transform>(ensureStorage<Transform>(world),start,Transform(translation: Vec3(0.0,2.0,7000.0)))
-    storageInsert<VehicleSetup>(ensureStorage<VehicleSetup>(world),start,VehicleSetup(motorcycle: bike,sport: sport))
+    storageInsert<PlayerStart>(ensureStorage(world),start,.())
+    storageInsert<Transform>(ensureStorage(world),start,.(translation: .(0.0,2.0,7000.0)))
+    storageInsert<VehicleSetup>(ensureStorage(world),start,.(motorcycle: bike,sport: sport))
     var grounds = loadLandscapeColliders(world,".")
     defer { releaseLandscapeColliders(grounds) }
     fin car = spawnVehicle(world,start,grounds)
     fin settings = configuredVehicle(world,car,if bike then .Motorcycle else .Car)
-    var result = Run(grip: settings.tireGrip,response: settings.steerRate)
+    var result: Run = .(grip: settings.tireGrip,response: settings.steerRate)
     fin dt: Double = 1.0/120.0
     var step = 0
     while step < 4800 {
-        simulateVehicle(world,car,grounds,DriveInput(1.0,0.0,false),gravity3d(),dt)
-        step += 1
-        fin current = storageGet<Vehicle>(ensureStorage<Vehicle>(world),car).speed*3.6
+        simulateVehicle(world,car,grounds,.(1.0,0.0,false),gravity3d(),dt)
+        step++
+        fin current = storageGet<Vehicle>(ensureStorage(world),car).speed*3.6
         if result.to100 == 100.0 && current >= 100.0 then result.to100 = (step as Double)*dt
         if current > result.speed then result.speed = current
     }

@@ -14,12 +14,12 @@ import engine.atmosphere.scattering
 import engine.atmosphere.cloudshader
 
 /** Bytes of the block every sky pass reads (`AetherU` in the Metal source). */
-fin aetherUniformBytes: Long = 448
+inline fin aetherUniformBytes: Long = 448
 
 /** Pixel formats and usages the passes use. */
-fin halfFloatRgba: Long = 115
-fin displayBgra: Long = 80
-fin depthFloat: Long = 252
+inline fin halfFloatRgba: Long = 115
+inline fin displayBgra: Long = 80
+inline fin depthFloat: Long = 252
 
 /**
  * The GPU half of an Aether Sphere: its pipelines, the atmosphere's tables
@@ -153,7 +153,7 @@ func aetherKernel(device: Long, library: Long, name: String): Long {
 
 /** Compiles the sky's passes and makes its tables. A failure prints why and leaves the renderer not ready. */
 func makeAetherRenderer(device: Long): AetherRenderer {
-    var renderer = AetherRenderer()
+    var renderer: AetherRenderer = .()
     renderer.uniforms = azAlloc(aetherUniformBytes)
     renderer.sizes = azAlloc(64)
     var index: Long = 0
@@ -341,7 +341,7 @@ func marchClouds(commands: Long, renderer: AetherRenderer!) {
     send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
     send0(encoder, sel("endEncoding"))
     renderer.cloudReadA = !renderer.cloudReadA
-    renderer.cloudFrames += 1
+    renderer.cloudFrames++
     dispatchKernel(commands, renderer, renderer.shadowKernel, renderer.cloudShadow, 64, 8, true,
         renderer.shapeNoise, renderer.detailNoise, renderer.weatherMap)
 }

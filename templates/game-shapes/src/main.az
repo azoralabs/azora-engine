@@ -27,9 +27,7 @@ import engine
 func main() {
     // 1. A window + renderer. Everything hangs off `app`.
     var app = appInit("__AZORA_PROJECT_NAME__ — Shapes", 1100, 700)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
     app.setClearColor(0.07, 0.08, 0.11)
 
     // 2. Meshes are created once, drawn many times.
@@ -42,9 +40,7 @@ func main() {
     while app.frame() {
         fin t = app.timeNow()
         var spin = t
-        if paused {
-            spin = 0.0
-        }
+        if paused then spin = 0.0
 
         // 3. The camera slowly orbits the scene (a Camera is just data —
         //    position, yaw, pitch — and the engine computes the matrices).
@@ -62,9 +58,7 @@ func main() {
 
         // …a green one bouncing…
         var bounce = sin(t * 3.0)
-        if bounce < 0.0 {
-            bounce = 0.0 - bounce
-        }
+        if bounce < 0.0 then bounce = -bounce
         fin green = mat4Translation(0.0, 0.5 + bounce * 1.5, 0.0)
         app.drawMesh(cube, green, 0.35, 0.85, 0.45)
 
@@ -75,8 +69,8 @@ func main() {
 
         // …and a small moon orbiting the green cube.
         fin moon = mat4Mul(
-            mat4Translation(sin(t * 1.7) * 2.0, 1.2, cos(t * 1.7) * 2.0),
-            mat4Scale(0.35, 0.35, 0.35),
+            mat4Translation(sin(t * 1.7) * 2.0, 1.2, cos(t * 1.7) * 2.0)
+            mat4Scale(0.35, 0.35, 0.35)
         )
         app.drawMesh(cube, moon, 0.95, 0.85, 0.40)
 
@@ -92,16 +86,10 @@ func main() {
         // 6. Text + buttons (immediate mode: they draw and report clicks).
         app.uiTitle("Azora Engine — shapes & transforms", 16.0, 22.0)
         var label = "Pause spin"
-        if paused {
-            label = "Resume spin"
-        }
-        if app.button(label, w - 140.0, 16.0, 124.0, 34.0) {
-            paused = !paused
-        }
+        if paused then label = "Resume spin"
+        if app.button(label, w - 140.0, 16.0, 124.0, 34.0) then paused = !paused
 
-        if app.keyPressed(.Escape) {
-            app.quit()
-        }
+        if app.keyPressed(.Escape) then app.quit()
         app.present()
     }
 

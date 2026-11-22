@@ -9,8 +9,8 @@ import std.math
 // tool edits the field, never triangles.
 
 /** How far from the surface a value is kept, in cells; farther is all ground or all air. */
-fin band: Double = 6.0
-fin maxPoints: Long = 6500000
+inline fin band: Double = 6.0
+inline fin maxPoints: Long = 6500000
 
 pack Field derives Clone {
     /** Cells along each axis; the grid has one more point than cells on each. */
@@ -120,9 +120,9 @@ func startingField(cellsX: Int, cellsY: Int, cellsZ: Int, cell: Double): Field {
     field.cellsY = cellsY
     field.cellsZ = cellsZ
     field.cell = cell
-    field.originX = 0.0 - (cellsX as Double) * cell * 0.5
-    field.originY = 0.0 - (cellsY as Double) * cell * 0.6
-    field.originZ = 0.0 - (cellsZ as Double) * cell * 0.5
+    field.originX = -(cellsX as Double) * cell * 0.5
+    field.originY = -(cellsY as Double) * cell * 0.6
+    field.originZ = -(cellsZ as Double) * cell * 0.5
     field.closed = true
     fin count = field.pointsX() * field.pointsY() * field.pointsZ()
     field.values = .() * count
@@ -136,12 +136,12 @@ func startingField(cellsX: Int, cellsY: Int, cellsZ: Int, cell: Double): Field {
                 fin side = higher(magnitude(field.worldX(i)) - (cellsX as Double) * cell * 0.5 + cell * 0.5,
                     magnitude(field.worldZ(k)) - (cellsZ as Double) * cell * 0.5 + cell * 0.5)
                 fin solid = higher(higher(field.worldY(j), field.originY + cell * 0.5 - field.worldY(j)), side)
-                field.values[field.at(i, j, k)] = clampReal(solid, 0.0 - band * cell, band * cell)
-                i = i + 1
+                field.values[field.at(i, j, k)] = clampReal(solid, -band * cell, band * cell)
+                i++
             }
-            j = j + 1
+            j++
         }
-        k = k + 1
+        k++
     }
     return field
 }
@@ -177,7 +177,7 @@ impl Field {
         var hit: Hit = .()
         fin speed = length(dx, dy, dz)
         if speed < 0.000001 then return hit
-        var span = RaySpan(0.0, reach)
+        var span: RaySpan = .(0.0, reach)
         if !clipRay(span, ox, dx, self.originX, self.worldX(self.cellsX)) ||
             !clipRay(span, oy, dy, self.originY, self.worldY(self.cellsY)) ||
             !clipRay(span, oz, dz, self.originZ, self.worldZ(self.cellsZ)) then return hit
@@ -190,11 +190,9 @@ impl Field {
             if nextInside != inside {
                 var low = previous
                 var high = t
-                var iteration = 0
-                while iteration < 10 {
+                for iteration: Int in 0..<10 {
                     fin middle = (low + high) * 0.5
                     if (self.sample(ox + dx * middle, oy + dy * middle, oz + dz * middle) <= 0.0) == inside then low = middle else high = middle
-                    iteration = iteration + 1
                 }
                 fin distance = (low + high) * 0.5
                 hit.found = true
@@ -247,12 +245,12 @@ impl Reach {
 
 impl Field {
     func &.reach(cx: Double, cy: Double, cz: Double, radius: Double): Reach = .(
-        clampInt(floor((cx - radius - self.originX) / self.cell), 0, self.cellsX),
-        clampInt(floor((cy - radius - self.originY) / self.cell), 0, self.cellsY),
-        clampInt(floor((cz - radius - self.originZ) / self.cell), 0, self.cellsZ),
-        clampInt(floor((cx + radius - self.originX) / self.cell) + 1, 0, self.cellsX),
-        clampInt(floor((cy + radius - self.originY) / self.cell) + 1, 0, self.cellsY),
-        clampInt(floor((cz + radius - self.originZ) / self.cell) + 1, 0, self.cellsZ),
+        clampInt(floor((cx - radius - self.originX) / self.cell), 0, self.cellsX)
+        clampInt(floor((cy - radius - self.originY) / self.cell), 0, self.cellsY)
+        clampInt(floor((cz - radius - self.originZ) / self.cell), 0, self.cellsZ)
+        clampInt(floor((cx + radius - self.originX) / self.cell) + 1, 0, self.cellsX)
+        clampInt(floor((cy + radius - self.originY) / self.cell) + 1, 0, self.cellsY)
+        clampInt(floor((cz + radius - self.originZ) / self.cell) + 1, 0, self.cellsZ)
     )
 
     /**
@@ -302,27 +300,23 @@ impl Field {
                         if value != old then box.changed = true
                     }
                     if smooth then smoothed.add(value) else if value != old then self.values[at] = value
-                    i = i + 1
+                    i++
                 }
-                j = j + 1
+                j++
             }
-            k = k + 1
+            k++
         }
         if smooth && box.changed {
             var index = 0
             k = box.lowK
             while k <= box.highK {
-                var j = box.lowJ
-                while j <= box.highJ {
-                    var i = box.lowI
-                    while i <= box.highI {
+                for j in box.lowJ..box.highJ {
+                    for i in box.lowI..box.highI {
                         self.values[self.at(i, j, k)] = smoothed[index]
-                        index = index + 1
-                        i = i + 1
+                        index++
                     }
-                    j = j + 1
                 }
-                k = k + 1
+                k++
             }
         }
         return box
@@ -332,23 +326,19 @@ impl Field {
     func &.neighbourAverage(i: Int, j: Int, k: Int): Double {
         var sum = self.value(i, j, k) * 4.0
         var count = 4.0
-        var ring = 1
-        while ring <= 2 {
+        for ring: Int in 1..2 {
             fin weight = if ring == 1 then 2.0 else 1.0
-            var side = 0
-            while side < 6 {
+            for side: Int in 0..<6 {
                 fin axis = side / 2
                 fin step = if side % 2 == 0 then -ring else ring
                 fin x = i + (if axis == 0 then step else 0)
                 fin y = j + (if axis == 1 then step else 0)
                 fin z = k + (if axis == 2 then step else 0)
                 if x >= 0 && y >= 0 && z >= 0 && x <= self.cellsX && y <= self.cellsY && z <= self.cellsZ {
-                    sum = sum + self.value(x, y, z) * weight
-                    count = count + weight
+                    sum += self.value(x, y, z) * weight
+                    count += weight
                 }
-                side = side + 1
             }
-            ring = ring + 1
         }
         return sum / count
     }

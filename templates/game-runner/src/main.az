@@ -33,18 +33,14 @@ bridge .C {
     func @foreignName("arc4random_uniform")(bound: Int): Int
 }
 
-fin laneWidth: Double = 2.2
-fin obstacleCount = 10
+inline fin laneWidth: Double = 2.2
+inline fin obstacleCount = 10
 
-func laneX(lane: Int): Double {
-    return ((lane - 1) as Double) * laneWidth
-}
+func laneX(lane: Int): Double = ((lane - 1) as Double) * laneWidth
 
 func main() {
     var app = appInit("__AZORA_PROJECT_NAME__ — Runner", 1280, 720)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
     app.setClearColor(0.05, 0.06, 0.10)
 
     fin cube = app.meshCube(1.0)
@@ -53,11 +49,9 @@ func main() {
     // Obstacles: parallel arrays of lane + distance ahead (negative z).
     var obsLane = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
     var obsZ: Array<Double> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    var i = 0
-    while i < obstacleCount {
+    for i: Int in 0..<obstacleCount {
         obsLane[i] = arc4randomUniform(3)
         obsZ[i] = -20.0 - (i as Double) * 9.0
-        i = i + 1
     }
 
     var lane = 1
@@ -79,38 +73,29 @@ func main() {
         if alive {
             // ── Controls ──
             if app.keyPressed(.A) || app.keyPressed(.Left) {
-                if lane > 0 {
-                    lane = lane - 1
-                }
+                if lane > 0 then lane--
             }
             if app.keyPressed(.D) || app.keyPressed(.Right) {
-                if lane < 2 {
-                    lane = lane + 1
-                }
+                if lane < 2 then lane++
             }
-            if app.keyPressed(.Space) && playerY <= 0.51 {
-                velY = 8.5
-            }
+            if app.keyPressed(.Space) && playerY <= 0.51 then velY = 8.5
 
             // ── Physics ──
-            playerX = playerX + (laneX(lane) - playerX) * 12.0 * dt
-            velY = velY - 24.0 * dt
-            playerY = playerY + velY * dt
+            playerX += (laneX(lane) - playerX) * 12.0 * dt
+            velY -= 24.0 * dt
+            playerY += velY * dt
             if playerY < 0.5 {
                 playerY = 0.5
                 velY = 0.0
             }
 
             speed = 10.0 + distance * 0.02
-            if speed > 28.0 {
-                speed = 28.0
-            }
-            distance = distance + speed * dt
+            if speed > 28.0 then speed = 28.0
+            distance += speed * dt
 
             // ── Obstacles: approach the player, recycle behind the camera ──
-            var o = 0
-            while o < obstacleCount {
-                obsZ[o] = obsZ[o] + speed * dt
+            for o: Int in 0..<obstacleCount {
+                obsZ[o] += speed * dt
                 if obsZ[o] > 6.0 {
                     obsZ[o] = -70.0 - (arc4randomUniform(30) as Double)
                     obsLane[o] = arc4randomUniform(3)
@@ -119,19 +104,14 @@ func main() {
                 fin dx = laneX(obsLane[o]) - playerX
                 fin dz = obsZ[o]
                 if dz > -0.9 && dz < 0.9 {
-                    if (dx > -1.0 && dx < 1.0) && playerY < 1.4 {
-                        alive = false
-                    }
+                    if (dx > -1.0 && dx < 1.0) && playerY < 1.4 then alive = false
                 }
-                o = o + 1
             }
         } else {
             if app.keyPressed(.Enter) {
-                var o2 = 0
-                while o2 < obstacleCount {
+                for o2: Int in 0..<obstacleCount {
                     obsLane[o2] = arc4randomUniform(3)
                     obsZ[o2] = -20.0 - (o2 as Double) * 9.0
-                    o2 = o2 + 1
                 }
                 lane = 1
                 playerX = 0.0
@@ -148,18 +128,14 @@ func main() {
 
         // ── Draw ──
         // Track: a dark strip per lane, scrolling markers for motion cue.
-        var l = 0
-        while l < 3 {
+        for l: Int in 0..<3 {
             fin strip = mat4Mul(mat4Translation(laneX(l), -0.05, -30.0), mat4Scale(laneWidth - 0.15, 0.1, 80.0))
             app.drawMesh(cube, strip, 0.13, 0.14, 0.18)
-            l = l + 1
         }
-        var m = 0
-        while m < 8 {
-            fin mz: Double = 0.0 - ((distance * 1.0 + (m as Double) * 10.0) - ((((distance + (m as Double) * 10.0) / 80.0) as Int) as Double) * 80.0)
+        for m: Int in 0..<8 {
+            fin mz: Double = -((distance * 1.0 + (m as Double) * 10.0) - ((((distance + (m as Double) * 10.0) / 80.0) as Int) as Double) * 80.0)
             fin marker = mat4Mul(mat4Translation(0.0, 0.02, mz), mat4Scale(0.2, 0.02, 2.0))
             app.drawMesh(cube, marker, 0.85, 0.85, 0.55)
-            m = m + 1
         }
         app.drawMesh(ground, mat4Translation(0.0, -0.12, 0.0), 0.09, 0.10, 0.13)
 
@@ -168,11 +144,9 @@ func main() {
         app.drawMesh(cube, bob, 0.25, 0.75, 0.95)
 
         // Obstacles.
-        var o3 = 0
-        while o3 < obstacleCount {
+        for o3: Int in 0..<obstacleCount {
             fin t = mat4Mul(mat4Translation(laneX(obsLane[o3]), 0.55, obsZ[o3]), mat4Scale(1.4, 1.1, 1.0))
             app.drawMesh(cube, t, 0.90, 0.25, 0.25)
-            o3 = o3 + 1
         }
 
         // ── HUD ──
@@ -184,9 +158,7 @@ func main() {
             app.uiText("A/D switch lane   SPACE jump   ESC quit", 16.0, 40.0, 12.0)
         }
 
-        if app.keyPressed(.Escape) {
-            app.quit()
-        }
+        if app.keyPressed(.Escape) then app.quit()
         app.present()
     }
 

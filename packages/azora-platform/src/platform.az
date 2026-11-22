@@ -113,7 +113,7 @@ pack App {
 
 /** Whether [object] answers [selector]. */
 func responds(object: Long, selector: String): Bool =
-    (send1(object, sel("respondsToSelector:"), sel(selector)) & Long(255)) != Long(0)
+    (send1(object, sel("respondsToSelector:"), sel(selector)) & 255) != 0
 
 /**
  * Asks for the app to become active. Since macOS 14 activation is
@@ -124,7 +124,7 @@ func responds(object: Long, selector: String): Bool =
  */
 func requestActivation(nsapp: Long) {
     if responds(nsapp, "activate") then send0(nsapp, sel("activate"))
-    else send1(nsapp, sel("activateIgnoringOtherApps:"), Long(1))
+    else send1(nsapp, sel("activateIgnoringOtherApps:"), 1)
 }
 
 /** The decimal number [text] starts with from [from]; 0 when it starts with none. */
@@ -133,7 +133,7 @@ func leadingNumber(text: String, from: Int = 0): Int {
     var at = from
     while at < stringLength(text) && isDigit(charAt(text, at)) {
         value = value * 10 + ord(charAt(text, at)) - 48
-        at += 1
+        at++
     }
     return value
 }
@@ -151,21 +151,21 @@ func appInit(title: String, width: Int, height: Int): App {
 
     // NSApplication as a regular, activatable app.
     fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
-    send1(nsapp, sel("setActivationPolicy:"), Long(0))
+    send1(nsapp, sel("setActivationPolicy:"), 0)
 
     // Window: titled | closable | miniaturizable | resizable, buffered.
     fin winAlloc = send0(cls("NSWindow"), sel("alloc"))
     fin window = azSendQuadI3(
-        winAlloc, sel("initWithContentRect:styleMask:backing:defer:"),
-        0.0, 0.0, chosenWidth as Double, chosenHeight as Double,
-        Long(15), Long(2), Long(0)
+        winAlloc, sel("initWithContentRect:styleMask:backing:defer:")
+        0.0, 0.0, chosenWidth as Double, chosenHeight as Double
+        15, 2, 0
     )
-    if window == Long(0) {
+    if window == 0 {
         objcAutoreleasePoolPop(pool)
         return appFailed()
     }
     send1(window, sel("setTitle:"), nsString(title))
-    send1(window, sel("setReleasedWhenClosed:"), Long(0))
+    send1(window, sel("setReleasedWhenClosed:"), 0)
     send0(window, sel("center"))
 
     fin scale = azSendD0(window, sel("backingScaleFactor"))
@@ -183,28 +183,28 @@ func appInit(title: String, width: Int, height: Int): App {
         objcAutoreleasePoolPop(pool)
         return appFailed()
     }
-    send1(contentV, sel("setWantsLayer:"), Long(1))
+    send1(contentV, sel("setWantsLayer:"), 1)
     send1(contentV, sel("setLayer:"), gpu.layer)
 
-    fin win = AzWindow(window, contentV, gpu.layer, scale)
+    fin win: AzWindow = .(window, contentV, gpu.layer, scale)
 
     // Launch first, then ask to come forward: asked before finishLaunching,
     // the request could be lost, and the game's window opened while the
     // keyboard stayed with the app that started it - the car would not drive.
     send0(nsapp, sel("finishLaunching"))
-    send1(window, sel("makeKeyAndOrderFront:"), Long(0))
+    send1(window, sel("makeKeyAndOrderFront:"), 0)
     requestActivation(nsapp)
 
     fin now = CACurrentMediaTime()
     var app = App(
-        true,
-        take win,
-        take gpu,
-        AzInput(azAlloc(Long(4656))),
-        AzTime(now, now, 1.0 / 60.0),
-        0.10, 0.10, 0.12,
-        pool,
-        false,
+        true
+        take win
+        take gpu
+        AzInput(azAlloc(4656))
+        AzTime(now, now, 1.0 / 60.0)
+        0.10, 0.10, 0.12
+        pool
+        false
         false
     )
     // About five seconds at 120 Hz. Only the cooperative request is repeated: the
@@ -228,14 +228,14 @@ func appInit(title: String, width: Int, height: Int): App {
 func appFailed(): App {
     fin gpu = gpuFailed()
     return App(
-        false,
-        AzWindow(Long(0), Long(0), Long(0), 1.0),
-        take gpu,
-        AzInput(Long(0)),
-        AzTime(0.0, 0.0, 0.0),
-        0.0, 0.0, 0.0,
-        Long(0),
-        true,
+        false
+        AzWindow(0, 0, 0, 1.0)
+        take gpu
+        AzInput(0)
+        AzTime(0.0, 0.0, 0.0)
+        0.0, 0.0, 0.0
+        0
+        true
         false
     )
 }
@@ -245,9 +245,7 @@ impl App {
     /// Starts a frame: pumps events, updates timing/input and begins the
     /// render pass. Returns false once the window closed or quit() was called.
     func !.frame(): Bool {
-        if !self.ok {
-            return false
-        }
+        if !self.ok then return false
 
         // Recycle the per-frame autorelease pool (releases last frame's
         // drawable/event objects).
@@ -260,12 +258,12 @@ impl App {
         // the launcher may hand activation over after the first request.
         if self.seekingFocus > 0 {
             fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
-            self.seekingFocus -= 1
-            if (send0(nsapp, sel("isActive")) & Long(255)) != Long(0) then self.seekingFocus = 0
+            self.seekingFocus--
+            if (send0(nsapp, sel("isActive")) & 255) != 0 then self.seekingFocus = 0
             else if self.seekingFocus % 15 == 0 then requestActivation(nsapp)
         }
         if self.frameLimit > 0 && self.framesRun >= self.frameLimit then return false
-        self.framesRun += 1
+        self.framesRun++
         if self.framesRun == 60 && self.gpu.timing {
             self.measuredSince = CACurrentMediaTime()
             self.gpu.gpuSeconds = 0.0
@@ -274,15 +272,13 @@ impl App {
         // Two ways to stop: this window's own quit(), and the application-wide
         // request any code can make - including a reactive effect, which has no
         // window to call quit() on.
-        if self.closing || exitRequested() {
-            return false
-        }
+        if self.closing || exitRequested() then return false
         // The window server may map the window a few frames late; only treat
         // "not visible" as closed once it has been visible. A minimized window
         // and a hidden application (⌘H) are not visible either, and neither is
         // closed: reading them as a close quit Studio when it was minimized to
         // watch the game, and took the game it was running down with it.
-        if send0(self.win.handle, sel("isVisible")) != Long(0) {
+        if send0(self.win.handle, sel("isVisible")) != 0 {
             self.everVisible = true
         } else if self.everVisible && !self.isSetAside() {
             return false
@@ -330,9 +326,9 @@ impl App {
     /** Seconds between refreshes of the screen the window is on; 0 when unknown. */
     func &.refreshInterval(): Double {
         fin screen = send0(self.win.handle, sel("screen"))
-        if screen == Long(0) || !responds(screen, "maximumFramesPerSecond") then return 0.0
+        if screen == 0 || !responds(screen, "maximumFramesPerSecond") then return 0.0
         fin rate = send0(screen, sel("maximumFramesPerSecond"))
-        return if rate > Long(0) && rate < Long(1000) then 1.0 / (rate as Double) else 0.0
+        return if rate > 0 && rate < 1000 then 1.0 / (rate as Double) else 0.0
     }
 
     /** DIAGNOSTIC: adds a timed line to the trace for the first minute and saves it about once a second. */
@@ -356,7 +352,7 @@ impl App {
             fin type = azPeek64(self.traceEvents, at)
             fin kind = if type == 10 then "down" else if type == 11 then "up" else "flags"
             self.diagnose("key ${kind} code=${azPeek64(self.traceEvents, at + 8)} mapped=${azPeek64(self.traceEvents, at + 16)} repeat=${azPeek64(self.traceEvents, at + 24)}")
-            i += 1
+            i++
         }
         azPoke64(self.traceEvents, 0, 0)
         if self.framesRun % 30 == 1 {
@@ -372,13 +368,13 @@ impl App {
         else gpuEndFrame(self)
         // About two seconds at 60 Hz: long enough that text which blinks or
         // alternates stays cached, short enough that churn cannot accumulate.
-        self.releaseStaleText(Long(120))
+        self.releaseStaleText(120)
     }
 
     /// True while the window is minimized or the application hidden: out of sight, not closed.
     func &.isSetAside(): Bool {
-        if send0(self.win.handle, sel("isMiniaturized")) != Long(0) then return true
-        return send0(send0(cls("NSApplication"), sel("sharedApplication")), sel("isHidden")) != Long(0)
+        if send0(self.win.handle, sel("isMiniaturized")) != 0 then return true
+        return send0(send0(cls("NSApplication"), sel("sharedApplication")), sel("isHidden")) != 0
     }
 
     /// Requests exit: the next frame() returns false.
@@ -388,14 +384,12 @@ impl App {
 
     /// Enters or leaves macOS full screen, as the window's green button does.
     func &.toggleFullScreen() {
-        send1(self.win.handle, sel("toggleFullScreen:"), Long(0))
+        send1(self.win.handle, sel("toggleFullScreen:"), 0)
     }
 
     /// Closes the window and releases resources.
     func !.shutdown() {
-        if !self.ok {
-            return
-        }
+        if !self.ok then return
         if self.gpu.timing && self.gpu.timedFrames > 0 {
             fin wall = (CACurrentMediaTime() - self.measuredSince) / (self.gpu.timedFrames as Double)
             println("gpu frames ${self.gpu.timedFrames} mean gpu ms ${self.gpu.gpuSeconds * 1000.0 / (self.gpu.timedFrames as Double)} mean frame ms ${wall * 1000.0} pixels ${self.gpu.depthW}x${self.gpu.depthH} upscale ${self.gpu.upscale} gi ${self.gpu.indirectLighting} virtual ${self.gpu.virtualShadows}")
@@ -407,46 +401,38 @@ impl App {
             self.gpu.hasEncoder = false
         }
         // Every cached text texture belongs to this device.
-        self.releaseStaleText(Long(-1))
+        self.releaseStaleText(-1)
         gpuShutdown(self.gpu)
         send0(self.win.handle, sel("close"))
         send0(self.win.handle, sel("release"))
-        self.win.handle = Long(0)
-        self.win.content = Long(0)
-        self.win.layer = Long(0)
+        self.win.handle = 0
+        self.win.content = 0
+        self.win.layer = 0
         azFree(self.inp.state)
-        self.inp.state = Long(0)
+        self.inp.state = 0
         objcAutoreleasePoolPop(self.pool)
-        self.pool = Long(0)
+        self.pool = 0
         self.ok = false
     }
 
     // ── Timing / window ─────────────────────────────────────────────────
 
     /// Seconds since appInit.
-    func &.timeNow(): Double {
-        return CACurrentMediaTime() - self.clk.start
-    }
+    func &.timeNow(): Double = CACurrentMediaTime() - self.clk.start
 
     /// Seconds between the two most recent frames.
-    func &.deltaTime(): Double {
-        return self.clk.delta
-    }
+    func &.deltaTime(): Double = self.clk.delta
 
     /// Window content width in points.
-    func &.width(): Int {
-        return self.boundsSize(Long(2)) as Int
-    }
+    func &.width(): Int = self.boundsSize(2) as Int
 
     /// Window content height in points.
-    func &.height(): Int {
-        return self.boundsSize(Long(3)) as Int
-    }
+    func &.height(): Int = self.boundsSize(3) as Int
 
     /// Content bounds component (2 = width, 3 = height) in points.
     func &.boundsSize(index: Long): Double {
         azSendOutQuad(self.win.content, sel("bounds"), self.gpu.scratch)
-        return azPeekF64(self.gpu.scratch, index * Long(8))
+        return azPeekF64(self.gpu.scratch, index * 8)
     }
 
     /// Background clear color for subsequent frames (components 0..1).
@@ -462,82 +448,66 @@ impl App {
     func &.keyDown(key: KeyCode): Bool = azPeek8(self.inp.state, key.value as Long) != 0
 
     /// True on a key-down event, including keyboard auto-repeat.
-    func &.keyPressed(key: KeyCode): Bool = azPeek8(self.inp.state, Long(2048) + key.value as Long) != 0
+    func &.keyPressed(key: KeyCode): Bool = azPeek8(self.inp.state, 2048 + key.value as Long) != 0
 
     /// True on the initial down edge, even if the key was released in the same frame.
-    func &.keyJustPressed(key: KeyCode): Bool = (azPeek8(self.inp.state, Long(2048) + key.value as Long) & 1) != 0
+    func &.keyJustPressed(key: KeyCode): Bool = (azPeek8(self.inp.state, 2048 + key.value as Long) & 1) != 0
 
     /// Mouse position in window points, origin top-left.
     func &.mouseX(): Double {
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
-        return azPeekF64(self.gpu.scratch, Long(0))
+        return azPeekF64(self.gpu.scratch, 0)
     }
 
     func &.mouseY(): Double {
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
         fin y = azPeekF64(self.gpu.scratch, Long(8))
-        return self.boundsSize(Long(3)) - y
+        return self.boundsSize(3) - y
     }
 
     /// True while [button] is held; only left, right and middle are tracked.
     func &.mouseDown(button: MouseButton): Bool =
-        button.value <= 2 && azPeek8(self.inp.state, Long(4096) + button.value as Long) != 0
+        button.value <= 2 && azPeek8(self.inp.state, 4096 + button.value as Long) != 0
 
     /// True only on the frame [button] went down.
     func &.mouseClicked(button: MouseButton): Bool =
-        button.value <= 2 && azPeek8(self.inp.state, Long(4100) + button.value as Long) != 0
+        button.value <= 2 && azPeek8(self.inp.state, 4100 + button.value as Long) != 0
 
     /// True when a standard extended game controller exists at [index].
-    func controllerConnected(index: Int): Bool {
-        return gamepadAt(index) != Long(0)
-    }
+    func controllerConnected(index: Int): Bool = gamepadAt(index) != 0
 
     /// Analog value in the range 0..1 for a standard gamepad button.
     func controllerButtonValue(index: Int, button: GamepadButton): Double {
         fin gamepad = gamepadAt(index)
-        if gamepad == Long(0) {
-            return 0.0
-        }
+        if gamepad == 0 then return 0.0
         fin input = gamepadButton(gamepad, button)
-        if input == Long(0) {
-            return 0.0
-        }
-        return azSendFloat0(input, sel("value"))
+        return if input == 0 then 0.0 else azSendFloat0(input, sel("value"))
     }
 
     /// Standard gamepad axis value in the range -1..1.
     func controllerAxis(index: Int, axis: GamepadAxis): Double {
         fin gamepad = gamepadAt(index)
-        if gamepad == Long(0) {
-            return 0.0
-        }
+        if gamepad == 0 then return 0.0
         fin input = gamepadAxis(gamepad, axis)
-        if input == Long(0) {
-            return 0.0
-        }
-        return azSendFloat0(input, sel("value"))
+        return if input == 0 then 0.0 else azSendFloat0(input, sel("value"))
     }
 
     // ── Event pump (internal) ───────────────────────────────────────────
 
     func &.pumpEvents() {
         // Clear per-frame edges (pressed keys / clicked buttons).
-        var i = 0
-        while i < 2048 {
-            azPoke8(self.inp.state, Long(2048) + i as Long, 0)
-            i = i + 1
-        }
-        azPoke8(self.inp.state, Long(4100), 0)
-        azPoke8(self.inp.state, Long(4101), 0)
-        azPoke8(self.inp.state, Long(4102), 0)
+        for i: Int in 0..<2048 then azPoke8(self.inp.state, 2048 + i as Long, 0)
+        azPoke8(self.inp.state, 4100, 0)
+        azPoke8(self.inp.state, 4101, 0)
+        azPoke8(self.inp.state, 4102, 0)
         // Wheel motion is a per-frame delta, not a state: it is cleared here and
         // accumulated below, so a frame with no scrolling reports exactly zero.
-        azPokeF64(self.inp.state, Long(4104), 0.0)
-        azPokeF64(self.inp.state, Long(4112), 0.0)
-        azPoke64(self.inp.state, Long(4120), Long(0))
-        azPoke8(self.inp.state, Long(4128), 0)
-        azPokeF64(self.inp.state, Long(4640), 0.0)
-        azPoke8(self.inp.state, Long(4648), 0)
+        azPokeF64(self.inp.state, 4104, 0.0)
+        azPokeF64(self.inp.state, 4112, 0.0)
+        azPoke64(self.inp.state, 4120, 0)
+        azPoke8(self.inp.state, 4128, 0)
+        azPokeF64(self.inp.state, 4640, 0.0)
+        azPoke8(self.inp.state, 4648, 0)
 
         fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
         fin distantPast = send0(cls("NSDate"), sel("distantPast"))
@@ -546,28 +516,26 @@ impl App {
 
         loop {
             fin ev = send4(nsapp, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), maskAny, distantPast, mode, Long(1))
-            if ev == Long(0) {
-                break
-            }
+            if ev == 0 then break
             fin evType = send0(ev, sel("type"))
 
-            if (evType == Long(10) || evType == Long(11) || evType == Long(12)) && self.traceEvents != 0 {
+            if (evType == 10 || evType == 11 || evType == 12) && self.traceEvents != 0 {
                 fin count = azPeek64(self.traceEvents, 0)
                 if count < 64 {
                     fin at = 8 + count * 32
                     azPoke64(self.traceEvents, at, evType)
                     azPoke64(self.traceEvents, at + 8, send0(ev, sel("keyCode")) & 65535)
-                    azPoke64(self.traceEvents, at + 16, if evType == Long(12) then 0 else self.mapKey(ev) as Long)
-                    azPoke64(self.traceEvents, at + 24, if evType == Long(10) then send0(ev, sel("isARepeat")) else 0)
+                    azPoke64(self.traceEvents, at + 16, if evType == 12 then 0 else self.mapKey(ev) as Long)
+                    azPoke64(self.traceEvents, at + 24, if evType == 10 then send0(ev, sel("isARepeat")) else 0)
                     azPoke64(self.traceEvents, 0, count + 1)
                 }
             }
-            if evType == Long(10) {
+            if evType == 10 {
                 // keyDown — swallowed (avoids the system beep for unhandled keys).
                 // A held key repeats as another press, which is what an editor's
                 // Backspace and arrows need; keyDown stays one continuous hold.
                 fin key = self.mapKey(ev)
-                if send0(ev, sel("isARepeat")) == Long(0) {
+                if send0(ev, sel("isARepeat")) == 0 {
                     self.setKey(key, 1)
                 } else if key >= 0 && key < 2048 {
                     fin edge = Long(2048) + key as Long
@@ -577,61 +545,45 @@ impl App {
                 // Shift and Option layouts and non-ASCII input arrive intact.
                 // Command chords are shortcuts, never text.
                 fin flags = send0(ev, sel("modifierFlags"))
-                if (flags & Long(1048576)) == Long(0) && (flags & Long(262144)) == Long(0) {
-                    self.appendText(send0(ev, sel("characters")))
-                }
+                if (flags & 1048576) == 0 && (flags & 262144) == 0 then self.appendText(send0(ev, sel("characters")))
                 continue
             }
-            if evType == Long(11) {
+            if evType == 11 {
                 // keyUp — swallowed
                 self.setKey(self.mapKey(ev), 0)
                 continue
             }
-            if evType == Long(12) {
+            if evType == 12 {
                 // flagsChanged: Shift 1 << 17, Control 1 << 18, Option 1 << 19,
                 // Command 1 << 20 (NSEventModifierFlag*).
                 fin flags = send0(ev, sel("modifierFlags"))
-                self.setKey(KeyCode.Shift.value, if (flags & Long(131072)) != Long(0) then 1 else 0)
-                self.setKey(KeyCode.Control.value, if (flags & Long(262144)) != Long(0) then 1 else 0)
-                self.setKey(KeyCode.Alt.value, if (flags & Long(524288)) != Long(0) then 1 else 0)
-                self.setKey(KeyCode.Meta.value, if (flags & Long(1048576)) != Long(0) then 1 else 0)
+                self.setKey(KeyCode.Shift.value, if (flags & 131072) != 0 then 1 else 0)
+                self.setKey(KeyCode.Control.value, if (flags & 262144) != 0 then 1 else 0)
+                self.setKey(KeyCode.Alt.value, if (flags & 524288) != 0 then 1 else 0)
+                self.setKey(KeyCode.Meta.value, if (flags & 1048576) != 0 then 1 else 0)
             }
-            if evType == Long(22) {
+            if evType == 22 {
                 // Trackpads report precise deltas through the same event, so
                 // two-finger scrolling needs no separate path. Deltas within a
                 // frame accumulate: one frame can carry several events.
                 fin dx = azSendD0(ev, sel("scrollingDeltaX"))
                 fin dy = azSendD0(ev, sel("scrollingDeltaY"))
-                azPokeF64(self.inp.state, Long(4104), azPeekF64(self.inp.state, Long(4104)) + dx)
-                azPokeF64(self.inp.state, Long(4112), azPeekF64(self.inp.state, Long(4112)) + dy)
-                if send0(ev, sel("hasPreciseScrollingDeltas")) != Long(0) {
-                    azPoke8(self.inp.state, Long(4648), 1)
-                }
+                azPokeF64(self.inp.state, 4104, azPeekF64(self.inp.state, 4104) + dx)
+                azPokeF64(self.inp.state, 4112, azPeekF64(self.inp.state, 4112) + dy)
+                if send0(ev, sel("hasPreciseScrollingDeltas")) != 0 then azPoke8(self.inp.state, 4648, 1)
             }
-            if evType == Long(30) {
+            if evType == 30 {
                 // magnify: a trackpad pinch, as the fraction it grew by.
-                azPokeF64(self.inp.state, Long(4640), azPeekF64(self.inp.state, Long(4640)) + azSendD0(ev, sel("magnification")))
+                azPokeF64(self.inp.state, 4640, azPeekF64(self.inp.state, 4640) + azSendD0(ev, sel("magnification")))
             }
-            if evType == Long(1) {
-                self.setMouse(0, 1)
-            }
-            if evType == Long(2) {
-                self.setMouse(0, 0)
-            }
-            if evType == Long(3) {
-                self.setMouse(1, 1)
-            }
-            if evType == Long(4) {
-                self.setMouse(1, 0)
-            }
+            if evType == 1 then self.setMouse(0, 1)
+            if evType == 2 then self.setMouse(0, 0)
+            if evType == 3 then self.setMouse(1, 1)
+            if evType == 4 then self.setMouse(1, 0)
             // otherMouseDown / otherMouseUp: the middle button (and beyond,
             // which Studio and games read as middle too).
-            if evType == Long(25) {
-                self.setMouse(2, 1)
-            }
-            if evType == Long(26) {
-                self.setMouse(2, 0)
-            }
+            if evType == 25 then self.setMouse(2, 1)
+            if evType == 26 then self.setMouse(2, 0)
 
             send1(nsapp, sel("sendEvent:"), ev)
         }
@@ -641,18 +593,14 @@ impl App {
         // quit it), and a game kept driving on a key let go elsewhere. Held
         // keys are dropped while inactive, and the modifiers always follow the
         // keyboard's actual state.
-        if (send0(nsapp, sel("isActive")) & Long(255)) == Long(0) {
-            var key = 0
-            while key < 2048 {
-                azPoke8(self.inp.state, key as Long, 0)
-                key = key + 1
-            }
+        if (send0(nsapp, sel("isActive")) & 255) == 0 {
+            for key: Int in 0..<2048 then azPoke8(self.inp.state, key as Long, 0)
         }
         fin flags = send0(cls("NSEvent"), sel("modifierFlags"))
-        self.setKey(KeyCode.Shift.value, if (flags & Long(131072)) != Long(0) then 1 else 0)
-        self.setKey(KeyCode.Control.value, if (flags & Long(262144)) != Long(0) then 1 else 0)
-        self.setKey(KeyCode.Alt.value, if (flags & Long(524288)) != Long(0) then 1 else 0)
-        self.setKey(KeyCode.Meta.value, if (flags & Long(1048576)) != Long(0) then 1 else 0)
+        self.setKey(KeyCode.Shift.value, if (flags & 131072) != 0 then 1 else 0)
+        self.setKey(KeyCode.Control.value, if (flags & 262144) != 0 then 1 else 0)
+        self.setKey(KeyCode.Alt.value, if (flags & 524288) != 0 then 1 else 0)
+        self.setKey(KeyCode.Meta.value, if (flags & 1048576) != 0 then 1 else 0)
     }
 
     /**
@@ -663,98 +611,67 @@ impl App {
      * (Return, Backspace, arrows, Tab) are excluded: read those with
      * [keyPressed]. Valid until the next [frame].
      */
-    func &.textInput(): String {
-        return azCstring(self.inp.state, Long(4128))
-    }
+    func &.textInput(): String = azCstring(self.inp.state, 4128)
 
     func &.appendText(characters: Long) {
-        if characters == Long(0) {
-            return
-        }
+        if characters == 0 then return
         fin bytes = send0(characters, sel("UTF8String"))
-        if bytes == Long(0) {
-            return
-        }
+        if bytes == 0 then return
         var length = azPeek64(self.inp.state, Long(4120))
-        var index = Long(0)
+        var index: Long = 0
         loop {
             fin byte = azPeek8(bytes, index)
-            if byte == 0 {
-                break
-            }
+            if byte == 0 then break
             // Control characters and the private-use range AppKit gives arrow
             // and function keys (U+F700..U+F8FF, lead byte 0xEF) are not text.
-            if byte < 32 || byte == 127 {
-                return
-            }
-            if byte == 239 && azPeek8(bytes, index + Long(1)) >= 156 && azPeek8(bytes, index + Long(1)) <= 163 {
-                return
-            }
-            index = index + Long(1)
+            if byte < 32 || byte == 127 then return
+            if byte == 239 && azPeek8(bytes, index + 1) >= 156 && azPeek8(bytes, index + 1) <= 163 then return
+            index += 1
         }
-        if length + index >= Long(511) {
-            return
-        }
-        var copied = Long(0)
+        if length + index >= 511 then return
+        var copied: Long = 0
         while copied < index {
-            azPoke8(self.inp.state, Long(4128) + length + copied, azPeek8(bytes, copied))
-            copied = copied + Long(1)
+            azPoke8(self.inp.state, 4128 + length + copied, azPeek8(bytes, copied))
+            copied += 1
         }
-        length = length + index
-        azPoke8(self.inp.state, Long(4128) + length, 0)
-        azPoke64(self.inp.state, Long(4120), length)
+        length += index
+        azPoke8(self.inp.state, 4128 + length, 0)
+        azPoke64(self.inp.state, 4120, length)
     }
 
     /** The system clipboard's text, or empty when it holds none. Valid for this frame. */
     func &.clipboardText(): String {
         fin board = send0(cls("NSPasteboard"), sel("generalPasteboard"))
         fin text = send1(board, sel("stringForType:"), globalObject("NSPasteboardTypeString"))
-        if text == Long(0) {
-            return ""
-        }
+        if text == 0 then return ""
         fin bytes = send0(text, sel("UTF8String"))
-        if bytes == Long(0) {
-            return ""
-        }
-        return azCstring(bytes, Long(0))
+        return if bytes == 0 then "" else azCstring(bytes, 0)
     }
 
     /** Replaces the system clipboard's contents with [text]. */
     func &.setClipboardText(text: String) {
         fin board = send0(cls("NSPasteboard"), sel("generalPasteboard"))
-        fin cleared = send0(board, sel("clearContents"))
+        send0(board, sel("clearContents"))
         fin written = send2(board, sel("setString:forType:"), nsString(text), globalObject("NSPasteboardTypeString"))
     }
 
     /// Horizontal wheel/trackpad motion this frame; 0 when nothing scrolled.
-    func &.scrollX(): Double {
-        return azPeekF64(self.inp.state, Long(4104))
-    }
+    func &.scrollX(): Double = azPeekF64(self.inp.state, 4104)
 
     /// Vertical wheel/trackpad motion this frame. Positive scrolls content down.
-    func &.scrollY(): Double {
-        return azPeekF64(self.inp.state, Long(4112))
-    }
+    func &.scrollY(): Double = azPeekF64(self.inp.state, 4112)
 
     /// True when this frame's scrolling came from a trackpad (precise deltas)
     /// rather than a wheel's notches - two fingers moving, not a zoom request.
-    func &.scrollIsPrecise(): Bool {
-        return azPeek8(self.inp.state, Long(4648)) != 0
-    }
+    func &.scrollIsPrecise(): Bool = azPeek8(self.inp.state, 4648) != 0
 
     /// How much a trackpad pinch grew this frame (0.1 is 10% larger); 0 when none.
-    func &.pinch(): Double {
-        return azPeekF64(self.inp.state, Long(4640))
-    }
+    func &.pinch(): Double = azPeekF64(self.inp.state, 4640)
 
     func &.setKey(key: Int, down: Int) {
-        if key < 0 || key >= 2048 {
-            return
-        }
+        if key < 0 || key >= 2048 then return
         if down != 0 {
-            if azPeek8(self.inp.state, key as Long) == 0 {
-                azPoke8(self.inp.state, Long(2048) + key as Long, 1)
-            }
+            if azPeek8(self.inp.state, key as Long) == 0 then azPoke8(self.inp.state, 2048 + key as Long, 1)
             azPoke8(self.inp.state, key as Long, 1)
         } else {
             azPoke8(self.inp.state, key as Long, 0)
@@ -763,12 +680,10 @@ impl App {
 
     func &.setMouse(button: Int, down: Int) {
         if down != 0 {
-            if azPeek8(self.inp.state, Long(4096) + button as Long) == 0 {
-                azPoke8(self.inp.state, Long(4100) + button as Long, 1)
-            }
-            azPoke8(self.inp.state, Long(4096) + button as Long, 1)
+            if azPeek8(self.inp.state, 4096 + button as Long) == 0 then azPoke8(self.inp.state, 4100 + button as Long, 1)
+            azPoke8(self.inp.state, 4096 + button as Long, 1)
         } else {
-            azPoke8(self.inp.state, Long(4096) + button as Long, 0)
+            azPoke8(self.inp.state, 4096 + button as Long, 0)
         }
     }
 
@@ -792,45 +707,27 @@ impl App {
             121 -> KeyCode.PageDown.value
             else -> -1
         }
-        if named >= 0 { return named }
+        if named >= 0 then return named
 
         fin chars = send0(ev, sel("charactersIgnoringModifiers"))
-        if chars == Long(0) {
-            return -1
-        }
-        if send0(chars, sel("length")) == Long(0) {
-            return -1
-        }
+        if chars == 0 then return -1
+        if send0(chars, sel("length")) == 0 then return -1
         fin cstr = send0(chars, sel("UTF8String"))
-        if cstr == Long(0) {
-            return -1
-        }
+        if cstr == 0 then return -1
         var c = azPeek8(cstr, Long(0))
-        if c >= 97 && c <= 122 {
-            c = c - 32
-        }
-        if c < 128 {
-            return c
-        }
-        return -1
+        if c >= 97 && c <= 122 then c -= 32
+        return if c < 128 then c else -1
     }
 }
 
 // GameController framework access stays in Azora. The C shim only provides
 // the exact float-return objc_msgSend signature required by the native ABI.
 func gamepadAt(index: Int): Long {
-    if index < 0 {
-        return Long(0)
-    }
+    if index < 0 then return 0
     fin controllers = send0(cls("GCController"), sel("controllers"))
-    if controllers == Long(0) || index >= send0(controllers, sel("count")) as Int {
-        return Long(0)
-    }
+    if controllers == 0 || index >= send0(controllers, sel("count")) as Int then return 0
     fin controller = send1(controllers, sel("objectAtIndex:"), index as Long)
-    if controller == Long(0) {
-        return Long(0)
-    }
-    return send0(controller, sel("extendedGamepad"))
+    return if controller == 0 then 0 else send0(controller, sel("extendedGamepad"))
 }
 
 /** The GCExtendedGamepad element for [button], or 0. */
@@ -857,13 +754,13 @@ func gamepadButton(gamepad: Long, button: GamepadButton): Long = when button {
 /** One direction of the gamepad's d-pad, or 0 when it has none. */
 func dpadButton(gamepad: Long, direction: String): Long {
     fin dpad = send0(gamepad, sel("dpad"))
-    return if dpad == Long(0) then Long(0) else send0(dpad, sel(direction))
+    return if dpad == 0 then 0 else send0(dpad, sel(direction))
 }
 
 /** The thumbstick axis element for [axis], or 0. */
 func gamepadAxis(gamepad: Long, axis: GamepadAxis): Long {
     fin stick = send0(gamepad, sel(if axis == .LeftX || axis == .LeftY then "leftThumbstick" else "rightThumbstick"))
-    return if stick == Long(0) then Long(0) else send0(stick, sel(if axis == .LeftX || axis == .RightX then "xAxis" else "yAxis"))
+    return if stick == 0 then 0 else send0(stick, sel(if axis == .LeftX || axis == .RightX then "xAxis" else "yAxis"))
 }
 
 // ── Frame ───────────────────────────────────────────────────────────────
@@ -877,27 +774,25 @@ func gpuBeginFrame(app: App!) {
     fin hPts = azPeekF64(gpu.scratch, Long(24))
     fin pw = (wPts * gpu.scale) as Long
     fin ph = (hPts * gpu.scale) as Long
-    if pw < Long(1) || ph < Long(1) {
+    if pw < 1 || ph < 1 {
         gpu.hasEncoder = false
         return
     }
-    fin unused0 = azSendPair(gpu.layer, sel("setDrawableSize:"), pw as Double, ph as Double)
+    azSendPair(gpu.layer, sel("setDrawableSize:"), pw as Double, ph as Double)
 
     // (Re)create the depth texture on resize.
-    if gpu.depthTex == Long(0) || gpu.depthW != pw || gpu.depthH != ph {
+    if gpu.depthTex == 0 || gpu.depthW != pw || gpu.depthH != ph {
         fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), Long(252), pw, ph, Long(0))
-        send1(td, sel("setUsage:"), Long(4))
-        send1(td, sel("setStorageMode:"), Long(2))
-        if gpu.depthTex != Long(0) {
-            send0(gpu.depthTex, sel("release"))
-        }
+        send1(td, sel("setUsage:"), 4)
+        send1(td, sel("setStorageMode:"), 2)
+        if gpu.depthTex != 0 then send0(gpu.depthTex, sel("release"))
         gpu.depthTex = send1(gpu.device, sel("newTextureWithDescriptor:"), td)
         gpu.depthW = pw
         gpu.depthH = ph
     }
 
     gpu.drawable = send0(gpu.layer, sel("nextDrawable"))
-    if gpu.drawable == Long(0) {
+    if gpu.drawable == 0 {
         gpu.hasEncoder = false
         return
     }
@@ -907,15 +802,15 @@ func gpuBeginFrame(app: App!) {
 
     fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
     send1(ca, sel("setTexture:"), send0(gpu.drawable, sel("texture")))
-    send1(ca, sel("setLoadAction:"), Long(2))
-    send1(ca, sel("setStoreAction:"), Long(1))
-    fin unused1 = azSendQuad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
+    send1(ca, sel("setLoadAction:"), 2)
+    send1(ca, sel("setStoreAction:"), 1)
+    azSendQuad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
 
     fin da = send0(rp, sel("depthAttachment"))
     send1(da, sel("setTexture:"), gpu.depthTex)
-    send1(da, sel("setLoadAction:"), Long(2))
-    send1(da, sel("setStoreAction:"), Long(0))
-    fin unused2 = azSendF1(da, sel("setClearDepth:"), 1.0)
+    send1(da, sel("setLoadAction:"), 2)
+    send1(da, sel("setStoreAction:"), 0)
+    azSendF1(da, sel("setClearDepth:"), 1.0)
 
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
     gpu.hasEncoder = true
@@ -970,9 +865,7 @@ func gpuEndFrameCaptured(app: App!, path: String) {
 
 func gpuEndFrame(app: App!) {
     let gpu: AzGpu! = app.gpu
-    if !gpu.hasEncoder {
-        return
-    }
+    if !gpu.hasEncoder then return
     // A scene pass nothing ended still reaches the screen.
     resolveScenePass(gpu)
     send0(gpu.enc, sel("endEncoding"))
@@ -981,10 +874,10 @@ func gpuEndFrame(app: App!) {
     if gpu.timing {
         send0(gpu.cmd, sel("waitUntilCompleted"))
         gpu.gpuSeconds += azSendD0(gpu.cmd, sel("GPUEndTime")) - azSendD0(gpu.cmd, sel("GPUStartTime"))
-        gpu.timedFrames += 1
+        gpu.timedFrames++
     }
-    gpu.enc = Long(0)
-    gpu.cmd = Long(0)
-    gpu.drawable = Long(0)
+    gpu.enc = 0
+    gpu.cmd = 0
+    gpu.drawable = 0
     gpu.hasEncoder = false
 }

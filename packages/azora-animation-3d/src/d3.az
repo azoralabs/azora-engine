@@ -43,7 +43,7 @@ import engine.math.quat
 import engine.animation.core
 
 /** A bone index that names no bone. */
-fin noBone = -1
+inline fin noBone = -1
 
 /** Everything skeletal animation can refuse to do. */
 error SkeletonFault {
@@ -78,13 +78,9 @@ pack BoneTransform {
 }
 
 /** The transform that changes nothing. */
-func boneTransformIdentity(): BoneTransform {
-    return BoneTransform(vec3Zero(), quatIdentity(), Vec3(1.0, 1.0, 1.0))
-}
+func boneTransformIdentity(): BoneTransform = .(vec3Zero(), quatIdentity(), Vec3(1.0, 1.0, 1.0))
 
-func boneTransform(position: Vec3, rotation: Quat, scale: Vec3): BoneTransform {
-    return BoneTransform(position, rotation, scale)
-}
+func boneTransform(position: Vec3, rotation: Quat, scale: Vec3): BoneTransform = .(position, rotation, scale)
 
 impl BoneTransform {
     /** This transform as a matrix. */
@@ -104,16 +100,16 @@ impl BoneTransform {
      */
     func &.compose(child: BoneTransform): BoneTransform {
         fin scaled = Vec3(
-            child.position.x * self.scale.x,
-            child.position.y * self.scale.y,
+            child.position.x * self.scale.x
+            child.position.y * self.scale.y
             child.position.z * self.scale.z
         )
         return BoneTransform(
-            self.position + self.rotation.rotate(scaled),
-            self.rotation.times(child.rotation).normalized,
+            self.position + self.rotation.rotate(scaled)
+            self.rotation.times(child.rotation).normalized
             Vec3(
-                self.scale.x * child.scale.x,
-                self.scale.y * child.scale.y,
+                self.scale.x * child.scale.x
+                self.scale.y * child.scale.y
                 self.scale.z * child.scale.z
             )
         )
@@ -124,14 +120,14 @@ impl BoneTransform {
 func blendTransform(a: BoneTransform, b: BoneTransform, t: Double): BoneTransform {
     return BoneTransform(
         Vec3(
-            lerpReal(a.position.x, b.position.x, t),
-            lerpReal(a.position.y, b.position.y, t),
+            lerpReal(a.position.x, b.position.x, t)
+            lerpReal(a.position.y, b.position.y, t)
             lerpReal(a.position.z, b.position.z, t)
-        ),
-        quatSlerp(a.rotation, b.rotation, t),
+        )
+        quatSlerp(a.rotation, b.rotation, t)
         Vec3(
-            lerpReal(a.scale.x, b.scale.x, t),
-            lerpReal(a.scale.y, b.scale.y, t),
+            lerpReal(a.scale.x, b.scale.x, t)
+            lerpReal(a.scale.y, b.scale.y, t)
             lerpReal(a.scale.z, b.scale.z, t)
         )
     )
@@ -172,47 +168,37 @@ pack Skeleton {
 /** An empty skeleton with room for [capacity] bones. */
 func skeletonNew(name: String, capacity: Int): Skeleton {
     var bones: Array<Bone> = Array::fill<Bone>(animIntMax(capacity, 0))
-    return Skeleton(name, bones, 0)
+    return .(name, bones, 0)
 }
 
-func animIntMax(a: Int, b: Int): Int {
-    return if a > b { a } else { b }
-}
+func animIntMax(a: Int, b: Int): Int = if a > b then a else b
 
-func animIntMin(a: Int, b: Int): Int {
-    return if a < b { a } else { b }
-}
+func animIntMin(a: Int, b: Int): Int = if a < b then a else b
 
 impl Skeleton {
     /** The bone at [index], or a detached identity bone. */
     func &.at(index: Int): Bone {
-        if index < 0 || index >= self.count {
-            return Bone("", noBone, boneTransformIdentity(), mat4Identity())
-        }
+        if index < 0 || index >= self.count then return .("", noBone, boneTransformIdentity(), mat4Identity())
         return self.bones[index]
     }
 
     /** The index of the bone called [name], or [noBone]. */
     func &.indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
-            if self.bones[i].name == name {
-                return i
-            }
+            if self.bones[i].name == name then return i
         }
         return noBone
     }
 
     /** True when [index] names a bone. */
-    func &.has(index: Int): Bool {
-        return index >= 0 && index < self.count
-    }
+    func &.has(index: Int): Bool = index >= 0 && index < self.count
 
     /** The chain from [index] up to its root, nearest first. */
     func &.ancestorsOf(index: Int): Array<Int> {
         var depth = 0
         var walk = index
         while self.has(walk) {
-            depth = depth + 1
+            depth++
             walk = self.bones[walk].parent
         }
         var chain: Array<Int> = Array::fill<Int>(depth)
@@ -220,7 +206,7 @@ impl Skeleton {
         walk = index
         while self.has(walk) {
             chain[cursor] = walk
-            cursor = cursor + 1
+            cursor++
             walk = self.bones[walk].parent
         }
         return chain
@@ -240,15 +226,11 @@ func skeletonAddBone(
     parent: Int
     bindLocal: BoneTransform
 ): Int ?! SkeletonFault {
-    if parent != noBone && (parent < 0 || parent >= skeleton.count) {
-        return .BadHierarchy
-    }
+    if parent != noBone && (parent < 0 || parent >= skeleton.count) then return .BadHierarchy
     if skeleton.count >= skeleton.bones.size {
         fin room = animIntMax(skeleton.bones.size * 2, 8)
         var grown: Array<Bone> = Array::fill<Bone>(room)
-        for i in 0..(skeleton.count - 1) {
-            grown[i] = skeleton.bones[i]
-        }
+        for i in 0..(skeleton.count - 1) then grown[i] = skeleton.bones[i]
         skeleton.bones = grown
     }
 
@@ -267,14 +249,9 @@ func skeletonAddBone(
 
 /** The bind-pose world transform of [index], by walking up its parents. */
 func skeletonBindWorld(skeleton: Skeleton, index: Int): BoneTransform {
-    if !skeleton.has(index) {
-        return boneTransformIdentity()
-    }
+    if !skeleton.has(index) then return boneTransformIdentity()
     fin bone = skeleton.bones[index]
-    if bone.parent == noBone {
-        return bone.bindLocal
-    }
-    return skeletonBindWorld(skeleton, bone.parent).compose(bone.bindLocal)
+    return if bone.parent == noBone then bone.bindLocal else skeletonBindWorld(skeleton, bone.parent).compose(bone.bindLocal)
 }
 
 /**
@@ -286,31 +263,26 @@ func skeletonBindWorld(skeleton: Skeleton, index: Int): BoneTransform {
  */
 func inverseOfRigid(transform: BoneTransform): Mat4 {
     fin inverseScale = Vec3(
-        safeReciprocal(transform.scale.x),
-        safeReciprocal(transform.scale.y),
+        safeReciprocal(transform.scale.x)
+        safeReciprocal(transform.scale.y)
         safeReciprocal(transform.scale.z)
     )
     fin inverseRotation = transform.rotation.conjugate()
     fin scaledBack = Vec3(
-        0.0 - transform.position.x,
-        0.0 - transform.position.y,
-        0.0 - transform.position.z
+        -transform.position.x,
+        -transform.position.y,
+        -transform.position.z
     )
     fin rotated = inverseRotation.rotate(scaledBack)
     fin translated = Vec3(
-        rotated.x * inverseScale.x,
-        rotated.y * inverseScale.y,
+        rotated.x * inverseScale.x
+        rotated.y * inverseScale.y
         rotated.z * inverseScale.z
     )
     return BoneTransform(translated, inverseRotation, inverseScale).matrix()
 }
 
-func safeReciprocal(value: Double): Double {
-    if animAbs(value) < 0.000001 {
-        return 0.0
-    }
-    return 1.0 / value
-}
+func safeReciprocal(value: Double): Double = if animAbs(value) < 0.000001 then 0.0 else 1.0 / value
 
 // ── Poses ───────────────────────────────────────────────────────────────
 
@@ -330,45 +302,32 @@ pack Pose {
 /** A pose sized for [skeleton], holding its bind transforms. */
 func poseFromBind(skeleton: Skeleton): Pose {
     var locals: Array<BoneTransform> = Array::fill<BoneTransform>(animIntMax(skeleton.count, 0))
-    for i in 0..(skeleton.count - 1) {
-        locals[i] = skeleton.bones[i].bindLocal
-    }
-    return Pose(locals, skeleton.count)
+    for i in 0..(skeleton.count - 1) then locals[i] = skeleton.bones[i].bindLocal
+    return .(locals, skeleton.count)
 }
 
 /** A pose of [count] identity transforms. */
 func poseIdentity(count: Int): Pose {
     var locals: Array<BoneTransform> = Array::fill<BoneTransform>(animIntMax(count, 0))
-    for i in 0..(count - 1) {
-        locals[i] = boneTransformIdentity()
-    }
-    return Pose(locals, count)
+    for i in 0..(count - 1) then locals[i] = boneTransformIdentity()
+    return .(locals, count)
 }
 
 impl Pose {
     /** The local transform of [bone], or identity when out of range. */
-    func &.at(bone: Int): BoneTransform {
-        if bone < 0 || bone >= self.count {
-            return boneTransformIdentity()
-        }
-        return self.locals[bone]
-    }
+    func &.at(bone: Int): BoneTransform = if bone < 0 || bone >= self.count then boneTransformIdentity() else self.locals[bone]
 
     /** Sets the local transform of [bone]. */
     func !.set(bone: Int, transform: BoneTransform): Unit ?! SkeletonFault {
-        if bone < 0 || bone >= self.count {
-            return .UnknownBone
-        }
+        if bone < 0 || bone >= self.count then return .UnknownBone
         self.locals[bone] = transform
     }
 
     /** An independent copy. */
     func &.clone(): Pose {
         var locals: Array<BoneTransform> = Array::fill<BoneTransform>(self.count)
-        for i in 0..(self.count - 1) {
-            locals[i] = self.locals[i]
-        }
-        return Pose(locals, self.count)
+        for i in 0..(self.count - 1) then locals[i] = self.locals[i]
+        return .(locals, self.count)
     }
 }
 
@@ -380,13 +339,9 @@ impl Pose {
  * joints.
  */
 func blendPose(a: Pose, b: Pose, weight: Double, into: Pose): Unit ?! SkeletonFault {
-    if a.count != b.count || into.count != a.count {
-        return .BoneCountMismatch
-    }
+    if a.count != b.count || into.count != a.count then return .BoneCountMismatch
     fin t = animClamp01(weight)
-    for i in 0..(a.count - 1) {
-        into.locals[i] = blendTransform(a.locals[i], b.locals[i], t)
-    }
+    for i in 0..(a.count - 1) then into.locals[i] = blendTransform(a.locals[i], b.locals[i], t)
 }
 
 /**
@@ -404,12 +359,8 @@ func blendPoseMasked(
     root: Int
     into: Pose
 ): Unit ?! SkeletonFault {
-    if a.count != b.count || into.count != a.count {
-        return .BoneCountMismatch
-    }
-    if !skeleton.has(root) {
-        return .UnknownBone
-    }
+    if a.count != b.count || into.count != a.count then return .BoneCountMismatch
+    if !skeleton.has(root) then return .UnknownBone
     fin t = animClamp01(weight)
     for i in 0..(a.count - 1) {
         fin inside = i == root || boneDescendsFrom(skeleton, i, root)
@@ -425,9 +376,7 @@ func blendPoseMasked(
 func boneDescendsFrom(skeleton: Skeleton, bone: Int, root: Int): Bool {
     var walk = bone
     while skeleton.has(walk) {
-        if walk == root {
-            return true
-        }
+        if walk == root then return true
         walk = skeleton.bones[walk].parent
     }
     return false
@@ -444,7 +393,7 @@ func poseToWorld(skeleton: Skeleton, pose: Pose): Array<BoneTransform> {
     for i in 0..(skeleton.count - 1) {
         fin bone = skeleton.bones[i]
         fin local = pose.at(i)
-        world[i] = if bone.parent == noBone { local } else { world[bone.parent].compose(local) }
+        world[i] = if bone.parent == noBone then local else world[bone.parent].compose(local)
     }
     return world
 }
@@ -458,9 +407,7 @@ func poseToWorld(skeleton: Skeleton, pose: Pose): Array<BoneTransform> {
 func poseToSkinning(skeleton: Skeleton, pose: Pose): Array<Mat4> {
     fin world = poseToWorld(skeleton, pose)
     var matrices: Array<Mat4> = Array::fill<Mat4>(animIntMax(skeleton.count, 0))
-    for i in 0..(skeleton.count - 1) {
-        matrices[i] = mat4Mul(world[i].matrix(), skeleton.bones[i].inverseBind)
-    }
+    for i in 0..(skeleton.count - 1) then matrices[i] = mat4Mul(world[i].matrix(), skeleton.bones[i].inverseBind)
     return matrices
 }
 
@@ -483,33 +430,31 @@ pack Transform3DTrack {
 /** Empty curves for [bone], with room for [capacity] keys each. */
 func transform3dTrack(bone: Int, capacity: Int): Transform3DTrack {
     return Transform3DTrack(
-        bone,
-        trackNew<Vec3>("position", capacity),
-        trackNew<Quat>("rotation", capacity),
+        bone
+        trackNew<Vec3>("position", capacity)
+        trackNew<Quat>("rotation", capacity)
         trackNew<Vec3>("scale", capacity)
     )
 }
 
 /** Adds a fully specified key at [time]. */
 func transform3dKey(track: Transform3DTrack, time: Double, value: BoneTransform, mode: Interpolation) {
-    trackInsert<Vec3>(track.position, Keyframe<Vec3>(time, value.position, mode))
-    trackInsert<Quat>(track.rotation, Keyframe<Quat>(time, value.rotation, mode))
-    trackInsert<Vec3>(track.scale, Keyframe<Vec3>(time, value.scale, mode))
+    trackInsert<Vec3>(track.position, .(time, value.position, mode))
+    trackInsert<Quat>(track.rotation, .(time, value.rotation, mode))
+    trackInsert<Vec3>(track.scale, .(time, value.scale, mode))
 }
 
 /** The 3D vector a `Track<Vec3>` holds at [time]. */
 func sampleVec3(track: Track<Vec3>, time: Double): Vec3 {
     fin span = trackSpanAt<Vec3>(track, time)
-    if !span.valid {
-        return vec3Zero()
-    }
+    if !span.valid then return vec3Zero()
     fin fromKey: Keyframe<Vec3> = trackAt<Vec3>(track, span.fromIndex)
     fin toKey: Keyframe<Vec3> = trackAt<Vec3>(track, span.toIndex)
     fin a: Vec3 = fromKey.value
     fin b: Vec3 = toKey.value
     return Vec3(
-        lerpReal(a.x, b.x, span.factor),
-        lerpReal(a.y, b.y, span.factor),
+        lerpReal(a.x, b.x, span.factor)
+        lerpReal(a.y, b.y, span.factor)
         lerpReal(a.z, b.z, span.factor)
     )
 }
@@ -517,9 +462,7 @@ func sampleVec3(track: Track<Vec3>, time: Double): Vec3 {
 /** The rotation a `Track<Quat>` holds at [time]. */
 func sampleQuat(track: Track<Quat>, time: Double): Quat {
     fin span = trackSpanAt<Quat>(track, time)
-    if !span.valid {
-        return quatIdentity()
-    }
+    if !span.valid then return quatIdentity()
     fin fromKey: Keyframe<Quat> = trackAt<Quat>(track, span.fromIndex)
     fin toKey: Keyframe<Quat> = trackAt<Quat>(track, span.toIndex)
     fin a: Quat = fromKey.value
@@ -534,7 +477,7 @@ func sampleTransform3d(track: Transform3DTrack, time: Double): BoneTransform {
     } else {
         sampleVec3(track.scale, time)
     }
-    return BoneTransform(sampleVec3(track.position, time), sampleQuat(track.rotation, time), scale)
+    return .(sampleVec3(track.position, time), sampleQuat(track.rotation, time), scale)
 }
 
 // ── Skeletal animation ──────────────────────────────────────────────────
@@ -555,7 +498,7 @@ pack SkeletalAnimation {
 /** An animation over [clip] with room for [capacity] bone curves. */
 func skeletalAnimation(clip: AnimationClip, capacity: Int): SkeletalAnimation {
     var tracks: Array<Transform3DTrack> = Array::fill<Transform3DTrack>(animIntMax(capacity, 0))
-    return SkeletalAnimation(clip, tracks, 0)
+    return .(clip, tracks, 0)
 }
 
 impl SkeletalAnimation {
@@ -564,22 +507,18 @@ impl SkeletalAnimation {
         if self.count >= self.tracks.size {
             fin room = animIntMax(self.tracks.size * 2, 4)
             var grown: Array<Transform3DTrack> = Array::fill<Transform3DTrack>(room)
-            for i in 0..(self.count - 1) {
-                grown[i] = self.tracks[i]
-            }
+            for i in 0..(self.count - 1) then grown[i] = self.tracks[i]
             self.tracks = grown
         }
         self.tracks[self.count] = track
-        self.count = self.count + 1
+        self.count++
         return self.count - 1
     }
 
     /** The curve for [bone], or `-1`. */
     func &.indexOfBone(bone: Int): Int {
         for i in 0..(self.count - 1) {
-            if self.tracks[i].bone == bone {
-                return i
-            }
+            if self.tracks[i].bone == bone then return i
         }
         return -1
     }
@@ -597,7 +536,7 @@ func samplePose(animation: SkeletalAnimation, localTime: Double, into: Pose): In
         fin track = animation.tracks[i]
         if track.bone >= 0 && track.bone < into.count {
             into.locals[track.bone] = sampleTransform3d(track, localTime)
-            written = written + 1
+            written++
         }
     }
     return written
@@ -624,7 +563,7 @@ func morphTargetAnimation(clip: AnimationClip, capacity: Int): MorphTargetAnimat
     fin room = animIntMax(capacity, 0)
     var names: Array<String> = Array::fill<String>(room)
     var weights: Array<RealTrack> = Array::fill<RealTrack>(room)
-    return MorphTargetAnimation(clip, names, weights, 0)
+    return .(clip, names, weights, 0)
 }
 
 impl MorphTargetAnimation {
@@ -643,35 +582,28 @@ impl MorphTargetAnimation {
         }
         self.names[self.count] = name
         self.weights[self.count] = track
-        self.count = self.count + 1
+        self.count++
         return self.count - 1
     }
 
     /** The index of the target called [name], or `-1`. */
     func &.indexOf(name: String): Int {
         for i in 0..(self.count - 1) {
-            if self.names[i] == name {
-                return i
-            }
+            if self.names[i] == name then return i
         }
         return -1
     }
 
     /** The weight of target [index] at [localTime]. */
     func &.weightAt(index: Int, localTime: Double): Double {
-        if index < 0 || index >= self.count {
-            return 0.0
-        }
-        return animClamp01(sampleReal(self.weights[index], localTime))
+        return if index < 0 || index >= self.count then 0.0 else animClamp01(sampleReal(self.weights[index], localTime))
     }
 }
 
 /** Samples every target weight into [into] at [localTime]. */
 func sampleMorphWeights(animation: MorphTargetAnimation, localTime: Double, into: Array<Double>): Int {
     fin written = animIntMin(animation.count, into.size)
-    for i in 0..(written - 1) {
-        into[i] = animation.weightAt(i, localTime)
-    }
+    for i in 0..(written - 1) then into[i] = animation.weightAt(i, localTime)
     return written
 }
 
@@ -694,9 +626,9 @@ pack AnimationRig {
 /** A rig on [skeleton], resting in its bind pose. */
 func animationRig(skeleton: Skeleton, animation: SkeletalAnimation): AnimationRig {
     return AnimationRig(
-        skeleton,
-        poseFromBind(skeleton),
-        animationPlayer(animation.clip),
+        skeleton
+        poseFromBind(skeleton)
+        animationPlayer(animation.clip)
         animation
     )
 }
@@ -716,9 +648,7 @@ impl AnimationRig {
     }
 
     /** This frame's skinning matrices. */
-    func &.skinning(): Array<Mat4> {
-        return poseToSkinning(self.skeleton, self.pose)
-    }
+    func &.skinning(): Array<Mat4> = poseToSkinning(self.skeleton, self.pose)
 }
 
 // ── Blend tree ──────────────────────────────────────────────────────────
@@ -763,7 +693,7 @@ pack AnimationBlendTree {
 /** An empty tree with room for [capacity] nodes. */
 func blendTreeNew(capacity: Int): AnimationBlendTree {
     var nodes: Array<BlendNode> = Array::fill<BlendNode>(animIntMax(capacity, 0))
-    return AnimationBlendTree(nodes, 0, -1)
+    return .(nodes, 0, -1)
 }
 
 impl AnimationBlendTree {
@@ -771,41 +701,35 @@ impl AnimationBlendTree {
         if self.count >= self.nodes.size {
             fin room = animIntMax(self.nodes.size * 2, 4)
             var grown: Array<BlendNode> = Array::fill<BlendNode>(room)
-            for i in 0..(self.count - 1) {
-                grown[i] = self.nodes[i]
-            }
+            for i in 0..(self.count - 1) then grown[i] = self.nodes[i]
             self.nodes = grown
         }
         self.nodes[self.count] = node
-        self.count = self.count + 1
+        self.count++
         self.root = self.count - 1
         return self.root
     }
 
     /** Adds a leaf sampling [animation]. */
-    func !.addClip(animation: SkeletalAnimation): Int {
-        return self.add(BlendNode(BlendKind.Clip, animation, -1, -1, 1.0, noBone))
-    }
+    func !.addClip(animation: SkeletalAnimation): Int = self.add(.(.Clip, animation, -1, -1, 1.0, noBone))
 
     /** Adds a node mixing [left] and [right] by [weight]. */
     func !.addMix(left: Int, right: Int, weight: Double): Int {
         return self.add(
-            BlendNode(BlendKind.Mix, self.nodes[animIntMax(left, 0)].animation, left, right, weight, noBone)
+            BlendNode(.Mix, self.nodes[animIntMax(left, 0)].animation, left, right, weight, noBone)
         )
     }
 
     /** Adds a node mixing [right] over [left] beneath [maskRoot]. */
     func !.addLayer(left: Int, right: Int, weight: Double, maskRoot: Int): Int {
         return self.add(
-            BlendNode(BlendKind.Layer, self.nodes[animIntMax(left, 0)].animation, left, right, weight, maskRoot)
+            BlendNode(.Layer, self.nodes[animIntMax(left, 0)].animation, left, right, weight, maskRoot)
         )
     }
 
     /** Sets the weight of node [index]. */
     func !.setWeight(index: Int, weight: Double): Unit ?! SkeletonFault {
-        if index < 0 || index >= self.count {
-            return .UnknownBone
-        }
+        if index < 0 || index >= self.count then return .UnknownBone
         self.nodes[index].weight = animClamp01(weight)
     }
 }
@@ -823,12 +747,10 @@ func evaluateBlendTree(
     localTime: Double
     into: Pose
 ): Unit ?! SkeletonFault {
-    if node < 0 || node >= tree.count {
-        return .UnknownBone
-    }
+    if node < 0 || node >= tree.count then return .UnknownBone
     fin current = tree.nodes[node]
     when current.kind {
-        BlendKind.Clip -> {
+        .Clip -> {
             samplePose(current.animation, localTime, into)
         }
         else -> {
@@ -836,7 +758,7 @@ func evaluateBlendTree(
             var right = poseIdentity(into.count)
             try evaluateBlendTree(tree, skeleton, current.left, localTime, left)
             try evaluateBlendTree(tree, skeleton, current.right, localTime, right)
-            if current.kind == BlendKind.Layer {
+            if current.kind == .Layer {
                 try blendPoseMasked(skeleton, left, right, current.weight, current.maskRoot, into)
             } else {
                 try blendPose(left, right, current.weight, into)
@@ -863,9 +785,7 @@ pack InverseKinematics {
     var weight: Double
 }
 
-func inverseKinematics(root: Int, mid: Int, end: Int, poleDirection: Vec3): InverseKinematics {
-    return InverseKinematics(root, mid, end, poleDirection, 1.0)
-}
+func inverseKinematics(root: Int, mid: Int, end: Int, poleDirection: Vec3): InverseKinematics = .(root, mid, end, poleDirection, 1.0)
 
 /**
  * Bends [chain] so its end effector reaches [target], writing back into [pose].
@@ -881,12 +801,8 @@ func solveIk(
     target: Vec3
     pose: Pose
 ): Unit ?! SkeletonFault {
-    if !skeleton.has(chain.root) || !skeleton.has(chain.mid) || !skeleton.has(chain.end) {
-        return .UnknownBone
-    }
-    if skeleton.bones[chain.mid].parent != chain.root || skeleton.bones[chain.end].parent != chain.mid {
-        return .ChainTooShort
-    }
+    if !skeleton.has(chain.root) || !skeleton.has(chain.mid) || !skeleton.has(chain.end) then return .UnknownBone
+    if skeleton.bones[chain.mid].parent != chain.root || skeleton.bones[chain.end].parent != chain.mid then return .ChainTooShort
 
     fin world = poseToWorld(skeleton, pose)
     fin rootPos = world[chain.root].position
@@ -895,9 +811,7 @@ func solveIk(
 
     fin upper = midPos.minus(rootPos).size()
     fin lower = endPos.minus(midPos).size()
-    if upper < 0.000001 || lower < 0.000001 {
-        return .ChainTooShort
-    }
+    if upper < 0.000001 || lower < 0.000001 then return .ChainTooShort
 
     fin toTarget = target.minus(rootPos)
     // A target out of reach straightens the limb instead of failing: an arm
@@ -910,7 +824,7 @@ func solveIk(
     fin rootAngle = acos(
         realClampTo(
             (upper * upper + distance * distance - lower * lower) / (2.0 * upper * distance),
-            -1.0,
+            -1.0
             1.0
         )
     )
@@ -921,10 +835,8 @@ func solveIk(
     var bendAxis = aim.cross(chain.poleDirection.normalized)
     if bendAxis.size() < 0.000001 {
         // Aim and pole are parallel; any perpendicular will do.
-        bendAxis = aim.cross(Vec3(0.0, 0.0, 1.0))
-        if bendAxis.size() < 0.000001 {
-            bendAxis = aim.cross(Vec3(0.0, 1.0, 0.0))
-        }
+        bendAxis = aim.cross(.(0.0, 0.0, 1.0))
+        if bendAxis.size() < 0.000001 then bendAxis = aim.cross(.(0.0, 1.0, 0.0))
     }
     fin axis = bendAxis.normalized
 
@@ -954,14 +866,14 @@ func solveIk(
 
     fin rootTransform = pose.at(chain.root)
     pose.locals[chain.root] = BoneTransform(
-        rootTransform.position,
-        quatSlerp(rootTransform.rotation, rootLocal, blend),
+        rootTransform.position
+        quatSlerp(rootTransform.rotation, rootLocal, blend)
         rootTransform.scale
     )
     fin midTransform = pose.at(chain.mid)
     pose.locals[chain.mid] = BoneTransform(
-        midTransform.position,
-        quatSlerp(midTransform.rotation, midLocal, blend),
+        midTransform.position
+        quatSlerp(midTransform.rotation, midLocal, blend)
         midTransform.scale
     )
 }
@@ -971,15 +883,11 @@ func rotationBetween(from: Vec3, to: Vec3): Quat {
     fin a = from.normalized
     fin b = to.normalized
     fin cosine = a.dot(b)
-    if cosine > 0.99999 {
-        return quatIdentity()
-    }
+    if cosine > 0.99999 then return quatIdentity()
     // Opposite directions have no unique axis; any perpendicular will do.
     if cosine < -0.99999 {
         var axis = Vec3(1.0, 0.0, 0.0).cross(a)
-        if axis.size() < 0.000001 {
-            axis = Vec3(0.0, 1.0, 0.0).cross(a)
-        }
+        if axis.size() < 0.000001 then axis = Vec3(0.0, 1.0, 0.0).cross(a)
         return quatAxisAngle(axis.normalized, radians(180.0))
     }
     fin axis = a.cross(b)
@@ -1007,9 +915,7 @@ pack RootMotion {
 }
 
 /** Root motion tracking [bone], starting from rest. */
-func rootMotion(bone: Int): RootMotion {
-    return RootMotion(bone, vec3Zero(), quatIdentity(), vec3Zero(), quatIdentity(), true)
-}
+func rootMotion(bone: Int): RootMotion = .(bone, vec3Zero(), quatIdentity(), vec3Zero(), quatIdentity(), true)
 
 /**
  * Reads this frame's root displacement and removes it from [pose].
@@ -1019,12 +925,8 @@ func rootMotion(bone: Int): RootMotion {
  * not travel twice.
  */
 func extractRootMotion(motion: RootMotion, pose: Pose): Unit ?! SkeletonFault {
-    if !motion.enabled {
-        return
-    }
-    if motion.bone < 0 || motion.bone >= pose.count {
-        return .UnknownBone
-    }
+    if !motion.enabled then return
+    if motion.bone < 0 || motion.bone >= pose.count then return .UnknownBone
     fin current = pose.locals[motion.bone]
     motion.deltaPosition = current.position.minus(motion.previousPosition)
     motion.deltaRotation = motion.previousRotation.conjugate().times(current.rotation).normalized
@@ -1045,7 +947,7 @@ func resyncRootMotion(motion: RootMotion, pose: Pose) {
 // ── Skin ────────────────────────────────────────────────────────────────
 
 /** The largest number of bones one vertex may be weighted to. */
-fin maxBoneInfluences = 4
+inline fin maxBoneInfluences = 4
 
 /**
  * Per-vertex bone weights.
@@ -1073,7 +975,7 @@ func skinNew(name: String, vertexCount: Int): Skin {
         indices[i] = 0
         weights[i] = 0.0
     }
-    return Skin(name, indices, weights, animIntMax(vertexCount, 0))
+    return .(name, indices, weights, animIntMax(vertexCount, 0))
 }
 
 impl Skin {
@@ -1081,9 +983,7 @@ impl Skin {
      * Binds vertex [vertex]'s influence [influence] to [bone] with [weight].
      */
     func !.setInfluence(vertex: Int, influence: Int, bone: Int, weight: Double): Unit ?! SkeletonFault {
-        if vertex < 0 || vertex >= self.vertexCount || influence < 0 || influence >= maxBoneInfluences {
-            return .UnknownBone
-        }
+        if vertex < 0 || vertex >= self.vertexCount || influence < 0 || influence >= maxBoneInfluences then return .UnknownBone
         fin offset = vertex * maxBoneInfluences + influence
         self.boneIndices[offset] = bone
         self.weights[offset] = weight
@@ -1092,19 +992,13 @@ impl Skin {
     /** The bone of influence [influence] on [vertex]. */
     func &.boneOf(vertex: Int, influence: Int): Int {
         fin offset = vertex * maxBoneInfluences + influence
-        if offset < 0 || offset >= self.boneIndices.size {
-            return 0
-        }
-        return self.boneIndices[offset]
+        return if offset < 0 || offset >= self.boneIndices.size then 0 else self.boneIndices[offset]
     }
 
     /** The weight of influence [influence] on [vertex]. */
     func &.weightOf(vertex: Int, influence: Int): Double {
         fin offset = vertex * maxBoneInfluences + influence
-        if offset < 0 || offset >= self.weights.size {
-            return 0.0
-        }
-        return self.weights[offset]
+        return if offset < 0 || offset >= self.weights.size then 0.0 else self.weights[offset]
     }
 
     /**
@@ -1116,13 +1010,11 @@ impl Skin {
     func !.normalize() {
         for vertex in 0..(self.vertexCount - 1) {
             var total = 0.0
-            for influence in 0..(maxBoneInfluences - 1) {
-                total = total + self.weightOf(vertex, influence)
-            }
+            for influence in 0..(maxBoneInfluences - 1) then total += self.weightOf(vertex, influence)
             if total > 0.000001 {
                 for influence in 0..(maxBoneInfluences - 1) {
                     fin offset = vertex * maxBoneInfluences + influence
-                    self.weights[offset] = self.weights[offset] / total
+                    self.weights[offset] /= total
                 }
             }
         }
@@ -1131,9 +1023,7 @@ impl Skin {
     /** True when [bone] is within [skeleton] for every influence. */
     func &.fits(skeleton: Skeleton): Bool {
         for i in 0..(self.boneIndices.size - 1) {
-            if self.weights[i] > 0.0 && !skeleton.has(self.boneIndices[i]) {
-                return false
-            }
+            if self.weights[i] > 0.0 && !skeleton.has(self.boneIndices[i]) then return false
         }
         return true
     }
@@ -1155,38 +1045,35 @@ func skinVertex(skin: Skin, vertex: Int, position: Vec3, matrices: Array<Mat4>):
         if weight > 0.0 {
             fin bone = skin.boneOf(vertex, influence)
             if bone >= 0 && bone < matrices.size {
-                result = result + transformPoint(matrices[bone], position).scale(weight)
-                total = total + weight
+                result += transformPoint(matrices[bone], position).scale(weight)
+                total += weight
             }
         }
     }
-    if total <= 0.000001 {
-        return position
-    }
-    return result.scale(1.0 / total)
+    return if total <= 0.000001 then position else result.scale(1.0 / total)
 }
 
 /** [point] through the row-major matrix [m], with a implied w of 1. */
 func transformPoint(m: Mat4, point: Vec3): Vec3 {
     return Vec3(
-        m.m00 * point.x + m.m01 * point.y + m.m02 * point.z + m.m03,
-        m.m10 * point.x + m.m11 * point.y + m.m12 * point.z + m.m13,
+        m.m00 * point.x + m.m01 * point.y + m.m02 * point.z + m.m03
+        m.m10 * point.x + m.m11 * point.y + m.m12 * point.z + m.m13
         m.m20 * point.x + m.m21 * point.y + m.m22 * point.z + m.m23
     )
 }
 
 func realClampTo(value: Double, low: Double, high: Double): Double {
-    return if value < low { low } else { if value > high { high } else { value } }
+    return if value < low then low else { if value > high then high else value }
 }
 
 test "a skeleton keeps parents before children and rejects the reverse" {
     var skeleton = skeletonNew("rig", 4)
     fin root = skeletonAddBone(skeleton, "root", noBone, boneTransformIdentity()) catch -1
     fin hip = skeletonAddBone(
-        skeleton,
-        "hip",
-        root,
-        boneTransform(Vec3(0.0, 1.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+        skeleton
+        "hip"
+        root
+        boneTransform(.(0.0, 1.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
     ) catch -1
 
     assert root == 0 && hip == 1 panic "bones must be indexed in insertion order"
@@ -1206,10 +1093,10 @@ test "the bind pose composes down the hierarchy" {
     var skeleton = skeletonNew("rig", 4)
     fin root = skeletonAddBone(skeleton, "root", noBone, boneTransformIdentity()) catch -1
     skeletonAddBone(
-        skeleton,
-        "hip",
-        root,
-        boneTransform(Vec3(0.0, 2.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+        skeleton
+        "hip"
+        root
+        boneTransform(.(0.0, 2.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
     ) catch -1
 
     fin pose = poseFromBind(skeleton)
@@ -1221,17 +1108,17 @@ test "the bind pose composes down the hierarchy" {
 test "a bind pose skins a vertex back to where it started" {
     var skeleton = skeletonNew("rig", 2)
     skeletonAddBone(
-        skeleton,
-        "root",
-        noBone,
-        boneTransform(Vec3(1.0, 2.0, 3.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+        skeleton
+        "root"
+        noBone
+        boneTransform(.(1.0, 2.0, 3.0), quatIdentity(), .(1.0, 1.0, 1.0))
     ) catch -1
 
     var skin = skinNew("body", 1)
     skin.setInfluence(0, 0, 0, 1.0) catch { }
 
     fin matrices = poseToSkinning(skeleton, poseFromBind(skeleton))
-    fin moved = skinVertex(skin, 0, Vec3(5.0, 0.0, 0.0), matrices)
+    fin moved = skinVertex(skin, 0, .(5.0, 0.0, 0.0), matrices)
     assert animAbs(moved.x - 5.0) < 0.001 && animAbs(moved.y) < 0.001 panic "the bind pose must be the identity for skinning"
     assert skin.fits(skeleton) panic "every influence must name a real bone"
 }
@@ -1252,9 +1139,7 @@ test "blending mixes poses per bone, and a mask limits it to a subtree" {
 
     var a = poseIdentity(3)
     var b = poseIdentity(3)
-    for i in 0..2 {
-        b.locals[i] = boneTransform(Vec3(0.0, 10.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
-    }
+    for i in 0..2 then b.locals[i] = boneTransform(.(0.0, 10.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
 
     var mixed = poseIdentity(3)
     blendPose(a, b, 0.5, mixed) catch { }
@@ -1282,28 +1167,28 @@ test "a mismatched bone count is refused rather than half-blended" {
 
 test "a bone curve samples position and rotation" {
     var track = transform3dTrack(0, 2)
-    transform3dKey(track, 0.0, boneTransformIdentity(), Interpolation.Linear)
+    transform3dKey(track, 0.0, boneTransformIdentity(), .Linear)
     transform3dKey(
-        track,
-        1.0,
-        boneTransform(Vec3(0.0, 4.0, 0.0), quatAxisAngle(Vec3(0.0, 0.0, 1.0), radians(90.0)), Vec3(1.0, 1.0, 1.0)),
+        track
+        1.0
+        boneTransform(.(0.0, 4.0, 0.0), quatAxisAngle(.(0.0, 0.0, 1.0), radians(90.0)), .(1.0, 1.0, 1.0))
         Interpolation.Linear
     )
 
     fin mid = sampleTransform3d(track, 0.5)
     assert animAbs(mid.position.y - 2.0) < 0.001 panic "position must interpolate"
-    fin turned = mid.rotation.rotate(Vec3(1.0, 0.0, 0.0))
+    fin turned = mid.rotation.rotate(.(1.0, 0.0, 0.0))
     assert animAbs(turned.x - 0.7071) < 0.01 && animAbs(turned.y - 0.7071) < 0.01 panic "rotation must slerp to the halfway angle"
 }
 
 test "an animation only writes the bones it has curves for" {
-    var animation = skeletalAnimation(animationClip("wave", 1.0, LoopMode.Repeat), 2)
+    var animation = skeletalAnimation(animationClip("wave", 1.0, .Repeat), 2)
     var track = transform3dTrack(1, 2)
-    transform3dKey(track, 0.0, boneTransform(Vec3(0.0, 7.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0)), Interpolation.Linear)
+    transform3dKey(track, 0.0, boneTransform(.(0.0, 7.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0)), .Linear)
     animation.add(track)
 
     var pose = poseIdentity(3)
-    pose.locals[0] = boneTransform(Vec3(99.0, 0.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+    pose.locals[0] = boneTransform(.(99.0, 0.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
 
     assert samplePose(animation, 0.0, pose) == 1 panic "only the curve's own bone is written"
     assert animAbs(pose.at(1).position.y - 7.0) < 0.001 panic "the animated bone must be sampled"
@@ -1313,10 +1198,10 @@ test "an animation only writes the bones it has curves for" {
 }
 
 test "a blend tree mixes two clips" {
-    var still = skeletalAnimation(animationClip("still", 1.0, LoopMode.Repeat), 1)
-    var raised = skeletalAnimation(animationClip("raised", 1.0, LoopMode.Repeat), 1)
+    var still = skeletalAnimation(animationClip("still", 1.0, .Repeat), 1)
+    var raised = skeletalAnimation(animationClip("raised", 1.0, .Repeat), 1)
     var track = transform3dTrack(0, 1)
-    transform3dKey(track, 0.0, boneTransform(Vec3(0.0, 10.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0)), Interpolation.Linear)
+    transform3dKey(track, 0.0, boneTransform(.(0.0, 10.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0)), .Linear)
     raised.add(track)
 
     var tree = blendTreeNew(4)
@@ -1337,21 +1222,21 @@ test "root motion is handed to the caller and taken out of the pose" {
     var pose = poseIdentity(1)
     var motion = rootMotion(0)
 
-    pose.locals[0] = boneTransform(Vec3(0.0, 0.0, 2.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+    pose.locals[0] = boneTransform(.(0.0, 0.0, 2.0), quatIdentity(), .(1.0, 1.0, 1.0))
     extractRootMotion(motion, pose) catch { }
     assert animAbs(motion.deltaPosition.z - 2.0) < 0.001 panic "the first step must be reported"
     assert animAbs(pose.at(0).position.z) < 0.001 panic "and removed, so the mesh does not travel twice"
 
-    pose.locals[0] = boneTransform(Vec3(0.0, 0.0, 5.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+    pose.locals[0] = boneTransform(.(0.0, 0.0, 5.0), quatIdentity(), .(1.0, 1.0, 1.0))
     extractRootMotion(motion, pose) catch { }
     assert animAbs(motion.deltaPosition.z - 3.0) < 0.001 panic "the next delta must be relative to the last"
 }
 
 test "a morph animation clamps its weights" {
-    var morph = morphTargetAnimation(animationClip("face", 1.0, LoopMode.Once), 2)
+    var morph = morphTargetAnimation(animationClip("face", 1.0, .Once), 2)
     var smile = realTrackNew("smile", 2)
-    realTrackKey(smile, 0.0, 0.0, Interpolation.Linear)
-    realTrackKey(smile, 1.0, 1.0, Interpolation.Linear)
+    realTrackKey(smile, 0.0, 0.0, .Linear)
+    realTrackKey(smile, 1.0, 1.0, .Linear)
     morph.add("smile", smile)
 
     assert animAbs(morph.weightAt(0, 0.5) - 0.5) < 0.001 panic "a weight must interpolate"
@@ -1364,24 +1249,24 @@ test "two-bone IK reaches a target it can reach" {
     var skeleton = skeletonNew("arm", 4)
     fin shoulder = skeletonAddBone(skeleton, "shoulder", noBone, boneTransformIdentity()) catch -1
     fin elbow = skeletonAddBone(
-        skeleton,
-        "elbow",
-        shoulder,
-        boneTransform(Vec3(1.0, 0.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+        skeleton
+        "elbow"
+        shoulder
+        boneTransform(.(1.0, 0.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
     ) catch -1
     fin wrist = skeletonAddBone(
-        skeleton,
-        "wrist",
-        elbow,
-        boneTransform(Vec3(1.0, 0.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0))
+        skeleton
+        "wrist"
+        elbow
+        boneTransform(.(1.0, 0.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0))
     ) catch -1
 
     var pose = poseFromBind(skeleton)
-    fin chain = inverseKinematics(shoulder, elbow, wrist, Vec3(0.0, 0.0, 1.0))
-    solveIk(skeleton, chain, Vec3(1.0, 1.0, 0.0), pose) catch { }
+    fin chain = inverseKinematics(shoulder, elbow, wrist, .(0.0, 0.0, 1.0))
+    solveIk(skeleton, chain, .(1.0, 1.0, 0.0), pose) catch { }
 
     fin reached = poseToWorld(skeleton, pose)[wrist].position
-    fin deviation = reached.minus(Vec3(1.0, 1.0, 0.0)).size()
+    fin deviation = reached.minus(.(1.0, 1.0, 0.0)).size()
     assert deviation < 0.05 panic "the end effector must land on a reachable target"
 }
 
@@ -1395,7 +1280,7 @@ test "an IK chain that is not a chain is refused" {
     var refused = false
     try {
         // `c` is a sibling of `b`, not its child.
-        solveIk(skeleton, inverseKinematics(a, b, c, Vec3(0.0, 0.0, 1.0)), vec3Zero(), pose)
+        solveIk(skeleton, inverseKinematics(a, b, c, .(0.0, 0.0, 1.0)), vec3Zero(), pose)
     } catch {
         refused = true
     }
@@ -1406,10 +1291,10 @@ test "a rig advances its clock and produces skinning matrices" {
     var skeleton = skeletonNew("rig", 2)
     skeletonAddBone(skeleton, "root", noBone, boneTransformIdentity()) catch -1
 
-    var animation = skeletalAnimation(animationClip("bob", 1.0, LoopMode.Repeat), 1)
+    var animation = skeletalAnimation(animationClip("bob", 1.0, .Repeat), 1)
     var track = transform3dTrack(0, 2)
-    transform3dKey(track, 0.0, boneTransformIdentity(), Interpolation.Linear)
-    transform3dKey(track, 1.0, boneTransform(Vec3(0.0, 4.0, 0.0), quatIdentity(), Vec3(1.0, 1.0, 1.0)), Interpolation.Linear)
+    transform3dKey(track, 0.0, boneTransformIdentity(), .Linear)
+    transform3dKey(track, 1.0, boneTransform(.(0.0, 4.0, 0.0), quatIdentity(), .(1.0, 1.0, 1.0)), .Linear)
     animation.add(track)
 
     var rig = animationRig(skeleton, animation)

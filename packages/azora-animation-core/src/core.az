@@ -208,33 +208,27 @@ variant enum EventFire {
 func easeFactor(t: Double, mode: Interpolation): Double {
     fin clamped = animClamp01(t)
     return when mode {
-        Interpolation.Step -> if clamped >= 1.0 { 1.0 } else { 0.0 }
-        Interpolation.Linear -> clamped
-        Interpolation.EaseIn -> clamped * clamped
-        Interpolation.EaseOut -> clamped * (2.0 - clamped)
-        Interpolation.Smooth -> clamped * clamped * (3.0 - 2.0 * clamped)
+        .Step -> if clamped >= 1.0 then 1.0 else 0.0
+        .Linear -> clamped
+        .EaseIn -> clamped * clamped
+        .EaseOut -> clamped * (2.0 - clamped)
+        .Smooth -> clamped * clamped * (3.0 - 2.0 * clamped)
         else -> easeInOut(clamped)
     }
 }
 
 /** Two quadratics meeting at the halfway point: slow at both ends. */
 func easeInOut(t: Double): Double {
-    if t < 0.5 {
-        return 2.0 * t * t
-    }
+    if t < 0.5 then return 2.0 * t * t
     fin shifted = t - 1.0
     return 1.0 - 2.0 * shifted * shifted
 }
 
 /** Linear interpolation between two reals. */
-func lerpReal(a: Double, b: Double, t: Double): Double {
-    return a + (b - a) * t
-}
+func lerpReal(a: Double, b: Double, t: Double): Double = a + (b - a) * t
 
 /** Interpolation between two reals, eased by [mode]. */
-func interpolateReal(a: Double, b: Double, t: Double, mode: Interpolation): Double {
-    return lerpReal(a, b, easeFactor(t, mode))
-}
+func interpolateReal(a: Double, b: Double, t: Double, mode: Interpolation): Double = lerpReal(a, b, easeFactor(t, mode))
 
 func animClamp01(value: Double): Double {
     return when true {
@@ -244,17 +238,11 @@ func animClamp01(value: Double): Double {
     }
 }
 
-func animMax(a: Double, b: Double): Double {
-    return if a > b { a } else { b }
-}
+func animMax(a: Double, b: Double): Double = if a > b then a else b
 
-func animMin(a: Double, b: Double): Double {
-    return if a < b { a } else { b }
-}
+func animMin(a: Double, b: Double): Double = if a < b then a else b
 
-func animAbs(value: Double): Double {
-    return if value < 0.0 { 0.0 - value } else { value }
-}
+func animAbs(value: Double): Double = if value < 0.0 then -value else value
 
 /**
  * The non-negative remainder of `value / period`.
@@ -263,13 +251,9 @@ func animAbs(value: Double): Double {
  * remainder would fold that onto the wrong end of the loop.
  */
 func animWrap(value: Double, period: Double): Double {
-    if period <= animEpsilon {
-        return 0.0
-    }
+    if period <= animEpsilon then return 0.0
     var wrapped = value - (((value / period) as Int) as Double) * period
-    if wrapped < 0.0 {
-        wrapped = wrapped + period
-    }
+    if wrapped < 0.0 then wrapped += period
     return wrapped
 }
 
@@ -281,9 +265,7 @@ func<T> trackNew(name: String, capacity: Int): Track<T> {
     return Track<T>(name, keys, 0)
 }
 
-func animCapacity(capacity: Int): Int {
-    return if capacity > 0 { capacity } else { 0 }
-}
+func animCapacity(capacity: Int): Int = if capacity > 0 then capacity else 0
 
 /**
  * Inserts [key] at its place in time, keeping the track sorted.
@@ -294,13 +276,9 @@ func animCapacity(capacity: Int): Int {
  */
 func<T> trackInsert(track: Track<T>!, key: Keyframe<T>): Int {
     if track.count >= track.keys.size {
-        fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
+        fin room = if track.keys.size * 2 > 4 then track.keys.size * 2 else 4
         var grown: Array<Keyframe<T>> = Array::fill<Keyframe<T>>(room)
-        var i = 0
-        while i < track.count {
-            grown[i] = track.keys[i]
-            i = i + 1
-        }
+        for i: Int in 0..<track.count then grown[i] = track.keys[i]
         track.keys = grown
     }
 
@@ -311,24 +289,22 @@ func<T> trackInsert(track: Track<T>!, key: Keyframe<T>): Int {
             at = scan
             scan = track.count
         } else {
-            scan = scan + 1
+            scan++
         }
     }
 
     var move = track.count
     while move > at {
         track.keys[move] = track.keys[move - 1]
-        move = move - 1
+        move--
     }
     track.keys[at] = key
-    track.count = track.count + 1
+    track.count++
     return at
 }
 
 /** Adds a keyframe at [time] holding [value]. */
-func<T> trackKey(track: Track<T>!, time: Double, value: T, mode: Interpolation): Int {
-    return trackInsert<T>(track, Keyframe<T>(time, value, mode))
-}
+func<T> trackKey(track: Track<T>!, time: Double, value: T, mode: Interpolation): Int = trackInsert<T>(track, .(time, value, mode))
 
 /** The keyframe at [index], or the first one when the index is out of range. */
 func<T> trackAt(track: Track<T>&, index: Int): Keyframe<T> {
@@ -342,16 +318,9 @@ func<T> trackAt(track: Track<T>&, index: Int): Keyframe<T> {
 }
 
 /** The time of the track's last keyframe. */
-func<T> trackDuration(track: Track<T>&): Double {
-    if track.count <= 0 {
-        return 0.0
-    }
-    return track.keys[track.count - 1].time
-}
+func<T> trackDuration(track: Track<T>&): Double = if track.count <= 0 then 0.0 else track.keys[track.count - 1].time
 
-func<T> trackIsEmpty(track: Track<T>&): Bool {
-    return track.count <= 0
-}
+func<T> trackIsEmpty(track: Track<T>&): Bool = track.count <= 0
 
 /**
  * Where [time] falls in a track: the two keys around it and how far between.
@@ -370,34 +339,24 @@ pack TrackSpan {
 
 /** The span [time] falls in, on a track sorted by [trackInsert]. */
 func<T> trackSpanAt(track: Track<T>&, time: Double): TrackSpan {
-    if track.count <= 0 {
-        return TrackSpan(0, 0, 0.0, false)
-    }
-    if track.count == 1 || time <= track.keys[0].time {
-        return TrackSpan(0, 0, 0.0, true)
-    }
+    if track.count <= 0 then return .(0, 0, 0.0, false)
+    if track.count == 1 || time <= track.keys[0].time then return .(0, 0, 0.0, true)
     fin last = track.count - 1
-    if time >= track.keys[last].time {
-        return TrackSpan(last, last, 0.0, true)
-    }
+    if time >= track.keys[last].time then return .(last, last, 0.0, true)
 
     // Binary search: a long track sampled every frame should not be a scan.
     var low = 0
     var high = last
     while high - low > 1 {
         fin middle = (low + high) / 2
-        if track.keys[middle].time <= time {
-            low = middle
-        } else {
-            high = middle
-        }
+        if track.keys[middle].time <= time then low = middle else high = middle
     }
 
     fin start = track.keys[low]
     fin end = track.keys[high]
     fin span = end.time - start.time
-    fin raw = if span <= animEpsilon { 0.0 } else { (time - start.time) / span }
-    return TrackSpan(low, high, easeFactor(raw, start.interpolation), true)
+    fin raw = if span <= animEpsilon then 0.0 else (time - start.time) / span
+    return .(low, high, easeFactor(raw, start.interpolation), true)
 }
 
 // ── Scalar tracks ───────────────────────────────────────────────────────
@@ -424,19 +383,15 @@ pack RealTrack {
 /** An empty scalar track with room for [capacity] keyframes. */
 func realTrackNew(name: String, capacity: Int): RealTrack {
     var keys: Array<RealKeyframe> = Array::fill<RealKeyframe>(animCapacity(capacity))
-    return RealTrack(name, keys, 0)
+    return .(name, keys, 0)
 }
 
 /** Inserts a key at its place in time, keeping the track sorted. */
 func realTrackKey(track: RealTrack!, time: Double, value: Double, mode: Interpolation): Int {
     if track.count >= track.keys.size {
-        fin room = if track.keys.size * 2 > 4 { track.keys.size * 2 } else { 4 }
+        fin room = if track.keys.size * 2 > 4 then track.keys.size * 2 else 4
         var grown: Array<RealKeyframe> = Array::fill<RealKeyframe>(room)
-        var i = 0
-        while i < track.count {
-            grown[i] = track.keys[i]
-            i = i + 1
-        }
+        for i: Int in 0..<track.count then grown[i] = track.keys[i]
         track.keys = grown
     }
 
@@ -447,16 +402,16 @@ func realTrackKey(track: RealTrack!, time: Double, value: Double, mode: Interpol
             at = scan
             scan = track.count
         } else {
-            scan = scan + 1
+            scan++
         }
     }
     var move = track.count
     while move > at {
         track.keys[move] = track.keys[move - 1]
-        move = move - 1
+        move--
     }
     track.keys[at] = RealKeyframe(time, value, mode)
-    track.count = track.count + 1
+    track.count++
     return at
 }
 
@@ -472,53 +427,36 @@ func realTrackAt(track: RealTrack&, index: Int): RealKeyframe {
 }
 
 /** The time of the track's last keyframe. */
-func realTrackDuration(track: RealTrack&): Double {
-    if track.count <= 0 {
-        return 0.0
-    }
-    return track.keys[track.count - 1].time
-}
+func realTrackDuration(track: RealTrack&): Double = if track.count <= 0 then 0.0 else track.keys[track.count - 1].time
 
 /** The span [time] falls in, on a sorted scalar track. */
 func realTrackSpanAt(track: RealTrack&, time: Double): TrackSpan {
-    if track.count <= 0 {
-        return TrackSpan(0, 0, 0.0, false)
-    }
-    if track.count == 1 || time <= track.keys[0].time {
-        return TrackSpan(0, 0, 0.0, true)
-    }
+    if track.count <= 0 then return .(0, 0, 0.0, false)
+    if track.count == 1 || time <= track.keys[0].time then return .(0, 0, 0.0, true)
     fin last = track.count - 1
-    if time >= track.keys[last].time {
-        return TrackSpan(last, last, 0.0, true)
-    }
+    if time >= track.keys[last].time then return .(last, last, 0.0, true)
 
     var low = 0
     var high = last
     while high - low > 1 {
         fin middle = (low + high) / 2
-        if track.keys[middle].time <= time {
-            low = middle
-        } else {
-            high = middle
-        }
+        if track.keys[middle].time <= time then low = middle else high = middle
     }
 
     fin start = track.keys[low]
     fin end = track.keys[high]
     fin span = end.time - start.time
-    fin raw = if span <= animEpsilon { 0.0 } else { (time - start.time) / span }
-    return TrackSpan(low, high, easeFactor(raw, start.interpolation), true)
+    fin raw = if span <= animEpsilon then 0.0 else (time - start.time) / span
+    return .(low, high, easeFactor(raw, start.interpolation), true)
 }
 
 /** Samples a scalar track at [time]. */
 func sampleReal(track: RealTrack&, time: Double): Double {
     fin span = realTrackSpanAt(track, time)
-    if !span.valid {
-        return 0.0
-    }
+    if !span.valid then return 0.0
     return lerpReal(
-        track.keys[span.fromIndex].value,
-        track.keys[span.toIndex].value,
+        track.keys[span.fromIndex].value
+        track.keys[span.toIndex].value
         span.factor
     )
 }
@@ -527,20 +465,16 @@ func sampleReal(track: RealTrack&, time: Double): Double {
 
 /** A clip of [duration] seconds. */
 func animationClip(name: String, duration: Double, loopMode: LoopMode): AnimationClip {
-    var events: Array<AnimationEvent> = Array<AnimationEvent>()
-    return AnimationClip(name, animMax(duration, 0.0), loopMode, events, 0)
+    var events: Array<AnimationEvent> = []
+    return .(name, animMax(duration, 0.0), loopMode, events, 0)
 }
 
 /** Adds an event at [time], keeping the event list sorted. */
 func clipEvent(clip: AnimationClip!, time: Double, name: String, payload: Int): Int {
     if clip.eventCount >= clip.events.size {
-        fin room = if clip.events.size * 2 > 4 { clip.events.size * 2 } else { 4 }
+        fin room = if clip.events.size * 2 > 4 then clip.events.size * 2 else 4
         var grown: Array<AnimationEvent> = Array::fill<AnimationEvent>(room)
-        var i = 0
-        while i < clip.eventCount {
-            grown[i] = clip.events[i]
-            i = i + 1
-        }
+        for i: Int in 0..<clip.eventCount then grown[i] = clip.events[i]
         clip.events = grown
     }
 
@@ -551,16 +485,16 @@ func clipEvent(clip: AnimationClip!, time: Double, name: String, payload: Int): 
             at = scan
             scan = clip.eventCount
         } else {
-            scan = scan + 1
+            scan++
         }
     }
     var move = clip.eventCount
     while move > at {
         clip.events[move] = clip.events[move - 1]
-        move = move - 1
+        move--
     }
     clip.events[at] = AnimationEvent(time, name, payload)
-    clip.eventCount = clip.eventCount + 1
+    clip.eventCount++
     return at
 }
 
@@ -572,12 +506,10 @@ func clipEvent(clip: AnimationClip!, time: Double, name: String, payload: Int): 
  * `0 .. duration`.
  */
 func clipLocalTime(clip: AnimationClip&, elapsed: Double): Double {
-    if clip.duration <= animEpsilon {
-        return 0.0
-    }
+    if clip.duration <= animEpsilon then return 0.0
     return when clip.loopMode {
-        LoopMode.Repeat -> animWrap(elapsed, clip.duration)
-        LoopMode.PingPong -> pingPongTime(elapsed, clip.duration)
+        .Repeat -> animWrap(elapsed, clip.duration)
+        .PingPong -> pingPongTime(elapsed, clip.duration)
         else -> animHold(elapsed, clip.duration)
     }
 }
@@ -591,7 +523,7 @@ func clipLocalTime(clip: AnimationClip&, elapsed: Double): Double {
  */
 func pingPongTime(elapsed: Double, duration: Double): Double {
     fin phase = animWrap(elapsed, duration * 2.0)
-    return if phase <= duration { phase } else { duration * 2.0 - phase }
+    return if phase <= duration then phase else duration * 2.0 - phase
 }
 
 /** [elapsed] held inside `0 .. duration`, for the non-looping modes. */
@@ -605,11 +537,9 @@ func animHold(elapsed: Double, duration: Double): Double {
 
 /** Which way a ping-pong clip is travelling at [elapsed]. */
 func clipDirection(clip: AnimationClip&, elapsed: Double): PlaybackDirection {
-    if clip.duration <= animEpsilon {
-        return PlaybackDirection.Forward
-    }
+    if clip.duration <= animEpsilon then return PlaybackDirection.Forward
     return when clip.loopMode {
-        LoopMode.PingPong -> if animWrap(elapsed, clip.duration * 2.0) <= clip.duration {
+        .PingPong -> if animWrap(elapsed, clip.duration * 2.0) <= clip.duration {
             PlaybackDirection.Forward
         } else {
             PlaybackDirection.Backward
@@ -621,34 +551,25 @@ func clipDirection(clip: AnimationClip&, elapsed: Double): PlaybackDirection {
 /** True when a clip started at zero has run past its end. */
 func clipHasEnded(clip: AnimationClip&, elapsed: Double): Bool {
     return when clip.loopMode {
-        LoopMode.Once -> elapsed >= clip.duration
+        .Once -> elapsed >= clip.duration
         else -> false
     }
 }
 
 /** The clip's progress as a `0 .. 1` fraction. */
 func clipProgress(clip: AnimationClip&, elapsed: Double): Double {
-    if clip.duration <= animEpsilon {
-        return 1.0
-    }
-    return animClamp01(clipLocalTime(clip, elapsed) / clip.duration)
+    return if clip.duration <= animEpsilon then 1.0 else animClamp01(clipLocalTime(clip, elapsed) / clip.duration)
 }
 
 // ── Players ─────────────────────────────────────────────────────────────
 
 /** A player positioned at the start of [clip], stopped. */
-func animationPlayer(clip: AnimationClip): AnimationPlayer {
-    return AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Stopped, BlendWeight(1.0), 0.0)
-}
+func animationPlayer(clip: AnimationClip): AnimationPlayer = .(clip, 0.0, 1.0, .Stopped, BlendWeight(1.0), 0.0)
 
 /** A player positioned at the start of [clip], already playing. */
-func playingPlayer(clip: AnimationClip): AnimationPlayer {
-    return AnimationPlayer(clip, 0.0, 1.0, PlaybackState.Playing, BlendWeight(1.0), 0.0)
-}
+func playingPlayer(clip: AnimationClip): AnimationPlayer = .(clip, 0.0, 1.0, .Playing, BlendWeight(1.0), 0.0)
 
-func blendWeight(value: Double): BlendWeight {
-    return BlendWeight(animClamp01(value))
-}
+func blendWeight(value: Double): BlendWeight = .(animClamp01(value))
 
 impl AnimationPlayer {
     /** Starts, or restarts, playback from the beginning. */
@@ -660,15 +581,11 @@ impl AnimationPlayer {
 
     /** Resumes without rewinding. */
     func !.resume() {
-        if self.state != PlaybackState.Playing {
-            self.state = PlaybackState.Playing
-        }
+        if self.state != .Playing then self.state = PlaybackState.Playing
     }
 
     func !.pause() {
-        if self.state == PlaybackState.Playing {
-            self.state = PlaybackState.Paused
-        }
+        if self.state == .Playing then self.state = PlaybackState.Paused
     }
 
     /** Stops and rewinds. */
@@ -685,23 +602,15 @@ impl AnimationPlayer {
     }
 
     /** The time within the clip the player is currently at. */
-    func &.localTime(): Double {
-        return clipLocalTime(self.clip, self.elapsed)
-    }
+    func &.localTime(): Double = clipLocalTime(self.clip, self.elapsed)
 
     /** The player's progress through its clip, `0 .. 1`. */
-    func !.progress(): Double {
-        return clipProgress(self.clip, self.elapsed)
-    }
+    func !.progress(): Double = clipProgress(self.clip, self.elapsed)
 
-    func &.direction(): PlaybackDirection {
-        return clipDirection(self.clip, self.elapsed)
-    }
+    func &.direction(): PlaybackDirection = clipDirection(self.clip, self.elapsed)
 
     /** True while the player is contributing to a blend. */
-    func &.isActive(): Bool {
-        return self.state == PlaybackState.Playing && self.weight.value > 0.0
-    }
+    func &.isActive(): Bool = self.state == .Playing && self.weight.value > 0.0
 
     /**
      * Advances the clock by [dt] seconds and reports the resulting state.
@@ -711,11 +620,9 @@ impl AnimationPlayer {
      * jumping forward by however long it was paused.
      */
     func !.advance(dt: Double): PlaybackState {
-        if self.state != PlaybackState.Playing {
-            return self.state
-        }
+        if self.state != .Playing then return self.state
         self.previous = self.elapsed
-        self.elapsed = self.elapsed + dt * self.speed
+        self.elapsed += dt * self.speed
         if clipHasEnded(self.clip, self.elapsed) {
             self.elapsed = self.clip.duration
             self.state = PlaybackState.Finished
@@ -734,9 +641,7 @@ impl AnimationPlayer {
  */
 func playerEvent(player: AnimationPlayer&): EventFire {
     fin clip = player.clip
-    if clip.eventCount <= 0 || player.elapsed <= player.previous {
-        return EventFire.Silent
-    }
+    if clip.eventCount <= 0 || player.elapsed <= player.previous then return EventFire.Silent
     // A frame long enough to cover the whole clip crosses every event, and does
     // so without the local times differing — one full period lands back on the
     // instant it started from, which a plain window comparison reads as no
@@ -745,8 +650,7 @@ func playerEvent(player: AnimationPlayer&): EventFire {
     fin from = clipLocalTime(clip, player.previous)
     fin to = clipLocalTime(clip, player.elapsed)
 
-    var i = 0
-    while i < clip.eventCount {
+    for i: Int in 0..<clip.eventCount {
         fin event = clip.events[i]
         fin crossed = when true {
             wholeClip -> true
@@ -755,10 +659,7 @@ func playerEvent(player: AnimationPlayer&): EventFire {
             // clip and the head of the next pass.
             else -> event.time > from || event.time <= to
         }
-        if crossed {
-            return EventFire.Fired(event.name, event.payload, event.time)
-        }
-        i = i + 1
+        if crossed then return EventFire.Fired(event.name, event.payload, event.time)
     }
     return EventFire.Silent
 }
@@ -766,7 +667,7 @@ func playerEvent(player: AnimationPlayer&): EventFire {
 /** True when [fire] reported an event. */
 func eventFired(fire: EventFire): Bool {
     return when fire {
-        EventFire.Fired(name, payload, at) -> true
+        .Fired(name, payload, at) -> true
         else -> false
     }
 }
@@ -774,7 +675,7 @@ func eventFired(fire: EventFire): Bool {
 /** The name of a fired event, or the empty string. */
 func eventName(fire: EventFire): String {
     return when fire {
-        EventFire.Fired(name, payload, at) -> name
+        .Fired(name, payload, at) -> name
         else -> ""
     }
 }
@@ -784,24 +685,20 @@ func eventName(fire: EventFire): String {
 /** An empty timeline with room for [capacity] players. */
 func timelineNew(name: String, capacity: Int): Timeline {
     var players: Array<AnimationPlayer> = Array::fill<AnimationPlayer>(animCapacity(capacity))
-    return Timeline(name, players, 0, 1.0, PlaybackState.Stopped)
+    return .(name, players, 0, 1.0, .Stopped)
 }
 
 impl Timeline {
     /** Appends [player] and returns its index. */
     func !.add(player: AnimationPlayer): Int {
         if self.count >= self.players.size {
-            fin room = if self.players.size * 2 > 4 { self.players.size * 2 } else { 4 }
+            fin room = if self.players.size * 2 > 4 then self.players.size * 2 else 4
             var grown: Array<AnimationPlayer> = Array::fill<AnimationPlayer>(room)
-            var i = 0
-            while i < self.count {
-                grown[i] = self.players[i]
-                i = i + 1
-            }
+            for i: Int in 0..<self.count then grown[i] = self.players[i]
             self.players = grown
         }
         self.players[self.count] = player
-        self.count = self.count + 1
+        self.count++
         return self.count - 1
     }
 
@@ -818,30 +715,22 @@ impl Timeline {
 
     /** Starts every player from the beginning. */
     func !.play() {
-        for i in 0..(self.count - 1) {
-            self.players[i].play()
-        }
+        for i in 0..(self.count - 1) then self.players[i].play()
         self.state = PlaybackState.Playing
     }
 
     func !.pause() {
-        for i in 0..(self.count - 1) {
-            self.players[i].pause()
-        }
+        for i in 0..(self.count - 1) then self.players[i].pause()
         self.state = PlaybackState.Paused
     }
 
     func !.resume() {
-        for i in 0..(self.count - 1) {
-            self.players[i].resume()
-        }
+        for i in 0..(self.count - 1) then self.players[i].resume()
         self.state = PlaybackState.Playing
     }
 
     func !.stop() {
-        for i in 0..(self.count - 1) {
-            self.players[i].stop()
-        }
+        for i in 0..(self.count - 1) then self.players[i].stop()
         self.state = PlaybackState.Stopped
     }
 
@@ -853,27 +742,19 @@ impl Timeline {
      * caller tracking them individually.
      */
     func !.advance(dt: Double): PlaybackState {
-        if self.state != PlaybackState.Playing {
-            return self.state
-        }
+        if self.state != .Playing then return self.state
         var allDone = true
         for i in 0..(self.count - 1) {
-            if self.players[i].advance(dt * self.timeScale) != PlaybackState.Finished {
-                allDone = false
-            }
+            if self.players[i].advance(dt * self.timeScale) != .Finished then allDone = false
         }
-        if allDone && self.count > 0 {
-            self.state = PlaybackState.Finished
-        }
+        if allDone && self.count > 0 then self.state = PlaybackState.Finished
         return self.state
     }
 
     /** The longest clip on the timeline. */
     func &.duration(): Double {
         var longest = 0.0
-        for i in 0..(self.count - 1) {
-            longest = animMax(longest, self.players[i].clip.duration)
-        }
+        for i in 0..(self.count - 1) then longest = animMax(longest, self.players[i].clip.duration)
         return longest
     }
 }
@@ -889,39 +770,29 @@ impl Timeline {
  */
 func normalizeWeights(weights: Array<Double>, count: Int) {
     var total = 0.0
-    for i in 0..(count - 1) {
-        total = total + animMax(weights[i], 0.0)
-    }
-    if total <= animEpsilon {
-        return
-    }
-    for i in 0..(count - 1) {
-        weights[i] = animMax(weights[i], 0.0) / total
-    }
+    for i in 0..(count - 1) then total += animMax(weights[i], 0.0)
+    if total <= animEpsilon then return
+    for i in 0..(count - 1) then weights[i] = animMax(weights[i], 0.0) / total
 }
 
 /** The contribution of [player] to a blend, `0` when it is not active. */
-func playerContribution(player: AnimationPlayer&): Double {
-    return if player.isActive() { player.weight.value } else { 0.0 }
-}
+func playerContribution(player: AnimationPlayer&): Double = if player.isActive() then player.weight.value else 0.0
 
 test "easing keeps its endpoints and bends in between" {
-    for mode in 0..0 {
-        assert easeFactor(0.0, Interpolation.Linear) == 0.0 panic "every curve must start at zero"
-    }
-    assert easeFactor(1.0, Interpolation.EaseInOut) == 1.0 panic "every curve must end at one"
-    assert easeFactor(0.5, Interpolation.Linear) == 0.5 panic "linear must not bend"
-    assert easeFactor(0.5, Interpolation.EaseIn) < 0.5 panic "ease-in must lag at the midpoint"
-    assert easeFactor(0.5, Interpolation.EaseOut) > 0.5 panic "ease-out must lead at the midpoint"
-    assert easeFactor(0.4, Interpolation.Step) == 0.0 panic "a step must hold until it arrives"
-    assert easeFactor(2.0, Interpolation.Linear) == 1.0 panic "an over-run position must clamp"
+    for mode in 0..0 then assert easeFactor(0.0, .Linear) == 0.0 panic "every curve must start at zero"
+    assert easeFactor(1.0, .EaseInOut) == 1.0 panic "every curve must end at one"
+    assert easeFactor(0.5, .Linear) == 0.5 panic "linear must not bend"
+    assert easeFactor(0.5, .EaseIn) < 0.5 panic "ease-in must lag at the midpoint"
+    assert easeFactor(0.5, .EaseOut) > 0.5 panic "ease-out must lead at the midpoint"
+    assert easeFactor(0.4, .Step) == 0.0 panic "a step must hold until it arrives"
+    assert easeFactor(2.0, .Linear) == 1.0 panic "an over-run position must clamp"
 }
 
 test "a track stays sorted however it is built" {
     var track = realTrackNew("height", 4)
-    realTrackKey(track, 2.0, 20.0, Interpolation.Linear)
-    realTrackKey(track, 0.0, 0.0, Interpolation.Linear)
-    realTrackKey(track, 1.0, 10.0, Interpolation.Linear)
+    realTrackKey(track, 2.0, 20.0, .Linear)
+    realTrackKey(track, 0.0, 0.0, .Linear)
+    realTrackKey(track, 1.0, 10.0, .Linear)
 
     assert track.count == 3 panic "every key must be kept"
     assert realTrackAt(track, 0).time == 0.0 panic "the earliest key must sort first"
@@ -935,22 +806,22 @@ test "a track stays sorted however it is built" {
 }
 
 test "loop modes resolve the clock the way their names promise" {
-    fin once = animationClip("once", 2.0, LoopMode.Once)
+    fin once = animationClip("once", 2.0, .Once)
     assert clipLocalTime(once, 3.0) == 2.0 panic "a one-shot clip must hold its end"
     assert clipHasEnded(once, 2.5) panic "a one-shot clip must report finishing"
 
-    fin repeat = animationClip("repeat", 2.0, LoopMode.Repeat)
+    fin repeat = animationClip("repeat", 2.0, .Repeat)
     assert animAbs(clipLocalTime(repeat, 5.0) - 1.0) < 0.001 panic "a repeating clip must wrap"
     assert !clipHasEnded(repeat, 99.0) panic "a repeating clip never finishes"
 
-    fin pingPong = animationClip("pingpong", 2.0, LoopMode.PingPong)
+    fin pingPong = animationClip("pingpong", 2.0, .PingPong)
     assert animAbs(clipLocalTime(pingPong, 1.0) - 1.0) < 0.001 panic "a ping-pong must climb on the way out"
     assert animAbs(clipLocalTime(pingPong, 3.0) - 1.0) < 0.001 panic "a ping-pong must descend on the way back"
     assert clipDirection(pingPong, 3.0) == PlaybackDirection.Backward panic "the direction must reverse on the return leg"
 }
 
 test "a player only advances while it is playing" {
-    var player = animationPlayer(animationClip("walk", 2.0, LoopMode.Repeat))
+    var player = animationPlayer(animationClip("walk", 2.0, .Repeat))
     player.advance(1.0)
     assert player.elapsed == 0.0 panic "a stopped player must ignore time"
 
@@ -973,7 +844,7 @@ test "a player only advances while it is playing" {
 }
 
 test "a one-shot player reports finishing exactly once it is over" {
-    var player = playingPlayer(animationClip("attack", 1.0, LoopMode.Once))
+    var player = playingPlayer(animationClip("attack", 1.0, .Once))
     assert player.advance(0.5) == PlaybackState.Playing panic "a clip half over is still playing"
     assert player.advance(1.0) == PlaybackState.Finished panic "a clip run past its end must finish"
     assert player.elapsed == 1.0 panic "a finished clip must rest exactly on its end"
@@ -981,7 +852,7 @@ test "a one-shot player reports finishing exactly once it is over" {
 }
 
 test "events fire once, in the window the clock crossed" {
-    var clip = animationClip("swing", 1.0, LoopMode.Repeat)
+    var clip = animationClip("swing", 1.0, .Repeat)
     clipEvent(clip, 0.5, "hit", 7)
 
     var player = playingPlayer(take clip)
@@ -1002,8 +873,8 @@ test "events fire once, in the window the clock crossed" {
 
 test "a timeline drives its players as one" {
     var timeline = timelineNew("cutscene", 2)
-    timeline.add(playingPlayer(animationClip("pan", 1.0, LoopMode.Once)))
-    timeline.add(playingPlayer(animationClip("fade", 3.0, LoopMode.Once)))
+    timeline.add(playingPlayer(animationClip("pan", 1.0, .Once)))
+    timeline.add(playingPlayer(animationClip("fade", 3.0, .Once)))
     timeline.play()
 
     assert animAbs(timeline.duration() - 3.0) < 0.001 panic "a timeline is as long as its longest clip"

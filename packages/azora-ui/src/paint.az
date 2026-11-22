@@ -54,24 +54,24 @@ func paintTree(
     clipTop: Double
     clipBottom: Double
 ) {
-    fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), node, .())
+    fin rect = storageGetOrDefault<Rect>(store(pass), node, .())
     fin visible = rect.y + rect.height >= clipTop && rect.y <= clipBottom
 
     if visible {
-        fin ink = storageGetOrDefault<Paint>(store<Paint>(pass), node, .())
-        fin corner = storageGetOrDefault<Corner>(store<Corner>(pass), node, .())
+        fin ink = storageGetOrDefault<Paint>(store(pass), node, .())
+        fin corner = storageGetOrDefault<Corner>(store(pass), node, .())
         var fillR = ink.r
         var fillG = ink.g
         var fillB = ink.b
         // A node with no Paint of its own - a caption, a layout row - fills
         // nothing; the default paint is opaque black and would cover its parent.
-        var fillAlpha = if storageHas<Paint>(store<Paint>(pass), node) { ink.alpha } else { 0.0 }
-        if storageHas<HoverPaint>(store<HoverPaint>(pass), node) {
+        var fillAlpha = if storageHas<Paint>(store(pass), node) then ink.alpha else 0.0
+        if storageHas<HoverPaint>(store(pass), node) {
             fin pointerX = app.mouseX()
             fin pointerY = app.mouseY()
             if pointerX >= rect.x && pointerX < rect.x + rect.width && pointerY >= rect.y && pointerY < rect.y + rect.height &&
                 pointerY >= clipTop && pointerY <= clipBottom {
-                fin hover = storageGetOrDefault<HoverPaint>(store<HoverPaint>(pass), node, .())
+                fin hover = storageGetOrDefault<HoverPaint>(store(pass), node, .())
                 fillR = hover.r
                 fillG = hover.g
                 fillB = hover.b
@@ -85,30 +85,30 @@ func paintTree(
                 app.uiRect(rect.x, rect.y, rect.width, rect.height, fillR, fillG, fillB, fillAlpha)
             }
         }
-        if storageHas<Stroke>(store<Stroke>(pass), node) {
-            fin stroke = storageGetOrDefault<Stroke>(store<Stroke>(pass), node, .())
+        if storageHas<Stroke>(store(pass), node) {
+            fin stroke = storageGetOrDefault<Stroke>(store(pass), node, .())
             app.uiRoundRectStroke(rect.x, rect.y, rect.width, rect.height, corner.radius, stroke.width, stroke.r, stroke.g, stroke.b, stroke.alpha)
         }
-        fin label = storageGetOrDefault<Text>(store<Text>(pass), node, .())
+        fin label = storageGetOrDefault<Text>(store(pass), node, .())
         if stringLength(label.value) > 0 {
-            fin style = storageGetOrDefault<TextStyle>(store<TextStyle>(pass), node, .())
-            fin size = if style.size > 0.0 { style.size } else if ink.size > 0.0 { ink.size } else { 14.0 }
+            fin style = storageGetOrDefault<TextStyle>(store(pass), node, .())
+            fin size = if style.size > 0.0 then style.size else if ink.size > 0.0 then ink.size else 14.0
             // Text is drawn inside its own node's rectangle. It is not nudged
             // off the edge any more: a caption inside a button is a child that
             // the button's centring layout has already placed, so shifting it
             // here would move it off the centre it was just given. Alignment
             // is within the node's padding, which is the inset it asked for.
-            fin font = if style.font == 1 { uiFontSemibold } else if style.font == 2 { uiFontMonospace } else { uiFontRegular }
+            fin font = if style.font == 1 then uiFontSemibold else if style.font == 2 then uiFontMonospace else uiFontRegular
             fin width = app.uiTextWidthFont(label.value, size, font)
-            fin inset = storageGetOrDefault<Padding>(store<Padding>(pass), node, .())
-            fin x = if style.align == 0 { rect.x + inset.start } else if style.align == 2 { rect.x + rect.width - inset.end - width } else { rect.x + (rect.width - width) * 0.5 }
+            fin inset = storageGetOrDefault<Padding>(store(pass), node, .())
+            fin x = if style.align == 0 then rect.x + inset.start else if style.align == 2 then rect.x + rect.width - inset.end - width else rect.x + (rect.width - width) * 0.5
             fin height = app.uiTextHeight(size)
             app.uiTextFont(
-                label.value,
-                x,
-                rect.y + (rect.height - height) * 0.5,
-                size,
-                style.r, style.g, style.b,
+                label.value
+                x
+                rect.y + (rect.height - height) * 0.5
+                size
+                style.r, style.g, style.b
                 font
             )
         }
@@ -119,7 +119,7 @@ func paintTree(
     // drawn over whatever sits above the container - the toolbar, a neighbour,
     // anything. The rectangle is restored afterwards rather than saved and
     // put back, because containers here do not nest.
-    fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node)
+    fin scrolls = storageHas<Scroll>(store(pass), node)
     var childTop = clipTop
     var childBottom = clipBottom
     if scrolls {
@@ -127,29 +127,19 @@ func paintTree(
         // Culling still uses the tighter bounds: the scissor stops a partly
         // visible row from spilling, and this stops a wholly invisible one from
         // being drawn at all.
-        if rect.y > childTop {
-            childTop = rect.y
-        }
-        if rect.y + rect.height < childBottom {
-            childBottom = rect.y + rect.height
-        }
+        if rect.y > childTop then childTop = rect.y
+        if rect.y + rect.height < childBottom then childBottom = rect.y + rect.height
     }
 
     // Children are drawn whether or not the parent was visible: a scrolled
     // container is usually off-screen itself while its rows are not.
     fin count = pass.childCount(node)
-    var index = 0
-    while index < count {
-        fin child = pass.childAt(node, index)
-        if child.isValid {
-            paintTree(app, pass, child, childTop, childBottom)
-        }
-        index = index + 1
+    for i in 0..<count {
+        fin child = pass.childAt(node, i)
+        if child.isValid then paintTree(app, pass, child, childTop, childBottom)
     }
 
-    if scrolls {
-        app.clearScissor()
-    }
+    if scrolls then app.clearScissor()
 }
 
 // ── Recorded painting ───────────────────────────────────────────────────
@@ -186,7 +176,7 @@ pack PaintOp derives (Copy, Clone) {
     /** 0 regular, 1 semibold, 2 fixed-pitch. */
     var font: Int = 0
     /** An icon's atlas texture and the cell's corners in it. */
-    var texture: Long = Long(0)
+    var texture: Long = 0
     var u0: Double = 0.0
     var v0: Double = 0.0
     var u1: Double = 0.0
@@ -199,7 +189,7 @@ pack PaintOp derives (Copy, Clone) {
  * the user sees there.
  */
 pack PaintNode derives (Copy, Clone) {
-    var entity: Entity = Entity::invalid
+    var entity: Entity = ::invalid
     var x: Double = 0.0
     var y: Double = 0.0
     var width: Double = 0.0
@@ -212,8 +202,8 @@ pack PaintNode derives (Copy, Clone) {
 
 /** A recorded tree, ready to replay until the tree changes. */
 pack PaintList {
-    var ops: Array<PaintOp> = Array<PaintOp>()
-    var nodes: Array<PaintNode> = Array<PaintNode>()
+    var ops: Array<PaintOp> = []
+    var nodes: Array<PaintNode> = []
     var pointerFloor: Int = 0
     var pointerLimit: Int = -1
 }
@@ -246,19 +236,19 @@ impl PaintList {
             fin node = self.nodes[index]
             fin inside = x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height
             fin visible = x >= node.clipLeft && x < node.clipRight && y >= node.clipTop && y < node.clipBottom
-            if inside && visible && storageHas<T>(store, node.entity) {
-                return node.entity
-            }
-            index = index - 1
+            if inside && visible && storageHas<T>(store, node.entity) then return node.entity
+            index--
         }
-        return Entity::invalid
+        return ::invalid
     }
 }
 
 func paintFontName(font: Int): String {
-    if font == 1 { return uiFontSemibold }
-    if font == 2 { return uiFontMonospace }
-    return uiFontRegular
+    return when font {
+        1 -> uiFontSemibold
+        2 -> uiFontMonospace
+        else -> uiFontRegular
+    }
 }
 
 /** Records what [paintTree] would draw for [node]'s subtree into [list]. */
@@ -269,48 +259,46 @@ func recordTree(
     clipTop: Double
     clipBottom: Double
     list: PaintList!
-    clipLeft: Double = 0.0 - 1000000.0
+    clipLeft: Double = -1000000.0
     clipRight: Double = 1000000.0
 ) {
-    fin rect = storageGetOrDefault<Rect>(store<Rect>(pass), node, .())
+    fin rect = storageGetOrDefault<Rect>(store(pass), node, .())
     fin visible = rect.y + rect.height >= clipTop && rect.y <= clipBottom &&
         rect.x + rect.width >= clipLeft && rect.x <= clipRight
     list.nodes.add(PaintNode(node, rect.x, rect.y, rect.width, rect.height, clipLeft, clipTop, clipRight, clipBottom))
     if visible {
-        fin ink = storageGetOrDefault<Paint>(store<Paint>(pass), node, .())
-        fin corner = storageGetOrDefault<Corner>(store<Corner>(pass), node, .())
-        fin painted = storageHas<Paint>(store<Paint>(pass), node)
-        fin hovers = storageHas<HoverPaint>(store<HoverPaint>(pass), node)
+        fin ink = storageGetOrDefault<Paint>(store(pass), node, .())
+        fin corner = storageGetOrDefault<Corner>(store(pass), node, .())
+        fin painted = storageHas<Paint>(store(pass), node)
+        fin hovers = storageHas<HoverPaint>(store(pass), node)
         if (painted || hovers) && rect.width > 0.0 && rect.height > 0.0 {
-            fin hover = storageGetOrDefault<HoverPaint>(store<HoverPaint>(pass), node, .())
+            fin hover = storageGetOrDefault<HoverPaint>(store(pass), node, .())
             list.ops.add(PaintOp(0, rect.x, rect.y, rect.width, rect.height,
-                ink.r, ink.g, ink.b, if painted { ink.alpha } else { 0.0 }, corner.radius, 0.0,
+                ink.r, ink.g, ink.b, if painted then ink.alpha else 0.0, corner.radius, 0.0
                 hovers, hover.r, hover.g, hover.b, hover.alpha, clipTop, clipBottom, "", 0))
         }
-        if storageHas<Stroke>(store<Stroke>(pass), node) {
-            fin stroke = storageGetOrDefault<Stroke>(store<Stroke>(pass), node, .())
+        if storageHas<Stroke>(store(pass), node) {
+            fin stroke = storageGetOrDefault<Stroke>(store(pass), node, .())
             list.ops.add(PaintOp(1, rect.x, rect.y, rect.width, rect.height,
-                stroke.r, stroke.g, stroke.b, stroke.alpha, corner.radius, stroke.width,
+                stroke.r, stroke.g, stroke.b, stroke.alpha, corner.radius, stroke.width
                 false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
         }
-        fin label = storageGetOrDefault<Text>(store<Text>(pass), node, .())
+        fin label = storageGetOrDefault<Text>(store(pass), node, .())
         if stringLength(label.value) > 0 {
-            fin style = storageGetOrDefault<TextStyle>(store<TextStyle>(pass), node, .())
-            fin size = if style.size > 0.0 { style.size } else if ink.size > 0.0 { ink.size } else { 14.0 }
+            fin style = storageGetOrDefault<TextStyle>(store(pass), node, .())
+            fin size = if style.size > 0.0 then style.size else if ink.size > 0.0 then ink.size else 14.0
             fin width = app.uiTextWidthFont(label.value, size, paintFontName(style.font))
-            fin inset = storageGetOrDefault<Padding>(store<Padding>(pass), node, .())
-            fin x = if style.align == 0 { rect.x + inset.start } else if style.align == 2 { rect.x + rect.width - inset.end - width } else { rect.x + (rect.width - width) * 0.5 }
+            fin inset = storageGetOrDefault<Padding>(store(pass), node, .())
+            fin x = if style.align == 0 then rect.x + inset.start else if style.align == 2 then rect.x + rect.width - inset.end - width else rect.x + (rect.width - width) * 0.5
             fin height = app.uiTextHeight(size)
             list.ops.add(PaintOp(2, x, rect.y + (rect.height - height) * 0.5, width, height,
-                style.r, style.g, style.b, style.alpha, 0.0, size,
+                style.r, style.g, style.b, style.alpha, 0.0, size
                 false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, label.value, style.font))
         }
     }
-    if visible {
-        recordIcon(pass, node, rect, clipTop, clipBottom, list)
-    }
+    if visible then recordIcon(pass, node, rect, clipTop, clipBottom, list)
     // A scrolled container clips its content, and so does one that asked to.
-    fin scrolls = storageHas<Scroll>(store<Scroll>(pass), node) || storageHas<Clip>(store<Clip>(pass), node)
+    fin scrolls = storageHas<Scroll>(store(pass), node) || storageHas<Clip>(store(pass), node)
     var childTop = clipTop
     var childBottom = clipBottom
     var childLeft = clipLeft
@@ -318,19 +306,15 @@ func recordTree(
     if scrolls {
         list.ops.add(PaintOp(3, rect.x, rect.y, rect.width, rect.height,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0))
-        if rect.y > childTop { childTop = rect.y }
-        if rect.y + rect.height < childBottom { childBottom = rect.y + rect.height }
-        if rect.x > childLeft { childLeft = rect.x }
-        if rect.x + rect.width < childRight { childRight = rect.x + rect.width }
+        if rect.y > childTop then childTop = rect.y
+        if rect.y + rect.height < childBottom then childBottom = rect.y + rect.height
+        if rect.x > childLeft then childLeft = rect.x
+        if rect.x + rect.width < childRight then childRight = rect.x + rect.width
     }
     fin count = pass.childCount(node)
-    var index = 0
-    while index < count {
-        fin child = pass.childAt(node, index)
-        if child.isValid {
-            recordTree(app, pass, child, childTop, childBottom, list, childLeft, childRight)
-        }
-        index = index + 1
+    for i: Int in 0..<count {
+        fin child = pass.childAt(node, i)
+        if child.isValid then recordTree(app, pass, child, childTop, childBottom, list, childLeft, childRight)
     }
     if scrolls {
         list.ops.add(PaintOp(4, 0.0, 0.0, 0.0, 0.0,
@@ -340,8 +324,8 @@ func recordTree(
 
 /** Records [node]'s icon or picture, if it has one. */
 func recordIcon(pass: Composition!, node: Entity, rect: Rect&, clipTop: Double, clipBottom: Double, list: PaintList!) {
-    fin imageAt = storageIndexOf<ImageFill>(store<ImageFill>(pass), node)
-    if imageAt >= 0 && store<ImageFill>(pass).values[imageAt].texture != Long(0) {
+    fin imageAt = storageIndexOf<ImageFill>(store(pass), node)
+    if imageAt >= 0 && store<ImageFill>(pass).values[imageAt].texture != 0 {
         var picture = PaintOp(6, rect.x, rect.y, rect.width, rect.height, 1.0, 1.0, 1.0, store<ImageFill>(pass).values[imageAt].alpha,
             0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0)
         picture.texture = store<ImageFill>(pass).values[imageAt].texture
@@ -349,24 +333,20 @@ func recordIcon(pass: Composition!, node: Entity, rect: Rect&, clipTop: Double, 
         picture.v1 = 1.0
         list.ops.add(picture)
     }
-    fin glyphAt = storageIndexOf<IconGlyph>(store<IconGlyph>(pass), node)
+    fin glyphAt = storageIndexOf<IconGlyph>(store(pass), node)
     fin atlases = store<IconAtlas>(pass)
-    if glyphAt < 0 || storageLength<IconAtlas>(atlases) == 0 {
-        return
-    }
+    if glyphAt < 0 || storageLength<IconAtlas>(atlases) == 0 then return
     fin cell = store<IconGlyph>(pass).values[glyphAt].cell
     fin columns = atlases.values[0].columns
     fin size = atlases.values[0].cell as Double
     fin width = atlases.values[0].width as Double
     fin height = atlases.values[0].height as Double
-    if cell < 0 || columns <= 0 || width <= 0.0 || height <= 0.0 {
-        return
-    }
+    if cell < 0 || columns <= 0 || width <= 0.0 || height <= 0.0 then return
     fin u0 = ((cell % columns) as Double) * size / width
     fin v0 = ((cell / columns) as Double) * size / height
     var op = PaintOp(5, rect.x, rect.y, rect.width, rect.height,
-        store<IconGlyph>(pass).values[glyphAt].r, store<IconGlyph>(pass).values[glyphAt].g,
-        store<IconGlyph>(pass).values[glyphAt].b, store<IconGlyph>(pass).values[glyphAt].alpha,
+        store<IconGlyph>(pass).values[glyphAt].r, store<IconGlyph>(pass).values[glyphAt].g
+        store<IconGlyph>(pass).values[glyphAt].b, store<IconGlyph>(pass).values[glyphAt].alpha
         0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0, clipTop, clipBottom, "", 0)
     op.texture = atlases.values[0].texture
     op.u0 = u0
@@ -382,10 +362,10 @@ func replayPaint(app: App!, list: PaintList&, from: Int = 0, until: Int = -1) {
     fin pointerY = app.mouseY()
     // Clips nest: each one is the intersection of its own rectangle with the
     // clip it sits inside, and leaving it restores the one around it.
-    var clipX: Array<Double> = Array<Double>()
-    var clipY: Array<Double> = Array<Double>()
-    var clipW: Array<Double> = Array<Double>()
-    var clipH: Array<Double> = Array<Double>()
+    var clipX: Array<Double> = []
+    var clipY: Array<Double> = []
+    var clipW: Array<Double> = []
+    var clipH: Array<Double> = []
     var index = from
     fin end = if until < 0 then list.ops.size else until
     while index < end {
@@ -423,13 +403,13 @@ func replayPaint(app: App!, list: PaintList&, from: Int = 0, until: Int = -1) {
             var bottom = y + height
             fin depth = clipX.size
             if depth > 0 {
-                if clipX[depth - 1] > left { left = clipX[depth - 1] }
-                if clipY[depth - 1] > top { top = clipY[depth - 1] }
-                if clipX[depth - 1] + clipW[depth - 1] < right { right = clipX[depth - 1] + clipW[depth - 1] }
-                if clipY[depth - 1] + clipH[depth - 1] < bottom { bottom = clipY[depth - 1] + clipH[depth - 1] }
+                if clipX[depth - 1] > left then left = clipX[depth - 1]
+                if clipY[depth - 1] > top then top = clipY[depth - 1]
+                if clipX[depth - 1] + clipW[depth - 1] < right then right = clipX[depth - 1] + clipW[depth - 1]
+                if clipY[depth - 1] + clipH[depth - 1] < bottom then bottom = clipY[depth - 1] + clipH[depth - 1]
             }
-            if right < left { right = left }
-            if bottom < top { bottom = top }
+            if right < left then right = left
+            if bottom < top then bottom = top
             clipX.add(left)
             clipY.add(top)
             clipW.add(right - left)
@@ -451,6 +431,6 @@ func replayPaint(app: App!, list: PaintList&, from: Int = 0, until: Int = -1) {
             if depth > 0 { app.setScissor(clipX[depth - 1], clipY[depth - 1], clipW[depth - 1], clipH[depth - 1]) }
             else { app.clearScissor() }
         }
-        index = index + 1
+        index++
     }
 }

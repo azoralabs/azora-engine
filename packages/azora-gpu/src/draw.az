@@ -37,17 +37,17 @@ import engine.io
 
 func writeMeshVertex(bytes: Long, off: Long, x: Double, y: Double, z: Double, nx: Double, ny: Double, nz: Double): Long {
     azPokeF32(bytes, off, x)
-    azPokeF32(bytes, off + Long(4), y)
-    azPokeF32(bytes, off + Long(8), z)
-    azPokeF32(bytes, off + Long(12), nx)
-    azPokeF32(bytes, off + Long(16), ny)
-    azPokeF32(bytes, off + Long(20), nz)
-    return off + Long(24)
+    azPokeF32(bytes, off + 4, y)
+    azPokeF32(bytes, off + 8, z)
+    azPokeF32(bytes, off + 12, nx)
+    azPokeF32(bytes, off + 16, ny)
+    azPokeF32(bytes, off + 20, nz)
+    return off + 24
 }
 
 /** A decoded image on the GPU: [texture] holds [width] x [height] pixels. 0 draws nothing. */
 pack ImageTexture derives (Copy, Clone) {
-    var texture: Long = Long(0)
+    var texture: Long = 0
     var width: Int = 0
     var height: Int = 0
 }
@@ -56,9 +56,9 @@ impl App {
 
     /** Releases a caller-owned vertex buffer and clears its handle. Repeated release is harmless. */
     func &.releaseMesh(mesh: Mesh!) {
-        if mesh.buffer != Long(0) {
+        if mesh.buffer != 0 {
             send0(mesh.buffer, sel("release"))
-            mesh.buffer = Long(0)
+            mesh.buffer = 0
             mesh.count = 0
         }
     }
@@ -75,9 +75,8 @@ impl App {
         fin cv: Array<Double> = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
 
         fin bytes = azAlloc(Long(864)) // 36 verts × 6 floats × 4 bytes
-        var off = Long(0)
-        var face = 0
-        while face < 6 {
+        var off: Long = 0
+        for face: Int in 0..<6 {
             fin fnx = nx[face]
             fin fny = ny[face]
             fin fnz = nz[face]
@@ -97,25 +96,22 @@ impl App {
             fin tty = bvz * fnx - bvx * fnz
             fin ttz = bvx * fny - bvy * fnx
 
-            var c = 0
-            while c < 6 {
+            for c: Int in 0..<6 {
                 fin u = cu[c]
                 fin v = cv[c]
                 azPokeF32(bytes, off, (fnx + ttx * u + bvx * v) * h)
-                azPokeF32(bytes, off + Long(4), (fny + tty * u + bvy * v) * h)
-                azPokeF32(bytes, off + Long(8), (fnz + ttz * u + bvz * v) * h)
-                azPokeF32(bytes, off + Long(12), fnx)
-                azPokeF32(bytes, off + Long(16), fny)
-                azPokeF32(bytes, off + Long(20), fnz)
-                off = off + Long(24)
-                c = c + 1
+                azPokeF32(bytes, off + 4, (fny + tty * u + bvy * v) * h)
+                azPokeF32(bytes, off + 8, (fnz + ttz * u + bvz * v) * h)
+                azPokeF32(bytes, off + 12, fnx)
+                azPokeF32(bytes, off + 16, fny)
+                azPokeF32(bytes, off + 20, fnz)
+                off += 24
             }
-            face = face + 1
         }
 
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, Long(864), Long(0))
         azFree(bytes)
-        return Mesh(buffer, 36)
+        return .(buffer, 36)
     }
 
     /**
@@ -126,16 +122,15 @@ impl App {
      */
     func &.meshCylinder(radius: Double, length: Double, segments: Int = 16): Mesh {
         var sides = segments
-        if sides < 3 { sides = 3 }
-        if sides > 64 { sides = 64 }
+        if sides < 3 then sides = 3
+        if sides > 64 then sides = 64
         fin vertexCount = sides * 12
         fin total = (vertexCount * 24) as Long
         fin bytes = azAlloc(total)
         fin half = length * 0.5
         fin step = PI * 2.0 / (sides as Double)
-        var off = Long(0)
-        var segment = 0
-        while segment < sides {
+        var off: Long = 0
+        for segment: Int in 0..<sides {
             fin a0 = (segment as Double) * step
             fin a1 = ((segment + 1) as Double) * step
             fin ny0 = cos(a0)
@@ -148,26 +143,25 @@ impl App {
             fin z1 = nz1 * radius
 
             // Side quad, split into two triangles with radial normals.
-            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, -half, y0, z0, 0.0, ny0, nz0)
             off = writeMeshVertex(bytes, off, half, y0, z0, 0.0, ny0, nz0)
             off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
-            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, -half, y0, z0, 0.0, ny0, nz0)
             off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
-            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, -half, y1, z1, 0.0, ny1, nz1)
 
             // End caps use one triangle per segment and flat axle normals.
-            off = writeMeshVertex(bytes, off, 0.0 - half, 0.0, 0.0, -1.0, 0.0, 0.0)
-            off = writeMeshVertex(bytes, off, 0.0 - half, y1, z1, -1.0, 0.0, 0.0)
-            off = writeMeshVertex(bytes, off, 0.0 - half, y0, z0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, -half, 0.0, 0.0, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, -half, y1, z1, -1.0, 0.0, 0.0)
+            off = writeMeshVertex(bytes, off, -half, y0, z0, -1.0, 0.0, 0.0)
             off = writeMeshVertex(bytes, off, half, 0.0, 0.0, 1.0, 0.0, 0.0)
             off = writeMeshVertex(bytes, off, half, y0, z0, 1.0, 0.0, 0.0)
             off = writeMeshVertex(bytes, off, half, y1, z1, 1.0, 0.0, 0.0)
-            segment = segment + 1
         }
 
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, Long(0))
         azFree(bytes)
-        return Mesh(buffer, vertexCount)
+        return .(buffer, vertexCount)
     }
 
     /**
@@ -177,87 +171,71 @@ impl App {
      */
     func &.meshSphere(radius: Double, rings: Int = 16, segments: Int = 24): Mesh {
         var bands = rings
-        if bands < 3 { bands = 3 }
+        if bands < 3 then bands = 3
         var around = segments
-        if around < 3 { around = 3 }
+        if around < 3 then around = 3
         fin vertexCount = bands * around * 6
         fin total = (vertexCount * 24) as Long
         fin bytes = azAlloc(total)
         fin pi = 3.141592653589793
-        var off = Long(0)
-        var ring = 0
-        while ring < bands {
+        var off: Long = 0
+        for ring: Int in 0..<bands {
             fin theta0 = pi * (ring as Double) / (bands as Double)
             fin theta1 = pi * ((ring + 1) as Double) / (bands as Double)
-            var segment = 0
-            while segment < around {
+            for segment: Int in 0..<around {
                 fin phi0 = 2.0 * pi * (segment as Double) / (around as Double)
                 fin phi1 = 2.0 * pi * ((segment + 1) as Double) / (around as Double)
                 // Corners: (theta, phi) pairs of one quad, as two triangles.
                 fin ts = [theta0, theta1, theta1, theta0, theta1, theta0]
                 fin ps = [phi0, phi0, phi1, phi0, phi1, phi1]
-                var corner = 0
-                while corner < 6 {
+                for corner: Int in 0..<6 {
                     fin nx = sin(ts[corner]) * cos(ps[corner])
                     fin ny = cos(ts[corner])
                     fin nz = sin(ts[corner]) * sin(ps[corner])
                     off = writeMeshVertex(bytes, off, nx * radius, ny * radius, nz * radius, nx, ny, nz)
-                    corner = corner + 1
                 }
-                segment = segment + 1
             }
-            ring = ring + 1
         }
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, Long(0))
         azFree(bytes)
-        return Mesh(buffer, vertexCount)
+        return .(buffer, vertexCount)
     }
 
     /// Creates a flat grid mesh in the XZ plane (`extent` half-size, `divisions` cells per side).
     func &.meshGrid(extent: Double, divisions: Int): Mesh {
         var divs = divisions
-        if divs < 1 {
-            divs = 1
-        }
-        if divs > 64 {
-            divs = 64
-        }
+        if divs < 1 then divs = 1
+        if divs > 64 then divs = 64
         fin vertCount = divs * divs * 6
         fin total = (vertCount * 24) as Long
         fin bytes = azAlloc(total)
         fin step = 2.0 * extent / (divs as Double)
-        fin origin = 0.0 - extent
+        fin origin = -extent
 
         // Quad corners in cell space.
         fin qu = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
         fin qv = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
 
-        var off = Long(0)
-        var i = 0
-        while i < divs {
-            var j = 0
-            while j < divs {
+        var off: Long = 0
+        for i: Int in 0..<divs {
+            for j: Int in 0..<divs {
                 fin x0 = origin + (i as Double) * step
                 fin z0 = origin + (j as Double) * step
-                var c = 0
-                while c < 6 {
+                for c: Int in 0..<6 {
                     azPokeF32(bytes, off, x0 + qu[c] * step)
-                    azPokeF32(bytes, off + Long(4), 0.0)
-                    azPokeF32(bytes, off + Long(8), z0 + qv[c] * step)
-                    azPokeF32(bytes, off + Long(12), 0.0)
-                    azPokeF32(bytes, off + Long(16), 1.0)
-                    azPokeF32(bytes, off + Long(20), 0.0)
-                    off = off + Long(24)
-                    c = c + 1
+                    azPokeF32(bytes, off + 4, 0.0)
+                    azPokeF32(bytes, off + 8, z0 + qv[c] * step)
+                    azPokeF32(bytes, off + 12, 0.0)
+                    azPokeF32(bytes, off + 16, 1.0)
+                    azPokeF32(bytes, off + 20, 0.0)
+                    off += 24
                 }
-                j = j + 1
             }
-            i = i + 1
         }
 
         fin buffer = send3(self.gpu.device, sel("newBufferWithBytes:length:options:"), bytes, total, Long(0))
         azFree(bytes)
-        return Mesh(buffer, vertCount)
+        return .(buffer, vertCount)
     }
 
     /// Draws a mesh with a model transform and the standard Lambert pipeline.
@@ -356,7 +334,7 @@ impl App {
             azPoke64(record, 0, mesh.buffer)
             azPoke64(record, 8, mesh.count as Long)
             pokeMat4(record, 16, model)
-            gpu.motionCount += 1
+            gpu.motionCount++
         }
         if indices != 0 {
             // Triangles, 32-bit indices from the start of [indices].
@@ -406,8 +384,8 @@ impl App {
     /// Ambient light amount clamped into 0..1.
     func !.setAmbientLight(value: Double) {
         var v = value
-        if v < 0.0 { v = 0.0 }
-        if v > 1.0 { v = 1.0 }
+        if v < 0.0 then v = 0.0
+        if v > 1.0 then v = 1.0
         self.gpu.ambient = v
     }
 
@@ -415,7 +393,7 @@ impl App {
 
     /// Filled rectangle (components 0..1).
     func !.uiRect(x: Double, y: Double, w: Double, h: Double, r: Double, g: Double, b: Double, a: Double) {
-        self.drawQuad2d(x, y, w, h, 0.0, 0.0, 1.0, 1.0, r, g, b, a, Long(0))
+        self.drawQuad2d(x, y, w, h, 0.0, 0.0, 1.0, 1.0, r, g, b, a, 0)
     }
 
     /**
@@ -434,32 +412,24 @@ impl App {
 
         var px = x * scale
         var py = y * scale
-        if px < 0.0 {
-            px = 0.0
-        }
-        if py < 0.0 {
-            py = 0.0
-        }
+        if px < 0.0 then px = 0.0
+        if py < 0.0 then py = 0.0
         var pw = w * scale
         var ph = h * scale
-        if px + pw > maxW {
-            pw = maxW - px
-        }
-        if py + ph > maxH {
-            ph = maxH - py
-        }
+        if px + pw > maxW then pw = maxW - px
+        if py + ph > maxH then ph = maxH - py
         if pw <= 0.0 || ph <= 0.0 {
             // An empty rectangle is not a legal scissor; nothing is visible
             // anyway, so collapse it to a single pixel off in the corner.
-            azSendScissor(self.gpu.enc, sel("setScissorRect:"), Long(0), Long(0), Long(1), Long(1))
+            azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0, 0, 1, 1)
             return
         }
         azSendScissor(
-            self.gpu.enc,
-            sel("setScissorRect:"),
-            px as Long,
-            py as Long,
-            pw as Long,
+            self.gpu.enc
+            sel("setScissorRect:")
+            px as Long
+            py as Long
+            pw as Long
             ph as Long
         )
     }
@@ -469,7 +439,7 @@ impl App {
         fin scale = self.gpu.scale * self.gpu.passScale
         fin w = (self.width() as Double) * scale
         fin h = (self.height() as Double) * scale
-        azSendScissor(self.gpu.enc, sel("setScissorRect:"), Long(0), Long(0), w as Long, h as Long)
+        azSendScissor(self.gpu.enc, sel("setScissorRect:"), 0, 0, w as Long, h as Long)
     }
 
     /**
@@ -485,25 +455,21 @@ impl App {
      * survive many frames; only the per-frame text textures are transient.
      */
     func &.newTexture(width: Int, height: Int, pixels: Long): Long {
-        if width <= 0 || height <= 0 || pixels == Long(0) {
-            return Long(0)
-        }
+        if width <= 0 || height <= 0 || pixels == 0 then return 0
         fin pw = width as Long
         fin ph = height as Long
         // 70 = MTLPixelFormatRGBA8Unorm.
         fin descriptor = send4(
-            cls("MTLTextureDescriptor"),
-            sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
-            Long(70), pw, ph, Long(0)
+            cls("MTLTextureDescriptor")
+            sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:")
+            70, pw, ph, 0
         )
         fin tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), descriptor)
-        if tex == Long(0) {
-            return Long(0)
-        }
-        fin unused = azSendRegion(
-            tex,
-            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
-            Long(0), Long(0), Long(0), pw, ph, Long(1), Long(0), pixels, pw * Long(4)
+        if tex == 0 then return 0
+        azSendRegion(
+            tex
+            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:")
+            0, 0, 0, pw, ph, 1, 0, pixels, pw * 4
         )
         return tex
     }
@@ -518,29 +484,21 @@ impl App {
      */
     func &.loadImage(path: String): ImageTexture {
         fin provider = CGDataProviderCreateWithFilename(path)
-        if provider == Long(0) {
-            return ImageTexture()
-        }
+        if provider == 0 then return .()
         var image = CGImageCreateWithPNGDataProvider(provider, Long(0), 1, 0)
-        if image == Long(0) {
-            image = CGImageCreateWithJPEGDataProvider(provider, Long(0), 1, 0)
-        }
+        if image == 0 then image = CGImageCreateWithJPEGDataProvider(provider, 0, 1, 0)
         CGDataProviderRelease(provider)
-        if image == Long(0) {
-            return ImageTexture()
-        }
+        if image == 0 then return .()
         fin width = CGImageGetWidth(image)
         fin height = CGImageGetHeight(image)
         fin space = CGColorSpaceCreateDeviceRGB()
         // 1 = kCGImageAlphaPremultipliedLast: RGBA, as MTLPixelFormatRGBA8Unorm reads it.
         fin ctx = CGBitmapContextCreate(Long(0), width, height, Long(8), width * Long(4), space, 1)
-        var loaded = ImageTexture()
-        if ctx != Long(0) {
+        var loaded: ImageTexture = .()
+        if ctx != 0 {
             CGContextDrawImage(ctx, 0.0, 0.0, width as Double, height as Double, image)
             fin texture = self.newTexture(width as Int, height as Int, CGBitmapContextGetData(ctx))
-            if texture != Long(0) {
-                loaded = ImageTexture(texture, width as Int, height as Int)
-            }
+            if texture != 0 then loaded = ImageTexture(texture, width as Int, height as Int)
             CGContextRelease(ctx)
         }
         CGColorSpaceRelease(space)
@@ -555,22 +513,18 @@ impl App {
      * texture avoids allocating and freeing a GPU resource per frame.
      */
     func updateTexture(tex: Long, width: Int, height: Int, pixels: Long) {
-        if tex == Long(0) || width <= 0 || height <= 0 || pixels == Long(0) {
-            return
-        }
+        if tex == 0 || width <= 0 || height <= 0 || pixels == 0 then return
         fin pw = width as Long
-        fin unused = azSendRegion(
-            tex,
-            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
-            Long(0), Long(0), Long(0), pw, height as Long, Long(1), Long(0), pixels, pw * Long(4)
+        azSendRegion(
+            tex
+            sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:")
+            0, 0, 0, pw, height as Long, 1, 0, pixels, pw * 4
         )
     }
 
     /// Releases a texture created by [newTexture].
     func releaseTexture(tex: Long) {
-        if tex != Long(0) {
-            fin unused = send0(tex, sel("release"))
-        }
+        if tex != 0 then send0(tex, sel("release"))
     }
 
     /// Draws a whole texture into the rectangle at (`x`, `y`), unmodulated.
@@ -589,15 +543,13 @@ impl App {
         srcX: Int, srcY: Int, srcW: Int, srcH: Int
         x: Double, y: Double, w: Double, h: Double
     ) {
-        if texWidth <= 0 || texHeight <= 0 {
-            return
-        }
+        if texWidth <= 0 || texHeight <= 0 then return
         fin tw = texWidth as Double
         fin th = texHeight as Double
         self.drawImageQuad(
-            x, y, w, h,
-            ((srcX + srcW) as Double) / tw, (srcY as Double) / th,
-            (srcX as Double) / tw, ((srcY + srcH) as Double) / th,
+            x, y, w, h
+            ((srcX + srcW) as Double) / tw, (srcY as Double) / th
+            (srcX as Double) / tw, ((srcY + srcH) as Double) / th
             1.0, 1.0, 1.0, 1.0, tex
         )
     }
@@ -614,15 +566,13 @@ impl App {
         srcX: Int, srcY: Int, srcW: Int, srcH: Int
         x: Double, y: Double, w: Double, h: Double
     ) {
-        if texWidth <= 0 || texHeight <= 0 {
-            return
-        }
+        if texWidth <= 0 || texHeight <= 0 then return
         fin tw = texWidth as Double
         fin th = texHeight as Double
         self.drawImageQuad(
-            x, y, w, h,
-            (srcX as Double) / tw, (srcY as Double) / th,
-            ((srcX + srcW) as Double) / tw, ((srcY + srcH) as Double) / th,
+            x, y, w, h
+            (srcX as Double) / tw, (srcY as Double) / th
+            ((srcX + srcW) as Double) / tw, ((srcY + srcH) as Double) / th
             1.0, 1.0, 1.0, 1.0, tex
         )
     }
@@ -635,9 +585,7 @@ impl App {
      */
     func !.drawQuad2d(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long) {
         var mode: Double = 0.0
-        if tex != Long(0) {
-            mode = 1.0
-        }
+        if tex != 0 then mode = 1.0
         self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
     }
 
@@ -649,9 +597,7 @@ impl App {
      */
     func !.drawImageQuad(x: Double, y: Double, w: Double, h: Double, u0: Double, v0: Double, u1: Double, v1: Double, r: Double, g: Double, b: Double, a: Double, tex: Long) {
         var mode: Double = 0.0
-        if tex != Long(0) {
-            mode = 2.0
-        }
+        if tex != 0 then mode = 2.0
         self.drawQuad2dMode(x, y, w, h, u0, v0, u1, v1, r, g, b, a, tex, mode)
     }
 
@@ -667,18 +613,14 @@ impl App {
 
     /** The inner border of a rounded rectangle, [width] points wide. */
     func !.uiRoundRectStroke(x: Double, y: Double, w: Double, h: Double, radius: Double, width: Double, r: Double, g: Double, b: Double, a: Double) {
-        if width <= 0.0 {
-            return
-        }
+        if width <= 0.0 then return
         self.drawShape2d(x, y, w, h, radius, width, r, g, b, a)
     }
 
     func !.drawShape2d(x: Double, y: Double, w: Double, h: Double, radius: Double, stroke: Double, r: Double, g: Double, b: Double, a: Double) {
-        if w <= 0.0 || h <= 0.0 {
-            return
-        }
+        if w <= 0.0 || h <= 0.0 then return
         fin s = self.gpu.scale
-        self.drawQuad2dShaped(x, y, w, h, 0.0, 0.0, w * s, h * s, r, g, b, a, Long(0), 3.0, w * s, h * s, radius * s, stroke * s)
+        self.drawQuad2dShaped(x, y, w, h, 0.0, 0.0, w * s, h * s, r, g, b, a, 0, 3.0, w * s, h * s, radius * s, stroke * s)
     }
 
     /**
@@ -696,9 +638,7 @@ impl App {
         shapeW: Double, shapeH: Double, radius: Double, stroke: Double
     ) {
         let gpu: AzGpu! = self.gpu
-        if !gpu.hasEncoder {
-            return
-        }
+        if !gpu.hasEncoder then return
         if gpu.mode != 1 {
             send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe2d)
             send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
@@ -706,26 +646,26 @@ impl App {
         }
         fin s = gpu.scale
         fin p = gpu.scratch
-        pokeVert2d(p, Long(0), x0 * s, y0 * s, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(32), x1 * s, y1 * s, u1, v1, r, g, b, a)
-        pokeVert2d(p, Long(64), x2 * s, y2 * s, u2, v2, r, g, b, a)
-        pokeVert2d(p, Long(96), x0 * s, y0 * s, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(128), x2 * s, y2 * s, u2, v2, r, g, b, a)
-        pokeVert2d(p, Long(160), x3 * s, y3 * s, u3, v3, r, g, b, a)
-        azPokeF32(p, Long(192), gpu.depthW as Double)
-        azPokeF32(p, Long(196), gpu.depthH as Double)
-        azPokeF32(p, Long(200), texMode)
-        azPokeF32(p, Long(204), 0.0)
-        azPokeF32(p, Long(208), shapeW)
-        azPokeF32(p, Long(212), shapeH)
-        azPokeF32(p, Long(216), radius)
-        azPokeF32(p, Long(220), stroke)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, Long(192), Long(0))
+        pokeVert2d(p, 0, x0 * s, y0 * s, u0, v0, r, g, b, a)
+        pokeVert2d(p, 32, x1 * s, y1 * s, u1, v1, r, g, b, a)
+        pokeVert2d(p, 64, x2 * s, y2 * s, u2, v2, r, g, b, a)
+        pokeVert2d(p, 96, x0 * s, y0 * s, u0, v0, r, g, b, a)
+        pokeVert2d(p, 128, x2 * s, y2 * s, u2, v2, r, g, b, a)
+        pokeVert2d(p, 160, x3 * s, y3 * s, u3, v3, r, g, b, a)
+        azPokeF32(p, 192, gpu.depthW as Double)
+        azPokeF32(p, 196, gpu.depthH as Double)
+        azPokeF32(p, 200, texMode)
+        azPokeF32(p, 204, 0.0)
+        azPokeF32(p, 208, shapeW)
+        azPokeF32(p, 212, shapeH)
+        azPokeF32(p, 216, radius)
+        azPokeF32(p, 220, stroke)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, 192, 0)
         fin up = p + Long(192)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, Long(32), Long(1))
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, Long(32), Long(1))
-        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, Long(0))
-        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), Long(3), Long(0), Long(6))
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, 32, 1)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, 32, 1)
+        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, 0)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
     }
 
     /**
@@ -737,13 +677,11 @@ impl App {
         fin dx = x1 - x0
         fin dy = y1 - y0
         fin length = sqrt(dx * dx + dy * dy)
-        if length < 0.0001 || width <= 0.0 {
-            return
-        }
+        if length < 0.0001 || width <= 0.0 then return
         fin s = self.gpu.scale
         fin ux = dx / length
         fin uy = dy / length
-        fin nx = 0.0 - uy
+        fin nx = -uy
         fin ny = ux
         fin pad = 1.0 / s
         fin along = width * 0.5 + pad
@@ -752,14 +690,14 @@ impl App {
         fin sy = y0 - uy * along
         fin ex = x1 + ux * along
         fin ey = y1 + uy * along
-        fin uStart = (0.0 - pad) * s
+        fin uStart = (-pad) * s
         fin uEnd = (length + width + pad) * s
-        fin vTop = (0.0 - pad) * s
+        fin vTop = (-pad) * s
         fin vBottom = (width + pad) * s
         self.drawQuad2dCorners(
-            sx + nx * across, sy + ny * across, ex + nx * across, ey + ny * across,
-            ex - nx * across, ey - ny * across, sx - nx * across, sy - ny * across,
-            uStart, vTop, uEnd, vTop, uEnd, vBottom, uStart, vBottom,
+            sx + nx * across, sy + ny * across, ex + nx * across, ey + ny * across
+            ex - nx * across, ey - ny * across, sx - nx * across, sy - ny * across
+            uStart, vTop, uEnd, vTop, uEnd, vBottom, uStart, vBottom
             r, g, b, a, 3.0, (length + width) * s, width * s, width * s * 0.5, 0.0)
     }
 
@@ -781,9 +719,7 @@ impl App {
         shapeW: Double, shapeH: Double, radius: Double, stroke: Double
     ) {
         let gpu: AzGpu! = self.gpu
-        if !gpu.hasEncoder {
-            return
-        }
+        if !gpu.hasEncoder then return
         if gpu.mode != 1 {
             send1(gpu.enc, sel("setRenderPipelineState:"), gpu.pipe2d)
             send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOff)
@@ -798,33 +734,31 @@ impl App {
 
         // 6 vertices × (pos2, uv2, rgba4) into scratch.
         fin p = gpu.scratch
-        pokeVert2d(p, Long(0), x0, y0, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(32), x1, y0, u1, v0, r, g, b, a)
-        pokeVert2d(p, Long(64), x1, y1, u1, v1, r, g, b, a)
-        pokeVert2d(p, Long(96), x0, y0, u0, v0, r, g, b, a)
-        pokeVert2d(p, Long(128), x1, y1, u1, v1, r, g, b, a)
-        pokeVert2d(p, Long(160), x0, y1, u0, v1, r, g, b, a)
+        pokeVert2d(p, 0, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 32, x1, y0, u1, v0, r, g, b, a)
+        pokeVert2d(p, 64, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 96, x0, y0, u0, v0, r, g, b, a)
+        pokeVert2d(p, 128, x1, y1, u1, v1, r, g, b, a)
+        pokeVert2d(p, 160, x0, y1, u0, v1, r, g, b, a)
 
         // U2 uniforms: viewport (2 floats) + useTex + pad, then the shape
         // mode's size, corner radius and stroke width in pixels.
-        azPokeF32(p, Long(192), gpu.depthW as Double)
-        azPokeF32(p, Long(196), gpu.depthH as Double)
-        azPokeF32(p, Long(200), texMode)
-        azPokeF32(p, Long(204), 0.0)
-        azPokeF32(p, Long(208), shapeW)
-        azPokeF32(p, Long(212), shapeH)
-        azPokeF32(p, Long(216), radius)
-        azPokeF32(p, Long(220), stroke)
+        azPokeF32(p, 192, gpu.depthW as Double)
+        azPokeF32(p, 196, gpu.depthH as Double)
+        azPokeF32(p, 200, texMode)
+        azPokeF32(p, 204, 0.0)
+        azPokeF32(p, 208, shapeW)
+        azPokeF32(p, 212, shapeH)
+        azPokeF32(p, 216, radius)
+        azPokeF32(p, 220, stroke)
 
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, Long(192), Long(0))
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), p, 192, 0)
         fin up = p + Long(192)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, Long(32), Long(1))
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, Long(32), Long(1))
-        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, Long(0))
-        if tex != Long(0) {
-            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), tex, Long(0))
-        }
-        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), Long(3), Long(0), Long(6))
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), up, 32, 1)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), up, 32, 1)
+        send2(gpu.enc, sel("setFragmentSamplerState:atIndex:"), gpu.sampler, 0)
+        if tex != 0 then send2(gpu.enc, sel("setFragmentTexture:atIndex:"), tex, 0)
+        send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
     }
 
     // ── Text (CoreText rasterization → textured quad) ───────────────────
@@ -840,30 +774,24 @@ impl App {
     /// keeps; later frames draw that texture. [releaseStaleText] retires
     /// strings nothing has drawn for a while.
     func !.uiTextFont(text: String, x: Double, y: Double, size: Double, r: Double, g: Double, b: Double, font: String) {
-        if !self.gpu.hasEncoder {
-            return
-        }
+        if !self.gpu.hasEncoder then return
         fin s = self.gpu.scale
-        if azTextCacheFind(font, size * s, text) != Long(0) {
+        if azTextCacheFind(font, size * s, text) != 0 {
             fin cached = azTextCacheTexture()
-            if cached != Long(0) {
+            if cached != 0 {
                 self.drawQuad2d(x, y, azTextCacheWidth(), azTextCacheAscent() + azTextCacheDescent(), 0.0, 0.0, 1.0, 1.0, r, g, b, 1.0, cached)
                 return
             }
-            if azTextCacheWidth() < 0.5 {
-                return
-            }
+            if azTextCacheWidth() < 0.5 then return
         }
         fin line = ctLineCreate(text, size, self.gpu.scratch, font)
-        if line == Long(0) {
-            return
-        }
+        if line == 0 then return
         fin widthPts = azPeekF64(self.gpu.scratch, Long(3840))
         fin ascent = azPeekF64(self.gpu.scratch, Long(3848))
         fin descent = azPeekF64(self.gpu.scratch, Long(3856))
         fin heightPts = ascent + descent
         if widthPts < 0.5 || heightPts < 0.5 {
-            azTextCacheStore(font, size * s, text, Long(0), widthPts, ascent, descent)
+            azTextCacheStore(font, size * s, text, 0, widthPts, ascent, descent)
             CFRelease(line)
             return
         }
@@ -874,7 +802,7 @@ impl App {
         // Rasterize white text into an RGBA bitmap (tinted by the quad color).
         fin space = CGColorSpaceCreateDeviceRGB()
         fin ctx = CGBitmapContextCreate(Long(0), pw, ph, Long(8), pw * Long(4), space, 1)
-        if ctx != Long(0) {
+        if ctx != 0 {
             CGContextScaleCTM(ctx, s, s)
             CGContextSetTextPosition(ctx, 0.0, descent)
             CTLineDraw(line, ctx)
@@ -882,8 +810,8 @@ impl App {
             fin data = CGBitmapContextGetData(ctx)
             fin td = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), Long(70), pw, ph, Long(0))
             fin tex = send1(self.gpu.device, sel("newTextureWithDescriptor:"), td)
-            if tex != Long(0) {
-                fin unused0 = azSendRegion(tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), Long(0), Long(0), Long(0), pw, ph, Long(1), Long(0), data, pw * Long(4))
+            if tex != 0 {
+                azSendRegion(tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, pw, ph, 1, 0, data, pw * 4)
                 // The cache owns the texture from here; eviction releases it.
                 azTextCacheStore(font, size * s, text, tex, widthPts, ascent, descent)
                 // Bitmap rows are top-first, matching top-left-origin UVs.
@@ -904,33 +832,23 @@ impl App {
     func &.releaseStaleText(age: Long) {
         loop {
             fin texture = azTextCacheEvict(age)
-            if texture == Long(-1) {
-                break
-            }
-            if texture != Long(0) {
-                fin unused = send0(texture, sel("release"))
-            }
+            if texture == -1 then break
+            if texture != 0 then send0(texture, sel("release"))
         }
         azTextCacheAdvance()
     }
 
     /// Measured width in points of `text` at font `size`.
-    func &.uiTextWidth(text: String, size: Double): Double {
-        return self.uiTextWidthFont(text, size, uiFontRegular)
-    }
+    func &.uiTextWidth(text: String, size: Double): Double = self.uiTextWidthFont(text, size, uiFontRegular)
 
     /// Measured width in points of `text` at `size` in the named font.
     func &.uiTextWidthFont(text: String, size: Double, font: String): Double {
         fin key = size * self.gpu.scale
-        if azTextCacheFind(font, key, text) != Long(0) {
-            return azTextCacheWidth()
-        }
+        if azTextCacheFind(font, key, text) != 0 then return azTextCacheWidth()
         fin line = ctLineCreate(text, size, self.gpu.scratch, font)
-        if line == Long(0) {
-            return 0.0
-        }
+        if line == 0 then return 0.0
         fin w = azPeekF64(self.gpu.scratch, Long(3840))
-        azTextCacheStore(font, key, text, Long(0), w, azPeekF64(self.gpu.scratch, Long(3848)), azPeekF64(self.gpu.scratch, Long(3856)))
+        azTextCacheStore(font, key, text, 0, w, azPeekF64(self.gpu.scratch, 3848), azPeekF64(self.gpu.scratch, 3856))
         CFRelease(line)
         return w
     }
@@ -938,16 +856,12 @@ impl App {
     /// Measured line height in points of font `size`.
     func &.uiTextHeight(size: Double): Double {
         fin key = size * self.gpu.scale
-        if azTextCacheFind(uiFontRegular, key, "Ag") != Long(0) {
-            return azTextCacheAscent() + azTextCacheDescent()
-        }
+        if azTextCacheFind(uiFontRegular, key, "Ag") != 0 then return azTextCacheAscent() + azTextCacheDescent()
         fin line = ctLineCreate("Ag", size, self.gpu.scratch)
-        if line == Long(0) {
-            return size
-        }
+        if line == 0 then return size
         fin ascent = azPeekF64(self.gpu.scratch, Long(3848))
         fin descent = azPeekF64(self.gpu.scratch, Long(3856))
-        azTextCacheStore(uiFontRegular, key, "Ag", Long(0), azPeekF64(self.gpu.scratch, Long(3840)), ascent, descent)
+        azTextCacheStore(uiFontRegular, key, "Ag", 0, azPeekF64(self.gpu.scratch, 3840), ascent, descent)
         CFRelease(line)
         return ascent + descent
     }
@@ -956,23 +870,23 @@ impl App {
 /// Writes one 2D vertex (pos2, uv2, rgba4 — 8 floats) at [off].
 func pokeVert2d(p: Long, off: Long, x: Double, y: Double, u: Double, v: Double, r: Double, g: Double, b: Double, a: Double) {
     azPokeF32(p, off, x)
-    azPokeF32(p, off + Long(4), y)
-    azPokeF32(p, off + Long(8), u)
-    azPokeF32(p, off + Long(12), v)
-    azPokeF32(p, off + Long(16), r)
-    azPokeF32(p, off + Long(20), g)
-    azPokeF32(p, off + Long(24), b)
-    azPokeF32(p, off + Long(28), a)
+    azPokeF32(p, off + 4, y)
+    azPokeF32(p, off + 8, u)
+    azPokeF32(p, off + 12, v)
+    azPokeF32(p, off + 16, r)
+    azPokeF32(p, off + 20, g)
+    azPokeF32(p, off + 24, b)
+    azPokeF32(p, off + 28, a)
 }
 
 /** The system interface font (San Francisco on macOS). */
-fin uiFontRegular = ".AppleSystemUIFont"
+inline fin uiFontRegular = ".AppleSystemUIFont"
 
 /** The system interface font's semibold weight, for headings and emphasis. */
-fin uiFontSemibold = ".AppleSystemUIFontDemi"
+inline fin uiFontSemibold = ".AppleSystemUIFontDemi"
 
 /** A fixed-pitch font for source text, where columns must line up. */
-fin uiFontMonospace = "Menlo"
+inline fin uiFontMonospace = "Menlo"
 
 /// Builds a CTLine for [text] at [size] in [font] (white). Writes width /
 /// ascent / descent as doubles at scratch offsets 3840/3848/3856.
@@ -980,21 +894,19 @@ fin uiFontMonospace = "Menlo"
 func ctLineCreate(text: String, size: Double, scratch: Long, font: String = uiFontRegular): Long {
     fin utf8 = 134217984 // kCFStringEncodingUTF8
     fin cfText = CFStringCreateWithCString(Long(0), text, utf8)
-    if cfText == Long(0) {
-        return Long(0)
-    }
+    if cfText == 0 then return 0
     fin fontName = CFStringCreateWithCString(Long(0), font, utf8)
     fin ctFont = CTFontCreateWithName(fontName, size, Long(0))
     fin white = CGColorCreateGenericRGB(1.0, 1.0, 1.0, 1.0)
 
     // Attributes: { kCTFontAttributeName: font, kCTForegroundColorAttributeName: white }
-    azPoke64(scratch, Long(3872), globalObject("kCTFontAttributeName"))
-    azPoke64(scratch, Long(3880), globalObject("kCTForegroundColorAttributeName"))
-    azPoke64(scratch, Long(3888), ctFont)
-    azPoke64(scratch, Long(3896), white)
+    azPoke64(scratch, 3872, globalObject("kCTFontAttributeName"))
+    azPoke64(scratch, 3880, globalObject("kCTForegroundColorAttributeName"))
+    azPoke64(scratch, 3888, ctFont)
+    azPoke64(scratch, 3896, white)
     fin attrs = CFDictionaryCreate(
-        Long(0), scratch + Long(3872), scratch + Long(3888), Long(2),
-        azSym("kCFTypeDictionaryKeyCallBacks"),
+        0, scratch + 3872, scratch + 3888, 2
+        azSym("kCFTypeDictionaryKeyCallBacks")
         azSym("kCFTypeDictionaryValueCallBacks")
     )
 
@@ -1002,7 +914,7 @@ func ctLineCreate(text: String, size: Double, scratch: Long, font: String = uiFo
     fin line = CTLineCreateWithAttributedString(attrText)
 
     fin w = CTLineGetTypographicBounds(line, scratch + Long(3848), scratch + Long(3856), scratch + Long(3864))
-    azPokeF64(scratch, Long(3840), w)
+    azPokeF64(scratch, 3840, w)
 
     CFRelease(attrText)
     CFRelease(attrs)

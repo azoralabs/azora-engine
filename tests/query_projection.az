@@ -34,16 +34,16 @@ import engine.ecs
 @Component pack Paint { var r: std::Double }
 
 func main() {
-    var world = World()
+    var world: World = .()
     var tags = storageOf<Marker>(world)
     var paints = storageOf<Paint>(world)
 
     fin a = world.spawn()
     fin b = world.spawn()
-    storageInsert<Marker>(tags, a, Marker(1))
-    storageInsert<Marker>(tags, b, Marker(2))
-    storageInsert<Paint>(paints, a, Paint(0.0))
-    storageInsert<Paint>(paints, b, Paint(0.0))
+    storageInsert<Marker>(tags, a, .(1))
+    storageInsert<Marker>(tags, b, .(2))
+    storageInsert<Paint>(paints, a, .(0.0))
+    storageInsert<Paint>(paints, b, .(0.0))
 
     fin t = registerStorage<Marker>(world, tags)
     fin p = registerStorage<Paint>(world, paints)
@@ -73,9 +73,7 @@ func main() {
     // through `paint` writes the storage.
     var byUnpack = QueryOf<Marker&, Paint!>::provide(world)
     byUnpack.unpack { entity, tag, paint ->
-        if entity.isValid {
-            paint.r = (tag.group as std::Double)
-        }
+        if entity.isValid then paint.r = (tag.group as std::Double)
     }
 
     // Read back through a fresh query: the writes above landed in the storage.

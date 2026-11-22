@@ -60,7 +60,7 @@ pack TileCamera {
 
 /** A camera showing [viewWidth] x [viewHeight] points centred on [center]. */
 func tileCamera(center: Vec2, zoom: Double, viewWidth: Double, viewHeight: Double): TileCamera {
-    return TileCamera(center, realMax(zoom, 0.0001), viewWidth, viewHeight)
+    return .(center, realMax(zoom, 0.0001), viewWidth, viewHeight)
 }
 
 /** A camera filling [app]'s window. */
@@ -70,33 +70,29 @@ func cameraForApp(app: App, center: Vec2, zoom: Double): TileCamera {
 
 impl TileCamera {
     /** The centre of the viewport, in screen points. */
-    func &.screenCenter(): Vec2 {
-        return Vec2(self.viewWidth * 0.5, self.viewHeight * 0.5)
-    }
+    func &.screenCenter(): Vec2 = .(self.viewWidth * 0.5, self.viewHeight * 0.5)
 
     /** The world rectangle this camera shows, for a layer at [parallax]. */
     func &.viewAt(parallax: Vec2, offset: Vec2): WorldRect {
-        fin eye = Vec2(self.center.x * parallax.x, self.center.y * parallax.y)
+        fin eye: Vec2 = .(self.center.x * parallax.x, self.center.y * parallax.y)
         fin halfW = self.viewWidth * 0.5 / self.zoom
         fin halfH = self.viewHeight * 0.5 / self.zoom
         return worldRect(
-            eye.x - halfW - offset.x,
-            eye.y - halfH - offset.y,
-            eye.x + halfW - offset.x,
+            eye.x - halfW - offset.x
+            eye.y - halfH - offset.y
+            eye.x + halfW - offset.x
             eye.y + halfH - offset.y
         )
     }
 
     /** The world rectangle this camera shows for a world-locked layer. */
-    func &.view(): WorldRect {
-        return self.viewAt(Vec2(1.0, 1.0), vec2Zero())
-    }
+    func &.view(): WorldRect = self.viewAt(.(1.0, 1.0), vec2Zero())
 
     /** Where the world point [point] lands on screen. */
     func &.worldToScreen(point: Vec2): Vec2 {
         fin middle = self.screenCenter()
         return Vec2(
-            (point.x - self.center.x) * self.zoom + middle.x,
+            (point.x - self.center.x) * self.zoom + middle.x
             (point.y - self.center.y) * self.zoom + middle.y
         )
     }
@@ -105,15 +101,13 @@ impl TileCamera {
     func &.screenToWorld(point: Vec2): Vec2 {
         fin middle = self.screenCenter()
         return Vec2(
-            (point.x - middle.x) / self.zoom + self.center.x,
+            (point.x - middle.x) / self.zoom + self.center.x
             (point.y - middle.y) / self.zoom + self.center.y
         )
     }
 
     /** The camera moved so [point] is at the centre of the viewport. */
-    func &.lookingAt(point: Vec2): TileCamera {
-        return TileCamera(point, self.zoom, self.viewWidth, self.viewHeight)
-    }
+    func &.lookingAt(point: Vec2): TileCamera = .(point, self.zoom, self.viewWidth, self.viewHeight)
 
     /**
      * The camera held inside [bounds].
@@ -135,14 +129,12 @@ impl TileCamera {
         } else {
             realClamp(self.center.y, bounds.minY + halfH, bounds.maxY - halfH)
         }
-        return TileCamera(Vec2(x, y), self.zoom, self.viewWidth, self.viewHeight)
+        return .(Vec2(x, y), self.zoom, self.viewWidth, self.viewHeight)
     }
 }
 
 /** The world point under the mouse, for picking a tile with the cursor. */
-func cameraPointerWorld(app: App, camera: TileCamera): Vec2 {
-    return camera.screenToWorld(Vec2(app.mouseX(), app.mouseY()))
-}
+func cameraPointerWorld(app: App, camera: TileCamera): Vec2 = camera.screenToWorld(.(app.mouseX(), app.mouseY()))
 
 /** The tile under the mouse, on the map or beyond it. */
 func pickTileUnderPointer(app: App, map: Tilemap, camera: TileCamera): TilePick {
@@ -160,14 +152,12 @@ func pickTileUnderPointer(app: App, map: Tilemap, camera: TileCamera): TilePick 
  * paints its background first and its foreground last.
  */
 func drawTilemap(app: App, map: Tilemap, camera: TileCamera, seconds: Double): Int {
-    if !map.visible || map.opacity <= 0.0 || !map.tiles.ok() {
-        return 0
-    }
+    if !map.visible || map.opacity <= 0.0 || !map.tiles.ok() then return 0
     var drawn = 0
     var i = 0
     while i < map.count {
-        drawn = drawn + drawTileLayer(app, map, i, camera, seconds)
-        i = i + 1
+        drawn += drawTileLayer(app, map, i, camera, seconds)
+        i++
     }
     return drawn
 }
@@ -180,26 +170,20 @@ func drawTilemap(app: App, map: Tilemap, camera: TileCamera, seconds: Double): I
  * running the culling twice.
  */
 func drawTileLayer(app: App, map: Tilemap, index: Int, camera: TileCamera, seconds: Double): Int {
-    if !map.hasLayer(index) {
-        return 0
-    }
+    if !map.hasLayer(index) then return 0
     fin layer = map.layers[index]
-    if !layer.visible || layer.opacity <= 0.0 {
-        return 0
-    }
+    if !layer.visible || layer.opacity <= 0.0 then return 0
 
-    fin parallax = Vec2(layer.parallaxX, layer.parallaxY)
-    fin offset = Vec2(layer.offsetX, layer.offsetY)
+    fin parallax: Vec2 = .(layer.parallaxX, layer.parallaxY)
+    fin offset: Vec2 = .(layer.offsetX, layer.offsetY)
     fin view = camera.viewAt(parallax, offset)
     fin cells = visibleTiles(map.geometry, view)
-    if cells.isEmpty() {
-        return 0
-    }
+    if cells.isEmpty() then return 0
 
     // Parallax and the layer offset are folded into one camera, so the per-tile
     // path stays a single world-to-screen transform.
-    fin eye = Vec2(camera.center.x * parallax.x - offset.x, camera.center.y * parallax.y - offset.y)
-    fin shifted = TileCamera(eye, camera.zoom, camera.viewWidth, camera.viewHeight)
+    fin eye: Vec2 = .(camera.center.x * parallax.x - offset.x, camera.center.y * parallax.y - offset.y)
+    fin shifted: TileCamera = .(eye, camera.zoom, camera.viewWidth, camera.viewHeight)
     fin tint = tileColorModulate(layer.tint, map.tint)
     fin opacity = layer.opacity * map.opacity
 
@@ -224,9 +208,7 @@ func drawRows(
     var drawn = 0
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
-            if drawOneTile(app, map, layer, TilePos(x, y), camera, tint, opacity, seconds) {
-                drawn = drawn + 1
-            }
+            if drawOneTile(app, map, layer, .(x, y), camera, tint, opacity, seconds) then drawn++
         }
     }
     return drawn
@@ -255,12 +237,8 @@ func drawSorted(
     for depth in first..last {
         fin fromX = intMax(cells.minX, depth - cells.maxY)
         fin toX = intMin(cells.maxX, depth - cells.minY)
-        var x = fromX
-        while x <= toX {
-            if drawOneTile(app, map, layer, TilePos(x, depth - x), camera, tint, opacity, seconds) {
-                drawn = drawn + 1
-            }
-            x = x + 1
+        for x in fromX..toX {
+            if drawOneTile(app, map, layer, .(x, depth - x), camera, tint, opacity, seconds) then drawn++
         }
     }
     return drawn
@@ -283,31 +261,21 @@ func drawOneTile(
     opacity: Double
     seconds: Double
 ): Bool {
-    if layer.chunks.countAt(pos.x, pos.y) == 0 {
-        return false
-    }
+    if layer.chunks.countAt(pos.x, pos.y) == 0 then return false
     fin at = layer.offsetOf(pos)
-    if at < 0 {
-        return false
-    }
+    if at < 0 then return false
     fin index = layer.indices[at]
-    if index == tileEmpty {
-        return false
-    }
+    if index == tileEmpty then return false
 
     var flags = 0
-    if layer.flags.size > 0 {
-        flags = layer.flags[at]
-    }
-    if flagsAny(flags, cellHidden) {
-        return false
-    }
+    if layer.flags.size > 0 then flags = layer.flags[at]
+    if flagsAny(flags, cellHidden) then return false
 
     fin drawnIndex = map.tiles.resolve(index, seconds, pos)
     fin sheet = map.tiles.find(drawnIndex)
     when sheet {
-        AtlasPick.Missing() -> { return false }
-        AtlasPick.Found(atlas, local) -> {
+        .Missing() -> { return false }
+        .Found(atlas, local) -> {
             return blitTile(app, map, layer, pos, atlas, local, flags, at, camera, tint, opacity)
         }
     }
@@ -328,27 +296,19 @@ func blitTile(
     tint: TileColor
     opacity: Double
 ): Bool {
-    if atlas.texture == Long(0) || atlas.texWidth <= 0 || atlas.texHeight <= 0 {
-        return false
-    }
+    if atlas.texture == 0 || atlas.texWidth <= 0 || atlas.texHeight <= 0 then return false
     fin source = atlas.rectOf(local)
-    if source.w <= 0 || source.h <= 0 {
-        return false
-    }
+    if source.w <= 0 || source.h <= 0 then return false
 
     fin quad = tileQuad(map.geometry, pos)
-    fin topLeft = camera.worldToScreen(Vec2(quad.minX, quad.minY))
+    fin topLeft = camera.worldToScreen(.(quad.minX, quad.minY))
     fin width = quad.width() * camera.zoom
     fin height = quad.height() * camera.zoom
 
     var color = tint
-    if layer.tints.size > 0 && layer.tints[at] != tileTintNone {
-        color = tileColorModulate(tileColorUnpack(layer.tints[at]), tint)
-    }
+    if layer.tints.size > 0 && layer.tints[at] != tileTintNone then color = tileColorModulate(tileColorUnpack(layer.tints[at]), tint)
     fin alpha = color.a * opacity
-    if alpha <= 0.0 {
-        return false
-    }
+    if alpha <= 0.0 then return false
 
     // Pixel coordinates become texture coordinates here, and the mirrors are
     // applied by swapping them — which costs nothing and avoids storing a
@@ -371,9 +331,9 @@ func blitTile(
     }
 
     app.drawImageQuad(
-        topLeft.x, topLeft.y, width, height,
-        u0, v0, u1, v1,
-        color.r, color.g, color.b, alpha,
+        topLeft.x, topLeft.y, width, height
+        u0, v0, u1, v1
+        color.r, color.g, color.b, alpha
         atlas.texture
     )
     return true
@@ -388,20 +348,18 @@ func blitTile(
  */
 func drawTileGrid(app: App, map: Tilemap, camera: TileCamera, color: TileColor): Int {
     fin cells = visibleTiles(map.geometry, camera.view())
-    if cells.isEmpty() {
-        return 0
-    }
+    if cells.isEmpty() then return 0
     fin thickness = realMax(1.0, camera.zoom * 0.03)
     var drawn = 0
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
-            fin quad = tileQuad(map.geometry, TilePos(x, y))
-            fin topLeft = camera.worldToScreen(Vec2(quad.minX, quad.minY))
+            fin quad = tileQuad(map.geometry, .(x, y))
+            fin topLeft = camera.worldToScreen(.(quad.minX, quad.minY))
             fin width = quad.width() * camera.zoom
             fin height = quad.height() * camera.zoom
             app.uiRect(topLeft.x, topLeft.y, width, thickness, color.r, color.g, color.b, color.a)
             app.uiRect(topLeft.x, topLeft.y, thickness, height, color.r, color.g, color.b, color.a)
-            drawn = drawn + 1
+            drawn++
         }
     }
     return drawn
@@ -410,46 +368,46 @@ func drawTileGrid(app: App, map: Tilemap, camera: TileCamera, color: TileColor):
 /** Highlights one cell, for a cursor or a placement preview. */
 func drawTileHighlight(app: App, map: Tilemap, pos: TilePos, camera: TileCamera, color: TileColor) {
     fin quad = tileQuad(map.geometry, pos)
-    fin topLeft = camera.worldToScreen(Vec2(quad.minX, quad.minY))
+    fin topLeft = camera.worldToScreen(.(quad.minX, quad.minY))
     app.uiRect(
-        topLeft.x,
-        topLeft.y,
-        quad.width() * camera.zoom,
-        quad.height() * camera.zoom,
+        topLeft.x
+        topLeft.y
+        quad.width() * camera.zoom
+        quad.height() * camera.zoom
         color.r, color.g, color.b, color.a
     )
 }
 
 test "the camera round-trips between world and screen" {
-    fin camera = tileCamera(Vec2(100.0, 50.0), 2.0, 800.0, 600.0)
-    fin screen = camera.worldToScreen(Vec2(100.0, 50.0))
+    fin camera = tileCamera(.(100.0, 50.0), 2.0, 800.0, 600.0)
+    fin screen = camera.worldToScreen(.(100.0, 50.0))
     assert realAbs(screen.x - 400.0) < 0.001 && realAbs(screen.y - 300.0) < 0.001 panic "the camera centre must land at the middle of the viewport"
 
-    fin back = camera.screenToWorld(camera.worldToScreen(Vec2(37.0, -12.0)))
+    fin back = camera.screenToWorld(camera.worldToScreen(.(37.0, -12.0)))
     assert realAbs(back.x - 37.0) < 0.001 && realAbs(back.y + 12.0) < 0.001 panic "world to screen and back must be the identity"
 
-    fin zoomed = camera.worldToScreen(Vec2(110.0, 50.0))
+    fin zoomed = camera.worldToScreen(.(110.0, 50.0))
     assert realAbs(zoomed.x - 420.0) < 0.001 panic "ten world units at 2x zoom must be twenty points"
 }
 
 test "the camera's view narrows as it zooms in" {
-    fin camera = tileCamera(Vec2(0.0, 0.0), 2.0, 800.0, 600.0)
+    fin camera = tileCamera(.(0.0, 0.0), 2.0, 800.0, 600.0)
     fin view = camera.view()
     assert realAbs(view.width() - 400.0) < 0.001 panic "an 800-point viewport at 2x shows 400 world units"
     assert realAbs(view.height() - 300.0) < 0.001 panic "a 600-point viewport at 2x shows 300 world units"
 
     // A half-speed layer moves half as far, so it sees a different window.
-    fin far = camera.lookingAt(Vec2(1000.0, 0.0)).viewAt(Vec2(0.5, 1.0), vec2Zero())
+    fin far = camera.lookingAt(.(1000.0, 0.0)).viewAt(.(0.5, 1.0), vec2Zero())
     assert realAbs(far.center().x - 500.0) < 0.001 panic "a parallax of 0.5 must move the layer at half the camera's rate"
 }
 
 test "a camera clamped to a map stays inside it, or centres on a small one" {
-    fin camera = tileCamera(Vec2(0.0, 0.0), 1.0, 200.0, 200.0)
+    fin camera = tileCamera(.(0.0, 0.0), 1.0, 200.0, 200.0)
     fin big = worldRect(0.0, 0.0, 1000.0, 1000.0)
     fin held = camera.clampedTo(big)
     assert realAbs(held.center.x - 100.0) < 0.001 panic "the camera must not show past the left edge"
 
     fin small = worldRect(0.0, 0.0, 50.0, 50.0)
-    fin centred = camera.lookingAt(Vec2(900.0, 900.0)).clampedTo(small)
+    fin centred = camera.lookingAt(.(900.0, 900.0)).clampedTo(small)
     assert realAbs(centred.center.x - 25.0) < 0.001 panic "a world smaller than the viewport must be centred, not pinned to a corner"
 }

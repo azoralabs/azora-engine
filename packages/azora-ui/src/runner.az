@@ -99,14 +99,10 @@ pack Ui {
 
 impl Ui {
     /** Window width in points. */
-    func &.width(): Double {
-        return self.app.width() as Double
-    }
+    func &.width(): Double = self.app.width() as Double
 
     /** Window height in points. */
-    func &.height(): Double {
-        return self.app.height() as Double
-    }
+    func &.height(): Double = self.app.height() as Double
 
     /** Whether [key] is held this frame. */
     func &.keyDown(key: KeyCode): Bool = self.app.keyDown(key)
@@ -128,73 +124,55 @@ impl Ui {
      * changed, rather than because a frame happened.
      */
     func !.moved(slot: Int, stamp: Int): Bool {
-        if slot < 0 || slot >= maxSystems {
-            return true
-        }
-        if self.stamps[slot] == stamp {
-            return false
-        }
+        if slot < 0 || slot >= maxSystems then return true
+        if self.stamps[slot] == stamp then return false
         self.stamps[slot] = stamp
         return true
     }
 
     func !.due(slot: Int, interval: SystemInterval): Bool {
-        if slot < 0 || slot >= maxSystems {
-            return true
-        }
-        self.elapsed[slot] = self.elapsed[slot] + self.deltaSecs
-        self.frames[slot] = self.frames[slot] + 1
+        if slot < 0 || slot >= maxSystems then return true
+        self.elapsed[slot] += self.deltaSecs
+        self.frames[slot]++
 
-        when interval {
-            SystemInterval.EveryFrame -> return true
-            SystemInterval.Every(d) -> {
-                if self.elapsed[slot] < durationSecs(d) {
-                    return false
-                }
+        return when interval {
+            .EveryFrame -> true
+            .Every(d) -> {
+                if self.elapsed[slot] < durationSecs(d) then return false
                 // Dropped, not accumulated: an overrun frame runs the system
                 // once, not once per interval it slept through.
                 self.elapsed[slot] = 0.0
-                return true
+                true
             }
-            SystemInterval.EveryFrames(n) -> {
-                if self.frames[slot] < n {
-                    return false
-                }
+            .EveryFrames(n) -> {
+                if self.frames[slot] < n then return false
                 self.frames[slot] = 0
-                return true
+                true
             }
-            SystemInterval.Once -> {
-                if self.ran[slot] {
-                    return false
-                }
+            .Once -> {
+                if self.ran[slot] then return false
                 self.ran[slot] = true
-                return true
+                true
             }
-            SystemInterval.After(d) -> {
-                if self.ran[slot] || self.elapsed[slot] < durationSecs(d) {
-                    return false
-                }
+            .After(d) -> {
+                if self.ran[slot] || self.elapsed[slot] < durationSecs(d) then return false
                 self.ran[slot] = true
-                return true
+                true
             }
-            SystemInterval.AfterFrames(n) -> {
-                if self.ran[slot] || self.frames[slot] < n {
-                    return false
-                }
+            .AfterFrames(n) -> {
+                if self.ran[slot] || self.frames[slot] < n then return false
                 self.ran[slot] = true
-                return true
+                true
             }
-            SystemInterval.Fixed(d) -> {
+            .Fixed(d) -> {
                 // Accumulated, not dropped - the caller runs the system once per
                 // step the accumulator holds, which is what determinism needs.
-                if self.elapsed[slot] < durationSecs(d) {
-                    return false
-                }
-                self.elapsed[slot] = self.elapsed[slot] - durationSecs(d)
-                return true
+                if self.elapsed[slot] < durationSecs(d) then return false
+                self.elapsed[slot] -= durationSecs(d)
+                true
             }
+            else -> true
         }
-        return true
     }
 }
 
@@ -211,12 +189,10 @@ impl Ui {
  * length - the systems are known at compile time, and this only has to be at
  * least as many.
  */
-fin maxSystems = 256
+inline fin maxSystems: Int = 256
 
 /** A duration in seconds, as the scheduler counts time. */
-func durationSecs(d: Duration&): Double {
-    return (d.seconds as Double) + (d.nanosecondAdjustment as Double) / 1000000000.0
-}
+func durationSecs(d: Duration&): Double = (d.seconds as Double) + (d.nanosecondAdjustment as Double) / 1000000000.0
 
 /**
  * Runs [phase]'s systems, honouring each one's interval.
@@ -263,16 +239,18 @@ pack Viewport {
  */
 @Experimental(since: "0.1")
 @ProvidesAccess
-inline func composeIn(world: World&): Anchor {
-    return resource<Anchor>(world)
-}
+inline func composeIn(world: World&): Anchor = resource<Anchor>(world)
 
 /** Builds one child with an explicit anchor and composable value. */
-react func<T: Compose> composeChild(anchor: Anchor&, value: T&, key: String, modifier: Modifier&, children: inline react Anchor!.() -> Unit): Entity {
-    fin node = value.compose(anchor.pass, anchor.parent, key, modifier)
-    using anchor.inside(node) {
-        children()
-    }
+react func<T: Compose> composeChild(
+    anchor: Anchor&
+    value: T&
+    key: String
+    modifier: Modifier&
+    children: inline react Anchor!.() -> Unit
+): Entity {
+    fin node: T = value.compose(anchor.pass, anchor.parent, key, modifier)
+    using anchor.inside(node) then children()
     return node
 }
 
@@ -299,50 +277,38 @@ impl Res<T> {
     @Experimental(since: "0.1")
     /** How many times this resource has been written. */
     @ProvidesAccess
-    inline func stamp(world: World&): Int {
-        return resourceStamp(world, T.typeName)
-    }
+    inline func stamp(world: World&): Int = resourceStamp(world, T.typeName)
 
     @ProvidesAccess
-    inline func from(ui: Ui!): Res<T> {
-        return Res(resource<T>(ui.at.pass.world))
-    }
+    inline func from(ui: Ui!): Res<T> = Res(resource<T>(ui.at.pass.world))
 }
 
 impl World {
-
-}
-
-impl World {
+    /** How far the world has moved, as a system that reads it sees it. */
+    @Experimental(since: "0.1")
+    @ProvidesAccess
+    func stamp(world: World&): Int = world.stamp
 
     @Experimental(since: "0.1")
-    func from(ui: Ui!): World& {
-        return ui.at.pass.world
-    }
+    func from(ui: Ui!): World& = ui.at.pass.world
 }
 
 impl QueryWith<Q, ...T> {
     /** A narrowed query over the frame's world. */
     @Experimental(since: "0.1")
-    func from(ui: Ui!): QueryWith<Q, ...T> {
-        return QueryWith::provide(ui.at.pass.world)
-    }
+    func from(ui: Ui!): QueryWith<Q, ...T> = ::provide(ui.at.pass.world)
 }
 
 impl QueryWithout<Q, ...T> {
     /** A narrowed query over the frame's world. */
     @Experimental(since: "0.1")
-    func from(ui: Ui!): QueryWithout<Q, ...T> {
-        return QueryWithout::provide(ui.at.pass.world)
-    }
+    func from(ui: Ui!): QueryWithout<Q, ...T> = ::provide(ui.at.pass.world)
 }
 
 impl QueryOf<...T> {
     /** A query over the frame's world - the frame is what a system is handed. */
     @Experimental(since: "0.1")
-    func from(ui: Ui!): QueryOf<...T> {
-        return QueryOf::provide(ui.at.pass.world)
-    }
+    func from(ui: Ui!): QueryOf<...T> = ::provide(ui.at.pass.world)
 }
 
 impl Ui {
@@ -355,9 +321,7 @@ impl Ui {
      * more than the world it carries.
      */
     @Experimental(since: "0.1")
-    func from(ui: Ui!): Ui! {
-        return ui
-    }
+    func from(ui: Ui!): Ui! = ui
 }
 
 /**
@@ -373,8 +337,8 @@ react func seedFrameResources(ui: Ui!) {
     // Written every frame, because it is different every frame: a system that
     // asks for the clock is asking to run on every one.
     fin clock = insertResource<Time>(
-        ui.at.pass.world,
-        Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as Long),
+        ui.at.pass.world
+        Time(ui.deltaSecs, world.totalTime, world.fixedTimestep, world.tick as Long)
     )
     // The rest are written only when they differ. A resource's stamp moves when
     // it is written, and a description re-runs when a stamp it reads moves - so
@@ -396,36 +360,34 @@ react func seedFrameResources(ui: Ui!) {
         ui.seededScope = true
         wrote = insertResource<Anchor>(ui.at.pass.world, ui.at.clone())
     }
-    if wrote {
-        return
-    }
+    if wrote then return
 }
 
 
 react func dispatch(phase: SystemPhase, ui: Ui!) {
     var describeOwner = false
     var observedSlot = 0
-    if phase == SystemPhase.Startup {
+    if phase == .Startup {
         inline for F in reflect<*>.withAnnot<System> {
-            if reflect<F>.annotMeta<System>.phase == SystemPhase.Startup {
+            if reflect<F>.annotMeta<System>.phase == .Startup {
                 var inputs = 0
                 inline for P in reflect<F>.params {
-                    inputs = inputs + P::stamp(ui.at.pass.world)
+                    inputs += P::stamp(ui.at.pass.world)
                 }
-                if ui.moved(observedSlot, inputs) { describeOwner = true }
+                if ui.moved(observedSlot, inputs) then describeOwner = true
             }
-            observedSlot = observedSlot + 1
+            observedSlot++
         }
     }
-    var slot = 0
+    var slot: Int = 0
     inline for F in reflect<*>.withAnnot<System> {
         if reflect<F>.annotMeta<System>.phase == phase {
-            if (phase == SystemPhase.Startup && describeOwner) ||
-                (phase != SystemPhase.Startup && ui.due(slot, reflect<F>.annotMeta<System>.interval)) {
-                F(inline for P in reflect<F>.params { P::from(ui) })
+            if (phase == .Startup && describeOwner) ||
+                (phase != .Startup && ui.due(slot, reflect<F>.annotMeta<System>.interval)) {
+                F(inline for P in reflect<F>.params then P::from(ui))
             }
         }
-        slot = slot + 1
+        slot++
     }
 }
 
@@ -469,43 +431,27 @@ react func run(title: String, width: Int, height: Int) {
 /** [runUi] with an explicit background colour. */
 /** [count] zeroed slots; `Array::fill` leaves them unset. */
 func zeroDoubles(count: Int): Array<Double> {
-    var slots: Array<Double> = Array<Double>()
-    var i = 0
-    while i < count {
-        slots.add(0.0)
-        i = i + 1
-    }
+    var slots: Array<Double> = []
+    for i: Int in 0..<count then slots.add(0.0)
     return slots
 }
 
 /** [count] slots, each holding [value]. */
 func filledInts(count: Int, value: Int): Array<Int> {
-    var slots: Array<Int> = Array<Int>()
-    var i = 0
-    while i < count {
-        slots.add(value)
-        i = i + 1
-    }
+    var slots: Array<Int> = []
+    for i: Int in 0..<count then slots.add(value)
     return slots
 }
 
 func zeroInts(count: Int): Array<Int> {
-    var slots: Array<Int> = Array<Int>()
-    var i = 0
-    while i < count {
-        slots.add(0)
-        i = i + 1
-    }
+    var slots: Array<Int> = []
+    for i: Int in 0..<count then slots.add(0)
     return slots
 }
 
 func zeroBools(count: Int): Array<Bool> {
-    var slots: Array<Bool> = Array<Bool>()
-    var i = 0
-    while i < count {
-        slots.add(false)
-        i = i + 1
-    }
+    var slots: Array<Bool> = []
+    for i: Int in 0..<count then slots.add(false)
     return slots
 }
 
@@ -518,27 +464,25 @@ react func runUiColored(
     b: Double
 ) {
     var window = appInit(title, width, height)
-    if !window.ok {
-        return
-    }
+    if !window.ok then return
     window.setClearColor(r, g, b)
 
-    var world = World()
+    var world: World = .()
     var pass = Composition::of(world, "app")
     // Commas: a newline cannot separate arguments once one of them is a call.
     var ui = Ui(
-        Anchor(pass, pass.root), take window, 0, 0.0,
+        Anchor(pass, pass.root), take window, 0, 0.0
         zeroDoubles(maxSystems), zeroInts(maxSystems), zeroBools(maxSystems),
-        0 - 1, 0.0 - 1.0, 0.0 - 1.0, false,
+        -1, -1.0, -1.0, false
         // Below any real stamp, so the first pass always runs.
-        filledInts(maxSystems, 0 - 1),
+        filledInts(maxSystems, -1)
     )
 
     pass.begin()
     // A `.Startup` system asks for resources exactly as any other does, so they
     // are seeded before it runs rather than only once the loop is turning.
     seedFrameResources(ui)
-    dispatch(SystemPhase.Startup, ui)
+    dispatch(.Startup, ui)
     pass.commit()
 
     while ui.app.frame() {
@@ -547,9 +491,7 @@ react func runUiColored(
         // Hit-testing before the systems run, so a system sees this frame's
         // click rather than the previous one's.
         ui.action = 0
-        if ui.app.mouseClicked(.Left) {
-            ui.action = pass.hit(ui.app.mouseX(), ui.app.mouseY())
-        }
+        if ui.app.mouseClicked(.Left) then ui.action = pass.hit(ui.app.mouseX(), ui.app.mouseY())
 
         // Scrolling is the engine's, and it runs *before* the description: a
         // scrollable is scrollable because it carries the component, so this
@@ -558,15 +500,11 @@ react func runUiColored(
         // that exists yet - and is what the user was looking at when they
         // scrolled.
         var keyScroll: Double = 0.0
-        if ui.keyDown(.Down) {
-            keyScroll = 12.0
-        }
-        if ui.keyDown(.Up) {
-            keyScroll = 0.0 - 12.0
-        }
+        if ui.keyDown(.Down) then keyScroll = 12.0
+        if ui.keyDown(.Up) then keyScroll = -12.0
         pass.applyScroll(ui.app.mouseX(),
             ui.app.mouseY(),
-            0.0 - ui.app.scrollY(),
+            -ui.app.scrollY()
             keyScroll
         )
 
@@ -577,14 +515,14 @@ react func runUiColored(
         // The description runs again when what it reads differs from when it
         // last ran; `dispatch` decides that per system from its own parameters.
         // Reconciliation turns a second pass into an update of the first.
-        dispatch(SystemPhase.Startup, ui)
-        dispatch(SystemPhase.PreUpdate, ui)
-        dispatch(SystemPhase.Update, ui)
-        dispatch(SystemPhase.PostUpdate, ui)
+        dispatch(.Startup, ui)
+        dispatch(.PreUpdate, ui)
+        dispatch(.Update, ui)
+        dispatch(.PostUpdate, ui)
         pass.commit()
 
         renderFrame(ui)
-        dispatch(SystemPhase.Last, ui)
+        dispatch(.Last, ui)
     }
 
     pass.dispose()
@@ -606,16 +544,14 @@ react func renderFrame(ui: Ui!) {
     // Every root-level node is given the whole window; a tree with one root -
     // the usual shape - therefore fills it.
     fin count = ui.at.pass.childCount(ui.at.pass.root)
-    var index = 0
-    while index < count {
-        fin node = ui.at.pass.childAt(ui.at.pass.root, index)
+    for i: Int in 0..<count {
+        fin node = ui.at.pass.childAt(ui.at.pass.root, i)
         if node.isValid {
             ui.at.pass.arrange(node, 0.0, 0.0, w, h)
             paintTree(ui.app, ui.at.pass, node, 0.0, h)
         }
-        index = index + 1
     }
 
-    dispatch(SystemPhase.Render, ui)
+    dispatch(.Render, ui)
     ui.app.present()
 }

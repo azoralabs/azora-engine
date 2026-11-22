@@ -13,14 +13,14 @@ import engine.atmosphere.components
 // +Y axis.
 
 /** The planet's radius and the top of its air, in kilometres. */
-fin groundRadius: Double = 6360.0
-fin airRadius: Double = 6460.0
+inline fin groundRadius: Double = 6360.0
+inline fin airRadius: Double = 6460.0
 
 /** How the sky's light becomes a display value: `1 - exp(-L·k)` with this `k` at exposure 1. */
-fin skyExposure: Double = 11.0
+inline fin skyExposure: Double = 11.0
 
 /** Kilometres the aerial-perspective volume reaches from the camera. */
-fin aerialReach: Double = 8.0
+inline fin aerialReach: Double = 8.0
 
 func atmosphereClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
 
@@ -52,8 +52,7 @@ func sunTransmittance(sky: AetherSky&, altitude: Double, direction: Vec3&): Vec3
     var red: Double = 0.0
     var green: Double = 0.0
     var blue: Double = 0.0
-    var i = 0
-    while i < steps {
+    for i: Int in 0..<steps {
         fin t = ((i as Double) + 0.5) * dt
         fin x = t * sqrt(atmosphereClamp(1.0 - mu * mu, 0.0, 1.0))
         fin y = radius + t * mu
@@ -64,9 +63,8 @@ func sunTransmittance(sky: AetherSky&, altitude: Double, direction: Vec3&): Vec3
         red += (rayleigh * 5.802e-3 + mie + ozone * 0.650e-3) * dt
         green += (rayleigh * 13.558e-3 + mie + ozone * 1.881e-3) * dt
         blue += (rayleigh * 33.1e-3 + mie + ozone * 0.085e-3) * dt
-        i += 1
     }
-    return Vec3(exp(-red), exp(-green), exp(-blue))
+    return .(exp(-red), exp(-green), exp(-blue))
 }
 
 /** Metal source of every sky pass: the tables, the sky itself, the aerial volume and its application to the scene. */

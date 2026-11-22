@@ -75,39 +75,27 @@ pack GameConfig {
     fin cameraSpeed: Double = 4.5
 }
 
-func defaultLocalTransform(): LocalTransform {
-    return LocalTransform(Vec3(0.0, 0.0, 0.0), Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
-}
+func defaultLocalTransform(): LocalTransform = .(Vec3(0.0, 0.0, 0.0), Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0))
 
-func defaultRenderable(): Renderable {
-    return Renderable(Mesh(Long(0), 0), colorRgb(0.0, 0.0, 0.0))
-}
+func defaultRenderable(): Renderable = .(Mesh(0, 0), colorRgb(0.0, 0.0, 0.0))
 
 func sameEntity(left: Entity, right: Entity): Bool {
     return left.isValid && right.isValid && left.id == right.id && left.generation == right.generation
 }
 
-func transformStoreInit(): TransformStore {
-    return TransformStore([Entity::invalid], [defaultLocalTransform()])
-}
+func transformStoreInit(): TransformStore = .([Entity::invalid], [defaultLocalTransform()])
 
-func spinStoreInit(): SpinStore {
-    return SpinStore([Entity::invalid], [Spin(0.0)])
-}
+func spinStoreInit(): SpinStore = .([Entity::invalid], [Spin(0.0)])
 
-func renderableStoreInit(): RenderableStore {
-    return RenderableStore([Entity::invalid], [defaultRenderable()])
-}
+func renderableStoreInit(): RenderableStore = .([Entity::invalid], [defaultRenderable()])
 
 func buildSpinQuery(world: World&, transforms: TransformStore&, spins: SpinStore&): QueryCursor {
     var query = queryEmpty()
     var i = 1
     while i < transforms.entities.size {
         fin entity = transforms.entities[i]
-        if entity.isValid && world.isAlive(entity) && spins.has(entity) {
-            query.add(entity)
-        }
-        i = i + 1
+        if entity.isValid && world.isAlive(entity) && spins.has(entity) then query.add(entity)
+        i++
     }
     return query
 }
@@ -117,10 +105,8 @@ func buildRenderQuery(world: World&, transforms: TransformStore&, renderables: R
     var i = 1
     while i < transforms.entities.size {
         fin entity = transforms.entities[i]
-        if entity.isValid && world.isAlive(entity) && renderables.has(entity) {
-            query.add(entity)
-        }
-        i = i + 1
+        if entity.isValid && world.isAlive(entity) && renderables.has(entity) then query.add(entity)
+        i++
     }
     return query
 }
@@ -129,17 +115,13 @@ impl TransformStore {
     func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
-            if sameEntity(self.entities[i], entity) {
-                return i
-            }
-            i = i + 1
+            if sameEntity(self.entities[i], entity) then return i
+            i++
         }
         return -1
     }
 
-    func &.has(entity: Entity): Bool {
-        return self.indexOf(entity) >= 0
-    }
+    func &.has(entity: Entity): Bool = self.indexOf(entity) >= 0
 
     func !.insert(entity: Entity, value: LocalTransform) {
         fin index = self.indexOf(entity)
@@ -151,26 +133,20 @@ impl TransformStore {
         self.values.add(take value)
     }
 
-    func &.get(entity: Entity): LocalTransform {
-        return self.values[self.indexOf(entity)]
-    }
+    func &.get(entity: Entity): LocalTransform = self.values[self.indexOf(entity)]
 }
 
 impl SpinStore {
     func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
-            if sameEntity(self.entities[i], entity) {
-                return i
-            }
-            i = i + 1
+            if sameEntity(self.entities[i], entity) then return i
+            i++
         }
         return -1
     }
 
-    func &.has(entity: Entity): Bool {
-        return self.indexOf(entity) >= 0
-    }
+    func &.has(entity: Entity): Bool = self.indexOf(entity) >= 0
 
     func !.insert(entity: Entity, value: Spin) {
         fin index = self.indexOf(entity)
@@ -182,26 +158,20 @@ impl SpinStore {
         self.values.add(value)
     }
 
-    func &.get(entity: Entity): Spin {
-        return self.values[self.indexOf(entity)]
-    }
+    func &.get(entity: Entity): Spin = self.values[self.indexOf(entity)]
 }
 
 impl RenderableStore {
     func &.indexOf(entity: Entity): Int {
         var i = 1
         while i < self.entities.size {
-            if sameEntity(self.entities[i], entity) {
-                return i
-            }
-            i = i + 1
+            if sameEntity(self.entities[i], entity) then return i
+            i++
         }
         return -1
     }
 
-    func &.has(entity: Entity): Bool {
-        return self.indexOf(entity) >= 0
-    }
+    func &.has(entity: Entity): Bool = self.indexOf(entity) >= 0
 
     func !.insert(entity: Entity, value: Renderable) {
         fin index = self.indexOf(entity)
@@ -213,18 +183,16 @@ impl RenderableStore {
         self.values.add(value)
     }
 
-    func &.get(entity: Entity): Renderable {
-        return self.values[self.indexOf(entity)]
-    }
+    func &.get(entity: Entity): Renderable = self.values[self.indexOf(entity)]
 }
 
 func spinSystem(
     world: World&
-    query: QueryCursor!,
-    transforms: TransformStore!,
+    query: QueryCursor!
+    transforms: TransformStore!
     spins: SpinStore&
-    dt: Double,
-    speedScale: Double,
+    dt: Double
+    speedScale: Double
 ) {
     query.reset()
     while query.hasNext() {
@@ -234,18 +202,18 @@ func spinSystem(
             // A copy: `insert` below changes the store this one is read from.
             fin transform = transforms.values[index].clone()
             fin spin = spins.get(entity)
-            transforms.insert(entity, LocalTransform(transform.position, transform.rotation + Vec3(0.0, spin.speed * speedScale * dt, 0.0), transform.scale))
+            transforms.insert(entity, .(transform.position, transform.rotation + Vec3(0.0, spin.speed * speedScale * dt, 0.0), transform.scale))
         }
     }
 }
 
 func renderSystem(
-    app: App,
+    app: App!
     world: World&
-    query: QueryCursor!,
-    transforms: TransformStore&,
-    renderables: RenderableStore&,
-    queue: RenderQueue!,
+    query: QueryCursor!
+    transforms: TransformStore&
+    renderables: RenderableStore&
+    queue: RenderQueue!
 ) {
     query.reset()
     while query.hasNext() {
@@ -255,9 +223,9 @@ func renderSystem(
             let transform: LocalTransform& = transforms.values[index].&
             fin renderable = renderables.get(entity)
             queue.add(
-                renderable.mesh,
-                Transform3d(transform.position, transform.rotation, transform.scale),
-                materialColor(renderable.color),
+                renderable.mesh
+                Transform3d(transform.position, transform.rotation, transform.scale)
+                materialColor(renderable.color)
             )
         }
     }
@@ -265,15 +233,13 @@ func renderSystem(
 }
 
 async func main() {
-    var frameIndex = Long(0)
-    var config = GameConfig(1.0, 4.5)
+    var frameIndex: Long = 0
+    var config: GameConfig = .(1.0, 4.5)
 
     fin cubeCount = await azIntJob(5)
 
     var app = appInit("__AZORA_PROJECT_NAME__ — ECS", 1280, 720)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
     defer {
         app.shutdown()
     }
@@ -289,7 +255,7 @@ async func main() {
         app.releaseMesh(grid)
     }
 
-    var world = World()
+    var world: World = .()
     var transforms = transformStoreInit()
     var spins = spinStoreInit()
     var renderables = renderableStoreInit()
@@ -299,18 +265,18 @@ async func main() {
     cam.pitch = -0.32
 
     fin ground = world.spawnNamed("Ground")
-    transforms.insert(ground, LocalTransform(Vec3(0.0, 0.0, 0.0), Vec3(0.0, 0.0, 0.0), Vec3(1.0, 1.0, 1.0)))
-    renderables.insert(ground, Renderable(grid, colorRgb(0.18, 0.22, 0.28)))
+    transforms.insert(ground, .(.(0.0, 0.0, 0.0), .(0.0, 0.0, 0.0), .(1.0, 1.0, 1.0)))
+    renderables.insert(ground, .(grid, colorRgb(0.18, 0.22, 0.28)))
 
     var i = 0
     while i < cubeCount {
         fin entity = world.spawnNamed("Cube")
         fin x = ((i as Double) - 2.0) * 1.7
         fin y: Double = 0.65 + ((i % 2) as Double) * 0.35
-        transforms.insert(entity, LocalTransform(Vec3(x, y, 0.0), Vec3(0.0, (i as Double) * 0.4, 0.0), Vec3(0.8, 0.8, 0.8)))
-        spins.insert(entity, Spin(0.7 + (i as Double) * 0.18))
-        renderables.insert(entity, Renderable(cube, colorRgb(0.30 + (i as Double) * 0.10, 0.70, 0.95 - (i as Double) * 0.08)))
-        i = i + 1
+        transforms.insert(entity, .(.(x, y, 0.0), .(0.0, (i as Double) * 0.4, 0.0), .(0.8, 0.8, 0.8)))
+        spins.insert(entity, .(0.7 + (i as Double) * 0.18))
+        renderables.insert(entity, .(cube, colorRgb(0.30 + (i as Double) * 0.10, 0.70, 0.95 - (i as Double) * 0.08)))
+        i++
     }
 
     var paused: Bool = false
@@ -318,12 +284,10 @@ async func main() {
     while app.frame() {
         fin dt = app.deltaTime()
         world.progress(dt)
-        frameIndex = frameIndex + Long(1)
+        frameIndex += 1
 
         var speedScale = config.spinSpeed
-        if paused {
-            speedScale = 0.0
-        }
+        if paused then speedScale = 0.0
 
         var spinQuery = buildSpinQuery(world, transforms, spins)
         spinSystem(world, spinQuery, transforms, spins, dt, speedScale)
@@ -335,17 +299,11 @@ async func main() {
         renderSystem(app, world, renderQuery, transforms, renderables, queue)
 
         var label = "Pause systems"
-        if paused {
-            label = "Resume systems"
-        }
-        if app.button(label, 16.0, 16.0, 142.0, 34.0) {
-            paused = !paused
-        }
+        if paused then label = "Resume systems"
+        if app.button(label, 16.0, 16.0, 142.0, 34.0) then paused = !paused
         app.uiText("Entities ${world.count}   Frame ${frameIndex}   ESC quit", 16.0, 62.0, 14.0)
 
-        if app.keyPressed(.Escape) {
-            app.quit()
-        }
+        if app.keyPressed(.Escape) then app.quit()
         app.present()
     }
 }

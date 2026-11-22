@@ -37,23 +37,16 @@ import engine.ecs
 import engine.ui.node
 import engine.ui.compose
 
-
 /** A child's extent across the container's axis. */
-func crossExtent(asked: Double, fills: Bool, available: Double): Double {
-    if asked > 0.0 {
-        return asked
-    }
-    return available
-}
+func crossExtent(asked: Double, fills: Bool, available: Double): Double = if asked > 0.0 then asked else available
 
 /** Where a child of [extent] sits within [available], for [alignment]. */
 func alignOffset(alignment: Alignment, available: Double, extent: Double): Double {
-    when alignment {
-        Alignment.Start -> { return 0.0 }
-        Alignment.Center -> { return (available - extent) * 0.5 }
-        Alignment.End -> { return available - extent }
+    return when alignment {
+        .Center -> (available - extent) * 0.5
+        .End -> available - extent
+        .Start, else -> 0.0
     }
-    return 0.0
 }
 
 impl Composition {
@@ -65,57 +58,45 @@ impl Composition {
      * [SiblingOrder], so the arranged order is the composed order rather than whatever
      * order storage happens to hold (§10.3).
      */
-    func Composition!.arrange(
-        node: Entity
-        x: Double
-        y: Double
-        width: Double
-        height: Double
-    ) {
+    func Composition!.arrange(node: Entity, x: Double, y: Double, width: Double, height: Double) {
         self.place(node, x, y, width, height)
 
-        fin layout = storageGetOrDefault<Layout>(store<Layout>(self), node, Layout(0 - 1, Arrangement.Start, Alignment.Start, 0.0))
-        if layout.direction < 0 {
-            return
-        }
+        fin layout = storageGetOrDefault<Layout>(store(self), node, .(-1, .Start, .Start, 0.0))
+        if layout.direction < 0 then return
 
-        fin scroll = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
-        fin pad = storageGetOrDefault<Padding>(store<Padding>(self), node, Padding(0.0, 0.0, 0.0, 0.0))
+        fin scroll = storageGetOrDefault<Scroll>(store(self), node, .(0.0, 0.0))
+        fin pad = storageGetOrDefault<Padding>(store(self), node, .(0.0, 0.0, 0.0, 0.0))
         fin innerX = x + pad.start
         fin innerY = y + pad.top
         fin innerWidth = width - pad.start - pad.end
         fin innerHeight = height - pad.top - pad.bottom
-        fin along = if layout.direction == layoutRow { innerWidth } else { innerHeight }
+        fin along = if layout.direction == layoutRow then innerWidth else innerHeight
 
         fin count = self.childCount(node)
-        if count == 0 {
-            return
-        }
+        if count == 0 then return
 
         // A flow places each child at its own size, wrapping at the right edge.
         if layout.direction == layoutFlow {
             var cursorX: Double = 0.0
-            var cursorY: Double = 0.0 - scroll.offset
+            var cursorY: Double = -scroll.offset
             var lineHeight: Double = 0.0
-            var flowIndex = 0
-            while flowIndex < count {
+            for flowIndex: Int in 0..<count {
                 fin child = self.childAt(node, flowIndex)
                 if child.isValid {
-                    fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
-                    fin childWidth = if size.width > 0.0 { size.width } else { innerWidth }
-                    fin childHeight = if size.height > 0.0 { size.height } else { 24.0 }
+                    fin size = storageGetOrDefault<Size>(store(self), child, .(false, false, 0.0, 0.0, 0.0))
+                    fin childWidth = if size.width > 0.0 then size.width else innerWidth
+                    fin childHeight = if size.height > 0.0 then size.height else 24.0
                     if cursorX > 0.0 && cursorX + childWidth > innerWidth {
                         cursorX = 0.0
-                        cursorY = cursorY + lineHeight + layout.spacing
+                        cursorY += lineHeight + layout.spacing
                         lineHeight = 0.0
                     }
                     self.arrange(child, innerX + cursorX, innerY + cursorY, childWidth, childHeight)
-                    cursorX = cursorX + childWidth + layout.spacing
-                    if childHeight > lineHeight { lineHeight = childHeight }
+                    cursorX += childWidth + layout.spacing
+                    if childHeight > lineHeight then lineHeight = childHeight
                 }
-                flowIndex = flowIndex + 1
             }
-            storageInsert<Scroll>(store<Scroll>(self), node, Scroll(scroll.offset, cursorY + lineHeight + scroll.offset))
+            storageInsert<Scroll>(store(self), node, .(scroll.offset, cursorY + lineHeight + scroll.offset))
             return
         }
 
@@ -127,38 +108,38 @@ impl Composition {
         // column of plain rows look right without anyone stating a size.
         // Annotated because `Array::fill` alone yields `Array<Any>`: the element
         // type does not survive into the local, and every write then fails.
-        var extents: Array<Double> = Array<Double>()
-        var weights: Array<Double> = Array<Double>()
+        var extents: Array<Double> = []
+        var weights: Array<Double> = []
         var allocated = 0
         while allocated < count {
             extents.add(0.0)
             weights.add(0.0)
-            allocated = allocated + 1
+            allocated++
         }
         var fixedTotal: Double = 0.0
         var weightTotal: Double = 0.0
         var flexible = 0
-        var shares: Array<Bool> = Array<Bool>()
+        var shares: Array<Bool> = []
         var index = 0
         while index < count {
             fin child = self.childAt(node, index)
-            fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
-            fin asked = if layout.direction == layoutRow { size.width } else { size.height }
-            fin fills = if layout.direction == layoutRow { size.fillWidth } else { size.fillHeight }
+            fin size = storageGetOrDefault<Size>(store(self), child, .(false, false, 0.0, 0.0, 0.0))
+            fin asked = if layout.direction == layoutRow then size.width else size.height
+            fin fills = if layout.direction == layoutRow then size.fillWidth else size.fillHeight
             weights[index] = size.weight
             shares.add(false)
             if size.weight > 0.0 {
                 extents[index] = 0.0
-                weightTotal = weightTotal + size.weight
+                weightTotal += size.weight
             } else if asked > 0.0 {
                 extents[index] = asked
-                fixedTotal = fixedTotal + asked
+                fixedTotal += asked
             } else if fills {
                 // Filling is a weight of one: it shares the leftover with any
                 // weighted siblings, and takes all of it when it is alone.
                 extents[index] = 0.0
                 weights[index] = 1.0
-                weightTotal = weightTotal + 1.0
+                weightTotal += 1.0
             } else {
                 // A container that asked for nothing wraps what it holds: a bar of
                 // fixed buttons is as wide as the buttons. Only a child with no
@@ -166,21 +147,19 @@ impl Composition {
                 fin wrapped = self.intrinsicExtent(child, layout.direction == layoutRow)
                 if wrapped > 0.0 {
                     extents[index] = wrapped
-                    fixedTotal = fixedTotal + wrapped
+                    fixedTotal += wrapped
                 } else {
                     extents[index] = 0.0
                     shares[index] = true
-                    flexible = flexible + 1
+                    flexible++
                 }
             }
-            index = index + 1
+            index++
         }
 
         fin gaps = layout.spacing * ((count - 1) as Double)
         var leftover = along - fixedTotal - gaps
-        if leftover < 0.0 {
-            leftover = 0.0
-        }
+        if leftover < 0.0 then leftover = 0.0
 
         // Weighted children take their share first; whatever remains is split
         // between the children that asked for nothing at all.
@@ -188,25 +167,19 @@ impl Composition {
             fin unit = leftover / weightTotal
             index = 0
             while index < count {
-                if weights[index] > 0.0 {
-                    extents[index] = unit * weights[index]
-                }
-                index = index + 1
+                if weights[index] > 0.0 then extents[index] = unit * weights[index]
+                index++
             }
             fin used = unit * weightTotal
-            leftover = leftover - used
-            if leftover < 0.0 {
-                leftover = 0.0
-            }
+            leftover -= used
+            if leftover < 0.0 then leftover = 0.0
         }
         if flexible > 0 {
             fin share = leftover / (flexible as Double)
             index = 0
             while index < count {
-                if shares[index] {
-                    extents[index] = share
-                }
-                index = index + 1
+                if shares[index] then extents[index] = share
+                index++
             }
             leftover = 0.0
         }
@@ -219,23 +192,21 @@ impl Composition {
         var between = layout.spacing
         fin holes = (count - 1) as Double
         when layout.arrangement {
-            Arrangement.Start -> { }
-            Arrangement.Center -> { lead = leftover * 0.5 }
-            Arrangement.End -> { lead = leftover }
-            Arrangement.SpaceBetween -> {
-                if count > 1 {
-                    between = between + leftover / holes
-                }
+            .Start -> { }
+            .Center -> { lead = leftover * 0.5 }
+            .End -> { lead = leftover }
+            .SpaceBetween -> {
+                if count > 1 then between += leftover / holes
             }
-            Arrangement.SpaceAround -> {
+            .SpaceAround -> {
                 fin unit = leftover / (count as Double)
                 lead = unit * 0.5
-                between = between + unit
+                between += unit
             }
-            Arrangement.SpaceEvenly -> {
+            .SpaceEvenly -> {
                 fin unit = leftover / ((count + 1) as Double)
                 lead = unit
-                between = between + unit
+                between += unit
             }
         }
 
@@ -246,7 +217,7 @@ impl Composition {
             fin child = self.childAt(node, index)
             fin span = extents[index]
             if child.isValid {
-                fin size = storageGetOrDefault<Size>(store<Size>(self), child, Size(false, false, 0.0, 0.0, 0.0))
+                fin size = storageGetOrDefault<Size>(store(self), child, .(false, false, 0.0, 0.0, 0.0))
                 if layout.direction == layoutRow {
                     fin across = crossExtent(size.height, size.fillHeight, innerHeight)
                     fin offset = alignOffset(layout.alignment, innerHeight, across)
@@ -258,13 +229,13 @@ impl Composition {
                 }
                 content = cursor + span
             }
-            cursor = cursor + span + between
-            index = index + 1
+            cursor += span + between
+            index++
         }
 
         // Record how much room the children wanted, so scrolling can be bounded.
         if layout.direction == layoutColumn {
-            storageInsert<Scroll>(store<Scroll>(self), node, Scroll(scroll.offset, content + scroll.offset))
+            storageInsert<Scroll>(store(self), node, .(scroll.offset, content + scroll.offset))
         }
     }
 
@@ -276,24 +247,22 @@ impl Composition {
      * the layout does not measure.
      */
     func Composition!.intrinsicExtent(node: Entity, horizontal: Bool): Double {
-        fin size = storageGetOrDefault<Size>(store<Size>(self), node, Size(false, false, 0.0, 0.0, 0.0))
-        fin asked = if horizontal { size.width } else { size.height }
-        if asked > 0.0 { return asked }
-        fin layout = storageGetOrDefault<Layout>(store<Layout>(self), node, Layout(0 - 1, Arrangement.Start, Alignment.Start, 0.0))
-        if layout.direction != layoutRow && layout.direction != layoutColumn { return 0.0 }
+        fin size = storageGetOrDefault<Size>(store(self), node, .(false, false, 0.0, 0.0, 0.0))
+        fin asked = if horizontal then size.width else size.height
+        if asked > 0.0 then return asked
+        fin layout = storageGetOrDefault<Layout>(store(self), node, .(-1, .Start, .Start, 0.0))
+        if layout.direction != layoutRow && layout.direction != layoutColumn then return 0.0
         fin along = (layout.direction == layoutRow) == horizontal
         fin count = self.childCount(node)
         var total: Double = 0.0
-        var index = 0
-        while index < count {
-            fin extent = self.intrinsicExtent(self.childAt(node, index), horizontal)
-            if along { total = total + extent } else if extent > total { total = extent }
-            index = index + 1
+        for i: Int in 0..<count {
+            fin extent = self.intrinsicExtent(self.childAt(node, i), horizontal)
+            if along then total += extent else if extent > total then total = extent
         }
-        if total <= 0.0 { return 0.0 }
-        if along && count > 1 { total = total + layout.spacing * ((count - 1) as Double) }
-        fin pad = storageGetOrDefault<Padding>(store<Padding>(self), node, Padding(0.0, 0.0, 0.0, 0.0))
-        return total + if horizontal { pad.start + pad.end } else { pad.top + pad.bottom }
+        if total <= 0.0 then return 0.0
+        if along && count > 1 then total += layout.spacing * ((count - 1) as Double)
+        fin pad = storageGetOrDefault<Padding>(store(self), node, .(0.0, 0.0, 0.0, 0.0))
+        return total + if horizontal then pad.start + pad.end else pad.top + pad.bottom
     }
 
     /**
@@ -312,37 +281,26 @@ impl Composition {
      *
      * Returns the number of nodes moved.
      */
-    func Composition!.applyScroll(
-        pointerX: Double
-        pointerY: Double
-        wheelDelta: Double
-        keyDelta: Double
-    ): Int {
-        if wheelDelta == 0.0 && keyDelta == 0.0 {
-            return 0
-        }
+    func Composition!.applyScroll(pointerX: Double, pointerY: Double, wheelDelta: Double, keyDelta: Double): Int {
+        if wheelDelta == 0.0 && keyDelta == 0.0 then return 0
 
-        var moved = 0
-        var index = 0
-        while index < storageLength<Scroll>(store<Scroll>(self)) {
-            fin entity = storageEntityAt<Scroll>(store<Scroll>(self), index)
+        var moved: Int = 0
+        for i: Int in 0..<storageLength<Scroll>(store(self)) {
+            fin entity = storageEntityAt<Scroll>(store(self), i)
             if entity.isValid {
-                fin rect = storageGetOrDefault<Rect>(store<Rect>(self), entity, Rect(0.0, 0.0, 0.0, 0.0))
+                fin rect = storageGetOrDefault<Rect>(store(self), entity, .(0.0, 0.0, 0.0, 0.0))
                 fin insideX = pointerX >= rect.x && pointerX <= rect.x + rect.width
                 fin insideY = pointerY >= rect.y && pointerY <= rect.y + rect.height
                 fin inside = insideX && insideY
                 // The wheel scrolls what is under the pointer; the keyboard scrolls
                 // regardless, because a key press has no position to aim it with.
                 var delta = keyDelta
-                if inside {
-                    delta = delta + wheelDelta
-                }
+                if inside then delta += wheelDelta
                 if delta != 0.0 && rect.height > 0.0 {
                     self.scrollBy(entity, delta, rect.height)
-                    moved = moved + 1
+                    moved++
                 }
             }
-            index = index + 1
         }
         return moved
     }
@@ -350,25 +308,17 @@ impl Composition {
     /** How many children [parent] has. */
     func Composition!.childCount(parent: Entity): Int {
         fin claimed = self.claimedChildren(parent)
-        if !parent.isValid {
-            return if claimed < self.rootChildren.size { claimed } else { self.rootChildren.size }
-        }
+        if !parent.isValid then return if claimed < self.rootChildren.size then claimed else self.rootChildren.size
         fin at = storageIndexOf<Children>(self.childLists(), parent)
-        if at < 0 {
-            return 0
-        }
+        if at < 0 then return 0
         fin size = self.childLists().values[at].list.size
-        return if claimed < size { claimed } else { size }
+        return if claimed < size then claimed else size
     }
 
     /** [parent]'s child at composition position [position]. */
     func Composition!.childAt(parent: Entity, position: Int): Entity {
-        if position < 0 || position >= self.childCount(parent) {
-            return Entity::invalid
-        }
-        if !parent.isValid {
-            return self.rootChildren[position].clone()
-        }
+        if position < 0 || position >= self.childCount(parent) then return ::invalid
+        if !parent.isValid then return self.rootChildren[position].clone()
         fin at = storageIndexOf<Children>(self.childLists(), parent)
         return self.childLists().values[at].list[position].clone()
     }
@@ -382,29 +332,22 @@ impl Composition {
      */
     /** Writes [colour] onto [entity]'s paint, keeping its alpha and text size. */
     func Composition!.setPaint(entity: Entity, r: Double, g: Double, b: Double) {
-        fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
-        storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
+        fin current = storageGetOrDefault<Paint>(store(self), entity, .(0.0, 0.0, 0.0, 1.0, 0.0))
+        storageInsert<Paint>(store(self), entity, .(r, g, b, current.alpha, current.size))
     }
 
-    func Composition!.tintGroup(
-        group: Int
-        r: Double
-        g: Double
-        b: Double
-    ): Int {
-        var touched = 0
-        var index = 0
-        while index < storageLength<TagI>(store<TagI>(self)) {
-            fin entity = storageEntityAt<TagI>(store<TagI>(self), index)
+    func Composition!.tintGroup(group: Int, r: Double, g: Double, b: Double): Int {
+        var touched: Int = 0
+        for i: Int in 0..<storageLength<TagI>(store(self)) {
+            fin entity = storageEntityAt<TagI>(store(self), i)
             if entity.isValid {
-                fin tag = storageGetOrDefault<TagI>(store<TagI>(self), entity, TagI(0 - 1))
+                fin tag = storageGetOrDefault<TagI>(store(self), entity, .(-1))
                 if tag.index == group {
-                    fin current = storageGetOrDefault<Paint>(store<Paint>(self), entity, Paint(0.0, 0.0, 0.0, 1.0, 0.0))
-                    storageInsert<Paint>(store<Paint>(self), entity, Paint(r, g, b, current.alpha, current.size))
-                    touched = touched + 1
+                    fin current = storageGetOrDefault<Paint>(store(self), entity, .(0.0, 0.0, 0.0, 1.0, 0.0))
+                    storageInsert<Paint>(store(self), entity, .(r, g, b, current.alpha, current.size))
+                    touched++
                 }
             }
-            index = index + 1
         }
         return touched
     }
@@ -416,36 +359,28 @@ impl Composition {
      * user believes they clicked is the one that answers.
      */
     func Composition!.hit(pointerX: Double, pointerY: Double): Int {
-        var found = 0
-        var index = 0
-        while index < storageLength<Action>(store<Action>(self)) {
-            fin entity = storageEntityAt<Action>(store<Action>(self), index)
+        var found: Int = 0
+        for i: Int in 0..<storageLength<Action>(store(self)) {
+            fin entity = storageEntityAt<Action>(store(self), i)
             if entity.isValid {
-                fin rect = storageGetOrDefault<Rect>(store<Rect>(self), entity, Rect(0.0, 0.0, 0.0, 0.0))
+                fin rect = storageGetOrDefault<Rect>(store(self), entity, .(0.0, 0.0, 0.0, 0.0))
                 if pointerX >= rect.x && pointerX <= rect.x + rect.width &&
                     pointerY >= rect.y && pointerY <= rect.y + rect.height {
-                    fin action = storageGetOrDefault<Action>(store<Action>(self), entity, Action(0))
-                    if action.code != 0 {
-                        found = action.code
-                    }
+                    fin action = storageGetOrDefault<Action>(store(self), entity, .(0))
+                    if action.code != 0 then found = action.code
                 }
             }
-            index = index + 1
         }
         return found
     }
 
     /** Moves a scroll container by [delta], clamped to its content. */
     func Composition!.scrollBy(node: Entity, delta: Double, viewport: Double) {
-        fin current = storageGetOrDefault<Scroll>(store<Scroll>(self), node, Scroll(0.0, 0.0))
+        fin current = storageGetOrDefault<Scroll>(store(self), node, .(0.0, 0.0))
         var moved = current.offset + delta
         fin limit = current.contentExtent - viewport
-        if moved > limit {
-            moved = limit
-        }
-        if moved < 0.0 {
-            moved = 0.0
-        }
-        storageInsert<Scroll>(store<Scroll>(self), node, Scroll(moved, current.contentExtent))
+        if moved > limit then moved = limit
+        if moved < 0.0 then moved = 0.0
+        storageInsert<Scroll>(store(self), node, .(moved, current.contentExtent))
     }
 }

@@ -89,14 +89,10 @@ func traitsAt(map: Tilemap, layer: Int, pos: TilePos): Int {
 }
 
 /** True when the tile at [pos] carries any bit of [mask]. */
-func tileBlocks(map: Tilemap, layer: Int, pos: TilePos, mask: Int): Bool {
-    return flagsAny(traitsAt(map, layer, pos), mask)
-}
+func tileBlocks(map: Tilemap, layer: Int, pos: TilePos, mask: Int): Bool = flagsAny(traitsAt(map, layer, pos), mask)
 
 /** True when the tile at [pos] is solid. */
-func tileIsSolid(map: Tilemap, layer: Int, pos: TilePos): Bool {
-    return tileBlocks(map, layer, pos, traitSolid)
-}
+func tileIsSolid(map: Tilemap, layer: Int, pos: TilePos): Bool = tileBlocks(map, layer, pos, traitSolid)
 
 /**
  * The index of the tile at [pos] that actually carries a bit of [mask].
@@ -105,29 +101,23 @@ func tileIsSolid(map: Tilemap, layer: Int, pos: TilePos): Bool {
  * under a wall would be true and useless.
  */
 func blockingIndexAt(map: Tilemap, layer: Int, pos: TilePos, mask: Int): Int {
-    if layer != tileAnyLayer {
-        return tilemapIndexAt(map, layer, pos)
-    }
+    if layer != tileAnyLayer then return tilemapIndexAt(map, layer, pos)
     var i = map.count - 1
     while i >= 0 {
         fin tile = layerIndexAt(map.layers[i], pos)
-        if tile != tileEmpty && flagsAny(map.tiles.traitsOf(tile), mask) {
-            return tile
-        }
-        i = i - 1
+        if tile != tileEmpty && flagsAny(map.tiles.traitsOf(tile), mask) then return tile
+        i--
     }
     return tileEmpty
 }
 
 /** The tiles a world-space box touches, clipped to the map. */
-func tilesUnder(map: Tilemap, area: Aabb2D): TileRect {
-    return visibleTiles(map.geometry, worldRect(area.minX, area.minY, area.maxX, area.maxY))
-}
+func tilesUnder(map: Tilemap, area: Aabb2D): TileRect = visibleTiles(map.geometry, worldRect(area.minX, area.minY, area.maxX, area.maxY))
 
 /** The physics box a tile's drawn quad occupies. */
 func tileBox(map: Tilemap, pos: TilePos): Aabb2D {
     fin quad = tileQuad(map.geometry, pos)
-    return Aabb2D(quad.minX, quad.minY, quad.maxX, quad.maxY)
+    return .(quad.minX, quad.minY, quad.maxX, quad.maxY)
 }
 
 /**
@@ -139,15 +129,11 @@ func tileBox(map: Tilemap, pos: TilePos): Aabb2D {
  */
 func boxOverlaps(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Bool {
     fin cells = tilesUnder(map, area)
-    if cells.isEmpty() {
-        return false
-    }
+    if cells.isEmpty() then return false
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
-            fin pos = TilePos(x, y)
-            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) {
-                return true
-            }
+            fin pos: TilePos = .(x, y)
+            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) then return true
         }
     }
     return false
@@ -156,16 +142,12 @@ func boxOverlaps(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Bool {
 /** How many tiles of [area] carry a bit of [mask]. */
 func countBlocking(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Int {
     fin cells = tilesUnder(map, area)
-    if cells.isEmpty() {
-        return 0
-    }
+    if cells.isEmpty() then return 0
     var total = 0
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
-            fin pos = TilePos(x, y)
-            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) {
-                total = total + 1
-            }
+            fin pos: TilePos = .(x, y)
+            if tileBlocks(map, layer, pos, mask) && tileBox(map, pos).overlaps(area) then total++
         }
     }
     return total
@@ -173,7 +155,7 @@ func countBlocking(map: Tilemap, layer: Int, area: Aabb2D, mask: Int): Int {
 
 /** True when a box resting at [body] has blocking ground within [reach] below it. */
 func isGrounded(map: Tilemap, layer: Int, body: Aabb2D, mask: Int, reach: Double): Bool {
-    fin probe = Aabb2D(body.minX, body.maxY, body.maxX, body.maxY + reach)
+    fin probe: Aabb2D = .(body.minX, body.maxY, body.maxX, body.maxY + reach)
     return boxOverlaps(map, layer, probe, mask) || boxOverlaps(map, layer, probe, traitOneWay)
 }
 
@@ -199,30 +181,26 @@ func sweepBoxAgainstMap(
     oneWay: Bool
 ): Sweep2D {
     fin cells = tilesUnder(map, body.sweptBy(motion))
-    if cells.isEmpty() {
-        return Sweep2D.Clear
-    }
+    if cells.isEmpty() then return Sweep2D.Clear
 
     var best = Sweep2D.Clear
     var bestT = 1.0
     for y in cells.minY..cells.maxY {
         for x in cells.minX..cells.maxX {
-            fin pos = TilePos(x, y)
+            fin pos: TilePos = .(x, y)
             fin traits = traitsAt(map, layer, pos)
             fin quad = tileBox(map, pos)
             var blocks = flagsAny(traits, mask)
-            if !blocks && oneWay && flagsAny(traits, traitOneWay) && motion.y > 0.0 {
-                blocks = body.maxY <= quad.minY
-            }
+            if !blocks && oneWay && flagsAny(traits, traitOneWay) && motion.y > 0.0 then blocks = body.maxY <= quad.minY
             if blocks {
                 when sweepBox(body, motion, quad) {
-                    Sweep2D.Blocked(t, normal, point) -> {
+                    .Blocked(t, normal, point) -> {
                         if t < bestT {
                             bestT = t
                             best = Sweep2D.Blocked(t, normal, point)
                         }
                     }
-                    Sweep2D.Clear() -> { }
+                    .Clear() -> { }
                 }
             }
         }
@@ -245,8 +223,8 @@ func moveBox(
     mask: Int
     oneWay: Bool
 ): TileMove {
-    fin size = Vec2(body.width(), body.height())
-    var at = Vec2(body.minX, body.minY)
+    fin size: Vec2 = .(body.width(), body.height())
+    var at: Vec2 = .(body.minX, body.minY)
     var left = motion
     var hitX = false
     var hitY = false
@@ -255,7 +233,7 @@ func moveBox(
 
     if left.x != 0.0 {
         fin current = aabbAt(at.x, at.y, size.x, size.y)
-        fin swept = sweepBoxAgainstMap(map, layer, current, Vec2(left.x, 0.0), mask, false)
+        fin swept = sweepBoxAgainstMap(map, layer, current, .(left.x, 0.0), mask, false)
         fin fraction = sweepFraction(swept)
         at = Vec2(at.x + left.x * fraction, at.y)
         if sweepBlocked(swept) {
@@ -266,7 +244,7 @@ func moveBox(
 
     if left.y != 0.0 {
         fin current = aabbAt(at.x, at.y, size.x, size.y)
-        fin swept = sweepBoxAgainstMap(map, layer, current, Vec2(0.0, left.y), mask, oneWay)
+        fin swept = sweepBoxAgainstMap(map, layer, current, .(0.0, left.y), mask, oneWay)
         fin fraction = sweepFraction(swept)
         at = Vec2(at.x, at.y + left.y * fraction)
         if sweepBlocked(swept) {
@@ -298,12 +276,8 @@ func moveAndSlide(
 ): TileMove {
     var moved = moveBox(map, layer, body, velocity.scale(dt), mask, oneWay)
     var result = velocity
-    if moved.hitX {
-        result = Vec2(0.0, result.y)
-    }
-    if moved.hitY {
-        result = Vec2(result.x, 0.0)
-    }
+    if moved.hitX then result = Vec2(0.0, result.y)
+    if moved.hitY then result = Vec2(result.x, 0.0)
     moved.velocity = result
     return moved
 }
@@ -328,7 +302,7 @@ func rayCast(
     mask: Int
 ): TileRayHit {
     return when map.geometry.kind {
-        TilemapKind.Square() -> raySquare(map, layer, origin, direction, maxT, mask)
+        .Square() -> raySquare(map, layer, origin, direction, maxT, mask)
         else -> rayMarch(map, layer, origin, direction, maxT, mask)
     }
 }
@@ -351,9 +325,7 @@ func raySquare(
     fin geo = map.geometry
     fin gx = geo.grid.x
     fin gy = geo.grid.y
-    if gx <= 0.0 || gy <= 0.0 {
-        return TileRayHit.Miss
-    }
+    if gx <= 0.0 || gy <= 0.0 then return TileRayHit.Miss
 
     // Lattice space, shifted so a cell spans a unit interval starting at its
     // own index rather than being centred on it.
@@ -394,51 +366,41 @@ func raySquare(
         tDeltaY = -1.0 / dv
     }
 
-    if stepX == 0 && stepY == 0 {
-        return TileRayHit.Miss
-    }
+    if stepX == 0 && stepY == 0 then return TileRayHit.Miss
 
     // The origin's own cell has no crossing to report, so it is tested first
     // with a zero normal; a ray that starts inside a wall says so.
-    var pos = TilePos(cellX, cellY)
-    if tileBlocks(map, layer, pos, mask) {
-        return TileRayHit.Hit(pos, blockingIndexAt(map, layer, pos, mask), vec2Zero(), 0.0, origin)
-    }
+    var pos: TilePos = .(cellX, cellY)
+    if tileBlocks(map, layer, pos, mask) then return TileRayHit.Hit(pos, blockingIndexAt(map, layer, pos, mask), vec2Zero(), 0.0, origin)
 
     var t = 0.0
     loop {
-        if t > maxT {
-            return TileRayHit.Miss
-        }
+        if t > maxT then return TileRayHit.Miss
         var normal = vec2Zero()
         if tMaxX < tMaxY {
             t = tMaxX
-            cellX = cellX + stepX
-            tMaxX = tMaxX + tDeltaX
-            normal = Vec2(0.0 - (stepX as Double), 0.0)
+            cellX += stepX
+            tMaxX += tDeltaX
+            normal = Vec2(-(stepX as Double), 0.0)
         } else {
             t = tMaxY
-            cellY = cellY + stepY
-            tMaxY = tMaxY + tDeltaY
-            normal = Vec2(0.0, 0.0 - (stepY as Double))
+            cellY += stepY
+            tMaxY += tDeltaY
+            normal = Vec2(0.0, -(stepY as Double))
         }
-        if t > maxT {
-            return TileRayHit.Miss
-        }
+        if t > maxT then return TileRayHit.Miss
 
         pos = TilePos(cellX, cellY)
         if !geo.size.contains(pos) {
             // Once the ray is past the far edge it can never come back.
-            if rayLeftForGood(geo.size, pos, stepX, stepY) {
-                return TileRayHit.Miss
-            }
+            if rayLeftForGood(geo.size, pos, stepX, stepY) then return TileRayHit.Miss
         } else {
             if tileBlocks(map, layer, pos, mask) {
                 return TileRayHit.Hit(
-                    pos,
-                    blockingIndexAt(map, layer, pos, mask),
-                    normal,
-                    t,
+                    pos
+                    blockingIndexAt(map, layer, pos, mask)
+                    normal
+                    t
                     origin + direction.scale(t)
                 )
             }
@@ -472,13 +434,11 @@ func rayMarch(
     fin step = geometryStep(map.geometry)
     fin shortest = realMax(realMin(step.x, step.y), 0.0001)
     fin travel = realMax(realAbs(direction.x), realAbs(direction.y))
-    if travel <= 0.0 {
-        return TileRayHit.Miss
-    }
+    if travel <= 0.0 then return TileRayHit.Miss
 
     fin increment = shortest * 0.5 / travel
     var t = 0.0
-    var last = TilePos(-999999, -999999)
+    var last: TilePos = .(-999999, -999999)
     while t <= maxT {
         fin point = origin + direction.scale(t)
         fin pos = worldToTile(map.geometry, worldPos(point.x, point.y))
@@ -488,7 +448,7 @@ func rayMarch(
                 return TileRayHit.Hit(pos, blockingIndexAt(map, layer, pos, mask), vec2Zero(), t, point)
             }
         }
-        t = t + increment
+        t += increment
     }
     return TileRayHit.Miss
 }
@@ -496,7 +456,7 @@ func rayMarch(
 /** True when nothing carrying a bit of [mask] stands between [from] and [to]. */
 func lineOfSight(map: Tilemap, layer: Int, from: Vec2, to: Vec2, mask: Int): Bool {
     return when rayCast(map, layer, from, to - from, 1.0, mask) {
-        TileRayHit.Miss() -> true
+        .Miss() -> true
         else -> false
     }
 }
@@ -504,7 +464,7 @@ func lineOfSight(map: Tilemap, layer: Int, from: Vec2, to: Vec2, mask: Int): Boo
 /** True when [result] met a tile. */
 func rayHitOk(result: TileRayHit): Bool {
     return when result {
-        TileRayHit.Hit(pos, index, normal, t, point) -> true
+        .Hit(pos, index, normal, t, point) -> true
         else -> false
     }
 }
@@ -512,7 +472,7 @@ func rayHitOk(result: TileRayHit): Bool {
 /** The tile [result] met, or `(0, 0)` when it met nothing. */
 func rayHitPos(result: TileRayHit): TilePos {
     return when result {
-        TileRayHit.Hit(pos, index, normal, t, point) -> pos
+        .Hit(pos, index, normal, t, point) -> pos
         else -> TilePos(0, 0)
     }
 }
@@ -520,7 +480,7 @@ func rayHitPos(result: TileRayHit): TilePos {
 /** The `t` [result] hit at, or `-1` when it met nothing. */
 func rayHitT(result: TileRayHit): Double {
     return when result {
-        TileRayHit.Hit(pos, index, normal, t, point) -> t
+        .Hit(pos, index, normal, t, point) -> t
         else -> -1.0
     }
 }
@@ -528,7 +488,7 @@ func rayHitT(result: TileRayHit): Double {
 /** The surface normal [result] struck, or zero. */
 func rayHitNormal(result: TileRayHit): Vec2 {
     return when result {
-        TileRayHit.Hit(pos, index, normal, t, point) -> normal
+        .Hit(pos, index, normal, t, point) -> normal
         else -> vec2Zero()
     }
 }
@@ -543,7 +503,7 @@ test "a fast box stops at the wall instead of tunnelling through it" {
     // Column 4 is drawn at x = 64 .. 80; the box must stop at 64 however fast
     // it is travelling.
     fin body = aabbAt(24.0, 20.0, 8.0, 8.0)
-    fin moved = moveBox(map, tileAnyLayer, body, Vec2(60.0, 6.0), traitSolid, false)
+    fin moved = moveBox(map, tileAnyLayer, body, .(60.0, 6.0), traitSolid, false)
 
     assert moved.hitX panic "moving into the wall must register a horizontal hit"
     assert realAbs(moved.position.x - 56.0) < 0.01 panic "a move longer than a tile must still stop at the wall"
@@ -559,11 +519,11 @@ test "a one-way platform is passed from below and landed on from above" {
     layerFillRect(map.layers[0], tileRect(0, 4, 7, 4), 2)
 
     // Row 4 is drawn at y = 64 .. 80.
-    fin landing = moveBox(map, tileAnyLayer, aabbAt(20.0, 40.0, 8.0, 8.0), Vec2(0.0, 20.0), traitSolid, true)
+    fin landing = moveBox(map, tileAnyLayer, aabbAt(20.0, 40.0, 8.0, 8.0), .(0.0, 20.0), traitSolid, true)
     assert landing.grounded panic "a fall onto a platform must land"
     assert realAbs(landing.position.y - 56.0) < 0.01 panic "the box must rest on top of the platform"
 
-    fin rising = moveBox(map, tileAnyLayer, aabbAt(20.0, 80.0, 8.0, 8.0), Vec2(0.0, -20.0), traitSolid, true)
+    fin rising = moveBox(map, tileAnyLayer, aabbAt(20.0, 80.0, 8.0, 8.0), .(0.0, -20.0), traitSolid, true)
     assert !rising.hitY panic "a jump from below must pass through a one-way platform"
     assert realAbs(rising.position.y - 60.0) < 0.01 panic "the rising box must keep its full movement"
 }
@@ -575,19 +535,19 @@ test "a square ray reports the tile, the normal and where it landed" {
     tilemapNewLayer(map, "walls")
     layerFillRect(map.layers[0], tileRect(5, 0, 5, 7), 1)
 
-    when rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(1.0, 0.0), 200.0, traitSolid) {
-        TileRayHit.Hit(pos, index, normal, t, point) -> {
+    when rayCast(map, tileAnyLayer, .(8.0, 24.0), .(1.0, 0.0), 200.0, traitSolid) {
+        .Hit(pos, index, normal, t, point) -> {
             assert pos.x == 5 panic "the ray must stop in the wall column"
             assert normal.x < -0.99 panic "the normal must face back along the ray"
             assert index == 1 panic "the hit must report the tile it met, across every layer"
             assert realAbs(point.x - 80.0) < 0.01 panic "the hit point must be on the wall's near face"
         }
-        TileRayHit.Miss() -> { assert false panic "a ray straight into a wall must hit" }
+        .Miss() -> { assert false panic "a ray straight into a wall must hit" }
     }
 
-    assert !rayHitOk(rayCast(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(0.0, 1.0), 100.0, traitSolid)) panic "a ray down an empty column must miss"
-    assert !lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(120.0, 24.0), traitSolid) panic "the wall must break the line of sight"
-    assert lineOfSight(map, tileAnyLayer, Vec2(8.0, 24.0), Vec2(8.0, 100.0), traitSolid) panic "an unobstructed line must be clear"
+    assert !rayHitOk(rayCast(map, tileAnyLayer, .(8.0, 24.0), .(0.0, 1.0), 100.0, traitSolid)) panic "a ray down an empty column must miss"
+    assert !lineOfSight(map, tileAnyLayer, .(8.0, 24.0), .(120.0, 24.0), traitSolid) panic "the wall must break the line of sight"
+    assert lineOfSight(map, tileAnyLayer, .(8.0, 24.0), .(8.0, 100.0), traitSolid) panic "an unobstructed line must be clear"
 }
 
 test "overlap tests see only the traits they ask for" {
@@ -596,8 +556,8 @@ test "overlap tests see only the traits they ask for" {
     tiles.addTraits(2, traitWater)
     var map = tilemapNew("level", squareGeometry(8, 8, 16.0, 16.0), tiles)
     tilemapNewLayer(map, "walls")
-    tilemapSet(map, 0, TilePos(2, 2), 1)
-    tilemapSet(map, 0, TilePos(3, 2), 2)
+    tilemapSet(map, 0, .(2, 2), 1)
+    tilemapSet(map, 0, .(3, 2), 2)
 
     fin overSolid = aabbAt(34.0, 34.0, 4.0, 4.0)
     assert boxOverlaps(map, tileAnyLayer, overSolid, traitSolid) panic "the solid tile must be found"
@@ -612,7 +572,7 @@ test "move and slide keeps the tangent velocity" {
     tilemapNewLayer(map, "walls")
     layerFillRect(map.layers[0], tileRect(4, 0, 4, 7), 1)
 
-    fin moved = moveAndSlide(map, tileAnyLayer, aabbAt(24.0, 20.0, 8.0, 8.0), Vec2(600.0, 60.0), 0.1, traitSolid, false)
+    fin moved = moveAndSlide(map, tileAnyLayer, aabbAt(24.0, 20.0, 8.0, 8.0), .(600.0, 60.0), 0.1, traitSolid, false)
     assert moved.hitX panic "the wall must stop the horizontal motion"
     assert moved.velocity.x == 0.0 panic "the blocked axis must lose its velocity"
     assert moved.velocity.y == 60.0 panic "the free axis must keep its velocity"

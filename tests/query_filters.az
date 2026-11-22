@@ -36,12 +36,10 @@ import engine.ecs
 @Component pack Frozen { var since: std::Int }
 @Component pack Tagged { var id: std::Int }
 
-func countOf(cursor: QueryCursor&): std::Int {
-    return cursor.count()
-}
+func countOf(cursor: QueryCursor&): std::Int = cursor.count()
 
 func main() {
-    var world = World()
+    var world: World = .()
 
     var positions = storageOf<Position>(world)
     var frozen = storageOf<Frozen>(world)
@@ -53,18 +51,18 @@ func main() {
     fin d = world.spawn()
 
     // All four carry a Position.
-    storageInsert<Position>(positions, a, Position(1))
-    storageInsert<Position>(positions, b, Position(2))
-    storageInsert<Position>(positions, c, Position(3))
-    storageInsert<Position>(positions, d, Position(4))
+    storageInsert<Position>(positions, a, .(1))
+    storageInsert<Position>(positions, b, .(2))
+    storageInsert<Position>(positions, c, .(3))
+    storageInsert<Position>(positions, d, .(4))
 
     // b and d are Frozen.
-    storageInsert<Frozen>(frozen, b, Frozen(10))
-    storageInsert<Frozen>(frozen, d, Frozen(20))
+    storageInsert<Frozen>(frozen, b, .(10))
+    storageInsert<Frozen>(frozen, d, .(20))
 
     // a and b are Tagged.
-    storageInsert<Tagged>(tagged, a, Tagged(100))
-    storageInsert<Tagged>(tagged, b, Tagged(200))
+    storageInsert<Tagged>(tagged, a, .(100))
+    storageInsert<Tagged>(tagged, b, .(200))
 
     // Each answers whether it *replaced* a registration, and each does: asking
     // for a storage is what creates it, so `storageOf` above already put these
@@ -94,9 +92,7 @@ func main() {
     // loop never ran, so the count agreed while the walk did nothing.
     var walked = 0
     for row in thawed {
-        if row.isValid {
-            walked = walked + 1
-        }
+        if row.isValid then walked++
     }
     println("walkedThawed=${walked}")
 }

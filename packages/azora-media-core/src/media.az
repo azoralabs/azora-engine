@@ -42,92 +42,71 @@ pack MediaTime {
 }
 
 /** Zero seconds in the engine's default microsecond time base. */
-func mediaTimeZero(): MediaTime {
-    return MediaTime(Long(0), 1, 1000000)
-}
+func mediaTimeZero(): MediaTime = .(0, 1, 1000000)
 
 /** Builds a timestamp in a `1 / scale` time base. */
-func mediaTime(value: Long, scale: Int): MediaTime {
-    if scale <= 0 {
-        return MediaTime(value, 1, 1000000)
-    }
-    return MediaTime(value, 1, scale)
-}
+func mediaTime(value: Long, scale: Int): MediaTime = if scale <= 0 then .(value, 1, 1000000) else .(value, 1, scale)
 
 /** Converts seconds to the default microsecond time base. */
-func mediaTimeSeconds(seconds: Double): MediaTime {
-    return MediaTime((seconds * 1000000.0) as Long, 1, 1000000)
-}
+func mediaTimeSeconds(seconds: Double): MediaTime = .((seconds * 1000000.0) as Long, 1, 1000000)
 
 /** Converts seconds to a provider's native time base. */
 func mediaTimeFromSecs(seconds: Double, timeBaseNum: Int, timeBaseDen: Int): MediaTime {
-    if timeBaseNum <= 0 || timeBaseDen <= 0 {
-        return mediaTimeSeconds(seconds)
-    }
+    if timeBaseNum <= 0 || timeBaseDen <= 0 then return mediaTimeSeconds(seconds)
     fin ticks = (seconds * (timeBaseDen as Double) / (timeBaseNum as Double)) as Long
-    return MediaTime(ticks, timeBaseNum, timeBaseDen)
+    return .(ticks, timeBaseNum, timeBaseDen)
 }
 
 /** Converts a timestamp to seconds for presentation and user interfaces. */
 func mediaTimeSecs(time: MediaTime&): Double {
-    if time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
-        return 0.0
-    }
+    if time.timeBaseNum <= 0 || time.timeBaseDen <= 0 then return 0.0
     return (time.ticks as Double) * (time.timeBaseNum as Double) / (time.timeBaseDen as Double)
 }
 
 /** Compatibility spelling retained for engine internals. */
-func mediaTimeAsSeconds(time: MediaTime&): Double {
-    return mediaTimeSecs(time)
-}
+func mediaTimeAsSeconds(time: MediaTime&): Double = mediaTimeSecs(time)
 
 /** Converts [time] to another rational time base. */
 func mediaTimeRescale(time: MediaTime&, scale: Int): MediaTime {
-    if scale <= 0 || time.timeBaseNum <= 0 || time.timeBaseDen <= 0 {
-        return mediaTimeZero()
-    }
+    if scale <= 0 || time.timeBaseNum <= 0 || time.timeBaseDen <= 0 then return mediaTimeZero()
     fin numerator = time.ticks * (time.timeBaseNum as Long) * (scale as Long)
-    return MediaTime(numerator / (time.timeBaseDen as Long), 1, scale)
+    return .(numerator / (time.timeBaseDen as Long), 1, scale)
 }
 
 /** Adds timestamps without first converting them to floating point. */
 func mediaTimeAdd(left: MediaTime&, right: MediaTime&): MediaTime {
-    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
-        return mediaTimeZero()
-    }
+    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 then return mediaTimeZero()
     fin numerator = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
     fin denominator = (right.timeBaseDen as Long) * (left.timeBaseNum as Long)
-    return MediaTime(left.ticks + numerator / denominator, left.timeBaseNum, left.timeBaseDen)
+    return .(left.ticks + numerator / denominator, left.timeBaseNum, left.timeBaseDen)
 }
 
 /** Subtracts timestamps without first converting them to floating point. */
 func mediaTimeSubtract(left: MediaTime&, right: MediaTime&): MediaTime {
-    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 {
-        return mediaTimeZero()
-    }
+    if left.timeBaseNum <= 0 || left.timeBaseDen <= 0 then return mediaTimeZero()
     fin numerator = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
     fin denominator = (right.timeBaseDen as Long) * (left.timeBaseNum as Long)
-    return MediaTime(left.ticks - numerator / denominator, left.timeBaseNum, left.timeBaseDen)
+    return .(left.ticks - numerator / denominator, left.timeBaseNum, left.timeBaseDen)
 }
 
 /** Returns a negative value, zero, or a positive value according to ordering. */
 func mediaTimeCompare(left: MediaTime&, right: MediaTime&): Int {
     fin leftValue = left.ticks * (left.timeBaseNum as Long) * (right.timeBaseDen as Long)
     fin rightValue = right.ticks * (right.timeBaseNum as Long) * (left.timeBaseDen as Long)
-    if leftValue < rightValue { return -1 }
-    if leftValue > rightValue { return 1 }
-    return 0
+    return when {
+        leftValue < rightValue -> -1
+        leftValue > rightValue -> 1
+        else -> 0
+    }
 }
 
 /** Restricts a timestamp to an inclusive interval. */
 func mediaTimeClamp(value: MediaTime&, minimum: MediaTime&, maximum: MediaTime&): MediaTime {
-    if mediaTimeCompare(value, minimum) < 0 {
-        return MediaTime(minimum.ticks, minimum.timeBaseNum, minimum.timeBaseDen)
+    return when {
+        mediaTimeCompare(value, minimum) < 0 -> .(minimum.ticks, minimum.timeBaseNum, minimum.timeBaseDen)
+        mediaTimeCompare(value, maximum) > 0 -> .(maximum.ticks, maximum.timeBaseNum, maximum.timeBaseDen)
+        else -> .(value.ticks, value.timeBaseNum, value.timeBaseDen)
     }
-    if mediaTimeCompare(value, maximum) > 0 {
-        return MediaTime(maximum.ticks, maximum.timeBaseNum, maximum.timeBaseDen)
-    }
-    return MediaTime(value.ticks, value.timeBaseNum, value.timeBaseDen)
 }
 
 /** A source accepted by a media provider. Byte storage remains caller-owned. */
@@ -171,34 +150,26 @@ pack MediaInfo {
 }
 
 /** An empty probe result used as a safe fallback in tools and tests. */
-func mediaInfoEmpty(): MediaInfo {
-    return MediaInfo("", mediaTimeZero(), false, false, Array<MediaStreamInfo>())
-}
+func mediaInfoEmpty(): MediaInfo = .("", mediaTimeZero(), false, false, Array<MediaStreamInfo>())
 
 /** Number of streams of [kind] in [info]. */
 func mediaStreamCount(info: MediaInfo&, kind: MediaStreamKind): Int {
     var count = 0
-    var index = 0
-    while index < info.streams.size {
-        if info.streams[index].kind == kind {
-            count = count + 1
-        }
-        index = index + 1
+    for i: Int in 0..<info.streams.size {
+        if info.streams[i].kind == kind then count++
     }
     return count
 }
 
 /** True when a caller-owned byte source has storage to probe. */
-func mediaBytesValid(bytes: Blob&): Bool {
-    return bytes.data != Long(0) && bytes.size > 0
-}
+func mediaBytesValid(bytes: Blob&): Bool = bytes.data != 0 && bytes.size > 0
 
 /** True when [source] contains enough information for a provider to open it. */
 func mediaSourceValid(source: MediaSource&): Bool {
     return when source {
-        MediaSource.Path(path) -> path != ""
-        MediaSource.Bytes(bytes) -> mediaBytesValid(bytes)
-        MediaSource.Uri(uri) -> uri != ""
+        .Path(path) -> path != ""
+        .Bytes(bytes) -> mediaBytesValid(bytes)
+        .Uri(uri) -> uri != ""
     }
 }
 
@@ -251,68 +222,60 @@ pack FakeMediaProvider {
 func fakeMovieInfo(): MediaInfo {
     var streams: Array<MediaStreamInfo> = Array::fill<MediaStreamInfo>(3)
     streams[0] = MediaStreamInfo(
-        StreamId(10),
-        MediaStreamKind.Video,
-        "h264",
-        "und",
-        "Picture",
-        1920,
-        1080,
-        24.0,
-        0,
-        0,
+        StreamId(10)
+        MediaStreamKind.Video
+        "h264"
+        "und"
+        "Picture"
+        1920
+        1080
+        24.0
+        0
+        0
         true
     )
     streams[1] = MediaStreamInfo(
-        StreamId(20),
-        MediaStreamKind.Audio,
-        "aac",
-        "en",
-        "Main",
-        0,
-        0,
-        0.0,
-        48000,
-        2,
+        StreamId(20)
+        MediaStreamKind.Audio
+        "aac"
+        "en"
+        "Main"
+        0
+        0
+        0.0
+        48000
+        2
         true
     )
     streams[2] = MediaStreamInfo(
-        StreamId(30),
-        MediaStreamKind.Subtitle,
-        "ass",
-        "en",
-        "English",
-        0,
-        0,
-        0.0,
-        0,
-        0,
+        StreamId(30)
+        MediaStreamKind.Subtitle
+        "ass"
+        "en"
+        "English"
+        0
+        0
+        0.0
+        0
+        0
         false
     )
-    return MediaInfo("matroska", mediaTimeSeconds(120.0), true, false, streams)
+    return .("matroska", mediaTimeSeconds(120.0), true, false, streams)
 }
 
 impl MediaProvider for FakeMediaProvider {
-    func &.name(): String {
-        return "azora.fake-media"
-    }
+    func &.name(): String = "azora.fake-media"
 
-    func &.capabilities(): MediaProviderCapabilities {
-        return MediaProviderCapabilities(true, true, false, true, false, false, true, true)
-    }
+    func &.capabilities(): MediaProviderCapabilities = .(true, true, false, true, false, false, true, true)
 
-    func &.canOpen(source: MediaSource&): Bool {
-        return self.available && mediaSourceValid(source)
-    }
+    func &.canOpen(source: MediaSource&): Bool = self.available && mediaSourceValid(source)
 
     func &.probe(source: MediaSource&): MediaInfo ?! MediaError {
-        if !self.available {
-            return .ProviderUnavailable
+        return when {
+            !self.available -> .ProviderUnavailable
+            !self.canOpen(source) -> .InvalidSource
+            else -> fakeMovieInfo()
         }
-        if !self.canOpen(source) {
-            return .InvalidSource
-        }
-        return fakeMovieInfo()
     }
 }
 
@@ -321,23 +284,23 @@ test "media time preserves ordering across time bases" {
     fin halfSecond = mediaTime(Long(500), 1000)
     assert mediaTimeCompare(oneSecond, halfSecond) > 0 panic "one second must follow half a second"
     assert mediaTimeCompare(oneSecond, mediaTimeSeconds(1.0)) == 0 panic "equal instants must compare equally"
-    assert mediaTimeAdd(halfSecond, halfSecond).ticks == Long(1000) panic "addition must retain the left time base"
+    assert mediaTimeAdd(halfSecond, halfSecond).ticks == 1000 panic "addition must retain the left time base"
 }
 
 test "the fake provider exposes streams by stable identity and kind" {
-    fin provider = FakeMediaProvider(true)
-    fin info = provider.probe(MediaSource.Path("movie.mkv")) catch mediaInfoEmpty()
+    fin provider: FakeMediaProvider = .(true)
+    fin info = provider.probe(.Path("movie.mkv")) catch mediaInfoEmpty()
     assert info.format == "matroska" panic "the test provider must describe its container"
-    assert mediaStreamCount(info, MediaStreamKind.Video) == 1 panic "the movie must have one video stream"
-    assert mediaStreamCount(info, MediaStreamKind.Audio) == 1 panic "the movie must have one audio stream"
+    assert mediaStreamCount(info, .Video) == 1 panic "the movie must have one video stream"
+    assert mediaStreamCount(info, .Audio) == 1 panic "the movie must have one audio stream"
     assert info.streams[0].id.value == 10 panic "stream selection must use ids, not names"
 }
 
 test "the provider rejects an empty source" {
-    fin provider = FakeMediaProvider(true)
+    fin provider: FakeMediaProvider = .(true)
     var rejected = false
     try {
-        provider.probe(MediaSource.Path(""))
+        provider.probe(.Path(""))
     } catch {
         rejected = true
     }

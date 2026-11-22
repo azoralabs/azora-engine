@@ -82,15 +82,14 @@ func peekFloat32(p: Long, offset: Long): Double {
     if exponent == 0 then return sign * fraction * exp2(-126.0)
     // Infinity and NaN read as the largest float of their sign.
     fin largest: Double = 3.4028234663852886e38
-    if exponent == 255 then return sign * largest
-    return sign * (1.0 + fraction) * exp2((exponent - 127) as Double)
+    return if exponent == 255 then sign * largest else sign * (1.0 + fraction) * exp2((exponent - 127) as Double)
 }
 
 /** `fseek` origin: end of stream. */
-fin seekEnd = 2
+inline fin seekEnd = 2
 
 /** `fseek` origin: start of stream. */
-fin seekSet = 0
+inline fin seekSet = 0
 
 /**
  * Every printable ASCII character, indexed by `code - 32`.
@@ -111,16 +110,12 @@ fin asciiPrintable =
  * enormous line. Carriage returns are dropped so CRLF files behave like LF.
  */
 func asciiChar(code: Int): String {
-    if code == 10 {
-        return "\n"
+    return when {
+        code == 10 -> "\n"
+        code == 9 -> "\t"
+        code < 32 || code > 126 -> ""
+        else -> strSlice(asciiPrintable, code - 32, code - 31)
     }
-    if code == 9 {
-        return "\t"
-    }
-    if code < 32 || code > 126 {
-        return ""
-    }
-    return strSlice(asciiPrintable, code - 32, code - 31)
 }
 
 /**
@@ -137,9 +132,7 @@ pack Blob {
 
 /** An empty blob, used for every failure path. */
 @Experimental(since: "0.1")
-func blobEmpty(): Blob {
-    return Blob(Long(0), 0)
-}
+func blobEmpty(): Blob = .(0, 0)
 
 /**
  * Reads the whole file at [path] into memory.
@@ -151,21 +144,19 @@ func blobEmpty(): Blob {
 @Experimental(since: "0.1")
 func readFile(path: String): Blob {
     fin stream = fopen(path, "rb")
-    if stream == Long(0) {
-        return blobEmpty()
-    }
+    if stream == 0 then return blobEmpty()
 
-    fseek(stream, Long(0), seekEnd)
+    fseek(stream, 0, seekEnd)
     fin length = ftell(stream)
-    fseek(stream, Long(0), seekSet)
+    fseek(stream, 0, seekSet)
 
-    if length <= Long(0) {
+    if length <= 0 {
         fclose(stream)
         return blobEmpty()
     }
 
     fin buffer = azAlloc(length)
-    if buffer == Long(0) {
+    if buffer == 0 {
         fclose(stream)
         return blobEmpty()
     }
@@ -173,11 +164,11 @@ func readFile(path: String): Blob {
     fin read = fread(buffer, Long(1), length, stream)
     fclose(stream)
 
-    if read <= Long(0) {
+    if read <= 0 {
         azFree(buffer)
         return blobEmpty()
     }
-    return Blob(buffer, read as Int)
+    return .(buffer, read as Int)
 }
 
 /**
@@ -191,9 +182,7 @@ func readFile(path: String): Blob {
 func writeTextFile(path: String, content: String): Bool {
     fin temporary = path + ".tmp"
     fin stream = fopen(temporary, "wb")
-    if stream == Long(0) {
-        return false
-    }
+    if stream == 0 then return false
     fin written = fputs(content, stream) >= 0
     fin flushed = fflush(stream) == 0
     fin closed = fclose(stream) == 0
@@ -205,13 +194,9 @@ func writeTextFile(path: String, content: String): Bool {
     // C rename replaces atomically on POSIX when both paths share a directory.
     // Removing first is a compatibility fallback for platforms that reject an
     // existing destination.
-    if rename(temporary, path) == 0 {
-        return true
-    }
+    if rename(temporary, path) == 0 then return true
     remove(path)
-    if rename(temporary, path) == 0 {
-        return true
-    }
+    if rename(temporary, path) == 0 then return true
     remove(temporary)
     return false
 }
@@ -219,17 +204,10 @@ func writeTextFile(path: String, content: String): Bool {
 impl Blob {
 
     /** Whether the blob holds any bytes. */
-    func &.ok(): Bool {
-        return self.data != Long(0) && self.size > 0
-    }
+    func &.ok(): Bool = self.data != 0 && self.size > 0
 
     /** Whether [count] bytes can be read starting at [offset]. */
-    func &.has(offset: Int, count: Int): Bool {
-        if offset < 0 || count < 0 {
-            return false
-        }
-        return offset + count <= self.size
-    }
+    func &.has(offset: Int, count: Int): Bool = if offset < 0 || count < 0 then false else offset + count <= self.size
 
     /**
      * The unsigned byte at [offset], or zero when out of range.
@@ -238,37 +216,24 @@ impl Blob {
      * negative; masking folds it back into 0..255. The cast is parenthesized
      * because `x as Long & m` would parse `Long &` as a borrowed type.
      */
-    func &.u8(offset: Int): Int {
-        if !self.has(offset, 1) {
-            return 0
-        }
-        return azPeek8(self.data, (offset as Long)) & 0xFF
-    }
+    func &.u8(offset: Int): Int = if !self.has(offset, 1) then 0 else azPeek8(self.data, (offset as Long)) & 0xFF
 
     /** The signed byte at [offset]. */
     func &.i8(offset: Int): Int {
         fin value = self.u8(offset)
-        if value > 127 {
-            return value - 256
-        }
-        return value
+        return if value > 127 then value - 256 else value
     }
 
     /**
      * The little-endian unsigned 16-bit value at [offset].
      *
      */
-    func &.u16(offset: Int): Int {
-        return self.u8(offset) | (self.u8(offset + 1) << 8)
-    }
+    func &.u16(offset: Int): Int = self.u8(offset) | (self.u8(offset + 1) << 8)
 
     /** The little-endian signed 16-bit value at [offset]. */
     func &.i16(offset: Int): Int {
         fin value = self.u16(offset)
-        if value > 32767 {
-            return value - 65536
-        }
-        return value
+        return if value > 32767 then value - 65536 else value
     }
 
     /**
@@ -293,12 +258,7 @@ impl Blob {
      * Read through the runtime rather than reassembled from bytes, because the
      * bit layout of a double is not something to hand-roll.
      */
-    func &.f64(offset: Int): Double {
-        if !self.has(offset, 8) {
-            return 0.0
-        }
-        return azPeekF64(self.data, offset as Long)
-    }
+    func &.f64(offset: Int): Double = if !self.has(offset, 8) then 0.0 else azPeekF64(self.data, offset as Long)
 
     /**
      * A fixed-width string of [length] bytes at [offset], stopping at the first
@@ -306,14 +266,10 @@ impl Blob {
      */
     func &.text(offset: Int, length: Int): String {
         var result = ""
-        var i = 0
-        while i < length {
+        for i: Int in 0..<length {
             fin code = self.u8(offset + i)
-            if code == 0 {
-                return result
-            }
-            result = result + asciiChar(code)
-            i = i + 1
+            if code == 0 then return result
+            result += asciiChar(code)
         }
         return result
     }
@@ -321,18 +277,13 @@ impl Blob {
     /** Whether the bytes at [offset] equal the ASCII [expected]. */
     func &.matches(offset: Int, expected: String): Bool {
         fin length = strLength(expected)
-        if !self.has(offset, length) {
-            return false
-        }
-        return self.text(offset, length) == expected
+        return if !self.has(offset, length) then false else self.text(offset, length) == expected
     }
 
     /** Releases the blob's memory. Safe to call on an empty blob. */
     func !.release() {
-        if self.data != Long(0) {
-            azFree(self.data)
-        }
-        self.data = Long(0)
+        if self.data != 0 then azFree(self.data)
+        self.data = 0
         self.size = 0
     }
 }

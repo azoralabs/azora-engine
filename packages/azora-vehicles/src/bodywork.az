@@ -7,22 +7,22 @@ import engine.ecs
 import engine.math
 import engine.render.geometry
 
-fin gtPaint = "azora.gt.body"
-fin gtGlass = "azora.gt.glass"
-fin gtCarbon = "azora.gt.carbon"
-fin gtStripe = "azora.gt.stripe"
-fin gtFrontLED = "azora.gt.front"
-fin gtRearLED = "azora.gt.rear"
-fin bikePaint = "azora.superbike.body"
-fin bikeGlass = "azora.superbike.glass"
-fin bikeCarbon = "azora.superbike.carbon"
-fin bikeStripe = "azora.superbike.stripe"
-fin bikeFrontLED = "azora.superbike.front"
-fin bikeRearLED = "azora.superbike.rear"
-fin wheelRubber = "azora.vehicle.tire"
-fin wheelAlloy = "azora.vehicle.alloy"
-fin wheelHubs = "azora.vehicle.hubs"
-fin riderShape = "azora.vehicle.rider"
+inline fin gtPaint = "azora.gt.body"
+inline fin gtGlass = "azora.gt.glass"
+inline fin gtCarbon = "azora.gt.carbon"
+inline fin gtStripe = "azora.gt.stripe"
+inline fin gtFrontLED = "azora.gt.front"
+inline fin gtRearLED = "azora.gt.rear"
+inline fin bikePaint = "azora.superbike.body"
+inline fin bikeGlass = "azora.superbike.glass"
+inline fin bikeCarbon = "azora.superbike.carbon"
+inline fin bikeStripe = "azora.superbike.stripe"
+inline fin bikeFrontLED = "azora.superbike.front"
+inline fin bikeRearLED = "azora.superbike.rear"
+inline fin wheelRubber = "azora.vehicle.tire"
+inline fin wheelAlloy = "azora.vehicle.alloy"
+inline fin wheelHubs = "azora.vehicle.hubs"
+inline fin riderShape = "azora.vehicle.rider"
 
 /** Cross sections of a hull perpendicular to its longitudinal Z axis. */
 pack BodySection derives Clone {
@@ -40,8 +40,7 @@ func bodyCross(a: Vec3&, b: Vec3&): Vec3 = Vec3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
 
 func bodyUnit(n: Vec3&): Vec3 {
     fin length = sqrt(n.x*n.x+n.y*n.y+n.z*n.z)
-    if length <= 0.000001 then return Vec3(0.0,1.0,0.0)
-    return Vec3(n.x/length,n.y/length,n.z/length)
+    return if length <= 0.000001 then Vec3(0.0,1.0,0.0) else .(n.x/length,n.y/length,n.z/length)
 }
 
 func bodyVertex(data: Array<Double>!, p: Vec3&, n: Vec3&) {
@@ -66,14 +65,14 @@ func bodyQuad(data: Array<Double>!, a: Vec3&, b: Vec3&, c: Vec3&, d: Vec3&) {
 }
 
 func bodyBox(data: Array<Double>!, x: Double, y: Double, z: Double, dx: Double, dy: Double, dz: Double) {
-    fin a = Vec3(x-dx,y-dy,z-dz)
-    fin b = Vec3(x+dx,y-dy,z-dz)
-    fin c = Vec3(x+dx,y+dy,z-dz)
-    fin d = Vec3(x-dx,y+dy,z-dz)
-    fin e = Vec3(x-dx,y-dy,z+dz)
-    fin f = Vec3(x+dx,y-dy,z+dz)
-    fin g = Vec3(x+dx,y+dy,z+dz)
-    fin h = Vec3(x-dx,y+dy,z+dz)
+    fin a: Vec3 = .(x-dx,y-dy,z-dz)
+    fin b: Vec3 = .(x+dx,y-dy,z-dz)
+    fin c: Vec3 = .(x+dx,y+dy,z-dz)
+    fin d: Vec3 = .(x-dx,y+dy,z-dz)
+    fin e: Vec3 = .(x-dx,y-dy,z+dz)
+    fin f: Vec3 = .(x+dx,y-dy,z+dz)
+    fin g: Vec3 = .(x+dx,y+dy,z+dz)
+    fin h: Vec3 = .(x-dx,y+dy,z+dz)
     bodyQuad(data,a,d,c,b)
     bodyQuad(data,e,f,g,h)
     bodyQuad(data,a,e,h,d)
@@ -100,7 +99,7 @@ func hullPoint(section: BodySection&, step: Int, sides: Int, cutouts: Bool): Vec
     fin low = archLower(section,absValue(x),cutouts)
     fin belt = if section.shoulder > low then section.shoulder else low
     fin height = if y >= 0.0 then bodyMix(belt,section.top,y) else bodyMix(belt,low,-y)
-    return Vec3(section.width*x,height,section.z)
+    return .(section.width*x,height,section.z)
 }
 
 func hullNormal(sections: Array<BodySection>&, row: Int, col: Int, sides: Int, cutouts: Bool): Vec3 {
@@ -131,23 +130,23 @@ func bodyHull(data: Array<Double>!, sections: Array<BodySection>&, sides: Int, c
             bodyVertex(data,a,na)
             bodyVertex(data,c,nc)
             bodyVertex(data,d,nd)
-            col += 1
+            col++
         }
-        row += 1
+        row++
     }
     fin front = sections[0].&
     fin rear = sections[sections.size-1].&
     var edge = 0
     while edge < sides {
-        bodyTriangle(data,Vec3(0.0,front.shoulder,front.z),hullPoint(front,edge+1,sides,cutouts),hullPoint(front,edge,sides,cutouts))
-        bodyTriangle(data,Vec3(0.0,rear.shoulder,rear.z),hullPoint(rear,edge,sides,cutouts),hullPoint(rear,edge+1,sides,cutouts))
-        edge += 1
+        bodyTriangle(data,.(0.0,front.shoulder,front.z),hullPoint(front,edge+1,sides,cutouts),hullPoint(front,edge,sides,cutouts))
+        bodyTriangle(data,.(0.0,rear.shoulder,rear.z),hullPoint(rear,edge,sides,cutouts),hullPoint(rear,edge+1,sides,cutouts))
+        edge++
     }
 }
 
 func stripePoint(section: BodySection&, x: Double): Vec3 {
     fin fraction = x/section.width
-    return Vec3(x,bodyMix(section.shoulder,section.top,sqrt(1.0-fraction*fraction))+0.008,section.z)
+    return .(x,bodyMix(section.shoulder,section.top,sqrt(1.0-fraction*fraction))+0.008,section.z)
 }
 
 func stripes(data: Array<Double>!, sections: Array<BodySection>&, width: Double, gap: Double) {
@@ -159,7 +158,7 @@ func stripes(data: Array<Double>!, sections: Array<BodySection>&, width: Double,
             bodyQuad(data,stripePoint(a,gap),stripePoint(b,gap),stripePoint(b,gap+width),stripePoint(a,gap+width))
             bodyQuad(data,stripePoint(a,-gap-width),stripePoint(b,-gap-width),stripePoint(b,-gap),stripePoint(a,-gap))
         }
-        i += 1
+        i++
     }
 }
 
@@ -215,9 +214,9 @@ func gtGeometry(world: World!) {
         bodyBox(carbon,side*0.91,-0.142,-2.01,0.11,0.085,0.075)
         bodyBox(carbon,side*0.60,-0.16,2.09,0.075,0.058,0.08)
         bodyBox(paint,side*0.82,0.48,-0.57,0.14,0.055,0.085)
-        bodyQuad(front,Vec3(side*0.49,0.046,-2.128),Vec3(side*0.79,0.09,-2.034),
+        bodyQuad(front,.(side*0.49,0.046,-2.128),.(side*0.79,0.09,-2.034),
             Vec3(side*0.87,0.18,-1.87),Vec3(side*0.67,0.115,-1.96))
-        bodyQuad(rear,Vec3(side*0.22,0.115,2.174),Vec3(side*0.83,0.143,2.119),
+        bodyQuad(rear,.(side*0.22,0.115,2.174),.(side*0.83,0.143,2.119),
             Vec3(side*0.86,0.177,2.103),Vec3(side*0.22,0.149,2.174))
         side += 2.0
     }
@@ -255,11 +254,11 @@ func bikeGeometry(world: World!) {
     stripes(trim,frontFairing,0.025,0.018)
     var side: Double = -1.0
     while side <= 1.0 {
-        bodyQuad(front,Vec3(side*0.065,0.399,-1.052),Vec3(side*0.17,0.436,-0.976),
+        bodyQuad(front,.(side*0.065,0.399,-1.052),.(side*0.17,0.436,-0.976),
             Vec3(side*0.20,0.471,-0.929),Vec3(side*0.075,0.434,-1.062))
-        bodyQuad(rear,Vec3(side*0.012,0.433,0.961),Vec3(side*0.075,0.456,0.949),
+        bodyQuad(rear,.(side*0.012,0.433,0.961),.(side*0.075,0.456,0.949),
             Vec3(side*0.079,0.48,0.945),Vec3(side*0.012,0.458,0.963))
-        bodyQuad(carbon,Vec3(side*0.15,0.24,-0.56),Vec3(side*0.37,0.23,-0.48),
+        bodyQuad(carbon,.(side*0.15,0.24,-0.56),.(side*0.37,0.23,-0.48),
             Vec3(side*0.28,0.19,-0.22),Vec3(side*0.16,0.19,-0.24))
         side += 2.0
     }
@@ -280,8 +279,7 @@ func wheelGeometry(world: World!) {
     var hubs: Array<Double> = []
     fin radius: Array<Double> = [0.31,0.392,0.468,0.50,0.50,0.468,0.392,0.31]
     fin offsets: Array<Double> = [-0.45,-0.50,-0.47,-0.29,0.29,0.47,0.50,0.45]
-    var side = 0
-    while side < 20 {
+    for side: Int in 0..<20 {
         fin a = (side as Double)*0.3141592653589793
         fin b = a+0.3141592653589793
         var p = 0
@@ -291,18 +289,16 @@ func wheelGeometry(world: World!) {
             fin e = rimPoint(radius[p+1],offsets[p+1],b)
             fin f = rimPoint(radius[p],offsets[p],b)
             bodyQuad(rubber,c,d,e,f)
-            p += 1
+            p++
         }
         var y: Double = -0.514
         while y < 0.6 {
             bodyQuad(alloy,rimPoint(0.355,y,a),rimPoint(0.355,y,b),rimPoint(0.30,y,b),rimPoint(0.30,y,a))
-            bodyTriangle(hubs,Vec3(0.0,y*0.87,0.0),rimPoint(0.238,y*0.87,a),rimPoint(0.238,y*0.87,b))
+            bodyTriangle(hubs,.(0.0,y*0.87,0.0),rimPoint(0.238,y*0.87,a),rimPoint(0.238,y*0.87,b))
             y += 1.028
         }
-        side += 1
     }
-    var spoke = 0
-    while spoke < 9 {
+    for spoke: Int in 0..<9 {
         fin angle = (spoke as Double)*0.6981317007977318
         var y: Double = -0.521
         while y < 0.6 {
@@ -310,7 +306,6 @@ func wheelGeometry(world: World!) {
                 rimPoint(0.315,y,angle+0.055),rimPoint(0.075,y,angle+0.28))
             y += 1.042
         }
-        spoke += 1
     }
     registerGeometry(world,wheelRubber,take rubber)
     registerGeometry(world,wheelAlloy,take alloy)

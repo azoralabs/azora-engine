@@ -8,9 +8,7 @@ import engine.platform
 import engine.vehicles
 import dolomites.components
 
-func axis(positive: Bool, negative: Bool): Double {
-    return (if positive then 1.0 else 0.0) - (if negative then 1.0 else 0.0)
-}
+func axis(positive: Bool, negative: Bool): Double = (if positive then 1.0 else 0.0) - (if negative then 1.0 else 0.0)
 
 @System(phase: .PreUpdate, runAfter: "menuInput")
 func readControls(frame: Game!, drivers: @query [Driver!, Vehicle&]) {
@@ -26,8 +24,8 @@ func readControls(frame: Game!, drivers: @query [Driver!, Vehicle&]) {
         if window.keyJustPressed(.G) then setHeadlights(frame.world, player, !headlightsOn(frame.world, player))
         soundHorn(frame.world, player, window.keyDown(.H))
         driver.input = DriveInput(
-            axis(window.keyDown(.W) || window.keyDown(.Up), window.keyDown(.S) || window.keyDown(.Down)),
-            axis(window.keyDown(.D) || window.keyDown(.Right), window.keyDown(.A) || window.keyDown(.Left)),
+            axis(window.keyDown(.W) || window.keyDown(.Up), window.keyDown(.S) || window.keyDown(.Down))
+            axis(window.keyDown(.D) || window.keyDown(.Right), window.keyDown(.A) || window.keyDown(.Left))
             window.keyDown(.Shift)
         )
         if window.framesRun % 30 == 1 {
@@ -45,15 +43,11 @@ func driveVehicle(world: World!, time: Time&, drivers: @query [Driver&, Course&]
 
 @System(phase: .Update)
 func interpolateVehicle(frame: Game!, drivers: @query [Driver&]) {
-    while drivers.hasNext() {
-        presentVehicle(frame.world, drivers.nextEntity(), frame.interpolation)
-    }
+    while drivers.hasNext() then presentVehicle(frame.world, drivers.nextEntity(), frame.interpolation)
 }
 
 /** Each driven vehicle's engine, tyres, wind and horn, heard from the camera; paused, they fade out. */
 @System(phase: .Audio)
 func vehicleAudio(frame: Game!, drivers: @query [Driver&]) {
-    while drivers.hasNext() {
-        mixVehicleSound(frame.audio, frame.world, drivers.nextEntity(), frame.paused)
-    }
+    while drivers.hasNext() then mixVehicleSound(frame.audio, frame.world, drivers.nextEntity(), frame.paused)
 }

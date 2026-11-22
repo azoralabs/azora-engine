@@ -80,7 +80,7 @@ func dockPanelTitle(panel: String): String {
     inline for P in reflect<*>.withAnnot<Panel> {
         if panel == reflect<P>.declName {
             fin title = reflect<P>.annotMeta<Panel>.title
-            return if stringLength(title) > 0 { title } else { panel }
+            return if stringLength(title) > 0 then title else panel
         }
     }
     return panel
@@ -89,7 +89,7 @@ func dockPanelTitle(panel: String): String {
 /** [panel]'s icon name, as its `@Panel` declares it. */
 func dockPanelIcon(panel: String): String {
     inline for P in reflect<*>.withAnnot<Panel> {
-        if panel == reflect<P>.declName { return reflect<P>.annotMeta<Panel>.icon }
+        if panel == reflect<P>.declName then return reflect<P>.annotMeta<Panel>.icon
     }
     return "panel-top"
 }
@@ -97,7 +97,7 @@ func dockPanelIcon(panel: String): String {
 /** Whether [panel] may be closed. */
 func dockPanelClosable(panel: String): Bool {
     inline for P in reflect<*>.withAnnot<Panel> {
-        if panel == reflect<P>.declName { return reflect<P>.annotMeta<Panel>.closable }
+        if panel == reflect<P>.declName then return reflect<P>.annotMeta<Panel>.closable
     }
     return true
 }
@@ -105,7 +105,7 @@ func dockPanelClosable(panel: String): Bool {
 /** Whether a `@Panel` named [panel] is declared at all. */
 func dockPanelExists(panel: String): Bool {
     inline for P in reflect<*>.withAnnot<Panel> {
-        if panel == reflect<P>.declName { return true }
+        if panel == reflect<P>.declName then return true
     }
     return false
 }
@@ -115,7 +115,7 @@ func dockPanelExists(panel: String): Bool {
 /** Where a dock entity hangs: its parent, and its place among the siblings. */
 @Component
 pack DockNode derives Clone {
-    var parent: Entity = Entity::invalid
+    var parent: Entity = ::invalid
     var slot: Int = 0
 }
 
@@ -163,16 +163,16 @@ enum DockZone {
 
 /** What the view tracks between frames; [revision] moves whenever the layout does. */
 pack DockState {
-    var revision: Long = Long(1)
-    var splitting: Entity = Entity::invalid
-    var splitContainer: Entity = Entity::invalid
-    var pressedTab: Entity = Entity::invalid
+    var revision: Long = 1
+    var splitting: Entity = ::invalid
+    var splitContainer: Entity = ::invalid
+    var pressedTab: Entity = ::invalid
     var dragging: Bool = false
     var pressX: Double = 0.0
     var pressY: Double = 0.0
     var pointerX: Double = 0.0
     var pointerY: Double = 0.0
-    var dropTarget: Entity = Entity::invalid
+    var dropTarget: Entity = ::invalid
     var dropZone: DockZone = .None
     var dropX: Double = 0.0
     var dropY: Double = 0.0
@@ -180,67 +180,65 @@ pack DockState {
     var dropHeight: Double = 0.0
     var dropSlot: Int = -1
     /** The floating window whose corner is being dragged. */
-    var resizing: Entity = Entity::invalid
+    var resizing: Entity = ::invalid
 }
 
 impl DockState {
-    func !.changed() { self.revision = self.revision + Long(1) }
+    func !.changed() { self.revision = self.revision + 1 }
 }
 
 // ── Tree reading ────────────────────────────────────────────────────────
 
-func dockSame(a: Entity, b: Entity): Bool {
-    return a.id == b.id && a.generation == b.generation
-}
+func dockSame(a: Entity, b: Entity): Bool = a.id == b.id && a.generation == b.generation
 
 /** [node]'s children, in slot order. */
 func dockChildren(world: World!, node: Entity): Array<Entity> {
-    var found: Array<Entity> = Array<Entity>()
-    var slots: Array<Int> = Array<Int>()
+    var found: Array<Entity> = []
+    var slots: Array<Int> = []
     var index = 0
-    while index < storageLength<DockNode>(ensureStorage<DockNode>(world)) {
-        fin entity = storageEntityAt<DockNode>(ensureStorage<DockNode>(world), index)
-        fin link = storageValueAt<DockNode>(ensureStorage<DockNode>(world), index).clone()
+    while index < storageLength<DockNode>(ensureStorage(world)) {
+        fin entity = storageEntityAt<DockNode>(ensureStorage(world), index)
+        fin link = storageValueAt<DockNode>(ensureStorage(world), index).clone()
         if world.isAlive(entity) && dockSame(link.parent, node) {
             var at = found.size
-            while at > 0 && slots[at - 1] > link.slot { at = at - 1 }
+            while at > 0 && slots[at - 1] > link.slot then at = at - 1
             found.insert(at, entity)
             slots.insert(at, link.slot)
         }
-        index = index + 1
+        index++
     }
     return found
 }
 
 func dockParent(world: World!, node: Entity): Entity {
-    return storageGetOrDefault<DockNode>(ensureStorage<DockNode>(world), node, DockNode()).parent
+    return storageGetOrDefault<DockNode>(ensureStorage(world), node, .()).parent
 }
 
-func dockIsSplit(world: World!, node: Entity): Bool { return storageHas<DockSplit>(ensureStorage<DockSplit>(world), node) }
-func dockIsTabs(world: World!, node: Entity): Bool { return storageHas<DockTabs>(ensureStorage<DockTabs>(world), node) }
-func dockIsRoot(world: World!, node: Entity): Bool { return storageHas<DockRoot>(ensureStorage<DockRoot>(world), node) }
+func dockIsSplit(world: World!, node: Entity): Bool = storageHas<DockSplit>(ensureStorage(world), node)
+func dockIsTabs(world: World!, node: Entity): Bool = storageHas<DockTabs>(ensureStorage(world), node)
+func dockIsRoot(world: World!, node: Entity): Bool = storageHas<DockRoot>(ensureStorage(world), node)
 
 /** Every window root, the main one (not floating) first. */
 func dockRoots(world: World!): Array<Entity> {
-    var roots: Array<Entity> = Array<Entity>()
+    var roots: Array<Entity> = []
     var index = 0
-    while index < storageLength<DockRoot>(ensureStorage<DockRoot>(world)) {
-        fin entity = storageEntityAt<DockRoot>(ensureStorage<DockRoot>(world), index)
+    while index < storageLength<DockRoot>(ensureStorage(world)) {
+        fin entity = storageEntityAt<DockRoot>(ensureStorage(world), index)
         if world.isAlive(entity) {
-            fin data = storageValueAt<DockRoot>(ensureStorage<DockRoot>(world), index).clone()
+            fin data = storageValueAt<DockRoot>(ensureStorage(world), index).clone()
             if data.floating {
                 var at = roots.size
                 while at > 0 {
-                    fin previous = storageGet<DockRoot>(ensureStorage<DockRoot>(world), roots[at - 1])
+                    fin previous = storageGet<DockRoot>(ensureStorage(world), roots[at - 1])
                     if !previous.floating || previous.z <= data.z then break
-                    at = at - 1
+                    at--
                 }
                 roots.insert(at, entity)
             } else {
                 roots.insert(0, entity)
             }
         }
-        index = index + 1
+        index++
     }
     return roots
 }
@@ -249,27 +247,27 @@ func dockRoots(world: World!): Array<Entity> {
 func dockRaise(world: World!, root: Entity): Bool {
     fin roots = dockRoots(world)
     if roots.size == 0 || dockSame(roots[roots.size - 1], root) then return false
-    var current = storageGet<DockRoot>(ensureStorage<DockRoot>(world), root).clone()
-    current.z = storageGet<DockRoot>(ensureStorage<DockRoot>(world), roots[roots.size - 1]).z + 1
-    storageInsert<DockRoot>(ensureStorage<DockRoot>(world), root, take current)
+    var current = storageGet<DockRoot>(ensureStorage(world), root).clone()
+    current.z = storageGet<DockRoot>(ensureStorage(world), roots[roots.size - 1]).z + 1
+    storageInsert<DockRoot>(ensureStorage(world), root, take current)
     return true
 }
 
 /** The tab showing [panel], or an invalid entity when it is not in the layout. */
 func dockFindPanel(world: World!, panel: String): Entity {
     var index = 0
-    while index < storageLength<DockTab>(ensureStorage<DockTab>(world)) {
-        fin entity = storageEntityAt<DockTab>(ensureStorage<DockTab>(world), index)
-        if world.isAlive(entity) && storageValueAt<DockTab>(ensureStorage<DockTab>(world), index).panel == panel { return entity }
-        index = index + 1
+    while index < storageLength<DockTab>(ensureStorage(world)) {
+        fin entity = storageEntityAt<DockTab>(ensureStorage(world), index)
+        if world.isAlive(entity) && storageValueAt<DockTab>(ensureStorage(world), index).panel == panel then return entity
+        index++
     }
-    return Entity::invalid
+    return ::invalid
 }
 
 // ── Tree writing ────────────────────────────────────────────────────────
 
 func dockAttach(world: World!, node: Entity, parent: Entity, slot: Int) {
-    storageInsert<DockNode>(ensureStorage<DockNode>(world), node, DockNode(parent, slot))
+    storageInsert<DockNode>(ensureStorage(world), node, .(parent, slot))
 }
 
 /** Gives [parent]'s children slots 0, 1, 2… in their current order. */
@@ -278,45 +276,45 @@ func dockRenumber(world: World!, parent: Entity) {
     var index = 0
     while index < children.size {
         dockAttach(world, children[index], parent, index)
-        index = index + 1
+        index++
     }
 }
 
 func dockNewSplit(world: World!, vertical: Bool, ratio: Double): Entity {
     fin node = world.spawn()
-    storageInsert<DockSplit>(ensureStorage<DockSplit>(world), node, DockSplit(vertical, ratio))
-    dockAttach(world, node, Entity::invalid, 0)
+    storageInsert<DockSplit>(ensureStorage(world), node, .(vertical, ratio))
+    dockAttach(world, node, ::invalid, 0)
     return node
 }
 
 func dockNewTabs(world: World!): Entity {
     fin node = world.spawn()
-    storageInsert<DockTabs>(ensureStorage<DockTabs>(world), node, DockTabs())
-    dockAttach(world, node, Entity::invalid, 0)
+    storageInsert<DockTabs>(ensureStorage(world), node, .())
+    dockAttach(world, node, ::invalid, 0)
     return node
 }
 
 /** Adds [panel] to [tabs] at [at] (the end when negative) and shows it. */
 func dockAddTab(world: World!, tabs: Entity, panel: String, at: Int = -1, title: String = ""): Entity {
     fin tab = world.spawn()
-    storageInsert<DockTab>(ensureStorage<DockTab>(world), tab, DockTab(panel, title))
+    storageInsert<DockTab>(ensureStorage(world), tab, DockTab(panel, title))
     fin count = dockChildren(world, tabs).size
-    fin slot = if at < 0 || at > count { count } else { at }
+    fin slot = if at < 0 || at > count then count else at
     // Make room: everything from [slot] on moves one place along.
     fin siblings = dockChildren(world, tabs)
     var index = siblings.size - 1
     while index >= slot {
         dockAttach(world, siblings[index], tabs, index + 1)
-        index = index - 1
+        index--
     }
     dockAttach(world, tab, tabs, slot)
-    storageInsert<DockTabs>(ensureStorage<DockTabs>(world), tabs, DockTabs(slot))
+    storageInsert<DockTabs>(ensureStorage(world), tabs, .(slot))
     return tab
 }
 
 /** Puts [node] where [old] was, in [old]'s parent. */
 func dockReplace(world: World!, old: Entity, node: Entity) {
-    fin link = storageGetOrDefault<DockNode>(ensureStorage<DockNode>(world), old, DockNode())
+    fin link = storageGetOrDefault<DockNode>(ensureStorage(world), old, .())
     dockAttach(world, node, link.parent, link.slot)
 }
 
@@ -328,41 +326,39 @@ func dockReplace(world: World!, old: Entity, node: Entity) {
 func dockCollapse(world: World!, tabs: Entity) {
     fin parent = dockParent(world, tabs)
     world.despawn(tabs)
-    if !world.isAlive(parent) { return }
+    if !world.isAlive(parent) then return
     if dockIsSplit(world, parent) {
         fin remaining = dockChildren(world, parent)
-        if remaining.size == 1 { dockReplace(world, parent, remaining[0]) }
+        if remaining.size == 1 then dockReplace(world, parent, remaining[0])
         world.despawn(parent)
     } else if dockIsRoot(world, parent) {
-        if storageGetOrDefault<DockRoot>(ensureStorage<DockRoot>(world), parent, DockRoot()).floating {
-            world.despawn(parent)
-        }
+        if storageGetOrDefault<DockRoot>(ensureStorage(world), parent, .()).floating then world.despawn(parent)
     }
 }
 
 /** Takes [tab] out of its group, collapsing the group when it was the last tab. */
 func dockDetach(world: World!, tab: Entity) {
     fin tabs = dockParent(world, tab)
-    fin slot = storageGetOrDefault<DockNode>(ensureStorage<DockNode>(world), tab, DockNode()).slot
-    dockAttach(world, tab, Entity::invalid, 0)
-    if !world.isAlive(tabs) { return }
+    fin slot = storageGetOrDefault<DockNode>(ensureStorage(world), tab, .()).slot
+    dockAttach(world, tab, ::invalid, 0)
+    if !world.isAlive(tabs) then return
     fin left = dockChildren(world, tabs)
     if left.size == 0 {
         dockCollapse(world, tabs)
         return
     }
     dockRenumber(world, tabs)
-    var active = storageGetOrDefault<DockTabs>(ensureStorage<DockTabs>(world), tabs, DockTabs()).active
+    var active = storageGetOrDefault<DockTabs>(ensureStorage(world), tabs, .()).active
     if slot < active then active = active - 1
-    if active >= left.size { active = left.size - 1 }
-    storageInsert<DockTabs>(ensureStorage<DockTabs>(world), tabs, DockTabs(active))
+    if active >= left.size then active = left.size - 1
+    storageInsert<DockTabs>(ensureStorage(world), tabs, .(active))
 }
 
 /** Shows [tab] in its group. */
 func dockActivate(world: World!, tab: Entity) {
     fin tabs = dockParent(world, tab)
-    fin slot = storageGetOrDefault<DockNode>(ensureStorage<DockNode>(world), tab, DockNode()).slot
-    storageInsert<DockTabs>(ensureStorage<DockTabs>(world), tabs, DockTabs(slot))
+    fin slot = storageGetOrDefault<DockNode>(ensureStorage(world), tab, .()).slot
+    storageInsert<DockTabs>(ensureStorage(world), tabs, .(slot))
 }
 
 /** Closes [tab]. */
@@ -376,32 +372,32 @@ func dockClose(world: World!, tab: Entity) {
  * otherwise into a new group split off the side [zone] names.
  */
 func dockMove(world: World!, tab: Entity, target: Entity, zone: DockZone, slot: Int = -1) {
-    fin data = storageGetOrDefault<DockTab>(ensureStorage<DockTab>(world), tab, DockTab())
+    fin data = storageGetOrDefault<DockTab>(ensureStorage(world), tab, DockTab())
     fin same = dockSame(dockParent(world, tab), target)
     var insertAt = slot
-    if same && zone == DockZone.Center {
-        fin old = storageGet<DockNode>(ensureStorage<DockNode>(world), tab).slot
+    if same && zone == .Center {
+        fin old = storageGet<DockNode>(ensureStorage(world), tab).slot
         if slot < 0 || slot == old || slot == old + 1 then return
         if slot > old then insertAt = slot - 1
     }
     // Detaching may collapse the source group; when that group is also the
     // target (a tab split off its own group), there is nothing left to split.
     fin sourceCount = dockChildren(world, dockParent(world, tab)).size
-    if same && sourceCount == 1 { return }
+    if same && sourceCount == 1 then return
     dockClose(world, tab)
-    if !world.isAlive(target) { return }
+    if !world.isAlive(target) then return
     when zone {
-        DockZone.Center -> { dockAddTab(world, target, data.panel, insertAt, data.title) }
-        DockZone.None -> { dockAddTab(world, target, data.panel, insertAt, data.title) }
+        .Center -> { dockAddTab(world, target, data.panel, insertAt, data.title) }
+        .None -> { dockAddTab(world, target, data.panel, insertAt, data.title) }
         else -> {
-            fin vertical = zone == DockZone.Top || zone == DockZone.Bottom
-            fin first = zone == DockZone.Left || zone == DockZone.Top
+            fin vertical = zone == .Top || zone == .Bottom
+            fin first = zone == .Left || zone == .Top
             fin split = dockNewSplit(world, vertical, 0.5)
             dockReplace(world, target, split)
             fin fresh = dockNewTabs(world)
             dockAddTab(world, fresh, data.panel, title: data.title)
-            dockAttach(world, fresh, split, if first { 0 } else { 1 })
-            dockAttach(world, target, split, if first { 1 } else { 0 })
+            dockAttach(world, fresh, split, if first then 0 else 1)
+            dockAttach(world, target, split, if first then 1 else 0)
         }
     }
 }
@@ -409,10 +405,10 @@ func dockMove(world: World!, tab: Entity, target: Entity, zone: DockZone, slot: 
 /** A new floating window holding [panel] alone, at the given bounds. */
 func dockFloat(world: World!, panel: String, x: Double, y: Double, width: Double, height: Double, title: String = ""): Entity {
     fin roots = dockRoots(world)
-    fin z = if roots.size == 0 then 0 else storageGet<DockRoot>(ensureStorage<DockRoot>(world), roots[roots.size - 1]).z + 1
+    fin z = if roots.size == 0 then 0 else storageGet<DockRoot>(ensureStorage(world), roots[roots.size - 1]).z + 1
     fin root = world.spawn()
-    storageInsert<DockRoot>(ensureStorage<DockRoot>(world), root, DockRoot(true, x, y, width, height, z))
-    dockAttach(world, root, Entity::invalid, 0)
+    storageInsert<DockRoot>(ensureStorage(world), root, .(true, x, y, width, height, z))
+    dockAttach(world, root, ::invalid, 0)
     fin tabs = dockNewTabs(world)
     dockAddTab(world, tabs, panel, title: title)
     dockAttach(world, tabs, root, 0)
@@ -431,16 +427,16 @@ pack DockSeed derives Clone {
 
 func dockAreaIndex(area: DockArea): Int {
     return when area {
-        DockArea.Left -> 0
-        DockArea.Right -> 1
-        DockArea.Bottom -> 2
+        .Left -> 0
+        .Right -> 1
+        .Bottom -> 2
         else -> 3
     }
 }
 
 /** Every declared panel, sorted by area, stack and order. */
 func dockSeeds(): Array<DockSeed> {
-    var seeds: Array<DockSeed> = Array<DockSeed>()
+    var seeds: Array<DockSeed> = []
     inline for P in reflect<*>.withAnnot<Panel> {
         if reflect<P>.annotMeta<Panel>.initiallyOpen {
             fin seed = DockSeed(reflect<P>.declName, dockAreaIndex(reflect<P>.annotMeta<Panel>.area),
@@ -449,7 +445,7 @@ func dockSeeds(): Array<DockSeed> {
             while at > 0 && (seeds[at - 1].area > seed.area ||
                 (seeds[at - 1].area == seed.area && (seeds[at - 1].stack > seed.stack ||
                     (seeds[at - 1].stack == seed.stack && seeds[at - 1].order > seed.order)))) {
-                at = at - 1
+                at--
             }
             seeds.insert(at, seed)
         }
@@ -474,17 +470,17 @@ func dockAreaTree(world: World!, seeds: Array<DockSeed>&, area: Int): Entity {
                 else {
                     // The upper groups keep their share; the new one takes an equal slice.
                     var ratio: Double = 0.45
-                    if groups > 1 { ratio = 1.0 - 1.0 / ((groups + 1) as Double) }
+                    if groups > 1 then ratio = 1.0 - 1.0 / ((groups + 1) as Double)
                     fin split = dockNewSplit(world, true, ratio)
                     dockAttach(world, top, split, 0)
                     dockAttach(world, group, split, 1)
                     top = split
                 }
-                groups = groups + 1
+                groups++
             }
             dockAddTab(world, group, seeds[index].panel)
         }
-        index = index + 1
+        index++
     }
     // Every group opens on its first tab.
     return top
@@ -492,8 +488,8 @@ func dockAreaTree(world: World!, seeds: Array<DockSeed>&, area: Int): Entity {
 
 /** Joins [a] and [b] in a split, or answers whichever one exists. */
 func dockJoin(world: World!, a: Entity, b: Entity, vertical: Bool, ratio: Double): Entity {
-    if !world.isAlive(a) { return b }
-    if !world.isAlive(b) { return a }
+    if !world.isAlive(a) then return b
+    if !world.isAlive(b) then return a
     fin split = dockNewSplit(world, vertical, ratio)
     dockAttach(world, a, split, 0)
     dockAttach(world, b, split, 1)
@@ -503,14 +499,14 @@ func dockJoin(world: World!, a: Entity, b: Entity, vertical: Bool, ratio: Double
 /** Shows the first tab of every group under [node]. */
 func dockShowFirst(world: World!, node: Entity) {
     if dockIsTabs(world, node) {
-        storageInsert<DockTabs>(ensureStorage<DockTabs>(world), node, DockTabs(0))
+        storageInsert<DockTabs>(ensureStorage(world), node, .(0))
         return
     }
     fin children = dockChildren(world, node)
     var index = 0
     while index < children.size {
         dockShowFirst(world, children[index])
-        index = index + 1
+        index++
     }
 }
 
@@ -528,8 +524,8 @@ func dockDefaultLayout(world: World!): Entity {
     fin withRight = dockJoin(world, middle, right, false, 0.76)
     fin top = dockJoin(world, left, withRight, false, 0.2)
     fin root = world.spawn()
-    storageInsert<DockRoot>(ensureStorage<DockRoot>(world), root, DockRoot())
-    dockAttach(world, root, Entity::invalid, 0)
+    storageInsert<DockRoot>(ensureStorage(world), root, .())
+    dockAttach(world, root, ::invalid, 0)
     if world.isAlive(top) {
         dockAttach(world, top, root, 0)
         dockShowFirst(world, top)
@@ -540,7 +536,7 @@ func dockDefaultLayout(world: World!): Entity {
 /** Adds every declared panel the layout lacks to the main window's largest group. */
 func dockEnsurePanels(world: World!, addOptional: Bool = true) {
     fin roots = dockRoots(world)
-    if roots.size == 0 { return }
+    if roots.size == 0 then return
     inline for P in reflect<*>.withAnnot<Panel> {
         if ((addOptional && reflect<P>.annotMeta<Panel>.initiallyOpen) || !reflect<P>.annotMeta<Panel>.closable) && !world.isAlive(dockFindPanel(world, reflect<P>.declName)) {
             var group = dockFirstGroup(world, roots[0])
@@ -555,49 +551,43 @@ func dockEnsurePanels(world: World!, addOptional: Bool = true) {
 
 /** The first tab group under [node], depth first. */
 func dockFirstGroup(world: World!, node: Entity): Entity {
-    if dockIsTabs(world, node) { return node }
+    if dockIsTabs(world, node) then return node
     fin children = dockChildren(world, node)
     var index = 0
     while index < children.size {
         fin found = dockFirstGroup(world, children[index])
-        if world.isAlive(found) { return found }
-        index = index + 1
+        if world.isAlive(found) then return found
+        index++
     }
-    return Entity::invalid
+    return ::invalid
 }
 
 // ── Saving ──────────────────────────────────────────────────────────────
 
-func dockQuote(text: String): String {
-    return "\"${text}\""
-}
+func dockQuote(text: String): String = "\"${text}\""
 
-func dockNumber(value: Double): String {
-    return formatDecimal(value, 4)
-}
+func dockNumber(value: Double): String = formatDecimal(value, 4)
 
 /** [node]'s subtree as AZON. */
 func dockNodeAzon(world: World!, node: Entity): String {
     if dockIsTabs(world, node) {
-        fin tabs = storageGetOrDefault<DockTabs>(ensureStorage<DockTabs>(world), node, DockTabs())
+        fin tabs = storageGetOrDefault<DockTabs>(ensureStorage(world), node, .())
         var panels = ""
         fin children = dockChildren(world, node)
-        var index = 0
-        while index < children.size {
-            fin panel = dockQuote(storageGetOrDefault<DockTab>(ensureStorage<DockTab>(world), children[index], DockTab()).panel)
-            panels = if index == 0 { panel } else { "${panels}, ${panel}" }
-            index = index + 1
+        for i: Int in 0..<children.size {
+            fin panel = dockQuote(storageGetOrDefault<DockTab>(ensureStorage(world), children[i], DockTab()).panel)
+            panels = if i == 0 then panel else { "${panels}, ${panel}" }
         }
         return "{\"tabs\": [${panels}], \"active\": ${tabs.active}}"
     }
-    fin split = storageGetOrDefault<DockSplit>(ensureStorage<DockSplit>(world), node, DockSplit())
+    fin split = storageGetOrDefault<DockSplit>(ensureStorage(world), node, .())
     var parts = ""
     fin children = dockChildren(world, node)
     var index = 0
     while index < children.size {
         fin part = dockNodeAzon(world, children[index])
-        parts = if index == 0 { part } else { "${parts}, ${part}" }
-        index = index + 1
+        parts = if index == 0 then part else { "${parts}, ${part}" }
+        index++
     }
     return "{\"split\": \"${if split.vertical { "vertical" } else { "horizontal" }}\", \"ratio\": ${dockNumber(split.ratio)}, \"children\": [${parts}]}"
 }
@@ -608,12 +598,12 @@ func writeDockLayout(world: World!): String {
     fin roots = dockRoots(world)
     var index = 0
     while index < roots.size {
-        fin root = storageGetOrDefault<DockRoot>(ensureStorage<DockRoot>(world), roots[index], DockRoot())
+        fin root = storageGetOrDefault<DockRoot>(ensureStorage(world), roots[index], .())
         fin children = dockChildren(world, roots[index])
-        fin tree = if children.size > 0 { dockNodeAzon(world, children[0]) } else { "null" }
+        fin tree = if children.size > 0 then dockNodeAzon(world, children[0]) else "null"
         fin window = "{\"floating\": ${if root.floating { "true" } else { "false" }}, \"x\": ${dockNumber(root.x)}, \"y\": ${dockNumber(root.y)}, \"width\": ${dockNumber(root.width)}, \"height\": ${dockNumber(root.height)}, \"node\": ${tree}}"
-        windows = if index == 0 { window } else { "${windows},\n    ${window}" }
-        index = index + 1
+        windows = if index == 0 then window else { "${windows},\n    ${window}" }
+        index++
     }
     return "{\"format\": \"azora-dock\", \"version\": 1, \"windows\": [\n    ${windows}\n]}\n"
 }
@@ -621,36 +611,33 @@ func writeDockLayout(world: World!): String {
 // ── Loading ─────────────────────────────────────────────────────────────
 
 func dockMember(fields: List<SerialField>&, name: String): Int {
-    var index = 0
-    while index < fields.size {
-        if fields[index].name == name { return index }
-        index = index + 1
+    for i: Int in 0..<fields.size {
+        if fields[i].name == name then return i
     }
     return -1
 }
 
 func dockReal(fields: List<SerialField>&, name: String, fallback: Double): Double {
     fin at = dockMember(fields, name)
-    if at < 0 { return fallback }
-    return serialAsReal(fields[at].value) catch fallback
+    return if at < 0 then fallback else serialAsReal(fields[at].value) catch fallback
 }
 
 /** Builds [value]'s subtree; invalid when nothing in it names a declared panel. */
 func dockReadNode(world: World!, value: SerialValue&, dynamicPrefix: String): Entity {
     when value {
-        SerialValue.Object(fields) -> {
+        .Object(fields) -> {
             fin tabsAt = dockMember(fields, "tabs")
             if tabsAt >= 0 {
                 fin group = dockNewTabs(world)
                 when fields[tabsAt].value {
-                    SerialValue.Array(names) -> {
+                    .Array(names) -> {
                         var index = 0
                         while index < names.size {
                             fin panel = serialAsText(names[index]) catch ""
                             if (dockPanelExists(panel) || (dynamicPrefix != "" && startsWith(panel, dynamicPrefix))) && !world.isAlive(dockFindPanel(world, panel)) {
                                 dockAddTab(world, group, panel)
                             }
-                            index = index + 1
+                            index++
                         }
                     }
                     else -> { }
@@ -658,34 +645,34 @@ func dockReadNode(world: World!, value: SerialValue&, dynamicPrefix: String): En
                 fin count = dockChildren(world, group).size
                 if count == 0 {
                     world.despawn(group)
-                    return Entity::invalid
+                    return ::invalid
                 }
                 var active = dockReal(fields, "active", 0.0) as Int
-                if active < 0 || active >= count { active = 0 }
-                storageInsert<DockTabs>(ensureStorage<DockTabs>(world), group, DockTabs(active))
+                if active < 0 || active >= count then active = 0
+                storageInsert<DockTabs>(ensureStorage(world), group, .(active))
                 return group
             }
             fin childrenAt = dockMember(fields, "children")
-            if childrenAt < 0 { return Entity::invalid }
-            var parts: Array<Entity> = Array<Entity>()
+            if childrenAt < 0 then return Entity::invalid
+            var parts: Array<Entity> = []
             when fields[childrenAt].value {
-                SerialValue.Array(children) -> {
+                .Array(children) -> {
                     var index = 0
                     while index < children.size {
                         fin part = dockReadNode(world, children[index], dynamicPrefix)
-                        if world.isAlive(part) { parts.add(part) }
-                        index = index + 1
+                        if world.isAlive(part) then parts.add(part)
+                        index++
                     }
                 }
                 else -> { }
             }
-            if parts.size == 0 { return Entity::invalid }
-            if parts.size == 1 { return parts[0] }
+            if parts.size == 0 then return Entity::invalid
+            if parts.size == 1 then return parts[0]
             fin splitAt = dockMember(fields, "split")
             fin vertical = splitAt >= 0 && (serialAsText(fields[splitAt].value) catch "") == "vertical"
             var ratio = dockReal(fields, "ratio", 0.5)
-            if ratio < 0.05 { ratio = 0.05 }
-            if ratio > 0.95 { ratio = 0.95 }
+            if ratio < 0.05 then ratio = 0.05
+            if ratio > 0.95 then ratio = 0.95
             return dockJoin(world, parts[0], parts[1], vertical, ratio)
         }
         else -> return Entity::invalid
@@ -701,43 +688,43 @@ func dockReadNode(world: World!, value: SerialValue&, dynamicPrefix: String): En
 func readDockLayout(world: World!, text: String, dynamicPrefix: String = "", addOptional: Bool = true): Bool {
     fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
     when root {
-        SerialValue.Object(members) -> {
+        .Object(members) -> {
             fin format = dockMember(members, "format")
             fin windowsAt = dockMember(members, "windows")
-            if format < 0 || windowsAt < 0 { return false }
-            if (serialAsText(members[format].value) catch "") != "azora-dock" { return false }
+            if format < 0 || windowsAt < 0 then return false
+            if (serialAsText(members[format].value) catch "") != "azora-dock" then return false
             var main = false
             when members[windowsAt].value {
-                SerialValue.Array(windows) -> {
+                .Array(windows) -> {
                     var index = 0
                     while index < windows.size {
                         when windows[index] {
-                            SerialValue.Object(fields) -> {
+                            .Object(fields) -> {
                                 fin floatingAt = dockMember(fields, "floating")
                                 fin floating = floatingAt >= 0 && (serialAsBool(fields[floatingAt].value) catch false)
                                 fin nodeAt = dockMember(fields, "node")
-                                fin top = if nodeAt >= 0 { dockReadNode(world, fields[nodeAt].value, dynamicPrefix) } else { Entity::invalid }
+                                fin top = if nodeAt >= 0 then dockReadNode(world, fields[nodeAt].value, dynamicPrefix) else Entity::invalid
                                 if world.isAlive(top) || !floating {
                                     fin window = world.spawn()
                                     storageInsert<DockRoot>(ensureStorage<DockRoot>(world), window, DockRoot(floating,
-                                        dockReal(fields, "x", 80.0), dockReal(fields, "y", 80.0),
+                                        dockReal(fields, "x", 80.0), dockReal(fields, "y", 80.0)
                                         dockReal(fields, "width", 480.0), dockReal(fields, "height", 360.0), index))
-                                    dockAttach(world, window, Entity::invalid, 0)
-                                    if world.isAlive(top) { dockAttach(world, top, window, 0) }
-                                    if !floating { main = true }
+                                    dockAttach(world, window, ::invalid, 0)
+                                    if world.isAlive(top) then dockAttach(world, top, window, 0)
+                                    if !floating then main = true
                                 }
                             }
                             else -> { }
                         }
-                        index = index + 1
+                        index++
                     }
                 }
                 else -> return false
             }
             if !main {
                 fin window = world.spawn()
-                storageInsert<DockRoot>(ensureStorage<DockRoot>(world), window, DockRoot())
-                dockAttach(world, window, Entity::invalid, 0)
+                storageInsert<DockRoot>(ensureStorage(world), window, .())
+                dockAttach(world, window, ::invalid, 0)
             }
             dockEnsurePanels(world, addOptional)
             return true

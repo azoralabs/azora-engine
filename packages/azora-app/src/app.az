@@ -53,16 +53,16 @@ pack Engine {
 /** Creates an engine host with an empty world and schedule. */
 func engine(title: String, width: Int, height: Int): Engine {
     return Engine(
-        title,
-        width,
-        height,
-        0.06,
-        0.07,
-        0.09,
-        World(),
-        timeInit(),
-        systemPlan(),
-        Array<GameSystem>(),
+        title
+        width
+        height
+        0.06
+        0.07
+        0.09
+        World()
+        timeInit()
+        systemPlan()
+        Array<GameSystem>()
         Array<GameSystem>()
     )
 }
@@ -101,43 +101,31 @@ impl Engine {
     /** Runs a bounded frame loop for native integration and lifecycle probes. Zero runs until quit. */
     func !.runFrames(frameLimit: Int): Bool {
         var app = appInit(self.title, self.width, self.height)
-        if !app.ok {
-            return false
-        }
+        if !app.ok then return false
         app.setClearColor(self.clearR, self.clearG, self.clearB)
 
-        runPhase(self.plan, SystemPhase.Startup, self.world)
-        for system in self.startup {
-            system.run(app)
-        }
+        runPhase(self.plan, .Startup, self.world)
+        for system in self.startup then system.run(app)
 
         var frames = 0
         while (frameLimit <= 0 || frames < frameLimit) && app.frame() {
             self.time.advance(app.deltaTime())
             self.world.progress(self.time.deltaSecs)
 
-            runPhase(self.plan, SystemPhase.PreUpdate, self.world)
-            runPhase(self.plan, SystemPhase.Update, self.world)
-            for system in self.update {
-                system.run(app)
-            }
-            runPhase(self.plan, SystemPhase.PostUpdate, self.world)
+            runPhase(self.plan, .PreUpdate, self.world)
+            runPhase(self.plan, .Update, self.world)
+            for system in self.update then system.run(app)
+            runPhase(self.plan, .PostUpdate, self.world)
 
-            while self.world.consumeFixedStep() {
-                runPhase(self.plan, SystemPhase.FixedUpdate, self.world)
-            }
+            while self.world.consumeFixedStep() then runPhase(self.plan, .FixedUpdate, self.world)
 
-            runPhase(self.plan, SystemPhase.Render, self.world)
+            runPhase(self.plan, .Render, self.world)
             app.present()
-            runPhase(self.plan, SystemPhase.Last, self.world)
-            frames = frames + 1
+            runPhase(self.plan, .Last, self.world)
+            frames++
         }
-        for system in self.update {
-            system.shutdown(app)
-        }
-        for system in self.startup {
-            system.shutdown(app)
-        }
+        for system in self.update then system.shutdown(app)
+        for system in self.startup then system.shutdown(app)
         app.shutdown()
         return frameLimit <= 0 || frames == frameLimit
     }

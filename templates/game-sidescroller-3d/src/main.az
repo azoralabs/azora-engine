@@ -18,23 +18,16 @@
  * @file game-sidescroller-3d,
  *
  * Native LLVM side-scroller demonstrating the current Azora Engine:
- * data-oriented ECS storage, typed navigation, reactive HUD state, immediate,
+ * data-oriented ECS storage, a typed route, reactive HUD state, immediate
  * UI, engine physics contacts, 3D rendering, keyboard/gamepad input and audio.
  *
- * A / D or arrows   Move,
- * Space or Up       Jump,
- * Escape            Pause,
+ * A / D or arrows   Move
+ * Space or Up       Jump
+ * Escape            Pause
  */
 module game
 
-import engine.audio
-import engine.core
-import engine.ecs
-import engine.input
-import engine.physics
-import engine.platform
-import engine.render
-import engine.ui
+import engine
 
 enum GameRoute {
     Menu
@@ -83,76 +76,39 @@ pack GameSession {
     var bestScore: Int
 }
 
-fin moveSpeed: Double = 7.8
-fin moveResponse: Double = 15.0
-fin airResponse: Double = 6.5
-fin jumpSpeed: Double = 10.8
-fin GRAVITY: Double = 27.0
+inline fin moveSpeed: Double = 7.8
+inline fin moveResponse: Double = 15.0
+inline fin airResponse: Double = 6.5
+inline fin jumpSpeed: Double = 10.8
+inline fin gravity: Double = 27.0
 
-func playerHalf(): Vec3 {
-    return Vec3(0.42, 0.72, 0.38)
+func playerHalf(): Vec3 = .(0.42, 0.72, 0.38)
+
+func freshPlayer(): Player = .(vec3Zero(), false, 0.0, 0.0, 3, 0, 0.0, 1.0)
+
+func clampReal(value: Double, lo: Double, hi: Double): Double = when {
+    value < lo -> lo
+    value > hi -> hi
+    else -> value
 }
 
-func absReal(value: Double): Double {
-    if value < 0.0 {
-        return 0.0 - value
-    }
-    return value
+func approach(current: Double, target: Double, amount: Double): Double =
+    if current < target then clampReal(current + amount, current, target) else clampReal(current - amount, target, current)
+
+func addPlatform(world: World!, platforms: Storage<Platform>!, x: Double, y: Double, width: Double, depth: Double,
+                 r: Double, g: Double, b: Double) {
+    spawnWith(world, platforms, Platform(.(x, y, 0.0), .(width * 0.5, 0.35, depth * 0.5), colorRgb(r, g, b)))
 }
 
-func clampReal(value: Double, lo: Double, hi: Double): Double {
-    if value < lo { return lo }
-    if value > hi { return hi }
-    return value
+func addCoin(world: World!, coins: Storage<Coin>!, x: Double, y: Double, phase: Double) {
+    spawnWith(world, coins, Coin(.(x, y, 0.0), false, phase))
 }
 
-func approach(current: Double, target: Double, amount: Double): Double {
-    if current < target {
-        return clampReal(current + amount, current, target)
-    }
-    return clampReal(current - amount, target, current)
+func addWalker(world: World!, walkers: Storage<Walker>!, x: Double, y: Double, minX: Double, maxX: Double, speed: Double) {
+    spawnWith(world, walkers, Walker(.(x, y, 0.0), speed, minX, maxX))
 }
 
-func addPlatform(
-    world: World,
-    platforms: Storage<Platform>
-    x: Double,
-    y: Double,
-    width: Double,
-    depth: Double,
-    r: Double,
-    g: Double,
-    b: Double,
-) {
-    spawnWith<Platform>(world, platforms, Platform(
-        Vec3(x, y, 0.0),
-        Vec3(width * 0.5, 0.35, depth * 0.5),
-        colorRgb(r, g, b),
-    ))
-}
-
-func addCoin(world: World, coins: Storage<Coin>, x: Double, y: Double, phase: Double) {
-    spawnWith<Coin>(world, coins, Coin(Vec3(x, y, 0.0), false, phase))
-}
-
-func addWalker(
-    world: World,
-    walkers: Storage<Walker>
-    x: Double,
-    y: Double,
-    minX: Double,
-    maxX: Double,
-    speed: Double,
-) {
-    spawnWith<Walker>(world, walkers, Walker(Vec3(x, y, 0.0), speed, minX, maxX))
-}
-
-func buildLevel(
-    world: World,
-    platforms: Storage<Platform>
-    coins: Storage<Coin>
-    walkers: Storage<Walker>
-) {
+func buildLevel(world: World!, platforms: Storage<Platform>!, coins: Storage<Coin>!, walkers: Storage<Walker>!) {
     // Ground islands form a readable route while leaving real fall hazards.
     addPlatform(world, platforms, 0.0, -0.35, 12.0, 5.0, 0.20, 0.48, 0.31)
     addPlatform(world, platforms, 8.0, 0.35, 3.2, 4.0, 0.22, 0.52, 0.35)
@@ -189,224 +145,100 @@ func buildLevel(
     addWalker(world, walkers, 70.0, 0.9, 68.5, 74.0, 2.5)
 }
 
-func resetSession(
-    playerEntity: Entity,
-    players: Storage<Player>
-    transforms: Storage<Transform>
-    coins: Storage<Coin>
-    walkers: Storage<Walker>
-    score: ReactiveResource<Int>
-    session: GameSession,
-) {
-    fin player: Player = storageGet<Player>(players, playerEntity)
-    player.velocity = vec3Zero()
-    player.grounded = false
-    player.coyoteTime = 0.0
-    player.jumpBuffer = 0.0
-    player.health = 3
-    player.score = 0
-    player.invulnerableFor = 0.0
-    player.facing = 1.0
-
-    fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
-    transform.translation = Vec3(-3.5, 1.2, 0.0)
-    transform.rotation = vec3Zero()
-    transform.scale = Vec3(1.0, 1.0, 1.0)
-
-    var i = 1
-    while i < storageLength<Coin>(coins) {
-        if storageEntityAt<Coin>(coins, i).isValid {
-            fin coin: Coin = storageValueAt<Coin>(coins, i)
-            coin.collected = false
-        }
-        i = i + 1
+/** Puts the player back at the start with full health, every coin back, and every walker on its beat. */
+func resetSession(playerEntity: Entity, players: Storage<Player>!, transforms: Storage<Transform>!, coins: Storage<Coin>!,
+                  walkers: Storage<Walker>!, score: ReactiveResource<Int>!, session: GameSession!) {
+    storageInsert(players, playerEntity, freshPlayer())
+    storageInsert(transforms, playerEntity, Transform(translation: .(-3.5, 1.2, 0.0)))
+    for i in 1..<storageLength(coins) then coins.values[i].collected = false
+    for w in 1..<storageLength(walkers) {
+        let walker = walkers.values[w].!
+        if walker.center.x <= walker.minX || walker.center.x >= walker.maxX then walker.center.x = (walker.minX + walker.maxX) * 0.5
     }
-
-    var w = 1
-    while w < storageLength<Walker>(walkers) {
-        if storageEntityAt<Walker>(walkers, w).isValid {
-            fin walker: Walker = storageValueAt<Walker>(walkers, w)
-            if walker.center.x <= walker.minX || walker.center.x >= walker.maxX {
-                walker.center.x = (walker.minX + walker.maxX) * 0.5
-            }
-        }
-        w = w + 1
-    }
-
     score.set(0)
     session.elapsed = 0.0
     session.cameraX = -1.0
 }
 
-func readMoveInput(app: App): Double {
+func readMoveInput(app: App&): Double {
     var movement: Double = 0.0
-    if app.keyDown(.A) || app.keyDown(.Left) {
-        movement = movement - 1.0
-    }
-    if app.keyDown(.D) || app.keyDown(.Right) {
-        movement = movement + 1.0
-    }
-    if app.controllerConnected(0) {
-        fin axis = app.controllerAxis(0, .LeftX)
-        if absReal(axis) > 0.18 {
-            movement = axis
-        }
+    if app.keyDown(.A) || app.keyDown(.Left) then movement -= 1.0
+    if app.keyDown(.D) || app.keyDown(.Right) then movement += 1.0
+    if App::controllerConnected(0) {
+        fin axis = App::controllerAxis(0, .LeftX)
+        if absReal(axis) > 0.18 then movement = axis
     }
     return clampReal(movement, -1.0, 1.0)
 }
 
-func jumpPressed(app: App): Bool {
-    if app.keyPressed(.Space) || app.keyPressed(.Up) {
-        return true
-    }
-    return app.controllerConnected(0) && app.controllerButtonValue(0, .South) > 0.5
-}
+func jumpPressed(app: App&): Bool =
+    app.keyPressed(.Space) || app.keyPressed(.Up) || (App::controllerConnected(0) && App::controllerButtonValue(0, .South) > 0.5)
 
-func updateWalkers(walkers: Storage<Walker>, dt: Double) {
-    var queryIndex = 1
-    while queryIndex < storageLength<Walker>(walkers) {
-        fin entity = storageEntityAt<Walker>(walkers, queryIndex)
-        if entity.isValid {
-            fin walker: Walker = storageValueAt<Walker>(walkers, queryIndex)
-            walker.center.x = walker.center.x + walker.velocityX * dt
-            if walker.center.x < walker.minX {
-                walker.center.x = walker.minX
-                walker.velocityX = absReal(walker.velocityX)
-            }
-            if walker.center.x > walker.maxX {
-                walker.center.x = walker.maxX
-                walker.velocityX = 0.0 - absReal(walker.velocityX)
-            }
+func updateWalkers(walkers: Storage<Walker>!, dt: Double) {
+    for i in 1..<storageLength(walkers) {
+        let walker = walkers.values[i].!
+        walker.center.x += walker.velocityX * dt
+        if walker.center.x < walker.minX {
+            walker.center.x = walker.minX
+            walker.velocityX = absReal(walker.velocityX)
         }
-        queryIndex = queryIndex + 1
+        if walker.center.x > walker.maxX {
+            walker.center.x = walker.maxX
+            walker.velocityX = -absReal(walker.velocityX)
+        }
     }
 }
 
-func solvePlatforms(position: Vec3, velocity: Vec3, platforms: Storage<Platform>): Bool {
+/** Pushes the player out of every platform it sinks into; true when one is underfoot. */
+func solvePlatforms(position: Vec3!, velocity: Vec3!, platforms: Storage<Platform>&): Bool {
     var grounded = false
-    var i = 1
-    while i < storageLength<Platform>(platforms) {
-        fin entity = storageEntityAt<Platform>(platforms, i)
-        if entity.isValid {
-            fin platform: Platform = storageValueAt<Platform>(platforms, i)
-            fin contact = aabbContact(position, playerHalf(), platform.center, platform.halfSize)
-            if contact.hit {
+    for i in 1..<storageLength(platforms) {
+        fin platform = platforms.values[i].&
+        when boxContact3d(position, playerHalf(), platform.center, platform.halfSize) {
+            .Touching(contact) -> {
                 if contact.normal.y > 0.5 && velocity.y <= 0.0 {
-                    position.y = position.y + contact.penetration
+                    position.y += contact.penetration
                     velocity.y = 0.0
                     grounded = true
+                } else if contact.normal.y < -0.5 && velocity.y > 0.0 {
+                    position.y -= contact.penetration
+                    velocity.y = 0.0
                 } else {
-                    if contact.normal.y < -0.5 && velocity.y > 0.0 {
-                        position.y = position.y - contact.penetration
-                        velocity.y = 0.0
-                    } else {
-                        position.x = position.x + contact.normal.x * contact.penetration
-                        velocity.x = 0.0
-                    }
+                    position.x += contact.normal.x * contact.penetration
+                    velocity.x = 0.0
                 }
             }
+            .Separate -> continue
         }
-        i = i + 1
     }
     return grounded
 }
 
-func collectCoins(
-    position: Vec3,
-    player: Player,
-    coins: Storage<Coin>
-    score: ReactiveResource<Int>
-) {
-    var i = 1
-    while i < storageLength<Coin>(coins) {
-        fin entity = storageEntityAt<Coin>(coins, i)
-        if entity.isValid {
-            fin coin: Coin = storageValueAt<Coin>(coins, i)
-            if !coin.collected {
-                fin hit = aabbOverlaps(
-                    position,
-                    playerHalf(),
-                    coin.center,
-                    Vec3(0.34, 0.34, 0.34),
-                )
-                if hit {
-                    coin.collected = true
-                    player.score = player.score + 100
-                    score.set(player.score)
-                }
-            }
-        }
-        i = i + 1
+func collectCoins(position: Vec3, player: Player!, coins: Storage<Coin>!, score: ReactiveResource<Int>!) {
+    for i in 1..<storageLength(coins) {
+        let coin = coins.values[i].!
+        if coin.collected || !overlapTouching3d(boxContact3d(position, playerHalf(), coin.center, .(0.34, 0.34, 0.34))) then continue
+        coin.collected = true
+        player.score += 100
+        score.set(player.score)
     }
 }
 
-func hitWalker(position: Vec3, walkers: Storage<Walker>): Bool {
-    var i = 1
-    while i < storageLength<Walker>(walkers) {
-        fin entity = storageEntityAt<Walker>(walkers, i)
-        if entity.isValid {
-            fin walker: Walker = storageValueAt<Walker>(walkers, i)
-            if aabbOverlaps(
-                position,
-                playerHalf(),
-                walker.center,
-                Vec3(0.48, 0.48, 0.48),
-            ) {
-                return true
-            }
-        }
-        i = i + 1
-    }
-    return false
-}
+func hitWalker(position: Vec3, walkers: Storage<Walker>&): Bool = for i in 1..<storageLength(walkers) {
+    if overlapTouching3d(boxContact3d(position, playerHalf(), walkers.values[i].center, .(0.48, 0.48, 0.48))) then break true
+} else false
 
-func updatePlayer(
-    app: App,
-    world: World,
-    players: Storage<Player>
-    transforms: Storage<Transform>
-    platforms: Storage<Platform>
-    coins: Storage<Coin>
-    walkers: Storage<Walker>
-    score: ReactiveResource<Int>
-    audio: AudioScene,
-    dt: Double,
-): Bool {
-    var query = queryFromStorage<Player>(world, players, false)
-    queryWith<Transform>(query, transforms)
-    fin only = query.single()
-    if !only.ok {
-        return false
-    }
-
-    fin player: Player = storageGet<Player>(players, only.entity)
-    fin transform: Transform = storageGet<Transform>(transforms, only.entity)
-
-    if player.invulnerableFor > 0.0 {
-        player.invulnerableFor = player.invulnerableFor - dt
-    }
-
-    if jumpPressed(app) {
-        player.jumpBuffer = 0.14
-    } else {
-        player.jumpBuffer = player.jumpBuffer - dt
-    }
-
-    if player.grounded {
-        player.coyoteTime = 0.12
-    } else {
-        player.coyoteTime = player.coyoteTime - dt
-    }
+/** One step of the player; false once it has fallen off the world or run out of health. */
+func updatePlayer(app: App&, player: Player!, transform: Transform!, platforms: Storage<Platform>&, coins: Storage<Coin>!,
+                  walkers: Storage<Walker>&, score: ReactiveResource<Int>!, audio: AudioScene&, dt: Double): Bool {
+    if player.invulnerableFor > 0.0 then player.invulnerableFor -= dt
+    player.jumpBuffer = if jumpPressed(app) then 0.14 else player.jumpBuffer - dt
+    player.coyoteTime = if player.grounded then 0.12 else player.coyoteTime - dt
 
     fin movement = readMoveInput(app)
-    var response = airResponse
-    if player.grounded {
-        response = moveResponse
-    }
+    fin response = if player.grounded then moveResponse else airResponse
     player.velocity.x = approach(player.velocity.x, movement * moveSpeed, response * dt)
-    if absReal(movement) > 0.05 {
-        player.facing = movement
-    }
+    if absReal(movement) > 0.05 then player.facing = movement
 
     if player.jumpBuffer > 0.0 && player.coyoteTime > 0.0 {
         player.velocity.y = jumpSpeed
@@ -414,179 +246,108 @@ func updatePlayer(
         player.coyoteTime = 0.0
         player.jumpBuffer = 0.0
     }
+    player.velocity.y = clampReal(player.velocity.y - gravity * dt, -18.0, 1000.0)
 
-    player.velocity.y = player.velocity.y - GRAVITY * dt
-    if player.velocity.y < -18.0 {
-        player.velocity.y = -18.0
-    }
-
-    transform.translation.x = transform.translation.x + player.velocity.x * dt
-    transform.translation.y = transform.translation.y + player.velocity.y * dt
+    transform.translation.x += player.velocity.x * dt
+    transform.translation.y += player.velocity.y * dt
     player.grounded = solvePlatforms(transform.translation, player.velocity, platforms)
-
     collectCoins(transform.translation, player, coins, score)
 
     if player.invulnerableFor <= 0.0 && hitWalker(transform.translation, walkers) {
-        player.health = player.health - 1
+        player.health--
         player.invulnerableFor = 1.1
-        player.velocity.x = 0.0 - player.facing * 7.5
+        player.velocity.x = -player.facing * 7.5
         player.velocity.y = 6.5
         playCrash(audio, 0.45)
     }
-
     updateEngine(audio, absReal(player.velocity.x), absReal(movement), moveSpeed)
     return transform.translation.y > -10.0 && player.health > 0
 }
 
-func drawBox(app: App, cube: Mesh, center: Vec3, size: Vec3, color: Color) {
-    fin model = mat4Mul(
-        mat4Translation(center.x, center.y, center.z),
-        mat4Scale(size.x, size.y, size.z),
-    )
-    app.drawMesh(cube, model, color.r, color.g, color.b)
+func drawBox(app: App!, cube: Mesh&, center: Vec3, size: Vec3, color: Color&) {
+    app.drawMesh(cube, mat4Mul(mat4Translation(center.x, center.y, center.z), mat4Scale(size.x, size.y, size.z)), color.r, color.g, color.b)
 }
 
-func drawBackdrop(app: App, cube: Mesh, cameraX: Double, elapsed: Double) {
+func drawBackdrop(app: App!, cube: Mesh&, cameraX: Double, elapsed: Double) {
     // Layered geometry gives the side camera depth and parallax.
-    var i = -5
-    while i < 18 {
+    for i in -5..<18 {
         fin x = (i as Double) * 7.0 + cameraX * 0.22
         fin h: Double = 3.0 + (((i + 7) % 5) as Double) * 1.2
-        drawBox(app, cube, Vec3(x, h * 0.5 - 1.5, -12.0), Vec3(5.5, h, 2.4), colorRgb(0.18, 0.28, 0.42))
-        i = i + 1
+        drawBox(app, cube, .(x, h * 0.5 - 1.5, -12.0), .(5.5, h, 2.4), colorRgb(0.18, 0.28, 0.42))
     }
-
-    var cloud = -3
-    while cloud < 12 {
+    for cloud in -3..<12 {
         fin drift = elapsed * (0.18 + (((cloud + 4) % 3) as Double) * 0.05)
         fin x = (cloud as Double) * 11.0 + drift + cameraX * 0.45
         fin y: Double = 6.0 + (((cloud + 8) % 4) as Double) * 0.75
-        drawBox(app, cube, Vec3(x, y, -7.0), Vec3(2.8, 0.45, 1.0), colorRgb(0.84, 0.90, 0.98))
-        drawBox(app, cube, Vec3(x + 0.9, y + 0.3, -7.0), Vec3(1.4, 0.55, 1.0), colorRgb(0.90, 0.94, 1.0))
-        cloud = cloud + 1
+        drawBox(app, cube, .(x, y, -7.0), .(2.8, 0.45, 1.0), colorRgb(0.84, 0.90, 0.98))
+        drawBox(app, cube, .(x + 0.9, y + 0.3, -7.0), .(1.4, 0.55, 1.0), colorRgb(0.90, 0.94, 1.0))
     }
 }
 
-func renderWorld(
-    app: App,
-    cube: Mesh,
-    cylinder: Mesh,
-    playerEntity: Entity,
-    players: Storage<Player>
-    transforms: Storage<Transform>
-    platforms: Storage<Platform>
-    coins: Storage<Coin>
-    walkers: Storage<Walker>
-    session: GameSession,
-) {
+func renderWorld(app: App!, cube: Mesh&, cylinder: Mesh&, player: Player&, transform: Transform&, platforms: Storage<Platform>&,
+                 coins: Storage<Coin>&, walkers: Storage<Walker>&, session: GameSession&) {
     drawBackdrop(app, cube, session.cameraX, session.elapsed)
-
-    var p = 1
-    while p < storageLength<Platform>(platforms) {
-        if storageEntityAt<Platform>(platforms, p).isValid {
-            fin platform: Platform = storageValueAt<Platform>(platforms, p)
-            drawBox(
-                app,
-                cube,
-                platform.center,
-                Vec3(platform.halfSize.x * 2.0, platform.halfSize.y * 2.0, platform.halfSize.z * 2.0),
-                platform.color,
-            )
-            drawBox(
-                app,
-                cube,
-                Vec3(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z),
-                Vec3(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0),
-                colorRgb(0.43, 0.76, 0.36),
-            )
-        }
-        p = p + 1
+    for p in 1..<storageLength(platforms) {
+        fin platform = platforms.values[p].&
+        drawBox(app, cube, platform.center, platform.halfSize.scale(2.0), platform.color)
+        drawBox(app, cube, .(platform.center.x, platform.center.y + platform.halfSize.y + 0.07, platform.center.z),
+            .(platform.halfSize.x * 2.0, 0.14, platform.halfSize.z * 2.0), colorRgb(0.43, 0.76, 0.36))
     }
-
-    var c = 1
-    while c < storageLength<Coin>(coins) {
-        if storageEntityAt<Coin>(coins, c).isValid {
-            fin coin: Coin = storageValueAt<Coin>(coins, c)
-            if !coin.collected {
-                fin bob = sin(session.elapsed * 3.0 + coin.phase) * 0.12
-                fin rotate = mat4RotationY(session.elapsed * 2.5 + coin.phase)
-                fin move = mat4Translation(coin.center.x, coin.center.y + bob, coin.center.z)
-                fin scale = mat4Scale(0.22, 0.08, 0.22)
-                app.drawMesh(cylinder, mat4Mul(move, mat4Mul(rotate, scale)), 1.0, 0.78, 0.12)
-            }
-        }
-        c = c + 1
+    for c in 1..<storageLength(coins) {
+        fin coin = coins.values[c].&
+        if coin.collected then continue
+        fin bob = sin(session.elapsed * 3.0 + coin.phase) * 0.12
+        fin turn = mat4RotationY(session.elapsed * 2.5 + coin.phase)
+        fin move = mat4Translation(coin.center.x, coin.center.y + bob, coin.center.z)
+        app.drawMesh(cylinder, mat4Mul(move, mat4Mul(turn, mat4Scale(0.22, 0.08, 0.22))), 1.0, 0.78, 0.12)
     }
-
-    var w = 1
-    while w < storageLength<Walker>(walkers) {
-        if storageEntityAt<Walker>(walkers, w).isValid {
-            fin walker: Walker = storageValueAt<Walker>(walkers, w)
-            drawBox(app, cube, walker.center, Vec3(0.9, 0.9, 0.8), colorRgb(0.82, 0.22, 0.30))
-            drawBox(app, cube, Vec3(walker.center.x - 0.22, walker.center.y - 0.55, 0.0), Vec3(0.18, 0.28, 0.26), colorRgb(0.19, 0.16, 0.20))
-            drawBox(app, cube, Vec3(walker.center.x + 0.22, walker.center.y - 0.55, 0.0), Vec3(0.18, 0.28, 0.26), colorRgb(0.19, 0.16, 0.20))
-        }
-        w = w + 1
+    for w in 1..<storageLength(walkers) {
+        fin at = walkers.values[w].center
+        drawBox(app, cube, at, .(0.9, 0.9, 0.8), colorRgb(0.82, 0.22, 0.30))
+        drawBox(app, cube, .(at.x - 0.22, at.y - 0.55, 0.0), .(0.18, 0.28, 0.26), colorRgb(0.19, 0.16, 0.20))
+        drawBox(app, cube, .(at.x + 0.22, at.y - 0.55, 0.0), .(0.18, 0.28, 0.26), colorRgb(0.19, 0.16, 0.20))
     }
-
-    fin player: Player = storageGet<Player>(players, playerEntity)
-    fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
-    var visible = true
-    if player.invulnerableFor > 0.0 {
-        visible = ((player.invulnerableFor * 12.0) as Int) % 2 == 0
-    }
-    if visible {
-        fin bodyColor = colorRgb(0.16, 0.62, 0.96)
-        drawBox(app, cube, transform.translation, Vec3(0.84, 1.44, 0.76), bodyColor)
-        drawBox(app, cube, Vec3(transform.translation.x, transform.translation.y + 0.94, 0.0), Vec3(0.64, 0.55, 0.64), colorRgb(0.96, 0.74, 0.54))
-        fin eyeX = transform.translation.x + player.facing * 0.22
-        drawBox(app, cube, Vec3(eyeX, transform.translation.y + 1.02, 0.34), Vec3(0.09, 0.09, 0.05), colorRgb(0.06, 0.08, 0.12))
-    }
+    // A hit player blinks while it cannot be hit again.
+    if player.invulnerableFor > 0.0 && ((player.invulnerableFor * 12.0) as Int) % 2 != 0 then return
+    fin at = transform.translation
+    drawBox(app, cube, at, .(0.84, 1.44, 0.76), colorRgb(0.16, 0.62, 0.96))
+    drawBox(app, cube, .(at.x, at.y + 0.94, 0.0), .(0.64, 0.55, 0.64), colorRgb(0.96, 0.74, 0.54))
+    drawBox(app, cube, .(at.x + player.facing * 0.22, at.y + 1.02, 0.34), .(0.09, 0.09, 0.05), colorRgb(0.06, 0.08, 0.12))
 }
 
-func drawHud(app: App, player: Player, score: ReactiveResource<Int>) {
-    fin displayScore: Int = score.value
+func drawHud(app: App!, player: Player&, score: ReactiveResource<Int>&) {
     app.uiRect(18.0, 18.0, 250.0, 76.0, 0.03, 0.05, 0.09, 0.82)
-    app.uiText("SCORE  ${displayScore}", 34.0, 31.0, 18.0)
+    app.uiText("SCORE  ${score.value}", 34.0, 31.0, 18.0)
     app.uiText("HEALTH ${player.health} / 3", 34.0, 61.0, 15.0)
     app.uiText("A/D move   SPACE jump   ESC pause", 20.0, (app.height() as Double) - 34.0, 13.0)
 }
 
-func drawMenuScene(app: App, cube: Mesh, elapsed: Double) {
-    var cam = cameraDefault()
-    cam.pos = Vec3(sin(elapsed * 0.18) * 2.0, 3.5, 11.5)
-    cam.pitch = -0.16
-    cam.fovDeg = 52.0
-    app.applyCamera(cam)
+func drawMenuScene(app: App!, cube: Mesh&, elapsed: Double) {
+    app.applyCamera(.(.(sin(elapsed * 0.18) * 2.0, 3.5, 11.5), 0.0, -0.16, 52.0))
     drawBackdrop(app, cube, 0.0, elapsed)
-    drawBox(app, cube, Vec3(0.0, -0.4, 0.0), Vec3(14.0, 0.7, 5.0), colorRgb(0.20, 0.48, 0.31))
-    drawBox(app, cube, Vec3(0.0, 1.0 + sin(elapsed * 1.8) * 0.12, 0.0), Vec3(0.9, 1.5, 0.8), colorRgb(0.16, 0.62, 0.96))
+    drawBox(app, cube, .(0.0, -0.4, 0.0), .(14.0, 0.7, 5.0), colorRgb(0.20, 0.48, 0.31))
+    drawBox(app, cube, .(0.0, 1.0 + sin(elapsed * 1.8) * 0.12, 0.0), .(0.9, 1.5, 0.8), colorRgb(0.16, 0.62, 0.96))
 }
 
-func drawMenu(app: App, bestScore: Int): Int {
-    fin width = app.width() as Double
-    fin height = app.height() as Double
+/** The title menu; 1 to play, 2 to quit, 0 while it waits. */
+func drawMenu(app: App!, bestScore: Int): Int {
     fin panelWidth: Double = 420.0
-    fin panelX = (width - panelWidth) * 0.5
-    fin panelY = height * 0.19
-
+    fin panelX = ((app.width() as Double) - panelWidth) * 0.5
+    fin panelY = (app.height() as Double) * 0.19
     app.uiRect(panelX, panelY, panelWidth, 330.0, 0.025, 0.04, 0.075, 0.90)
     app.uiTitle("SKYLINE RUNNER", panelY + 38.0, 34.0)
     app.uiTitle("An Azora Engine side-scroller", panelY + 86.0, 15.0)
-    if bestScore > 0 {
-        app.uiTitle("Best score  ${bestScore}", panelY + 122.0, 15.0)
-    }
-    if app.button("PLAY", panelX + 70.0, panelY + 166.0, 280.0, 52.0) {
-        return 1
-    }
-    if app.buttonColored("QUIT", panelX + 70.0, panelY + 236.0, 280.0, 48.0, 0.38, 0.42, 0.50) {
-        return 2
-    }
+    if bestScore > 0 then app.uiTitle("Best score  ${bestScore}", panelY + 122.0, 15.0)
     app.uiTitle("Keyboard and gamepad supported", panelY + 302.0, 12.0)
-    return 0
+    return when {
+        app.button("PLAY", panelX + 70.0, panelY + 166.0, 280.0, 52.0) -> 1
+        app.buttonColored("QUIT", panelX + 70.0, panelY + 236.0, 280.0, 48.0, 0.38, 0.42, 0.50) -> 2
+        else -> 0
+    }
 }
 
-func drawPause(app: App): Int {
+/** The pause card; 1 to resume, 2 for the main menu, 0 while it waits. */
+func drawPause(app: App!): Int {
     fin width = app.width() as Double
     fin height = app.height() as Double
     fin x = (width - 360.0) * 0.5
@@ -594,16 +355,15 @@ func drawPause(app: App): Int {
     app.uiRect(0.0, 0.0, width, height, 0.01, 0.02, 0.04, 0.62)
     app.uiRect(x, y, 360.0, 270.0, 0.035, 0.055, 0.095, 0.96)
     app.uiTitle("PAUSED", y + 34.0, 30.0)
-    if app.button("RESUME", x + 55.0, y + 104.0, 250.0, 48.0) {
-        return 1
+    return when {
+        app.button("RESUME", x + 55.0, y + 104.0, 250.0, 48.0) -> 1
+        app.buttonColored("MAIN MENU", x + 55.0, y + 172.0, 250.0, 48.0, 0.38, 0.42, 0.50) -> 2
+        else -> 0
     }
-    if app.buttonColored("MAIN MENU", x + 55.0, y + 172.0, 250.0, 48.0, 0.38, 0.42, 0.50) {
-        return 2
-    }
-    return 0
 }
 
-func drawGameOver(app: App, score: Int, bestScore: Int): Int {
+/** The run-over card; 1 to run again, 2 for the main menu, 0 while it waits. */
+func drawGameOver(app: App!, score: Int, bestScore: Int): Int {
     fin width = app.width() as Double
     fin height = app.height() as Double
     fin x = (width - 410.0) * 0.5
@@ -612,152 +372,98 @@ func drawGameOver(app: App, score: Int, bestScore: Int): Int {
     app.uiRect(x, y, 410.0, 330.0, 0.07, 0.035, 0.055, 0.96)
     app.uiTitle("RUN OVER", y + 34.0, 31.0)
     app.uiTitle("Score ${score}   Best ${bestScore}", y + 91.0, 17.0)
-    if app.button("RUN AGAIN", x + 65.0, y + 151.0, 280.0, 50.0) {
-        return 1
+    return when {
+        app.button("RUN AGAIN", x + 65.0, y + 151.0, 280.0, 50.0) -> 1
+        app.buttonColored("MAIN MENU", x + 65.0, y + 220.0, 280.0, 48.0, 0.38, 0.42, 0.50) -> 2
+        else -> 0
     }
-    if app.buttonColored("MAIN MENU", x + 65.0, y + 220.0, 280.0, 48.0, 0.38, 0.42, 0.50) {
-        return 2
-    }
-    return 0
 }
 
 async func main() {
     var app = appInit("Skyline Runner - Azora Engine", 1280, 720)
-    if !app.ok {
-        return
-    }
+    if !app.ok then return
 
     var audio = scene()
     start(audio)
-
     app.setClearColor(0.48, 0.68, 0.90)
     app.setLightDirection(-0.55, 0.82, 0.28)
     app.setAmbientLight(0.38)
-
     fin cube = app.meshCube(1.0)
     fin cylinder = app.meshCylinder(1.0, 1.0, 18)
 
-    var world = World()
-    var transforms = storageInit<Transform>(Transform())
-    var players = storageInit<Player>(Player(vec3Zero(), false, 0.0, 0.0, 3, 0, 0.0, 1.0))
-    var platforms = storageInit<Platform>(Platform(vec3Zero(), Vec3(1.0, 1.0, 1.0), colorRgb(0.3, 0.6, 0.4)))
-    var coins = storageInit<Coin>(Coin(vec3Zero(), true, 0.0))
-    var walkers = storageInit<Walker>(Walker(vec3Zero(), 0.0, 0.0, 0.0))
-
+    var world: World = .()
+    var transforms = storageInit(Transform())
+    var players = storageInit(freshPlayer())
+    var platforms = storageInit(Platform(vec3Zero(), .(1.0, 1.0, 1.0), colorRgb(0.3, 0.6, 0.4)))
+    var coins = storageInit(Coin(vec3Zero(), true, 0.0))
+    var walkers = storageInit(Walker(vec3Zero(), 0.0, 0.0, 0.0))
     fin playerEntity = world.spawnNamed("Player")
-    storageInsert<Player>(players, playerEntity, Player(vec3Zero(), false, 0.0, 0.0, 3, 0, 0.0, 1.0))
-    storageInsert<Transform>(transforms, playerEntity, Transform())
     buildLevel(world, platforms, coins, walkers)
 
-    var route = navBackStack<GameRoute>(GameRoute.Menu, 8)
-    var navigationDisplay = navDisplay()
-    var observer = ecsObserver()
-    var score = reactiveResource<Int>(0)
-    var session = GameSession(0.0, -1.0, 0)
+    var route: GameRoute = .Menu
+    var score = reactiveResource(0)
+    var session: GameSession = .(0.0, -1.0, 0)
     resetSession(playerEntity, players, transforms, coins, walkers, score, session)
-
-    var camera = cameraDefault()
-    camera.pitch = -0.13
-    camera.fovDeg = 55.0
+    var camera: Camera = .(vec3Zero(), 0.0, -0.13, 55.0)
 
     while app.frame() {
-        scope "frame" {
-            var dt = app.deltaTime()
-            if dt > 0.05 {
-                dt = 0.05
-            }
-            session.elapsed = session.elapsed + dt
+        scope {
+            fin dt = clampReal(app.deltaTime(), 0.0, 0.05)
+            session.elapsed += dt
             world.progress(dt)
-            navigationDisplay.sync(route)
-            observer.observeWorld(world)
-            observer.observeRevision(route.version)
-
-            fin current: GameRoute = route.current
-            if current == GameRoute.Menu {
-                updateEngine(audio, 0.0, 0.0, moveSpeed)
-                drawMenuScene(app, cube, session.elapsed)
-                fin action = drawMenu(app, session.bestScore)
-                if action == 1 || app.keyPressed(.Enter) {
-                    resetSession(playerEntity, players, transforms, coins, walkers, score, session)
-                    route.replace(GameRoute.Playing)
-                }
-                if action == 2 || app.keyPressed(.Escape) {
-                    app.quit()
-                }
-            }
-
-            if current == GameRoute.Playing {
-                updateWalkers(walkers, dt)
-                fin alive = updatePlayer(
-                    app,
-                    world,
-                    players,
-                    transforms,
-                    platforms,
-                    coins,
-                    walkers,
-                    score,
-                    audio,
-                    dt,
-                )
-                fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
-                fin player: Player = storageGet<Player>(players, playerEntity)
+            let player = players.values[storageIndexOf(players, playerEntity)].!
+            let transform = transforms.values[storageIndexOf(transforms, playerEntity)].!
+            if route != .Menu {
                 session.cameraX = approach(session.cameraX, transform.translation.x + 3.2, 8.0 * dt)
-                camera.pos = Vec3(session.cameraX, 3.6, 12.0)
+                camera.pos = .(session.cameraX, 3.6, 12.0)
                 app.applyCamera(camera)
-                renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
-                drawHud(app, player, score)
-
-                if app.keyPressed(.Escape) {
-                    route.push(GameRoute.Paused)
-                }
-                if !alive {
-                    if player.score > session.bestScore {
-                        session.bestScore = player.score
+            }
+            when route {
+                .Menu -> {
+                    updateEngine(audio, 0.0, 0.0, moveSpeed)
+                    drawMenuScene(app, cube, session.elapsed)
+                    fin action = drawMenu(app, session.bestScore)
+                    if action == 1 || app.keyPressed(.Enter) {
+                        resetSession(playerEntity, players, transforms, coins, walkers, score, session)
+                        route = .Playing
                     }
-                    playCrash(audio, 0.8)
-                    route.replace(GameRoute.GameOver)
+                    if action == 2 || app.keyPressed(.Escape) then app.quit()
+                }
+                .Playing -> {
+                    updateWalkers(walkers, dt)
+                    fin alive = updatePlayer(app, player, transform, platforms, coins, walkers, score, audio, dt)
+                    renderWorld(app, cube, cylinder, player, transform, platforms, coins, walkers, session)
+                    drawHud(app, player, score)
+                    if app.keyPressed(.Escape) {
+                        route = .Paused
+                    } else if !alive {
+                        if player.score > session.bestScore then session.bestScore = player.score
+                        playCrash(audio, 0.8)
+                        route = .GameOver
+                    }
+                }
+                .Paused -> {
+                    renderWorld(app, cube, cylinder, player, transform, platforms, coins, walkers, session)
+                    drawHud(app, player, score)
+                    updateEngine(audio, 0.0, 0.0, moveSpeed)
+                    fin action = drawPause(app)
+                    if action == 1 || app.keyPressed(.Escape) {
+                        route = .Playing
+                    } else if action == 2 then route = .Menu
+                }
+                .GameOver -> {
+                    renderWorld(app, cube, cylinder, player, transform, platforms, coins, walkers, session)
+                    updateEngine(audio, 0.0, 0.0, moveSpeed)
+                    fin action = drawGameOver(app, player.score, session.bestScore)
+                    if action == 1 || app.keyPressed(.Enter) {
+                        resetSession(playerEntity, players, transforms, coins, walkers, score, session)
+                        route = .Playing
+                    } else if action == 2 || app.keyPressed(.Escape) then route = .Menu
                 }
             }
-
-            if current == GameRoute.Paused {
-                fin transform: Transform = storageGet<Transform>(transforms, playerEntity)
-                fin player: Player = storageGet<Player>(players, playerEntity)
-                camera.pos = Vec3(session.cameraX, 3.6, 12.0)
-                app.applyCamera(camera)
-                renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
-                drawHud(app, player, score)
-                updateEngine(audio, 0.0, 0.0, moveSpeed)
-                fin action = drawPause(app)
-                if action == 1 || app.keyPressed(.Escape) {
-                    route.pop()
-                }
-                if action == 2 {
-                    route.popToRoot()
-                }
-            }
-
-            if current == GameRoute.GameOver {
-                fin player: Player = storageGet<Player>(players, playerEntity)
-                camera.pos = Vec3(session.cameraX, 3.6, 12.0)
-                app.applyCamera(camera)
-                renderWorld(app, cube, cylinder, playerEntity, players, transforms, platforms, coins, walkers, session)
-                updateEngine(audio, 0.0, 0.0, moveSpeed)
-                fin action = drawGameOver(app, player.score, session.bestScore)
-                if action == 1 || app.keyPressed(.Enter) {
-                    resetSession(playerEntity, players, transforms, coins, walkers, score, session)
-                    route.replace(GameRoute.Playing)
-                }
-                if action == 2 || app.keyPressed(.Escape) {
-                    route.popToRoot()
-                }
-            }
-
             app.present()
         }
     }
-
     stop(audio)
-    navigationDisplay.destroy()
     app.shutdown()
 }

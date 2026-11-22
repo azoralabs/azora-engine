@@ -32,10 +32,8 @@ import engine.ui.node
 
 /** The member of [fields] called [name], or -1. */
 func iconMember(fields: List<SerialField>&, name: String): Int {
-    var index = 0
-    while index < fields.size {
-        if fields[index].name == name { return index }
-        index = index + 1
+    for i: Int in 0..<fields.size {
+        if fields[i].name == name then return i
     }
     return -1
 }
@@ -43,7 +41,7 @@ func iconMember(fields: List<SerialField>&, name: String): Int {
 /** [fields]' integer [name], or [fallback]. */
 func iconNumber(fields: List<SerialField>&, name: String, fallback: Int): Int {
     fin at = iconMember(fields, name)
-    return if at < 0 { fallback } else { serialAsInt(fields[at].value) catch fallback }
+    return if at < 0 then fallback else serialAsInt(fields[at].value) catch fallback
 }
 
 /**
@@ -53,9 +51,9 @@ func iconNumber(fields: List<SerialField>&, name: String, fallback: Int): Int {
  */
 func loadIconAtlas(app: App&, world: World!, imagePath: String, index: String): Bool {
     fin root = decodeSerialValue(index, serializerOptions()) catch SerialValue.Null
-    var atlas = IconAtlas()
+    var atlas: IconAtlas = .()
     when root {
-        SerialValue.Object(fields) -> {
+        .Object(fields) -> {
             atlas.cell = iconNumber(fields, "cell", 64)
             atlas.columns = iconNumber(fields, "columns", 16)
             atlas.width = iconNumber(fields, "width", 0)
@@ -63,11 +61,11 @@ func loadIconAtlas(app: App&, world: World!, imagePath: String, index: String): 
             fin listAt = iconMember(fields, "icons")
             if listAt >= 0 {
                 when fields[listAt].value {
-                    SerialValue.Array(items) -> {
+                    .Array(items) -> {
                         var item = 0
                         while item < items.size {
                             atlas.names.add(serialAsText(items[item]) catch "")
-                            item = item + 1
+                            item++
                         }
                     }
                     else -> { }
@@ -77,14 +75,12 @@ func loadIconAtlas(app: App&, world: World!, imagePath: String, index: String): 
         else -> { return false }
     }
     fin image = app.loadImage(imagePath)
-    if image.texture == Long(0) {
-        return false
-    }
+    if image.texture == 0 then return false
     atlas.texture = image.texture
     atlas.width = image.width
     atlas.height = image.height
     fin holder = world.spawnResource("icon-atlas")
-    storageInsert<IconAtlas>(ensureStorage<IconAtlas>(world), holder, take atlas)
+    storageInsert<IconAtlas>(ensureStorage(world), holder, take atlas)
     return true
 }
 
@@ -96,12 +92,10 @@ func App!.drawIcon(atlas: IconAtlas&, name: String, x: Double, y: Double, size: 
     var cell = -1
     var index = 0
     while index < atlas.names.size && cell < 0 {
-        if atlas.names[index] == name { cell = index }
-        index = index + 1
+        if atlas.names[index] == name then cell = index
+        index++
     }
-    if cell < 0 || atlas.texture == Long(0) || atlas.columns <= 0 || atlas.width <= 0 || atlas.height <= 0 {
-        return
-    }
+    if cell < 0 || atlas.texture == 0 || atlas.columns <= 0 || atlas.width <= 0 || atlas.height <= 0 then return
     fin span = atlas.cell as Double
     fin u0 = ((cell % atlas.columns) as Double) * span / (atlas.width as Double)
     fin v0 = ((cell / atlas.columns) as Double) * span / (atlas.height as Double)

@@ -3,24 +3,24 @@ import std.io
 import engine.core
 import engine.ecs
 
-@System(phase: SystemPhase.Update, runAfter: "input")
+@System(phase: .Update, runAfter: "input")
 func movement(world: World!) {
     fin entity = world.entityAt(0)
     world.setName(entity, world.getName(entity) + "2")
     world.progress(0.02)
 }
-@System(phase: SystemPhase.Update)
+@System(phase: .Update)
 func input(world: World!) {
     fin entity = world.entityAt(0)
     world.setName(entity, world.getName(entity) + "1")
 }
-@System(phase: SystemPhase.Render, runAfter: "movement")
+@System(phase: .Render, runAfter: "movement")
 func draw(world: World!) {
     fin entity = world.entityAt(0)
     world.setName(entity, world.getName(entity) + "3")
 }
 func main() {
-    var world = World()
+    var world: World = .()
     world.spawnNamed("")
     var plan = systemPlan()
     assert !plan.cyclic panic "declared scheduling dependencies must resolve"

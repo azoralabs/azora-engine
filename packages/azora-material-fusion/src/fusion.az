@@ -7,7 +7,7 @@ import std.container.list
 import engine.core
 import engine.math
 
-fin fusionNodeLimit: Int = 64
+inline fin fusionNodeLimit: Int = 64
 
 /** Inputs reference node IDs. Zero is an unconnected pin. Positions are editor metadata. */
 pack FusionNode derives Clone {
@@ -106,10 +106,8 @@ func fusionClamp(value: Double, low: Double, high: Double): Double = when {
 
 impl FusionGraph {
     func &.indexOfNode(id: Int): Int {
-        var index = 0
-        while index < self.nodes.size {
-            if self.nodes[index].id == id then return index
-            index = index + 1
+        for i: Int in 0..<self.nodes.size {
+            if self.nodes[i].id == id then return i
         }
         return -1
     }
@@ -118,8 +116,8 @@ impl FusionGraph {
         if self.nodes.size >= fusionNodeLimit || (fusionType(kind) == 0 && kind != "output") then return 0
         if kind == "output" && self.output > 0 then return 0
         var id = 1
-        while self.indexOfNode(id) >= 0 { id = id + 1 }
-        var node = FusionNode()
+        while self.indexOfNode(id) >= 0 then id = id + 1
+        var node: FusionNode = .()
         node.id = id
         node.kind = kind
         node.x = x
@@ -133,12 +131,10 @@ impl FusionGraph {
         fin index = self.indexOfNode(id)
         if index < 0 || id == self.output then return false
         self.nodes.removeAt(index)
-        var at = 0
-        while at < self.nodes.size {
+        for at: Int in 0..<self.nodes.size {
             if self.nodes[at].a == id then self.nodes[at].a = 0
             if self.nodes[at].b == id then self.nodes[at].b = 0
             if self.nodes[at].mask == id then self.nodes[at].mask = 0
-            at = at + 1
         }
         return true
     }
@@ -162,7 +158,7 @@ impl FusionGraph {
                     while input < fusionPinCount(self.nodes[index].kind) {
                         fin dependency = fusionInput(self.nodes[index], input)
                         if dependency > 0 then pending.add(dependency)
-                        input = input + 1
+                        input++
                     }
                 }
             }
@@ -173,7 +169,7 @@ impl FusionGraph {
 }
 
 func newFusionGraph(): FusionGraph {
-    var document = FusionGraph()
+    var document: FusionGraph = .()
     fin base = document.addNode("slab", 34.0, 58.0)
     fin output = document.addNode("output", 280.0, 70.0)
     document.connect(base, output, 0)
@@ -181,34 +177,29 @@ func newFusionGraph(): FusionGraph {
 }
 
 func fusionMember(fields: List<SerialField>&, key: String): Int {
-    var index = 0
-    while index < fields.size {
-        if fields[index].name == key then return index
-        index = index + 1
+    for i: Int in 0..<fields.size {
+        if fields[i].name == key then return i
     }
     return -1
 }
 
 func fusionText(fields: List<SerialField>&, key: String): String {
     fin index = fusionMember(fields, key)
-    if index < 0 then return ""
-    return serialAsText(fields[index].value) catch ""
+    return if index < 0 then "" else serialAsText(fields[index].value) catch ""
 }
 
 func fusionInt(fields: List<SerialField>&, key: String): Int {
     fin index = fusionMember(fields, key)
-    if index < 0 then return 0
-    return serialAsInt(fields[index].value) catch 0
+    return if index < 0 then 0 else serialAsInt(fields[index].value) catch 0
 }
 
 func fusionReal(fields: List<SerialField>&, key: String, default: Double): Double {
     fin index = fusionMember(fields, key)
-    if index < 0 then return default
-    return serialAsReal(fields[index].value) catch default
+    return if index < 0 then default else serialAsReal(fields[index].value) catch default
 }
 
 func readFusionNode(fields: List<SerialField>&): FusionNode {
-    var n = FusionNode()
+    var n: FusionNode = .()
     n.id = fusionInt(fields, "id")
     n.kind = fusionText(fields, "kind")
     n.x = fusionClamp(fusionReal(fields, "x", 0.0), -10000.0, 10000.0)
@@ -238,11 +229,11 @@ func readFusionNode(fields: List<SerialField>&): FusionNode {
 }
 
 func readFusionGraph(text: String): FusionGraph {
-    var document = FusionGraph()
+    var document: FusionGraph = .()
     document.diagnostic = "Expected a Material Fusion document"
     fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
     when root {
-        SerialValue.Object(fields) -> {
+        .Object(fields) -> {
             if fusionText(fields, "format") != "azora-material-fusion" then return take document
             if fusionInt(fields, "version") != 1 {
                 document.diagnostic = "Unsupported Material Fusion file version"
@@ -251,7 +242,7 @@ func readFusionGraph(text: String): FusionGraph {
             fin list = fusionMember(fields, "nodes")
             if list < 0 then return take document
             when fields[list].value {
-                SerialValue.Array(nodes) -> {
+                .Array(nodes) -> {
                     if nodes.size == 0 || nodes.size > fusionNodeLimit {
                         document.diagnostic = "A document must have 1–${fusionNodeLimit} nodes"
                         return take document
@@ -259,7 +250,7 @@ func readFusionGraph(text: String): FusionGraph {
                     var index = 0
                     while index < nodes.size {
                         when nodes[index] {
-                            SerialValue.Object(members) -> {
+                            .Object(members) -> {
                                 var node = readFusionNode(members)
                                 if node.id <= 0 || document.indexOfNode(node.id) >= 0 || fusionNodeLabel(node.kind) == "Unknown" {
                                     document.diagnostic = "Invalid or duplicate node ID at entry ${index + 1}"
@@ -276,7 +267,7 @@ func readFusionGraph(text: String): FusionGraph {
                             }
                             else -> return take document
                         }
-                        index = index + 1
+                        index++
                     }
                     document.diagnostic = if document.output == 0 then "The document has no Material Output" else ""
                 }
@@ -290,7 +281,7 @@ func readFusionGraph(text: String): FusionGraph {
 
 /** Canonical AZON, including positions, with no platform-specific shader data. */
 func writeFusionGraph(document: FusionGraph&): String {
-    var text = StringBuilder()
+    var text: StringBuilder = .()
     text.append("{\"format\": \"azora-material-fusion\", \"version\": 1, \"nodes\": [")
     var index = 0
     while index < document.nodes.size {
@@ -302,10 +293,10 @@ func writeFusionGraph(document: FusionGraph&): String {
         text.append(", \"roughness\": ${formatDecimal(n.roughness, 6)}, \"metallic\": ${formatDecimal(n.metallic, 6)}, \"emission\": ${formatDecimal(n.emission, 6)}")
         text.append(", \"value\": ${formatDecimal(n.value, 6)}, \"scale\": ${formatDecimal(n.scale, 6)}, \"thickness\": ${formatDecimal(n.thickness, 6)}")
         fin texture = if fusionTexturePath(n.textureSet) then n.textureSet else ""
-        fin label = encodeSerialValue(SerialValue.Text(n.label), serializerOptions()) catch "\"\""
+        fin label = encodeSerialValue(.Text(n.label), serializerOptions()) catch "\"\""
         text.append(", \"label\": ${label}, \"offset\": ${formatDecimal(n.offset,6)}, \"contrast\": ${formatDecimal(n.contrast,6)}, \"macroScale\": ${formatDecimal(n.macroScale,6)}, \"rotation\": ${formatDecimal(n.rotation,6)}")
         text.append(", \"texture\": \"${texture}\", \"low\": ${formatDecimal(n.low,6)}, \"high\": ${formatDecimal(n.high,6)}, \"variation\": ${formatDecimal(n.variation,6)}}")
-        index = index + 1
+        index++
     }
     text.append("\n]}\n")
     return text.build()
@@ -328,7 +319,7 @@ func fusionRelativePath(path: String): Bool {
             if part == "" || part == "." || part == ".." then return false
             start = index + 1
         }
-        index = index + 1
+        index++
     }
     return true
 }

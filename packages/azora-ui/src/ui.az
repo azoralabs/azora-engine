@@ -35,7 +35,6 @@ import engine.input
 import engine.gpu.draw
 
 impl App {
-
     /// Text with the default UI foreground color.
     func !.uiText(text: String, x: Double, y: Double, size: Double) {
         self.uiTextColored(text, x, y, size, 0.92, 0.94, 0.96)
@@ -50,28 +49,29 @@ impl App {
 
     /// A button with the engine's default style. Returns true on the frame
     /// it is clicked.
-    func !.button(label: String, x: Double, y: Double, w: Double, h: Double): Bool {
-        return self.buttonColored(label, x, y, w, h, 0.23, 0.51, 0.96)
-    }
+    func !.button(label: String, x: Double, y: Double, w: Double, h: Double): Bool = self.buttonColored(label, x, y, w, h, 0.23, 0.51, 0.96)
 
     /// A button with a custom accent color. Returns true on the frame it is clicked.
-    func !.buttonColored(label: String, x: Double, y: Double, w: Double, h: Double, r: Double, g: Double, b: Double): Bool {
-        fin isHover = self.hovered(x, y, w, h)
-        fin isPress = isHover && self.mouseDown(.Left)
+    func !.buttonColored(
+        label: String
+        x: Double, y: Double
+        w: Double, h: Double
+        r: Double, g: Double, b: Double
+    ): Bool {
+        fin isHover: Bool = self.hovered(x, y, w, h)
+        fin isPress: Bool = isHover && self.mouseDown(.Left)
 
-        var cr = r
-        var cg = g
-        var cb = b
+        var cr: Double = r
+        var cg: Double = g
+        var cb: Double = b
         if isPress {
             cr = r * 0.75
             cg = g * 0.75
             cb = b * 0.75
-        } else {
-            if isHover {
-                cr = r * 1.12
-                cg = g * 1.12
-                cb = b * 1.12
-            }
+        } else if isHover {
+            cr = r * 1.12
+            cg = g * 1.12
+            cb = b * 1.12
         }
 
         // Soft shadow, then the button face.

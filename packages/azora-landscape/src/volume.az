@@ -22,7 +22,7 @@ func quoted(text: String): String = "\"${replace(replace(text, "\\", "\\\\"), "\
 /** [landscape] as an AZON document. */
 func landscapeText(landscape: Landscape&): String {
     fin field = landscape.field.&
-    var text = StringBuilder()
+    var text: StringBuilder = .()
     text.append("{\"format\": \"flex-landscape\", \"version\": 1, \"id\": ${landscape.id}, \"name\": ${quoted(landscape.name)}, ")
     text.append("\"cells\": [${field.cellsX}, ${field.cellsY}, ${field.cellsZ}], \"cell\": ${field.cell}, ")
     text.append("\"closed\": ${if field.closed then "true" else "false"}, ")
@@ -33,10 +33,10 @@ func landscapeText(landscape: Landscape&): String {
     while at < field.values.size {
         fin value = round(field.values[at] * 100.0)
         var run = 1
-        while at + run < field.values.size && round(field.values[at + run] * 100.0) == value { run = run + 1 }
+        while at + run < field.values.size && round(field.values[at + run] * 100.0) == value then run = run + 1
         text.append(if first then "${value}, ${run}" else ", ${value}, ${run}")
         first = false
-        at = at + run
+        at += run
     }
     text.append("]}")
     return text.build()
@@ -54,7 +54,7 @@ func readLandscape(text: String): Landscape {
     if runsAt < 0 then return landscape
     fin root = decodeSerialValue("${substring(text, 0, runsAt)}\"runs\": []}", serializerOptions()) catch SerialValue.Null
     when root {
-        SerialValue.Object(fields) -> {
+        .Object(fields) -> {
             if textAt(fields, "format", "") != "flex-landscape" then return landscape
             fin cells = intsAt(fields, "cells")
             fin origin = realsAt(fields, "origin")
@@ -82,10 +82,10 @@ func readLandscape(text: String): Landscape {
                 var left = runs[run + 1]
                 while left > 0 && at < count {
                     field.values[at] = value
-                    at = at + 1
-                    left = left - 1
+                    at++
+                    left--
                 }
-                run = run + 2
+                run += 2
             }
             if at != count then return landscape
             landscape.id = intAt(fields, "id", 0)
@@ -109,11 +109,11 @@ func scanIntegers(text: String): Array<Int> {
             var value = 0
             while at < chars.size && ord(chars[at]) >= 48 && ord(chars[at]) <= 57 {
                 value = value * 10 + ord(chars[at]) - 48
-                at = at + 1
+                at++
             }
-            numbers.add(if negative then 0 - value else value)
+            numbers.add(if negative then -value else value)
         } else {
-            at = at + 1
+            at++
         }
     }
     return numbers
@@ -122,10 +122,8 @@ func scanIntegers(text: String): Array<Int> {
 // ── Reading AZON ────────────────────────────────────────────────────────
 
 func memberAt(fields: List<SerialField>&, name: String): Int {
-    var index = 0
-    while index < fields.size {
-        if fields[index].name == name then return index
-        index = index + 1
+    for i: Int in 0..<fields.size {
+        if fields[i].name == name then return i
     }
     return -1
 }
@@ -150,11 +148,11 @@ func intsAt(fields: List<SerialField>&, name: String): Array<Int> {
     fin at = memberAt(fields, name)
     if at < 0 then return numbers
     when fields[at].value {
-        SerialValue.Array(items) -> {
+        .Array(items) -> {
             var index = 0
             while index < items.size {
                 numbers.add(serialAsInt(items[index]) catch 0)
-                index = index + 1
+                index++
             }
         }
         else -> { }
@@ -167,11 +165,11 @@ func realsAt(fields: List<SerialField>&, name: String): Array<Double> {
     fin at = memberAt(fields, name)
     if at < 0 then return numbers
     when fields[at].value {
-        SerialValue.Array(items) -> {
+        .Array(items) -> {
             var index = 0
             while index < items.size {
                 numbers.add(serialAsReal(items[index]) catch 0.0)
-                index = index + 1
+                index++
             }
         }
         else -> { }
@@ -184,7 +182,7 @@ func pointAt(fields: List<SerialField>&, name: String): Point {
     fin at = memberAt(fields, name)
     if at < 0 then return .()
     return when fields[at].value {
-        SerialValue.Object(xyz) -> Point(realAt(xyz, "x", 0.0), realAt(xyz, "y", 0.0), realAt(xyz, "z", 0.0))
+        .Object(xyz) -> Point(realAt(xyz, "x", 0.0), realAt(xyz, "y", 0.0), realAt(xyz, "z", 0.0))
         else -> Point()
     }
 }
@@ -194,7 +192,7 @@ func settingAt(fields: List<SerialField>&, object: String, name: String, fallbac
     fin at = memberAt(fields, object)
     if at < 0 then return fallback
     return when fields[at].value {
-        SerialValue.Object(inner) -> realAt(inner, name, fallback)
+        .Object(inner) -> realAt(inner, name, fallback)
         else -> fallback
     }
 }
@@ -203,6 +201,5 @@ func settingAt(fields: List<SerialField>&, object: String, name: String, fallbac
 func loadLandscapeVolume(root: String, id: Int): Landscape {
     var data = readFile("${root}/${landscapeFile(id)}")
     defer { data.release() }
-    if !data.ok() then return Landscape()
-    return readLandscape(data.text(0,data.size))
+    return if !data.ok() then Landscape() else readLandscape(data.text(0,data.size))
 }

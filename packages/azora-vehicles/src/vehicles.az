@@ -109,12 +109,12 @@ pack VehicleSpec {
 func vehicleSpec(kind: VehicleKind): VehicleSpec {
     if kind == .Car then return VehicleSpec()
     return VehicleSpec(wheelCount: 2, halfTrack: 0.0, frontAxle: -0.71, rearAxle: 0.71, mountHeight: 0.06,
-        wheelRadius: 0.31, tireWidth: 0.16, mass: 245.0, inertia: .(115.0, 98.0, 30.0),
-        restLength: 0.46, bumpLength: 0.16, spring: 11000.0, bump: 700.0, rebound: 1050.0,
-        antiRollFront: 0.0, antiRollRear: 0.0, antiPitch: 0.35, tireGrip: 1.05, wheelInertia: 0.55,
-        power: 72000.0, maxTorque: 1150.0, frontDrive: 0.0, maxSpeed: 62.0, reverseSpeed: 4.0,
-        brakeFront: 900.0, brakeRear: 320.0, handbrake: 700.0, maxSteer: 0.52, steerFalloff: 8.0, steerRate: 3.2,
-        drag: 0.42, rolling: 0.015, lean: true, bodyHalfWidth: 0.22, bodyHalfLength: 1.02,
+        wheelRadius: 0.31, tireWidth: 0.16, mass: 245.0, inertia: .(115.0, 98.0, 30.0)
+        restLength: 0.46, bumpLength: 0.16, spring: 11000.0, bump: 700.0, rebound: 1050.0
+        antiRollFront: 0.0, antiRollRear: 0.0, antiPitch: 0.35, tireGrip: 1.05, wheelInertia: 0.55
+        power: 72000.0, maxTorque: 1150.0, frontDrive: 0.0, maxSpeed: 62.0, reverseSpeed: 4.0
+        brakeFront: 900.0, brakeRear: 320.0, handbrake: 700.0, maxSteer: 0.52, steerFalloff: 8.0, steerRate: 3.2
+        drag: 0.42, rolling: 0.015, lean: true, bodyHalfWidth: 0.22, bodyHalfLength: 1.02
         bodyLow: -0.34, cornerLow: -0.30, bodyHigh: 1.25)
 }
 
@@ -271,19 +271,19 @@ func quatEulerRadians(q: Quat&): Vec3 {
     fin m20 = 2.0*(q.x*q.z-q.w*q.y)
     fin m21 = 2.0*(q.y*q.z+q.w*q.x)
     fin m22 = 1.0-2.0*(q.x*q.x+q.y*q.y)
-    return Vec3(atan2(m21,m22),asin(vehicleClamp(-m20,-1.0,1.0)),atan2(m10,m00))
+    return .(atan2(m21,m22),asin(vehicleClamp(-m20,-1.0,1.0)),atan2(m10,m00))
 }
 
 /** [q] advanced by the world angular velocity [w] over [dt]. */
 func integrateQuat(q: Quat&, w: Vec3&, dt: Double): Quat {
-    fin spin = Quat(w.x,w.y,w.z,0.0).times(Quat(q.x,q.y,q.z,q.w))
-    return Quat(q.x+spin.x*0.5*dt,q.y+spin.y*0.5*dt,q.z+spin.z*0.5*dt,q.w+spin.w*0.5*dt)
+    fin spin = Quat(w.x,w.y,w.z,0.0).times(.(q.x,q.y,q.z,q.w))
+    return .(q.x+spin.x*0.5*dt,q.y+spin.y*0.5*dt,q.z+spin.z*0.5*dt,q.w+spin.w*0.5*dt)
 }
 
 /** World inverse inertia applied to [v]. */
 func inverseInertia(q: Quat&, config: VehicleSpec&, v: Vec3&): Vec3 {
     fin local = q.conjugate().rotate(v.clone())
-    return q.rotate(Vec3(local.x/config.inertia.x,local.y/config.inertia.y,local.z/config.inertia.z))
+    return q.rotate(.(local.x/config.inertia.x,local.y/config.inertia.y,local.z/config.inertia.z))
 }
 
 /** The mass a push along unit [d] at arm [r] meets. */
@@ -324,11 +324,9 @@ func settleTire(slip: Double, limit: Double, give: Double, reference: Double): D
     fin direction = if slip > 0.0 then 1.0 else -1.0
     var low: Double = 0.0
     var high = slip/give
-    var step = 0
-    while step < 28 {
+    for step: Int in 0..<28 {
         fin middle = (low+high)*0.5
         if (middle-limit*tireLongitudinal((slip-give*middle)/reference))*direction > 0.0 then high = middle else low = middle
-        step += 1
     }
     return (low+high)*0.5
 }
@@ -380,25 +378,25 @@ func vehiclePart(world: World!, parent: Entity, position: Vec3, scale: Vec3, col
                  rotation: Vec3 = .(0.0,0.0,0.0)): Entity {
     fin entity = world.spawn()
     world.setParent(entity, parent)
-    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(position, rotation, scale))
-    storageInsert<Mesh3d>(ensureStorage<Mesh3d>(world), entity, Mesh3d(shape: shape))
-    storageInsert<StandardMaterial>(ensureStorage<StandardMaterial>(world), entity, StandardMaterial(color: color))
+    storageInsert<Transform>(ensureStorage(world), entity, .(position, rotation, scale))
+    storageInsert<Mesh3d>(ensureStorage(world), entity, .(shape: shape))
+    storageInsert<StandardMaterial>(ensureStorage(world), entity, .(color: color))
     return entity
 }
 
 func riderPart(world: World!, parent: Entity, position: Vec3, scale: Vec3, color: Rgba,
                rotation: Vec3 = .(0.0,0.0,0.0)): Entity {
     fin part = vehiclePart(world,parent,take position,take scale,take color,rotation: take rotation)
-    storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),part,MeshGeometry(riderShape))
+    storageInsert<MeshGeometry>(ensureStorage(world),part,.(riderShape))
     return part
 }
 
 func vehicleSurface(world: World!, parent: Entity, geometry: String, color: Rgba,
                     material: String = "", emission: Double = 0.0): Entity {
-    fin part = vehiclePart(world,parent,Vec3(0.0,0.0,0.0),Vec3(1.0,1.0,1.0),color.clone())
-    storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),part,MeshGeometry(geometry))
-    storageInsert<StandardMaterial>(ensureStorage<StandardMaterial>(world),part,StandardMaterial(color: color.clone(),emission: emission))
-    if material != "" then storageInsert<FusionMaterial>(ensureStorage<FusionMaterial>(world),part,FusionMaterial(asset: material))
+    fin part = vehiclePart(world,parent,.(0.0,0.0,0.0),.(1.0,1.0,1.0),color.clone())
+    storageInsert<MeshGeometry>(ensureStorage(world),part,.(geometry))
+    storageInsert<StandardMaterial>(ensureStorage(world),part,.(color: color.clone(),emission: emission))
+    if material != "" then storageInsert<FusionMaterial>(ensureStorage(world),part,.(asset: material))
     return part
 }
 
@@ -406,7 +404,7 @@ func vehicleSurface(world: World!, parent: Entity, geometry: String, color: Rgba
 func vehiclePivot(world: World!, parent: Entity, position: Vec3): Entity {
     fin entity = world.spawn()
     world.setParent(entity, parent)
-    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: position))
+    storageInsert<Transform>(ensureStorage(world), entity, .(translation: position))
     return entity
 }
 
@@ -414,10 +412,10 @@ func vehiclePivot(world: World!, parent: Entity, position: Vec3): Entity {
 func vehicleLamp(world: World!, parent: Entity, position: Vec3, angle: Double, range: Double, intensity: Double, on: Bool): Entity {
     fin entity = world.spawn()
     world.setParent(entity, parent)
-    storageInsert<Transform>(ensureStorage<Transform>(world), entity, Transform(translation: position, rotation: Vec3(-4.0,0.0,0.0)))
-    storageInsert<Light3d>(ensureStorage<Light3d>(world), entity, Light3d(kind: 2, color: Rgba(1.0,0.95,0.86,1.0),
+    storageInsert<Transform>(ensureStorage(world), entity, .(translation: position, rotation: .(-4.0,0.0,0.0)))
+    storageInsert<Light3d>(ensureStorage<Light3d>(world), entity, Light3d(kind: 2, color: .(1.0,0.95,0.86,1.0),
         intensity: intensity, range: range, shadows: false, spotAngle: angle, spotSoftness: 0.35))
-    storageInsert<Visibility>(ensureStorage<Visibility>(world), entity, Visibility(visible: on))
+    storageInsert<Visibility>(ensureStorage(world), entity, .(visible: on))
     return entity
 }
 
@@ -428,41 +426,41 @@ func despawnTree(world: World!, entity: Entity) {
 func addVehicleVisuals(world: World!, entity: Entity, state: Vehicle!, config: VehicleSpec&, lights: Headlights!) {
     var previous = state.parts.size
     while previous > 0 {
-        previous -= 1
+        previous--
         despawnTree(world, state.parts[previous])
     }
     state.parts.clear()
     state.head = -1
     wheelGeometry(world)
     if state.motorcycle then bikeGeometry(world) else gtGeometry(world)
-    fin paint = Rgba(0.67,0.025,0.035,1.0)
-    fin dark = Rgba(0.045,0.052,0.063,1.0)
-    fin glass = Rgba(0.08,0.16,0.23,1.0)
-    fin metal = Rgba(0.52,0.55,0.61,1.0)
-    fin ivory = Rgba(0.93,0.92,0.86,1.0)
-    fin tail = Rgba(0.86,0.035,0.025,1.0)
+    fin paint: Rgba = .(0.67,0.025,0.035,1.0)
+    fin dark: Rgba = .(0.045,0.052,0.063,1.0)
+    fin glass: Rgba = .(0.08,0.16,0.23,1.0)
+    fin metal: Rgba = .(0.52,0.55,0.61,1.0)
+    fin ivory: Rgba = .(0.93,0.92,0.86,1.0)
+    fin tail: Rgba = .(0.86,0.035,0.025,1.0)
 
     fin rest = restingLength(config)
     var i = 0
     while i < config.wheelCount {
-        state.parts.add(vehiclePivot(world,entity,Vec3(wheelX(config,i),config.mountHeight-rest,wheelZ(config,i))))
-        i += 1
+        state.parts.add(vehiclePivot(world,entity,.(wheelX(config,i),config.mountHeight-rest,wheelZ(config,i))))
+        i++
     }
     i = 0
     while i < config.wheelCount {
-        fin tire = vehiclePart(world,state.parts[i],Vec3(0.0,0.0,0.0),
-            Vec3(config.wheelRadius*2.0,config.tireWidth,config.wheelRadius*2.0),Rgba(0.038,0.039,0.043,1.0),
-            rotation: Vec3(0.0,0.0,90.0))
-        storageInsert<MeshGeometry>(ensureStorage<MeshGeometry>(world),tire,MeshGeometry(wheelRubber))
+        fin tire = vehiclePart(world,state.parts[i],.(0.0,0.0,0.0),
+            Vec3(config.wheelRadius*2.0,config.tireWidth,config.wheelRadius*2.0),Rgba(0.038,0.039,0.043,1.0)
+            rotation: .(0.0,0.0,90.0))
+        storageInsert<MeshGeometry>(ensureStorage(world),tire,.(wheelRubber))
         state.parts.add(tire)
-        i += 1
+        i++
     }
     i = 0
     while i < config.wheelCount {
         fin tire = state.parts[config.wheelCount+i]
         state.parts.add(vehicleSurface(world,tire,wheelAlloy,metal,"Materials/vehicle-alloy.azmaterial"))
         state.parts.add(vehicleSurface(world,tire,wheelHubs,dark))
-        i += 1
+        i++
     }
     state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikePaint else gtPaint,paint,"Materials/vehicle-paint.azmaterial"))
     state.parts.add(vehicleSurface(world,entity,if state.motorcycle then bikeGlass else gtGlass,glass,"Materials/vehicle-glass.azmaterial"))
@@ -475,35 +473,35 @@ func addVehicleVisuals(world: World!, entity: Entity, state: Vehicle!, config: V
     lights.glows.add(fronts)
     lights.tails.add(rears)
     if state.motorcycle {
-        fin head = vehiclePivot(world,entity,Vec3(0.0,0.48,config.frontAxle+0.06))
+        fin head = vehiclePivot(world,entity,.(0.0,0.48,config.frontAxle+0.06))
         state.head = state.parts.size
         state.parts.add(head)
-        state.parts.add(vehiclePart(world,head,Vec3(0.0,0.12,0.14),Vec3(0.58,0.033,0.035),dark))
-        state.parts.add(vehicleLamp(world,head,Vec3(0.0,0.08,-0.38),16.0,65.0,120.0,lights.on))
+        state.parts.add(vehiclePart(world,head,.(0.0,0.12,0.14),.(0.58,0.033,0.035),dark))
+        state.parts.add(vehicleLamp(world,head,.(0.0,0.08,-0.38),16.0,65.0,120.0,lights.on))
         lights.lamps.add(state.parts[state.parts.size-1])
-        fin fork = Rgba(0.75,0.52,0.24,1.0)
-        state.parts.add(vehiclePart(world,head,Vec3(-0.102,-0.11,0.02),Vec3(0.048,0.50,0.048),fork,2))
-        state.parts.add(vehiclePart(world,head,Vec3(0.102,-0.11,0.02),Vec3(0.048,0.50,0.048),fork,2))
-        state.parts.add(vehiclePart(world,state.parts[0],Vec3(-0.10,0.22,0.0),Vec3(0.046,0.41,0.046),metal,2))
-        state.parts.add(vehiclePart(world,state.parts[0],Vec3(0.10,0.22,0.0),Vec3(0.046,0.41,0.046),metal,2))
-        state.parts.add(riderPart(world,state.parts[0],Vec3(0.0,0.28,0.015),Vec3(0.20,0.09,0.36),paint))
-        state.parts.add(vehiclePart(world,state.parts[1],Vec3(0.11,0.07,-0.36),Vec3(0.11,0.07,0.70),dark))
-        state.parts.add(vehiclePart(world,entity,Vec3(0.16,-0.18,0.36),Vec3(0.16,0.14,0.48),metal,0,Vec3(-12.0,0.0,0.0)))
+        fin fork: Rgba = .(0.75,0.52,0.24,1.0)
+        state.parts.add(vehiclePart(world,head,.(-0.102,-0.11,0.02),.(0.048,0.50,0.048),fork,2))
+        state.parts.add(vehiclePart(world,head,.(0.102,-0.11,0.02),.(0.048,0.50,0.048),fork,2))
+        state.parts.add(vehiclePart(world,state.parts[0],.(-0.10,0.22,0.0),.(0.046,0.41,0.046),metal,2))
+        state.parts.add(vehiclePart(world,state.parts[0],.(0.10,0.22,0.0),.(0.046,0.41,0.046),metal,2))
+        state.parts.add(riderPart(world,state.parts[0],.(0.0,0.28,0.015),.(0.20,0.09,0.36),paint))
+        state.parts.add(vehiclePart(world,state.parts[1],.(0.11,0.07,-0.36),.(0.11,0.07,0.70),dark))
+        state.parts.add(vehiclePart(world,entity,.(0.16,-0.18,0.36),.(0.16,0.14,0.48),metal,0,.(-12.0,0.0,0.0)))
         // Tucked riding position follows the bike's interpolated lean.
-        fin jacket = Rgba(0.107,0.128,0.163,1.0)
-        state.parts.add(riderPart(world,entity,Vec3(0.0,0.60,0.06),Vec3(0.36,0.42,0.27),jacket,Vec3(34.0,0.0,0.0)))
-        state.parts.add(riderPart(world,entity,Vec3(0.0,0.92,-0.22),Vec3(0.255,0.27,0.28),ivory))
-        state.parts.add(riderPart(world,entity,Vec3(0.0,0.926,-0.31),Vec3(0.205,0.115,0.111),glass))
+        fin jacket: Rgba = .(0.107,0.128,0.163,1.0)
+        state.parts.add(riderPart(world,entity,.(0.0,0.60,0.06),.(0.36,0.42,0.27),jacket,.(34.0,0.0,0.0)))
+        state.parts.add(riderPart(world,entity,.(0.0,0.92,-0.22),.(0.255,0.27,0.28),ivory))
+        state.parts.add(riderPart(world,entity,.(0.0,0.926,-0.31),.(0.205,0.115,0.111),glass))
         var side: Double = -1.0
         while side <= 1.0 {
-            state.parts.add(riderPart(world,entity,Vec3(side*0.185,0.22,0.16),Vec3(0.11,0.115,0.46),dark,Vec3(-27.0,0.0,0.0)))
-            state.parts.add(riderPart(world,entity,Vec3(side*0.205,0.61,-0.30),Vec3(0.094,0.092,0.45),jacket,Vec3(-9.0,0.0,0.0)))
+            state.parts.add(riderPart(world,entity,.(side*0.185,0.22,0.16),.(0.11,0.115,0.46),dark,.(-27.0,0.0,0.0)))
+            state.parts.add(riderPart(world,entity,.(side*0.205,0.61,-0.30),.(0.094,0.092,0.45),jacket,.(-9.0,0.0,0.0)))
             side += 2.0
         }
     } else {
-        state.parts.add(vehicleLamp(world,entity,Vec3(-0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
+        state.parts.add(vehicleLamp(world,entity,.(-0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
         lights.lamps.add(state.parts[state.parts.size-1])
-        state.parts.add(vehicleLamp(world,entity,Vec3(0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
+        state.parts.add(vehicleLamp(world,entity,.(0.67,0.08,-2.17),18.0,85.0,161.0,lights.on))
         lights.lamps.add(state.parts[state.parts.size-1])
     }
 }
@@ -514,7 +512,7 @@ func freshWheels(config: VehicleSpec&): Array<WheelState> {
     var i = 0
     while i < config.wheelCount {
         wheels.add(WheelState(length: restingLength(config)))
-        i += 1
+        i++
     }
     return take wheels
 }
@@ -523,7 +521,7 @@ func freshWheels(config: VehicleSpec&): Array<WheelState> {
 func headingQuat(yaw: Double): Quat = Quat(0.0,sin(yaw*0.5),0.0,cos(yaw*0.5))
 
 func configuredVehicle(world: World!, entity: Entity, kind: VehicleKind): VehicleSpec {
-    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage<VehicleSetup>(world),entity,VehicleSetup())
+    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage(world),entity,.())
     var tuning = vehicleSpec(kind)
     fin power = vehicleClamp(setup.powerScale,0.25,3.0)
     fin brakes = vehicleClamp(setup.brakeScale,0.25,2.0)
@@ -567,14 +565,14 @@ func configuredVehicle(world: World!, entity: Entity, kind: VehicleKind): Vehicl
 
 func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     if !world.isAlive(entity) then return
-    var vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity).clone()
+    var vehicle = storageGet<Vehicle>(ensureStorage(world),entity).clone()
     fin previous = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
     fin config = configuredVehicle(world,entity,kind)
     vehicle.motorcycle = kind == .Motorcycle
-    fin collider = boxCollider3d(Vec3(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
-    storageInsert<RigidBody3D>(ensureStorage<RigidBody3D>(world),entity,rigidBody3d(.Dynamic,collider,config.mass,false))
-    storageInsert<Collider3D>(ensureStorage<Collider3D>(world),entity,take collider)
-    storageInsert<Name>(ensureStorage<Name>(world),entity,Name(if vehicle.motorcycle then "Motorcycle" else "Car"))
+    fin collider = boxCollider3d(.(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
+    storageInsert<RigidBody3D>(ensureStorage(world),entity,rigidBody3d(.Dynamic,collider,config.mass,false))
+    storageInsert<Collider3D>(ensureStorage(world),entity,take collider)
+    storageInsert<Name>(ensureStorage(world),entity,.(if vehicle.motorcycle then "Motorcycle" else "Car"))
     vehicle.wheels = freshWheels(config)
     vehicle.steer = 0.0
     // A new engine, idling in first.
@@ -590,42 +588,42 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     vehicle.roll = 0.0
     vehicle.pitch = 0.0
     // Lights stay as they were; the new engine's sound takes over from the old one's last sample.
-    var lights = Headlights(on: headlightsOn(world,entity))
+    var lights: Headlights = .(on: headlightsOn(world,entity))
     addVehicleVisuals(world,entity,vehicle,config,lights)
-    storageInsert<Headlights>(ensureStorage<Headlights>(world),entity,take lights)
-    fin carry = if storageHas<VehicleSound>(ensureStorage<VehicleSound>(world),entity) then storageGet<VehicleSound>(ensureStorage<VehicleSound>(world),entity).last else 0.0
-    storageInsert<VehicleSound>(ensureStorage<VehicleSound>(world),entity,vehicleSound(vehicle.motorcycle,carry))
-    fin body = storageGet<Transform3D>(ensureStorage<Transform3D>(world),entity)
+    storageInsert<Headlights>(ensureStorage(world),entity,take lights)
+    fin carry = if storageHas<VehicleSound>(ensureStorage(world),entity) then storageGet<VehicleSound>(ensureStorage(world),entity).last else 0.0
+    storageInsert<VehicleSound>(ensureStorage(world),entity,vehicleSound(vehicle.motorcycle,carry))
+    fin body = storageGet<Transform3D>(ensureStorage(world),entity)
     fin lift = rideHeight(config)-rideHeight(previous)+0.05
-    fin position = body.position.add(Vec3(0.0,lift,0.0))
+    fin position = body.position.add(.(0.0,lift,0.0))
     rememberPose(vehicle,position,heading,true)
-    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,Transform3D(position.clone(),Vec3(0.0,vehicle.yaw,0.0),Vec3(1.0,1.0,1.0)))
-    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),Vec3(0.0,vehicle.yaw/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
-    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
+    storageInsert<Transform3D>(ensureStorage(world),entity,.(position.clone(),.(0.0,vehicle.yaw,0.0),.(1.0,1.0,1.0)))
+    storageInsert<Transform>(ensureStorage(world),entity,.(position.clone(),.(0.0,vehicle.yaw/degreesToRadians,0.0),.(1.0,1.0,1.0)))
+    storageInsert<Vehicle>(ensureStorage(world),entity,take vehicle)
 }
 
 func spawnVehicle(world: World!, start: Entity, ground: Array<CollisionSurface>&): Entity {
-    fin marker = storageGet<PlayerStart>(ensureStorage<PlayerStart>(world),start)
-    fin controller = storageGetOrDefault<PlayerController>(ensureStorage<PlayerController>(world),start,PlayerController(slot: marker.slot))
+    fin marker = storageGet<PlayerStart>(ensureStorage(world),start)
+    fin controller = storageGetOrDefault<PlayerController>(ensureStorage(world),start,.(slot: marker.slot))
     fin worldPose = worldMatrix(world,start)
-    var pos = Vec3(worldPose.m03,worldPose.m13,worldPose.m23)
+    var pos: Vec3 = .(worldPose.m03,worldPose.m13,worldPose.m23)
     // The marker's forward axis is its -Z column.
     fin yaw = atan2(worldPose.m02,worldPose.m22)
-    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage<VehicleSetup>(world),start,VehicleSetup())
+    fin setup = storageGetOrDefault<VehicleSetup>(ensureStorage(world),start,.())
     fin kind: VehicleKind = if setup.motorcycle then .Motorcycle else .Car
     fin config = configuredVehicle(world,start,kind)
-    fin hit = castLandscape(ground,pos.add(Vec3(0.0,40.0,0.0)),Vec3(0.0,-1.0,0.0),120.0)
+    fin hit = castLandscape(ground,pos.add(.(0.0,40.0,0.0)),.(0.0,-1.0,0.0),120.0)
     if hit.hit then pos.y = hit.py + rideHeight(config) + 0.05
     fin entity = world.spawn()
-    var vehicle = Vehicle(yaw: yaw,slot: controller.slot,motorcycle: setup.motorcycle)
+    var vehicle: Vehicle = .(yaw: yaw,slot: controller.slot,motorcycle: setup.motorcycle)
     storeQuat(vehicle,headingQuat(yaw))
     vehicle.wheels = freshWheels(config)
-    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
-    storageInsert<PlayerController>(ensureStorage<PlayerController>(world),entity,take controller)
-    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,transform3d(pos.clone()))
-    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(translation: pos.clone()))
-    storageInsert<Velocity3D>(ensureStorage<Velocity3D>(world),entity,velocity3d(Vec3(0.0,0.0,0.0)))
-    storageInsert<VehicleSetup>(ensureStorage<VehicleSetup>(world),entity,take setup)
+    storageInsert<Vehicle>(ensureStorage(world),entity,take vehicle)
+    storageInsert<PlayerController>(ensureStorage(world),entity,take controller)
+    storageInsert<Transform3D>(ensureStorage(world),entity,transform3d(pos.clone()))
+    storageInsert<Transform>(ensureStorage(world),entity,.(translation: pos.clone()))
+    storageInsert<Velocity3D>(ensureStorage(world),entity,velocity3d(.(0.0,0.0,0.0)))
+    storageInsert<VehicleSetup>(ensureStorage(world),entity,take setup)
     setVehicleKind(world,entity,kind)
     return entity
 }
@@ -657,9 +655,9 @@ func rememberPose(vehicle: Vehicle!, position: Vec3&, drawn: Quat&, settle: Bool
  */
 func presentVehicle(world: World!, entity: Entity, blend: Double) {
     if !world.isAlive(entity) then return
-    fin vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity)
+    fin vehicle = storageGet<Vehicle>(ensureStorage(world),entity)
     fin t = vehicleClamp(blend,0.0,1.0)
-    fin position = Vec3(vehicle.lastX+(vehicle.x-vehicle.lastX)*t,vehicle.lastY+(vehicle.y-vehicle.lastY)*t,vehicle.lastZ+(vehicle.z-vehicle.lastZ)*t)
+    fin position: Vec3 = .(vehicle.lastX+(vehicle.x-vehicle.lastX)*t,vehicle.lastY+(vehicle.y-vehicle.lastY)*t,vehicle.lastZ+(vehicle.z-vehicle.lastZ)*t)
     // The shorter way between the two orientations, normalised.
     fin side = if vehicle.lastDx*vehicle.dx+vehicle.lastDy*vehicle.dy+vehicle.lastDz*vehicle.dz+vehicle.lastDw*vehicle.dw < 0.0 then -1.0 else 1.0
     fin qx = vehicle.lastDx+(vehicle.dx*side-vehicle.lastDx)*t
@@ -669,11 +667,11 @@ func presentVehicle(world: World!, entity: Entity, blend: Double) {
     fin size = sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
     fin q = if size > 0.000001 then Quat(qx/size,qy/size,qz/size,qw/size) else Quat(0.0,0.0,0.0,1.0)
     fin euler = quatEulerRadians(q)
-    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),euler.scale(1.0/degreesToRadians),Vec3(1.0,1.0,1.0)))
+    storageInsert<Transform>(ensureStorage(world),entity,.(position.clone(),euler.scale(1.0/degreesToRadians),.(1.0,1.0,1.0)))
 }
 
 /** Where [presentVehicle] last drew the body. */
-func presentedPosition(world: World!, entity: Entity): Vec3 = storageGet<Transform>(ensureStorage<Transform>(world),entity).translation.clone()
+func presentedPosition(world: World!, entity: Entity): Vec3 = storageGet<Transform>(ensureStorage(world),entity).translation.clone()
 
 // ── Simulation ──────────────────────────────────────────────────────────
 
@@ -714,21 +712,21 @@ func bodyPoint(config: VehicleSpec&, index: Int): Vec3 {
     }
 }
 
-fin bodyPointCount: Int = 16
+inline fin bodyPointCount: Int = 16
 
 func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurface>&, input: DriveInput&, gravity: Gravity3D&, dt: Double) {
     if !world.isAlive(entity) then return
-    var vehicle = storageGet<Vehicle>(ensureStorage<Vehicle>(world),entity).clone()
+    var vehicle = storageGet<Vehicle>(ensureStorage(world),entity).clone()
     fin config = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
     if vehicle.wheels.size != config.wheelCount then vehicle.wheels = freshWheels(config)
-    fin body = storageGet<Transform3D>(ensureStorage<Transform3D>(world),entity)
+    fin body = storageGet<Transform3D>(ensureStorage(world),entity)
     var position = body.position.clone()
-    fin velocity = storageGet<Velocity3D>(ensureStorage<Velocity3D>(world),entity)
-    var motion = BodyMotion(velocity.linear.clone(),velocity.angular.clone())
+    fin velocity = storageGet<Velocity3D>(ensureStorage(world),entity)
+    var motion: BodyMotion = .(velocity.linear.clone(),velocity.angular.clone())
     var q = vehicleQuat(vehicle)
-    fin forward = q.rotate(Vec3(0.0,0.0,-1.0))
-    fin up = q.rotate(Vec3(0.0,1.0,0.0))
-    fin right = q.rotate(Vec3(1.0,0.0,0.0))
+    fin forward = q.rotate(.(0.0,0.0,-1.0))
+    fin up = q.rotate(.(0.0,1.0,0.0))
+    fin right = q.rotate(.(1.0,0.0,0.0))
     // Two-wheelers hang their suspension from the vertical through the wheels, not the leaning body.
     var axisUp = up.clone()
     var axisRight = right.clone()
@@ -770,7 +768,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
             fin radius = base/tan(steerAngle)
             angle = atan(base/(radius-x))
         }
-        fin mount = position.add(q.rotate(Vec3(x,config.mountHeight,z)))
+        fin mount = position.add(q.rotate(.(x,config.mountHeight,z)))
         var heading = forward.scale(cos(angle)).add(axisRight.scale(sin(angle)))
         if config.lean && frontWheel(config,i) {
             // Trail: a bike's front wheel trails behind its steering axis and swings to follow
@@ -792,7 +790,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
         vehicle.wheels[i].length = length
         if hit.hit then vehicle.grounded += 1
         contacts.add(WheelContact(hit.clone(),mount.clone(),mount.add(down.scale(length)),heading.clone(),0.0))
-        i += 1
+        i++
     }
     i = 0
     while i < config.wheelCount {
@@ -810,13 +808,13 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
             }
             force = realMaxOf(force,0.0)
             contacts[i].force = force
-            fin normal = Vec3(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
+            fin normal: Vec3 = .(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
             vehicle.wheels[i].load = force*realMaxOf(normal.dot(axisUp),0.0)
         } else {
             contacts[i].force = 0.0
             vehicle.wheels[i].load = 0.0
         }
-        i += 1
+        i++
     }
 
     // ── Gravity, air and suspension push the body ──
@@ -828,10 +826,8 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     }
     i = 0
     while i < config.wheelCount {
-        if contacts[i].force > 0.0 {
-            pushBody(motion,q,config,contacts[i].centre.subtract(position),axisUp.scale(contacts[i].force*dt))
-        }
-        i += 1
+        if contacts[i].force > 0.0 then pushBody(motion,q,config,contacts[i].centre.subtract(position),axisUp.scale(contacts[i].force*dt))
+        i++
     }
 
     // ── Stability control ──
@@ -862,7 +858,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
             drivenSpin += absReal(vehicle.wheels[i].omega)
             drivenCount += 1.0
         }
-        i += 1
+        i++
     }
     fin wheelSpeed = if drivenCount > 0.0 then drivenSpin/drivenCount else 0.0
 
@@ -902,7 +898,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     }
 
     // ── Tyres, one wheel at a time so each sees the others' pushes ──
-    vehicle.steps += 1
+    vehicle.steps++
     var order = 0
     while order < config.wheelCount {
         i = if vehicle.steps % 2 == 0 then order else config.wheelCount-1-order
@@ -923,8 +919,8 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
         var ratio: Double = 0.0
         var skid: Double = 0.0
         if contacts[i].hit.hit && load > 0.0 {
-            fin normal = Vec3(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
-            fin point = Vec3(contacts[i].hit.px,contacts[i].hit.py,contacts[i].hit.pz)
+            fin normal: Vec3 = .(contacts[i].hit.nx,contacts[i].hit.ny,contacts[i].hit.nz)
+            fin point: Vec3 = .(contacts[i].hit.px,contacts[i].hit.py,contacts[i].hit.pz)
             fin along = (contacts[i].heading.subtract(normal.scale(contacts[i].heading.dot(normal)))).normalized catch forward.clone()
             fin side = along.cross(normal)
             fin arm = point.subtract(position)
@@ -997,7 +993,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
         if spin > 6.283185307179586 then spin -= 6.283185307179586
         if spin < 0.0 then spin += 6.283185307179586
         vehicle.wheels[i].spin = spin
-        order += 1
+        order++
     }
 
     // ── A two-wheeler stays upright: its lean is drawn, not simulated ──
@@ -1015,15 +1011,14 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     }
 
     // ── The body against the ground ──
-    var push = Vec3(0.0,0.0,0.0)
-    var pass = 0
-    while pass < 2 {
+    var push: Vec3 = .(0.0,0.0,0.0)
+    for pass: Int in 0..<2 {
         var point = 0
         while point < bodyPointCount {
             fin arm = q.rotate(bodyPoint(config,point))
             fin contact = landscapePenetration(ground,position.add(arm))
             if contact.depth > 0.0 {
-                fin normal = Vec3(contact.nx,contact.ny,contact.nz)
+                fin normal: Vec3 = .(contact.nx,contact.ny,contact.nz)
                 fin approach = pointVelocity(motion,arm).dot(normal)
                 if approach < 0.0 {
                     fin normalMass = effectiveMass(q,config,arm,normal)
@@ -1043,9 +1038,8 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
                     if needed.dot(normal) > push.dot(normal) then push = needed.clone()
                 }
             }
-            point += 1
+            point++
         }
-        pass += 1
     }
 
     // ── Integrate ──
@@ -1055,70 +1049,70 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     q = vehicleQuat(vehicle)
     if config.lean {
         // Remove any roll the step left, about the forward axis.
-        fin f = q.rotate(Vec3(0.0,0.0,-1.0))
-        fin u = q.rotate(Vec3(0.0,1.0,0.0))
+        fin f = q.rotate(.(0.0,0.0,-1.0))
+        fin u = q.rotate(.(0.0,1.0,0.0))
         fin vertical = (Vec3(0.0,1.0,0.0).subtract(f.scale(f.y))).normalized catch u.clone()
         fin lean = atan2(u.dot(f.cross(vertical)),u.dot(vertical))
-        storeQuat(vehicle,quatAxisAngle(f,-lean).times(Quat(q.x,q.y,q.z,q.w)))
+        storeQuat(vehicle,quatAxisAngle(f,-lean).times(.(q.x,q.y,q.z,q.w)))
         q = vehicleQuat(vehicle)
     }
 
     // A car on its roof for a while is set back on its wheels.
-    fin nowUp = q.rotate(Vec3(0.0,1.0,0.0))
+    fin nowUp = q.rotate(.(0.0,1.0,0.0))
     vehicle.upsideDown = if nowUp.y < 0.25 && motion.velocity.length < 3.0 then vehicle.upsideDown+dt else 0.0
     if vehicle.upsideDown > 2.5 {
-        fin f = q.rotate(Vec3(0.0,0.0,-1.0))
+        fin f = q.rotate(.(0.0,0.0,-1.0))
         storeQuat(vehicle,headingQuat(atan2(-f.x,-f.z)))
         q = vehicleQuat(vehicle)
-        position = position.add(Vec3(0.0,1.6,0.0))
+        position = position.add(.(0.0,1.6,0.0))
         motion.velocity = Vec3(0.0,0.0,0.0)
         motion.angular = Vec3(0.0,0.0,0.0)
         vehicle.upsideDown = 0.0
     }
 
     // ── What the rest of the scene reads ──
-    fin heading = q.rotate(Vec3(0.0,0.0,-1.0))
+    fin heading = q.rotate(.(0.0,0.0,-1.0))
     vehicle.yaw = atan2(-heading.x,-heading.z)
     vehicle.pitch = asin(vehicleClamp(heading.y,-1.0,1.0))
     vehicle.speed = motion.velocity.dot(heading)
-    var drawn = Quat(q.x,q.y,q.z,q.w)
+    var drawn: Quat = .(q.x,q.y,q.z,q.w)
     if config.lean {
         // Lean into the turn as a rider balances: tan(lean) = v * yaw rate / g.
         fin turn = -motion.angular.dot(axisUp)
         fin target = vehicleClamp(atan(vehicle.speed*turn/9.81),-0.8,0.8)*(if vehicle.grounded > 0 then 1.0 else 0.0)
         vehicle.roll += (target-vehicle.roll)*realMinOf(dt*7.0,1.0)
-        drawn = q.times(quatAxisAngle(Vec3(0.0,0.0,-1.0),vehicle.roll))
+        drawn = q.times(quatAxisAngle(.(0.0,0.0,-1.0),vehicle.roll))
     } else {
-        vehicle.roll = asin(vehicleClamp(q.rotate(Vec3(1.0,0.0,0.0)).y,-1.0,1.0))
+        vehicle.roll = asin(vehicleClamp(q.rotate(.(1.0,0.0,0.0)).y,-1.0,1.0))
     }
     fin euler = quatEulerRadians(drawn)
     i = 0
     while i < config.wheelCount {
-        fin centre = position.add(q.rotate(Vec3(wheelX(config,i),config.mountHeight,wheelZ(config,i)))).add(down.scale(vehicle.wheels[i].length))
+        fin centre = position.add(q.rotate(.(wheelX(config,i),config.mountHeight,wheelZ(config,i)))).add(down.scale(vehicle.wheels[i].length))
         fin local = drawn.conjugate().rotate(centre.subtract(position))
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[i],
-            Transform(local.clone(),Vec3(0.0,-vehicle.wheels[i].steer/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
+            Transform(local.clone(),.(0.0,-vehicle.wheels[i].steer/degreesToRadians,0.0),.(1.0,1.0,1.0)))
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[config.wheelCount+i],
-            Transform(Vec3(0.0,0.0,0.0),Vec3(0.0,vehicle.wheels[i].spin/degreesToRadians,90.0),
+            Transform(.(0.0,0.0,0.0),.(0.0,vehicle.wheels[i].spin/degreesToRadians,90.0),
                 Vec3(config.wheelRadius*2.0,config.tireWidth,config.wheelRadius*2.0)))
-        i += 1
+        i++
     }
     if vehicle.head >= 0 {
         storageInsert<Transform>(ensureStorage<Transform>(world),vehicle.parts[vehicle.head],
-            Transform(Vec3(0.0,0.48,config.frontAxle+0.06),Vec3(0.0,-vehicle.wheels[0].steer/degreesToRadians,0.0),Vec3(1.0,1.0,1.0)))
+            Transform(.(0.0,0.48,config.frontAxle+0.06),.(0.0,-vehicle.wheels[0].steer/degreesToRadians,0.0),.(1.0,1.0,1.0)))
     }
     rememberPose(vehicle,position,drawn,false)
-    storageInsert<Transform3D>(ensureStorage<Transform3D>(world),entity,Transform3D(position.clone(),euler.clone(),Vec3(1.0,1.0,1.0)))
-    storageInsert<Velocity3D>(ensureStorage<Velocity3D>(world),entity,Velocity3D(motion.velocity.clone(),motion.angular.clone()))
-    storageInsert<Transform>(ensureStorage<Transform>(world),entity,Transform(position.clone(),euler.scale(1.0/degreesToRadians),Vec3(1.0,1.0,1.0)))
-    storageInsert<Vehicle>(ensureStorage<Vehicle>(world),entity,take vehicle)
+    storageInsert<Transform3D>(ensureStorage(world),entity,.(position.clone(),euler.clone(),.(1.0,1.0,1.0)))
+    storageInsert<Velocity3D>(ensureStorage(world),entity,.(motion.velocity.clone(),motion.angular.clone()))
+    storageInsert<Transform>(ensureStorage(world),entity,.(position.clone(),euler.scale(1.0/degreesToRadians),.(1.0,1.0,1.0)))
+    storageInsert<Vehicle>(ensureStorage(world),entity,take vehicle)
 }
 
 
 // ── Lights and sound, as a game drives them ─────────────────────────────
 
 func headlightsOn(world: World!, vehicle: Entity): Bool =
-    storageHas<Headlights>(ensureStorage<Headlights>(world), vehicle) && storageGet<Headlights>(ensureStorage<Headlights>(world), vehicle).on
+    storageHas<Headlights>(ensureStorage(world), vehicle) && storageGet<Headlights>(ensureStorage(world), vehicle).on
 
 /** Switches [vehicle]'s headlamps on or off; the lamp glass and the tail lights glow with them. */
 func setHeadlights(world: World!, vehicle: Entity, on: Bool) {
@@ -1129,7 +1123,7 @@ func setHeadlights(world: World!, vehicle: Entity, on: Bool) {
     fin lamps = store.values[index].lamps.clone()
     fin glows = store.values[index].glows.clone()
     fin tails = store.values[index].tails.clone()
-    for lamp in lamps { storageInsert<Visibility>(ensureStorage<Visibility>(world), lamp, Visibility(visible: on)) }
+    for lamp in lamps then storageInsert<Visibility>(ensureStorage(world), lamp, .(visible: on))
     let materials = ensureStorage<StandardMaterial>(world)
     for part in glows {
         fin at = storageIndexOf<StandardMaterial>(materials, part)
@@ -1155,8 +1149,8 @@ func soundHorn(world: World!, vehicle: Entity, held: Bool) {
  * fades to silence in 50 ms, and back when play resumes.
  */
 func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Bool, doppler: Double, cutoff: Double = 20000.0): Long {
-    if !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage<Vehicle>(world), vehicle) then return 0
-    fin state = storageGet<Vehicle>(ensureStorage<Vehicle>(world), vehicle)
+    if !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage(world), vehicle) then return 0
+    fin state = storageGet<Vehicle>(ensureStorage(world), vehicle)
     fin motorcycle = state.motorcycle
     fin rpm = state.rpm
     fin load = state.load
@@ -1169,11 +1163,7 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
     let sound: VehicleSound! = sounds.values[index]
     fin count = if frames < audioCapacity then frames else audioCapacity
     fin rate: Double = 48000.0
-    var i = 0
-    while i < count {
-        setSample(sound.buffer, i, 0.0)
-        i += 1
-    }
+    for i: Int in 0..<count then setSample(sound.buffer, i, 0.0)
     sound.voice.render(sound.buffer, count, rpm * doppler, load, throttle, limiter)
     sound.horn.render(sound.buffer, count, sound.hornHeld)
     fin config = vehicleSpec(if motorcycle then .Motorcycle else .Car)
@@ -1186,8 +1176,7 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
     fin whinePitch = speed / (2.0 * PI * config.wheelRadius) * train.finalDrive * 20.0 * doppler
     sound.air.tune(cutoff, rate)
     fin fadeStep = 1.0 / (0.05 * rate)
-    i = 0
-    while i < count {
+    for i: Int in 0..<count {
         fin rumble = sound.road.next()
         var x = sample(sound.buffer, i) + sound.roadFilter.process(rumble) * roadGain + sound.windFilter.process(rumble) * windGain
         sound.whine += 2.0 * PI * whinePitch / rate
@@ -1198,7 +1187,6 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
         sound.carry *= 0.99
         if absReal(sound.carry) < 0.00001 then sound.carry = 0.0
         setSample(sound.buffer, i, x)
-        i += 1
     }
     sound.last = if count > 0 then sample(sound.buffer, count - 1) else sound.last
     return sound.buffer
@@ -1210,12 +1198,12 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
  * the Doppler shift and dulled by the air between.
  */
 func mixVehicleSound(output: AudioOutput!, world: World!, vehicle: Entity, paused: Bool) {
-    if output.frames <= 0 || !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage<Vehicle>(world), vehicle) then return
-    fin state = storageGet<Vehicle>(ensureStorage<Vehicle>(world), vehicle)
+    if output.frames <= 0 || !world.isAlive(vehicle) || !storageHas<Vehicle>(ensureStorage(world), vehicle) then return
+    fin state = storageGet<Vehicle>(ensureStorage(world), vehicle)
     fin config = vehicleSpec(if state.motorcycle then .Motorcycle else .Car)
-    fin rear = vehicleQuat(state).rotate(Vec3(0.0, 0.0, config.bodyHalfLength))
-    fin body = storageGet<Transform>(ensureStorage<Transform>(world), vehicle).translation.add(rear)
-    fin motion = storageGet<Velocity3D>(ensureStorage<Velocity3D>(world), vehicle).linear.clone()
+    fin rear = vehicleQuat(state).rotate(.(0.0, 0.0, config.bodyHalfLength))
+    fin body = storageGet<Transform>(ensureStorage(world), vehicle).translation.add(rear)
+    fin motion = storageGet<Velocity3D>(ensureStorage(world), vehicle).linear.clone()
     fin distance = output.distanceTo(body.x, body.y, body.z)
     fin doppler = output.dopplerRatio(body.x, body.y, body.z, motion.x, motion.y, motion.z)
     fin sound = renderVehicleSound(world, vehicle, output.frames, paused, doppler, airCutoff(distance))

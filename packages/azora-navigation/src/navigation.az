@@ -27,16 +27,31 @@ pack NavEntryId derives (Copy, Clone, Equal, Hash) {
     fin generation: Long
 }
 
+impl NavEntryId {
+    /** The sentinel: never allocated to a live entry. */
+    fin invalid: NavEntryId = .(0, 0)
+}
+
 /** Stable identity used by reactive content. */
 pack NavContentKey derives (Copy, Clone, Equal, Hash) {
     fin value: Long
     fin generation: Long
 }
 
+impl NavContentKey {
+    /** The sentinel: never allocated to live content. */
+    fin invalid: NavContentKey = .(0, 0)
+}
+
 /** Stable identity of an entry-owned reactive scope. */
 pack NavOwnerId derives (Copy, Clone, Equal, Hash) {
     fin value: Long
     fin generation: Long
+}
+
+impl NavOwnerId {
+    /** The sentinel: never allocated to a live owner. */
+    fin invalid: NavOwnerId = .(0, 0)
 }
 
 /** One typed route occurrence. Equal keys still receive different IDs. */
@@ -132,32 +147,11 @@ func navEnvironment(
     return .(width, height, 1.0, windowClass, 0.0, 0.0, 0.0, 0.0, false, true, false, false, revision)
 }
 
-/** Invalid IDs are sentinels only and are never allocated to live entries. */
-func navEntryIdInvalid(): NavEntryId {
-    return .(0, 0)
-}
+func navEntryIdEqual(a: NavEntryId&, b: NavEntryId&): Bool
+scope return a.value == b.value && a.generation == b.generation
 
-func navContentKeyInvalid(): NavContentKey {
-    return .(0, 0)
-}
-
-func navOwnerIdInvalid(): NavOwnerId {
-    return .(0, 0)
-}
-
-func navEntryIdEqual(
-    a: NavEntryId&
-    b: NavEntryId&
-): Bool {
-    return a.value == b.value && a.generation == b.generation
-}
-
-func navOwnerIdEqual(
-    a: NavOwnerId&
-    b: NavOwnerId&
-): Bool {
-    return a.value == b.value && a.generation == b.generation
-}
+func navOwnerIdEqual(a: NavOwnerId&, b: NavOwnerId&): Bool
+scope return a.value == b.value && a.generation == b.generation
 
 /** One committed, observable stack mutation. */
 pack NavChange {
@@ -169,8 +163,9 @@ pack NavChange {
     fin removed: Int
 }
 
-func navChangeNone(): NavChange {
-    return .(Long(0), .None, navEntryIdInvalid(), navEntryIdInvalid(), 0, 0)
+impl NavChange {
+    /** No mutation: nothing moved, nothing added or removed. */
+    fin none: NavChange = .(0, .None, ::invalid, ::invalid, 0, 0)
 }
 
 enum NavEdge {
@@ -184,10 +179,7 @@ enum NavEdge {
 variant enum NavMotion {
     None
     Fade
-    Slide(
-        edge: NavEdge,
-        distance: Double
-    )
+    Slide(edge: NavEdge, distance: Double)
     Scale(from: Double)
     Shared(group: String)
 }
@@ -227,13 +219,9 @@ variant enum NavTransitionOverride {
     Disabled
 }
 
-func navNoTransform(): NavContentTransform {
-    return .(.None, .None, 0.0, .Snap, true)
-}
+func navNoTransform(): NavContentTransform = .(.None, .None, 0.0, .Snap, true)
 
-func navFadeTransform(durationSeconds: Double = 0.18): NavContentTransform {
-    return .(.Fade, .Fade, durationSeconds, .Snap, true)
-}
+func navFadeTransform(durationSeconds: Double = 0.18): NavContentTransform = .(.Fade, .Fade, durationSeconds, .Snap, true)
 
 func navDefaultTransitions(): NavTransitionSet {
     fin fade = navFadeTransform()
@@ -247,24 +235,24 @@ func navSampleMotion(
     entering: Bool = true
 ): NavMotionFrame {
     var p = progress
-    if p < 0.0 { p = 0.0 }
-    if p > 1.0 { p = 1.0 }
-    fin amount = if entering { 1.0 - p } else { p }
+    if p < 0.0 then p = 0.0
+    if p > 1.0 then p = 1.0
+    fin amount = if entering then 1.0 - p else p
 
     return when motion {
-        NavMotion.None -> .(1.0, 0.0, 0.0, 1.0, 1.0)
-        NavMotion.Fade -> .(if entering { p } else { 1.0 - p }, 0.0, 0.0, 1.0, 1.0)
-        NavMotion.Scale(from) -> {
-            fin scale = if entering { from + (1.0 - from) * p } else { 1.0 + (from - 1.0) * p }
+        .None -> .(1.0, 0.0, 0.0, 1.0, 1.0)
+        .Fade -> .(if entering then p else 1.0 - p, 0.0, 0.0, 1.0, 1.0)
+        .Scale(from) -> {
+            fin scale = if entering then from + (1.0 - from) * p else 1.0 + (from - 1.0) * p
             return .(1.0, 0.0, 0.0, scale, scale)
         }
-        NavMotion.Shared(group) -> .(1.0, 0.0, 0.0, 1.0, 1.0)
-        NavMotion.Slide(edge, distance) -> {
+        .Shared(group) -> .(1.0, 0.0, 0.0, 1.0, 1.0)
+        .Slide(edge, distance) -> {
             fin frame: NavMotionFrame = when edge {
-                NavEdge.Start -> NavMotionFrame(1.0, 0.0 - distance * amount, 0.0, 1.0, 1.0)
-                NavEdge.End -> NavMotionFrame(1.0, distance * amount, 0.0, 1.0, 1.0)
-                NavEdge.Top -> NavMotionFrame(1.0, 0.0, 0.0 - distance * amount, 1.0, 1.0)
-                NavEdge.Bottom -> NavMotionFrame(1.0, 0.0, distance * amount, 1.0, 1.0)
+                .Start -> .(1.0, -distance * amount, 0.0, 1.0, 1.0)
+                .End -> .(1.0, distance * amount, 0.0, 1.0, 1.0)
+                .Top -> .(1.0, 0.0, -distance * amount, 1.0, 1.0)
+                .Bottom -> .(1.0, 0.0, distance * amount, 1.0, 1.0)
             }
             return frame
         }
@@ -280,9 +268,7 @@ pack NavOptions {
     fin transition: NavTransitionOverride
 }
 
-func navOptions(): NavOptions {
-    return .(.Never, null, false, false, .Inherit)
-}
+func navOptions(): NavOptions = .(.Never, null, false, false, .Inherit)
 
 /** Typed, bounded navigation history with stable entry identity. */
 pack NavBackStack<K> {
@@ -294,15 +280,12 @@ pack NavBackStack<K> {
 }
 
 /** Creates a non-empty back stack. */
-func<K> navBackStack(
-    root: K
-    capacity: Int = 32
-): NavBackStack<K>
+func<K> navBackStack(root: K, capacity: Int = 32): NavBackStack<K>
 in assert capacity > 0 panic "navigation capacity must be positive"
 scope {
     var items: Array<NavStackItem<K>> = ::fill(capacity)
     items[0] = .(.(1, 1), root)
-    return .(items, 1, 0, 2, navChangeNone())
+    return .(items, 1, 0, 2, ::none)
 }
 
 impl NavBackStack<K> {
@@ -323,11 +306,10 @@ impl NavBackStack<K> {
     in assert index >= 0 && index < self._size panic "navigation index out of bounds"
     scope return self._items[index]
 
-    func &.indexOf(id: NavEntryId&): Int {
-        return for i: Int in 0..<self._size {
-            if navEntryIdEqual(self._items[i].id, id) then break i
-        } else -1
-    }
+    func &.indexOf(id: NavEntryId&): Int
+    scope return for i: Int in 0..<self._size {
+        if navEntryIdEqual(self._items[i].id, id) then break i
+    } else -1
 
     func !._publish(
         direction: NavDirection
@@ -336,7 +318,7 @@ impl NavBackStack<K> {
         added: Int
         removed: Int
     ): NavChange {
-        self._revision = self._revision + Long(1)
+        self._revision++
         self._lastChange = NavChange(self._revision, direction, from, to, added, removed)
         return self._lastChange
     }
@@ -345,30 +327,30 @@ impl NavBackStack<K> {
     func !.push(key: K): NavEntryId ?! NavError {
         if self._size >= self._items.size then return .CapacityExceeded
         fin from = self.currentItem.id
-        fin id: NavEntryId = .(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
         self._items[self._size] = NavStackItem<K>(id, key)
-        self._size = self._size + 1
-        self._publish(NavDirection.Push, from, id, 1, 0)
+        self._size++
+        self._publish(.Push, from, id, 1, 0)
         return id
     }
 
     /** Pops the top occurrence while preserving the root invariant. */
     func !.pop(): K ?! NavError {
-        if self._size <= 1 { return .CannotPopRoot }
+        if self._size <= 1 then return .CannotPopRoot
         fin removed = self._items[self._size - 1]
-        self._size = self._size - 1
-        self._publish(NavDirection.Pop, removed.id, self.currentItem.id, 0, 1)
+        self._size--
+        self._publish(.Pop, removed.id, self.currentItem.id, 0, 1)
         return removed.key
     }
 
     /** Replaces the top route and therefore creates a fresh entry identity. */
     func !.replace(key: K): NavEntryId ?! NavError {
         fin from = self.currentItem.id
-        fin id = NavEntryId(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
         self._items[self._size - 1] = NavStackItem<K>(id, key)
-        self._publish(NavDirection.Replace, from, id, 1, 1)
+        self._publish(.Replace, from, id, 1, 1)
         return id
     }
 
@@ -378,24 +360,24 @@ impl NavBackStack<K> {
         inclusive: Bool = false
     ): Int ?! NavError {
         fin target = self.indexOf(id)
-        if target < 0 { return .EntryNotFound }
-        fin desired = if inclusive { target } else { target + 1 }
-        if desired < 1 { return .CannotPopRoot }
-        if desired >= self._size { return 0 }
+        if target < 0 then return .EntryNotFound
+        fin desired = if inclusive then target else target + 1
+        if desired < 1 then return .CannotPopRoot
+        if desired >= self._size then return 0
         fin from = self.currentItem.id
         fin removed = self._size - desired
         self._size = desired
-        self._publish(NavDirection.Pop, from, self.currentItem.id, 0, removed)
+        self._publish(.Pop, from, self.currentItem.id, 0, removed)
         return removed
     }
 
     /** Pops every item above the root and returns the number removed. */
     func !.popToRoot(): Int {
-        if self._size <= 1 { return 0 }
+        if self._size <= 1 then return 0
         fin from = self.currentItem.id
         fin removed = self._size - 1
         self._size = 1
-        self._publish(NavDirection.Pop, from, self.currentItem.id, 0, removed)
+        self._publish(.Pop, from, self.currentItem.id, 0, removed)
         return removed
     }
 
@@ -403,11 +385,11 @@ impl NavBackStack<K> {
     func !.reset(root: K): NavEntryId {
         fin from = self.currentItem.id
         fin removed = self._size
-        fin id = NavEntryId(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
         self._items[0] = NavStackItem<K>(id, root)
         self._size = 1
-        self._publish(NavDirection.Reset, from, id, 1, removed)
+        self._publish(.Reset, from, id, 1, removed)
         return id
     }
 }
@@ -429,21 +411,10 @@ impl NavBackStack<K> {
     /** Creates an isolated staging copy for one transaction. */
     func &.beginMutation(): NavMutation<K> {
         var items: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(self.capacity)
-        var index = 0
-        while index < self.count {
-            items[index] = self.itemAt(index)
-            index = index + 1
-        }
-        return NavMutation<K>(
-            items,
-            self.count,
-            self._nextId,
-            self.currentItem.id,
-            NavDirection.None,
-            0,
-            0,
-            false,
-            0
+        for i: Int in 0..<self.count then items[i] = self.itemAt(i)
+        return NavMutation<K>(items
+            self.count, self._nextId, self.currentItem.id
+            .None, 0, 0, false, 0
         )
     }
 
@@ -458,66 +429,59 @@ impl NavBackStack<K> {
         added: Int
         removed: Int
     ): NavChange {
-        var index = 0
-        while index < size {
-            self._items[index] = items[index]
-            index = index + 1
-        }
+        for i: Int in 0..<size then self._items[i] = items[i]
         self._size = size
         self._nextId = nextId
         return self._publish(direction, from, to, added, removed)
     }
 }
 
-func<K> navMutation(stack: NavBackStack<K>&): NavMutation<K> {
-    return stack.beginMutation()
-}
+func<K> navMutation(stack: NavBackStack<K>&): NavMutation<K> = stack.beginMutation()
 
 impl NavMutation<K> {
-    prop  &.count: Int = self._size
-    prop  &.valid: Bool = !self._failed
-    prop  &.currentItem: NavStackItem<K> = self._items[self._size - 1]
+    prop &.count: Int = self._size
+    prop &.valid: Bool = !self._failed
+    prop &.currentItem: NavStackItem<K> = self._items[self._size - 1]
 
-    func !._fail(fault: Int) {
-        if !self._failed {
-            self._failed = true
-            self._fault = fault
-        }
+    func !._fail(fault: Int)
+    scope if !self._failed {
+        self._failed = true
+        self._fault = fault
     }
 
     func !.push(key: K): NavEntryId {
-        if self._failed { return navEntryIdInvalid() }
+        if self._failed then return ::invalid
         if self._size >= self._items.size {
             self._fail(1)
-            return navEntryIdInvalid()
+            return ::invalid
         }
-        fin id = NavEntryId(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
         self._items[self._size] = NavStackItem<K>(id, key)
-        self._size = self._size + 1
-        self._added = self._added + 1
+        self._size++
+        self._added++
         self._direction = NavDirection.Push
         return id
     }
 
     func !.pop() {
-        if self._failed { return }
+        if self._failed then return
         if self._size <= 1 {
             self._fail(2)
             return
         }
-        self._size = self._size - 1
-        self._removed = self._removed + 1
+        self._size--
+        self._removed++
         self._direction = NavDirection.Pop
     }
 
     func !.replace(key: K): NavEntryId {
-        if self._failed { return navEntryIdInvalid() }
-        fin id = NavEntryId(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
+        if self._failed then return ::invalid
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
         self._items[self._size - 1] = NavStackItem<K>(id, key)
-        self._added = self._added + 1
-        self._removed = self._removed + 1
+        self._added++
+        self._removed++
         self._direction = NavDirection.Replace
         return id
     }
@@ -526,35 +490,35 @@ impl NavMutation<K> {
         id: NavEntryId&
         inclusive: Bool = false
     ) {
-        if self._failed { return }
+        if self._failed then return
         var target = -1
         var index = 0
         while index < self._size {
-            if navEntryIdEqual(self._items[index].id, id) { target = index }
-            index = index + 1
+            if navEntryIdEqual(self._items[index].id, id) then target = index
+            index++
         }
         if target < 0 {
             self._fail(3)
             return
         }
-        fin desired = if inclusive { target } else { target + 1 }
+        fin desired = if inclusive then target else target + 1
         if desired < 1 {
             self._fail(2)
             return
         }
         if desired < self._size {
-            self._removed = self._removed + self._size - desired
+            self._removed += self._size - desired
             self._size = desired
             self._direction = NavDirection.Pop
         }
     }
 
     func !.reset(root: K): NavEntryId {
-        if self._failed { return navEntryIdInvalid() }
-        fin id = NavEntryId(self._nextId, Long(1))
-        self._nextId = self._nextId + Long(1)
-        self._removed = self._removed + self._size
-        self._added = self._added + 1
+        if self._failed then return ::invalid
+        fin id: NavEntryId = .(self._nextId, 1)
+        self._nextId++
+        self._removed += self._size
+        self._added++
         self._items[0] = NavStackItem<K>(id, root)
         self._size = 1
         self._direction = NavDirection.Reset
@@ -563,22 +527,22 @@ impl NavMutation<K> {
 
     func !.commit(stack: NavBackStack<K>!): NavChange ?! NavError {
         if self._failed {
-            if self._fault == 1 { return .CapacityExceeded }
-            if self._fault == 2 { return .CannotPopRoot }
-            if self._fault == 3 { return .EntryNotFound }
-            return .InvalidMutation
+            return when {
+                self._fault == 1 -> .CapacityExceeded
+                self._fault == 2 -> .CannotPopRoot
+                self._fault == 3 -> .EntryNotFound
+                else -> .InvalidMutation
+            }
         }
-        if self._direction == NavDirection.None {
-            return stack.lastChange
-        }
+        if self._direction == .None then return stack.lastChange
         return stack.applyMutation(
-            self._items,
-            self._size,
-            self._nextId,
-            self._direction,
-            self._from,
-            self.currentItem.id,
-            self._added,
+            self._items
+            self._size
+            self._nextId
+            self._direction
+            self._from
+            self.currentItem.id
+            self._added
             self._removed
         )
     }
@@ -653,17 +617,11 @@ pack PopoverProperties {
     fin keepInsideWindow: Bool
 }
 
-func dialogProperties(): DialogProperties {
-    return .(true, true, true, true, true, true, .Content, .Content, 0.42)
-}
+func dialogProperties(): DialogProperties = .(true, true, true, true, true, true, .Content, .Content, 0.42)
 
-func sheetProperties(): SheetProperties {
-    return .(true, true, true, .Fraction(0.6), 0.36)
-}
+func sheetProperties(): SheetProperties = .(true, true, true, .Fraction(0.6), 0.36)
 
-func popoverProperties(): PopoverProperties {
-    return .(false, true, true, true)
-}
+func popoverProperties(): PopoverProperties = .(false, true, true, true)
 
 /** Presentation intent interpreted by overlay and scene strategies. */
 variant enum NavPresentation {
@@ -726,14 +684,14 @@ pack NavEntryMetadata {
 func navMetadata(): NavEntryMetadata {
     return .(
         .Screen,
-        .Automatic,
+        .Automatic
         navDefaultTransitions(),
         .(true, false, true),
         .Restore,
         .Pop,
-        .Inherit,
-        "",
-        "",
+        .Inherit
+        ""
+        ""
         Array<NavMetadataValue>()
     )
 }
@@ -742,14 +700,14 @@ impl NavEntryMetadata {
     func &.asDialog(properties: DialogProperties = dialogProperties()): Self {
         var metadata = self
         metadata.presentation = NavPresentation.Dialog(properties)
-        metadata.backPolicy = if properties.dismissOnBack { NavBackPolicy.Dismiss } else { NavBackPolicy.Disabled }
+        metadata.backPolicy = if properties.dismissOnBack then NavBackPolicy.Dismiss else NavBackPolicy.Disabled
         return metadata
     }
 
     func &.asBottomSheet(properties: SheetProperties = sheetProperties()): Self {
         var metadata = self
         metadata.presentation = NavPresentation.BottomSheet(properties)
-        metadata.backPolicy = if properties.dismissOnBack { NavBackPolicy.Dismiss } else { NavBackPolicy.Disabled }
+        metadata.backPolicy = if properties.dismissOnBack then NavBackPolicy.Dismiss else NavBackPolicy.Disabled
         return metadata
     }
 
@@ -809,14 +767,12 @@ func<K> navEntry(
     item: NavStackItem<K>&
     content: NavContent<K>
     metadata: NavEntryMetadata = navMetadata()
-): NavEntry<K> {
-    return NavEntry<K>(
-        item,
-        NavContentKey(item.id.value, item.id.generation),
-        metadata,
-        content
-    )
-}
+): NavEntry<K> = .(
+    item
+    NavContentKey(item.id.value, item.id.generation)
+    metadata
+    content
+)
 
 /** Resolver-based provider that handles route symbols and carried payloads. */
 pack NavEntryProvider<K> {
@@ -824,38 +780,20 @@ pack NavEntryProvider<K> {
     var revision: Long
 }
 
-func<K> navEntryProvider(resolver: NavResolver<K>): NavEntryProvider<K> {
-    return .(resolver, Long(0))
-}
+func<K> navEntryProvider(resolver: NavResolver<K>): NavEntryProvider<K> = .(resolver, 0)
 
 impl NavEntryProvider<K> {
-    func !.resolve(item: NavStackItem<K>&): NavEntry<K> ?! NavError {
-        return try self.resolver(item)
-    }
+    func !.resolve(item: NavStackItem<K>&): NavEntry<K> ?! NavError = try self.resolver(item)
 
-    func !.invalidate() {
-        self.revision = self.revision + Long(1)
-    }
+    func !.invalidate() scope self.revision++
 }
 
 /** Lifecycle callbacks attached to every entry owned by a display. */
 spec NavEntryDecorator<K> {
-    func !.onCreate(
-        entry: NavEntry<K>&
-        owner: NavOwnerId
-    )
-    func !.onActive(
-        entry: NavEntry<K>&
-        owner: NavOwnerId
-    )
-    func !.onSuspend(
-        entry: NavEntry<K>&
-        owner: NavOwnerId
-    )
-    func !.onPop(
-        entry: NavEntry<K>&
-        owner: NavOwnerId
-    )
+    func !.onCreate(entry: NavEntry<K>&, owner: NavOwnerId)
+    func !.onActive(entry: NavEntry<K>&, owner: NavOwnerId)
+    func !.onSuspend(entry: NavEntry<K>&, owner: NavOwnerId)
+    func !.onPop(entry: NavEntry<K>&, owner: NavOwnerId)
 }
 
 /** Runtime owner record retained independently from visual scenes. */
@@ -874,24 +812,21 @@ pack NavOwnerStore {
     var nextId: Long
 }
 
-func navOwnerStore(capacity: Int = 32): NavOwnerStore {
-    return .(Array::fill<NavEntryOwner>(capacity), 0, Long(1))
-}
+func navOwnerStore(capacity: Int = 32): NavOwnerStore = .(::fill<NavEntryOwner>(capacity), 0, 1)
 
 impl NavOwnerStore {
     func &.indexOfEntry(entry: NavEntryId&): Int {
         var index = 0
         while index < self.size {
-            if navEntryIdEqual(self.owners[index].entry, entry) { return index }
-            index = index + 1
+            if navEntryIdEqual(self.owners[index].entry, entry) then return index
+            index++
         }
         return -1
     }
 
     func &.ownerFor(entry: NavEntryId&): NavOwnerId {
         fin index = self.indexOfEntry(entry)
-        if index < 0 { return navOwnerIdInvalid() }
-        return self.owners[index].id
+        return if index < 0 then ::invalid else self.owners[index].id
     }
 
     func !.create(
@@ -899,12 +834,12 @@ impl NavOwnerStore {
         parent: NavOwnerId? = null
     ): NavOwnerId ?! NavError {
         fin existing = self.indexOfEntry(entry)
-        if existing >= 0 { return self.owners[existing].id }
-        if self.size >= self.owners.size { return .CapacityExceeded }
-        fin id = NavOwnerId(self.nextId, Long(1))
-        self.nextId = self.nextId + Long(1)
-        self.owners[self.size] = NavEntryOwner(id, entry, parent, .Created, Long(0))
-        self.size = self.size + 1
+        if existing >= 0 then return self.owners[existing].id
+        if self.size >= self.owners.size then return .CapacityExceeded
+        fin id: NavOwnerId = .(self.nextId, 1)
+        self.nextId++
+        self.owners[self.size] = NavEntryOwner(id, entry, parent, .Created, 0)
+        self.size++
         return id
     }
 
@@ -913,32 +848,31 @@ impl NavOwnerStore {
         lifecycle: NavLifecycle
     ): Bool {
         fin index = self.indexOfEntry(entry)
-        if index < 0 { return false }
+        if index < 0 then return false
         if self.owners[index].lifecycle != lifecycle {
             self.owners[index].lifecycle = lifecycle
-            self.owners[index].revision = self.owners[index].revision + Long(1)
+            self.owners[index].revision++
         }
         return true
     }
 
     func &.lifecycleOf(entry: NavEntryId&): NavLifecycle {
         fin index = self.indexOfEntry(entry)
-        if index < 0 { return NavLifecycle.Destroyed }
-        return self.owners[index].lifecycle
+        return if index < 0 then NavLifecycle.Destroyed else self.owners[index].lifecycle
     }
 
     /** Marks an owner destroyed and compacts the table. */
     func !.destroy(entry: NavEntryId&): NavOwnerId {
         fin index = self.indexOfEntry(entry)
-        if index < 0 { return navOwnerIdInvalid() }
+        if index < 0 then return ::invalid
         fin id = self.owners[index].id
         self.owners[index].lifecycle = NavLifecycle.Destroyed
         var at = index
         while at + 1 < self.size {
             self.owners[at] = self.owners[at + 1]
-            at = at + 1
+            at++
         }
-        self.size = self.size - 1
+        self.size--
         return id
     }
 }
@@ -1012,7 +946,7 @@ pack NavScenePlan {
 
 func navPresentationIsOverlay(presentation: NavPresentation&): Bool {
     return when presentation {
-        NavPresentation.Screen -> false
+        .Screen -> false
         else -> true
     }
 }
@@ -1025,31 +959,25 @@ func<K> navSelectScene(
     revision: Long
 ): NavScenePlan {
     var baseCount = count
-    while baseCount > 1 && navPresentationIsOverlay(entries[baseCount - 1].metadata.presentation) {
-        baseCount = baseCount - 1
-    }
+    while baseCount > 1 && navPresentationIsOverlay(entries[baseCount - 1].metadata.presentation) then baseCount--
 
     var primary = -1
     var detail = -1
     var supporting = -1
-    var index = 0
-    while index < baseCount {
-        when entries[index].metadata.pane {
-            NavPaneRole.Primary -> { primary = index }
-            NavPaneRole.Detail -> { detail = index }
-            NavPaneRole.Supporting -> { supporting = index }
+    for i: Int in 0..<baseCount {
+        when entries[i].metadata.pane {
+            .Primary -> { primary = i }
+            .Detail -> { detail = i }
+            .Supporting -> { supporting = i }
             else -> { }
         }
-        index = index + 1
     }
 
     var kind = NavSceneKind.SinglePane
-    if environment.windowClass != NavWindowClass.Compact && primary >= 0 && detail >= 0 {
-        kind = if supporting >= 0 { NavSceneKind.Supporting } else { NavSceneKind.ListDetail }
+    if environment.windowClass != .Compact && primary >= 0 && detail >= 0 {
+        kind = if supporting >= 0 then NavSceneKind.Supporting else NavSceneKind.ListDetail
     }
-    if baseCount > 0 && (kind == NavSceneKind.SinglePane || detail < 0) {
-        detail = baseCount - 1
-    }
+    if baseCount > 0 && (kind == .SinglePane || detail < 0) then detail = baseCount - 1
     return .(kind, primary, detail, supporting, baseCount, baseCount, count - baseCount, revision)
 }
 
@@ -1071,9 +999,7 @@ pack NavTransitionState {
     var revision: Long
 }
 
-func navTransitionState(): NavTransitionState {
-    return .(.Idle, .None, navEntryIdInvalid(), navEntryIdInvalid(), 1.0, false, Long(0))
-}
+func navTransitionState(): NavTransitionState = .(.Idle, .None, ::invalid, ::invalid, 1.0, false, 0)
 
 impl NavTransitionState {
     func !.start(
@@ -1083,24 +1009,24 @@ impl NavTransitionState {
         self.direction = change.direction
         self.from = change.from
         self.to = change.to
-        self.progress = if reducedMotion { 1.0 } else { 0.0 }
+        self.progress = if reducedMotion then 1.0 else 0.0
         self.interactive = false
-        self.phase = if reducedMotion { NavTransitionPhase.Completing } else { NavTransitionPhase.Running }
-        self.revision = self.revision + Long(1)
+        self.phase = if reducedMotion then NavTransitionPhase.Completing else NavTransitionPhase.Running
+        self.revision++
     }
 
     func !.advance(progress: Double) {
         var value = progress
-        if value < 0.0 { value = 0.0 }
-        if value > 1.0 { value = 1.0 }
+        if value < 0.0 then value = 0.0
+        if value > 1.0 then value = 1.0
         self.progress = value
-        self.phase = if value >= 1.0 { NavTransitionPhase.Idle } else { NavTransitionPhase.Running }
+        self.phase = if value >= 1.0 then NavTransitionPhase.Idle else NavTransitionPhase.Running
     }
 
     func !.cancel() {
         self.phase = NavTransitionPhase.Cancelling
         self.interactive = false
-        self.revision = self.revision + Long(1)
+        self.revision++
     }
 }
 
@@ -1126,19 +1052,19 @@ func<K> navDisplay(
     parent: NavOwnerId? = null
 ): NavDisplay<K> {
     return NavDisplay<K>(
-        (Long(0) - Long(1)),
-        (Long(0) - Long(1)),
-        (Long(0) - Long(1)),
-        Array::fill<NavEntry<K>>(capacity),
+        (-1)
+        (-1)
+        (-1)
+        Array::fill<NavEntry<K>>(capacity)
+        0
+        navOwnerStore(capacity)
+        Array::fill<NavEntryDecorator<K>>(capacity)
         0,
-        navOwnerStore(capacity),
-        Array::fill<NavEntryDecorator<K>>(capacity),
-        0,
-        .(.SinglePane, -1, -1, -1, 0, 0, 0, Long(0)),
+        .(.SinglePane, -1, -1, -1, 0, 0, 0, 0)
         navTransitionState(),
-        .Created,
-        parent,
-        Long(0)
+        .Created
+        parent
+        0
     )
 }
 
@@ -1146,16 +1072,16 @@ impl NavDisplay<K> {
     func &.indexOf(id: NavEntryId&): Int {
         var index = 0
         while index < self.entryCount {
-            if navEntryIdEqual(self.entries[index].item.id, id) { return index }
-            index = index + 1
+            if navEntryIdEqual(self.entries[index].item.id, id) then return index
+            index++
         }
         return -1
     }
 
     func !.addDecorator(decorator: NavEntryDecorator<K>) ?! NavError {
-        if self.decoratorCount >= self.decorators.size { return .CapacityExceeded }
+        if self.decoratorCount >= self.decorators.size then return .CapacityExceeded
         self.decorators[self.decoratorCount] = decorator
-        self.decoratorCount = self.decoratorCount + 1
+        self.decoratorCount++
     }
 
     /** Resolves additions and commits all display-visible state together. */
@@ -1181,13 +1107,9 @@ impl NavDisplay<K> {
                 fin entry = try provider.resolve(item)
                 next[index] = entry
                 fin owner = try self.owners.create(item.id, self.parent)
-                var decorator = 0
-                while decorator < self.decoratorCount {
-                    self.decorators[decorator].onCreate(entry, owner)
-                    decorator = decorator + 1
-                }
+                for decorator: Int in 0..<self.decoratorCount then self.decorators[decorator].onCreate(entry, owner)
             }
-            index = index + 1
+            index++
         }
 
         var previous = self.entryCount - 1
@@ -1196,46 +1118,38 @@ impl NavDisplay<K> {
             var retained = false
             var at = 0
             while at < stack.count {
-                if navEntryIdEqual(stack.itemAt(at).id, entry.item.id) { retained = true }
-                at = at + 1
+                if navEntryIdEqual(stack.itemAt(at).id, entry.item.id) then retained = true
+                at++
             }
             if !retained {
                 fin owner = self.owners.ownerFor(entry.item.id)
-                var decorator = 0
-                while decorator < self.decoratorCount {
-                    self.decorators[decorator].onPop(entry, owner)
-                    decorator = decorator + 1
-                }
+                for decorator: Int in 0..<self.decoratorCount then self.decorators[decorator].onPop(entry, owner)
                 self.owners.destroy(entry.item.id)
             }
-            previous = previous - 1
+            previous--
         }
 
         self.entries = next
         self.entryCount = stack.count
-        self.scene = navSelectScene<K>(self.entries, self.entryCount, environment, self.revision + Long(1))
+        self.scene = navSelectScene<K>(self.entries, self.entryCount, environment, self.revision + 1)
 
         index = 0
         while index < self.entryCount {
             fin entry = self.entries[index]
             var active = index == self.scene.detail
-            if self.scene.kind != NavSceneKind.SinglePane {
-                active = active || index == self.scene.primary || index == self.scene.supporting
-            }
-            if index >= self.scene.overlayStart { active = true }
-            fin lifecycle = if active { NavLifecycle.Active } else { NavLifecycle.Suspended }
+            if self.scene.kind != .SinglePane then active = active || index == self.scene.primary || index == self.scene.supporting
+            if index >= self.scene.overlayStart then active = true
+            fin lifecycle = if active then NavLifecycle.Active else NavLifecycle.Suspended
             self.owners.setLifecycle(entry.item.id, lifecycle)
-            index = index + 1
+            index++
         }
 
-        if stack.version != self.observedRevision {
-            self.transition.start(stack.lastChange, environment.reducedMotion)
-        }
+        if stack.version != self.observedRevision then self.transition.start(stack.lastChange, environment.reducedMotion)
         self.observedRevision = stack.version
         self.observedProviderRevision = provider.revision
         self.observedEnvironmentRevision = environment.revision
         self.lifecycle = NavLifecycle.Active
-        self.revision = self.revision + Long(1)
+        self.revision++
         return true
     }
 
@@ -1243,7 +1157,7 @@ impl NavDisplay<K> {
         var index = 0
         while index < self.entryCount {
             self.owners.setLifecycle(self.entries[index].item.id, .Suspended)
-            index = index + 1
+            index++
         }
         self.lifecycle = NavLifecycle.Suspended
     }
@@ -1252,11 +1166,11 @@ impl NavDisplay<K> {
         var index = self.entryCount - 1
         while index >= 0 {
             self.owners.destroy(self.entries[index].item.id)
-            index = index - 1
+            index--
         }
         self.entryCount = 0
         self.lifecycle = NavLifecycle.Destroyed
-        self.revision = self.revision + Long(1)
+        self.revision++
     }
 
     /** Invokes one entry exactly once under a caller-supplied context. */
@@ -1264,8 +1178,8 @@ impl NavDisplay<K> {
         index: Int
         context: NavEntryContext<K>!
     ) ?! NavError {
-        if index < 0 || index >= self.entryCount { return .EntryNotFound }
-        if !navEntryIdEqual(self.entries[index].item.id, context.item.id) { return .InvalidScene }
+        if index < 0 || index >= self.entryCount then return .EntryNotFound
+        if !navEntryIdEqual(self.entries[index].item.id, context.item.id) then return .InvalidScene
         self.entries[index].content(context)
     }
 }
@@ -1285,27 +1199,27 @@ func navCanDismiss(
     reason: NavDismissReason
 ): Bool {
     return when metadata.presentation {
-        NavPresentation.Screen -> false
-        NavPresentation.FullscreenOverlay -> metadata.backPolicy == NavBackPolicy.Dismiss
-        NavPresentation.Dialog(properties) -> when reason {
-            NavDismissReason.Back -> properties.dismissOnBack
-            NavDismissReason.Escape -> properties.dismissOnEscape
-            NavDismissReason.OutsidePress -> properties.dismissOnOutsidePress
+        .Screen -> false
+        .FullscreenOverlay -> metadata.backPolicy == .Dismiss
+        .Dialog(properties) -> when reason {
+            .Back -> properties.dismissOnBack
+            .Escape -> properties.dismissOnEscape
+            .OutsidePress -> properties.dismissOnOutsidePress
             else -> true
         }
-        NavPresentation.BottomSheet(properties) -> when reason {
-            NavDismissReason.Back -> properties.dismissOnBack
-            NavDismissReason.OutsidePress -> properties.dismissOnOutsidePress
+        .BottomSheet(properties) -> when reason {
+            .Back -> properties.dismissOnBack
+            .OutsidePress -> properties.dismissOnOutsidePress
             else -> true
         }
-        NavPresentation.SideSheet(properties) -> when reason {
-            NavDismissReason.Back -> properties.dismissOnBack
-            NavDismissReason.OutsidePress -> properties.dismissOnOutsidePress
+        .SideSheet(properties) -> when reason {
+            .Back -> properties.dismissOnBack
+            .OutsidePress -> properties.dismissOnOutsidePress
             else -> true
         }
-        NavPresentation.Popover(anchor, properties) -> when reason {
-            NavDismissReason.Back -> properties.dismissOnBack
-            NavDismissReason.OutsidePress -> properties.dismissOnOutsidePress
+        .Popover(anchor, properties) -> when reason {
+            .Back -> properties.dismissOnBack
+            .OutsidePress -> properties.dismissOnOutsidePress
             else -> true
         }
     }
@@ -1328,28 +1242,22 @@ pack NavBackGesture {
     var generation: Long
 }
 
-func navBackGesture(): NavBackGesture {
-    return .(.Idle, 0.0, .Start, -1, navEntryIdInvalid(), Long(0))
-}
+func navBackGesture(): NavBackGesture = .(.Idle, 0.0, .Start, -1, ::invalid, 0)
 
 impl NavBackGesture {
-    func !.begin(
-        target: NavEntryId
-        edge: NavEdge = .Start
-        pointer: Int = -1
-    ) {
+    func !.begin(target: NavEntryId, edge: NavEdge = .Start, pointer: Int = -1) {
         self.phase = NavBackPhase.Started
         self.progress = 0.0
         self.edge = edge
         self.pointer = pointer
         self.target = target
-        self.generation = self.generation + Long(1)
+        self.generation++
     }
 
     func !.update(progress: Double) {
         var value = progress
-        if value < 0.0 { value = 0.0 }
-        if value > 1.0 { value = 1.0 }
+        if value < 0.0 then value = 0.0
+        if value > 1.0 then value = 1.0
         self.progress = value
         self.phase = NavBackPhase.Progressed
     }
@@ -1372,14 +1280,12 @@ enum NavBackPriority {
     Overlay
 }
 
-func navBackPriorityRank(priority: NavBackPriority): Int {
-    return when priority {
-        .PlatformExit -> 0
-        .Display -> 1
-        .Screen -> 2
-        .Nested -> 3
-        .Overlay -> 4
-    }
+func navBackPriorityRank(priority: NavBackPriority): Int = when priority {
+    .PlatformExit -> 0
+    .Display -> 1
+    .Screen -> 2
+    .Nested -> 3
+    .Overlay -> 4
 }
 
 spec NavBackHandler {
@@ -1411,19 +1317,19 @@ pack NavBackDispatcher {
 }
 
 func navBackDispatcher(capacity: Int = 32): NavBackDispatcher {
-    var parents: Array<Int> = Array::fill<Int>(capacity)
+    var parents: Array<Int> = ::fill<Int>(capacity)
     parents[0] = -1
-    return .(Array::fill<NavBackRegistration>(capacity), 0, parents, 1, Long(1), -1)
+    return .(::fill<NavBackRegistration>(capacity), 0, parents, 1, 1, -1)
 }
 
 impl NavBackDispatcher {
     /** Creates a child scope. Unhandled events bubble through its parent. */
     func !.child(parentScope: Int = 0): Int ?! NavError {
-        if parentScope < 0 || parentScope >= self.scopeCount { return .InvalidMutation }
-        if self.scopeCount >= self.scopeParents.size { return .CapacityExceeded }
+        if parentScope < 0 || parentScope >= self.scopeCount then return .InvalidMutation
+        if self.scopeCount >= self.scopeParents.size then return .CapacityExceeded
         fin id = self.scopeCount
         self.scopeParents[id] = parentScope
-        self.scopeCount = self.scopeCount + 1
+        self.scopeCount++
         return id
     }
 
@@ -1434,19 +1340,19 @@ impl NavBackDispatcher {
         depth: Int
         handler: NavBackHandler
     ) ?! NavError {
-        if scopeId < 0 || scopeId >= self.scopeCount { return .InvalidMutation }
-        if self.size >= self.registrations.size { return .CapacityExceeded }
+        if scopeId < 0 || scopeId >= self.scopeCount then return .InvalidMutation
+        if self.size >= self.registrations.size then return .CapacityExceeded
         self.registrations[self.size] = NavBackRegistration(
-            owner,
-            scopeId,
-            priority,
-            depth,
-            self.nextOrder,
-            true,
+            owner
+            scopeId
+            priority
+            depth
+            self.nextOrder
+            true
             handler
         )
-        self.nextOrder = self.nextOrder + Long(1)
-        self.size = self.size + 1
+        self.nextOrder++
+        self.size++
     }
 
     func !.removeOwner(owner: NavOwnerId&) {
@@ -1454,10 +1360,10 @@ impl NavBackDispatcher {
         var write = 0
         while read < self.size {
             if !navOwnerIdEqual(self.registrations[read].owner, owner) {
-                if write != read { self.registrations[write] = self.registrations[read] }
-                write = write + 1
+                if write != read then self.registrations[write] = self.registrations[read]
+                write++
             }
-            read = read + 1
+            read++
         }
         self.size = write
         self.activeRegistration = -1
@@ -1465,12 +1371,11 @@ impl NavBackDispatcher {
 
     func &.winnerIn(scopeId: Int): Int {
         var winner = -1
-        var index = 0
-        while index < self.size {
-            fin candidate = self.registrations[index]
+        for i: Int in 0..<self.size {
+            fin candidate = self.registrations[i]
             if candidate.scopeId == scopeId && candidate.active && candidate.handler.enabled() {
                 if winner < 0 {
-                    winner = index
+                    winner = i
                 } else {
                     fin selected = self.registrations[winner]
                     fin candidateRank = navBackPriorityRank(candidate.priority)
@@ -1478,11 +1383,10 @@ impl NavBackDispatcher {
                     if candidateRank > selectedRank ||
                         (candidateRank == selectedRank && candidate.depth > selected.depth) ||
                         (candidateRank == selectedRank && candidate.depth == selected.depth && candidate.order > selected.order) {
-                        winner = index
+                        winner = i
                     }
                 }
             }
-            index = index + 1
         }
         return winner
     }
@@ -1491,7 +1395,7 @@ impl NavBackDispatcher {
         var current = scopeId
         while current >= 0 {
             fin found = self.winnerIn(current)
-            if found >= 0 { return found }
+            if found >= 0 then return found
             current = self.scopeParents[current]
         }
         return -1
@@ -1500,7 +1404,7 @@ impl NavBackDispatcher {
     /** Completes an ordinary Escape/controller/platform back event. */
     func !.dispatch(scopeId: Int = 0): NavOwnerId {
         fin selected = self.winner(scopeId)
-        if selected < 0 { return navOwnerIdInvalid() }
+        if selected < 0 then return ::invalid
         self.registrations[selected].handler.complete()
         return self.registrations[selected].owner
     }
@@ -1510,29 +1414,23 @@ impl NavBackDispatcher {
         event: NavBackGesture&
     ): NavOwnerId {
         fin selected = self.winner(scopeId)
-        if selected < 0 { return navOwnerIdInvalid() }
-        if !self.registrations[selected].handler.begin(event) { return navOwnerIdInvalid() }
+        if selected < 0 then return ::invalid
+        if !self.registrations[selected].handler.begin(event) then return ::invalid
         self.activeRegistration = selected
         return self.registrations[selected].owner
     }
 
     func !.progressPredictive(event: NavBackGesture&) {
-        if self.activeRegistration >= 0 {
-            self.registrations[self.activeRegistration].handler.progress(event)
-        }
+        if self.activeRegistration >= 0 then self.registrations[self.activeRegistration].handler.progress(event)
     }
 
     func !.cancelPredictive() {
-        if self.activeRegistration >= 0 {
-            self.registrations[self.activeRegistration].handler.cancel()
-        }
+        if self.activeRegistration >= 0 then self.registrations[self.activeRegistration].handler.cancel()
         self.activeRegistration = -1
     }
 
     func !.completePredictive() {
-        if self.activeRegistration >= 0 {
-            self.registrations[self.activeRegistration].handler.complete()
-        }
+        if self.activeRegistration >= 0 then self.registrations[self.activeRegistration].handler.complete()
         self.activeRegistration = -1
     }
 }
@@ -1566,7 +1464,7 @@ func<T> navResultChannel(
     capacity: Int = 1
     policy: NavResultPolicy = .Once
 ): NavResultChannel<T> {
-    return .(key, sender, receiver, policy, Array::fill<T>(capacity), 0, Long(0), false)
+    return .(key, sender, receiver, policy, Array::fill<T>(capacity), 0, 0, false)
 }
 
 impl NavResultChannel<T> {
@@ -1574,38 +1472,32 @@ impl NavResultChannel<T> {
         sender: NavEntryId&
         value: T
     ) ?! NavError {
-        if self.closed || !navEntryIdEqual(self.sender, sender) { return .InvalidResult }
-        if self.policy == NavResultPolicy.Once && self.count > 0 { return .InvalidResult }
-        if self.policy == NavResultPolicy.Conflated && self.count > 0 {
+        if self.closed || !navEntryIdEqual(self.sender, sender) then return .InvalidResult
+        if self.policy == .Once && self.count > 0 then return .InvalidResult
+        if self.policy == .Conflated && self.count > 0 {
             self.values[0] = value
         } else {
-            if self.count >= self.values.size { return .CapacityExceeded }
+            if self.count >= self.values.size then return .CapacityExceeded
             self.values[self.count] = value
-            self.count = self.count + 1
+            self.count++
         }
-        self.revision = self.revision + Long(1)
+        self.revision++
     }
 
     func !.take(receiver: NavEntryId&): T ?! NavError {
-        if self.closed || !navEntryIdEqual(self.receiver, receiver) || self.count <= 0 {
-            return .InvalidResult
-        }
+        if self.closed || !navEntryIdEqual(self.receiver, receiver) || self.count <= 0 then return .InvalidResult
         fin value = self.values[0]
-        var index = 1
-        while index < self.count {
-            self.values[index - 1] = self.values[index]
-            index = index + 1
-        }
-        self.count = self.count - 1
-        if self.policy == NavResultPolicy.Once { self.closed = true }
-        self.revision = self.revision + Long(1)
+        for i: Int in 1..<self.count then self.values[i - 1] = self.values[i]
+        self.count--
+        if self.policy == .Once then self.closed = true
+        self.revision++
         return value
     }
 
     func !.cancel() {
         self.closed = true
         self.count = 0
-        self.revision = self.revision + Long(1)
+        self.revision++
     }
 }
 
@@ -1649,22 +1541,22 @@ pack NavStackSnapshot {
 func<K> navSnapshot(
     stack: NavBackStack<K>&
     codec: NavRouteCodec<K>
-    stackId: Long = Long(1)
+    stackId: Long = 1
 ): NavStackSnapshot ?! NavError {
     var items: Array<NavItemSnapshot> = Array::fill<NavItemSnapshot>(stack.count)
     var index = 0
     while index < stack.count {
         fin item = stack.itemAt(index)
         items[index] = NavItemSnapshot(item.id.value, item.id.generation, try codec.encode(item.key))
-        index = index + 1
+        index++
     }
     return .(
-        1,
-        codec.version(),
-        stackId,
-        items,
-        stack.count,
-        stack.count - 1,
+        1
+        codec.version()
+        stackId
+        items
+        stack.count
+        stack.count - 1
         Array<NavOwnerSnapshot>()
     )
 }
@@ -1676,14 +1568,10 @@ impl NavBackStack<K> {
         count: Int
         nextId: Long
     ): NavChange ?! NavError {
-        if count < 1 { return .SnapshotMalformed }
-        if count > self.capacity { return .CapacityExceeded }
+        if count < 1 then return .SnapshotMalformed
+        if count > self.capacity then return .CapacityExceeded
         fin from = self.currentItem.id
-        var index = 0
-        while index < count {
-            self._items[index] = items[index]
-            index = index + 1
-        }
+        for i: Int in 0..<count then self._items[i] = items[i]
         fin removed = self._size
         self._size = count
         self._nextId = nextId
@@ -1697,29 +1585,23 @@ func<K> navRestore(
     codec: NavRouteCodec<K>
     capacity: Int = 32
 ): NavBackStack<K> ?! NavError {
-    if snapshot.formatVersion != 1 || snapshot.routeVersion != codec.version() {
-        return .SnapshotVersion
-    }
-    if snapshot.itemCount < 1 || snapshot.itemCount > snapshot.items.size || snapshot.itemCount > capacity {
-        return .SnapshotMalformed
-    }
+    if snapshot.formatVersion != 1 || snapshot.routeVersion != codec.version() then return .SnapshotVersion
+    if snapshot.itemCount < 1 || snapshot.itemCount > snapshot.items.size || snapshot.itemCount > capacity then return .SnapshotMalformed
 
     var decoded: Array<NavStackItem<K>> = Array::fill<NavStackItem<K>>(capacity)
-    var maximum = Long(0)
-    var index = 0
-    while index < snapshot.itemCount {
-        fin saved = snapshot.items[index]
-        if saved.id <= Long(0) || saved.generation <= Long(0) { return .SnapshotMalformed }
-        if saved.id > maximum { maximum = saved.id }
-        decoded[index] = NavStackItem<K>(
-            NavEntryId(saved.id, saved.generation),
+    var maximum: Long = 0
+    for i: Int in 0..<snapshot.itemCount {
+        fin saved = snapshot.items[i]
+        if saved.id <= 0 || saved.generation <= 0 then return .SnapshotMalformed
+        if saved.id > maximum then maximum = saved.id
+        decoded[i] = NavStackItem<K>(
+            NavEntryId(saved.id, saved.generation)
             try codec.decode(saved.key)
         )
-        index = index + 1
     }
 
     var stack = navBackStack<K>(decoded[0].key, capacity)
-    try stack.restoreItems(decoded, snapshot.itemCount, maximum + Long(1))
+    try stack.restoreItems(decoded, snapshot.itemCount, maximum + 1)
     return stack
 }
 
@@ -1740,10 +1622,8 @@ impl NavUri {
         name: String
         fallback: String = ""
     ): String {
-        var index = 0
-        while index < self.query.size {
-            if self.query[index].name == name { return self.query[index].value }
-            index = index + 1
+        for i: Int in 0..<self.query.size {
+            if self.query[i].name == name then return self.query[i].value
         }
         return fallback
     }
@@ -1772,15 +1652,11 @@ func<K> navApplyPlan(
     plan: NavStackPlan<K>&
 ): NavChange ?! NavError {
     var mutation = navMutation<K>(stack)
-    if plan.replaceCurrent {
-        mutation.replace(plan.root)
-    } else {
-        mutation.reset(plan.root)
-    }
+    if plan.replaceCurrent then mutation.replace(plan.root) else mutation.reset(plan.root)
     var index = 0
     while index < plan.pushes.size {
         mutation.push(plan.pushes[index])
-        index = index + 1
+        index++
     }
     return try mutation.commit(stack)
 }
@@ -1813,21 +1689,17 @@ in {
     assert roots.size > 0 panic "a stack set needs one top-level root"
     assert roots.size == routeRoots.size panic "top-level roots and route roots must align"
 } scope {
-    var stacks: Array<NavBackStack<K>> = Array::fill<NavBackStack<K>>(roots.size)
-    var index = 0
-    while index < roots.size {
-        stacks[index] = navBackStack<K>(routeRoots[index], capacityPerStack)
-        index = index + 1
-    }
-    return .(roots, stacks, roots.size, 0, 0, Long(0), equals)
+    var stacks: Array<NavBackStack<K>> = ::fill(roots.size)
+    for i: Int in 0..<roots.size then stacks[i] = navBackStack<K>(routeRoots[i], capacityPerStack)
+    return .(roots, stacks, roots.size, 0, 0, 0, equals)
 }
 
 impl NavStackSet<T, K> {
     func &.indexOf(root: T&): Int {
         var index = 0
         while index < self.size {
-            if self.equals(self.roots[index], root) { return index }
-            index = index + 1
+            if self.equals(self.roots[index], root) then return index
+            index++
         }
         return -1
     }
@@ -1837,19 +1709,16 @@ impl NavStackSet<T, K> {
         policy: NavTopLevelPolicy = .PreserveHistory
     ) ?! NavError {
         fin index = self.indexOf(root)
-        if index < 0 { return .EntryNotFound }
-        if index == self.selected && policy == NavTopLevelPolicy.ReselectPopsToRoot {
-            self.stacks[index].popToRoot()
-        }
+        if index < 0 then return .EntryNotFound
+        if index == self.selected && policy == .ReselectPopsToRoot
+        then self.stacks[index].popToRoot()
         if index != self.selected {
             self.selected = index
-            self.revision = self.revision + Long(1)
+            self.revision++
         }
     }
 
-    func &.current(): NavBackStack<K> {
-        return self.stacks[self.selected]
-    }
+    func &.current(): NavBackStack<K> = self.stacks[self.selected]
 }
 
 enum NavPreparationKind {
@@ -1885,23 +1754,21 @@ pack NavInspection {
 func<K> navInspect(display: NavDisplay<K>&): NavInspection {
     var active = 0
     var suspended = 0
-    var index = 0
-    while index < display.owners.size {
-        when display.owners.owners[index].lifecycle {
-            NavLifecycle.Active -> { active = active + 1 }
-            NavLifecycle.Suspended -> { suspended = suspended + 1 }
+    for i: Int in 0..<display.owners.size {
+        when display.owners.owners[i].lifecycle {
+            .Active -> { active = active + 1 }
+            .Suspended -> { suspended = suspended + 1 }
             else -> { }
         }
-        index = index + 1
     }
     return .(
-        display.entryCount,
-        active,
-        suspended,
-        display.scene.overlayCount,
-        display.transition.direction,
-        display.transition.phase,
-        display.transition.progress,
+        display.entryCount
+        active
+        suspended
+        display.scene.overlayCount
+        display.transition.direction
+        display.transition.phase
+        display.transition.progress
         display.revision
     )
 }
@@ -1929,8 +1796,8 @@ impl TestNavDisplay<K> {
     }
 
     func !.advance(seconds: Double) {
-        if seconds < 0.0 { return }
-        self.clockSeconds = self.clockSeconds + seconds
+        if seconds < 0.0 then return
+        self.clockSeconds += seconds
         self.display.transition.advance(1.0)
     }
 }
@@ -1939,9 +1806,11 @@ func navTestContent(context: NavEntryContext<Int>!) { }
 
 func navTestEntry(item: NavStackItem<Int>&): NavEntry<Int> ?! NavError {
     var metadata = navMetadata()
-    if item.key == 1 { metadata = metadata.inPane(.Primary) }
-    if item.key == 2 { metadata = metadata.inPane(.Detail) }
-    if item.key == 3 { metadata = metadata.asDialog() }
+    metadata = when item.key {
+        1 -> metadata.inPane(.Primary)
+        2 -> metadata.inPane(.Detail)
+        3 -> metadata.asDialog()
+    }
     return navEntry<Int>(item, { context -> navTestContent(context) }, take metadata)
 }
 
@@ -1950,51 +1819,33 @@ pack NavTestBackHandler {
 }
 
 impl NavBackHandler for NavTestBackHandler {
-    func &.enabled(): Bool {
-        return self.available
-    }
-
-    func !.begin(event: NavBackGesture&): Bool {
-        return self.available
-    }
-
+    func &.enabled(): Bool = self.available
+    func !.begin(event: NavBackGesture&): Bool = self.available
     func !.progress(event: NavBackGesture&) { }
-
     func !.cancel() { }
-
     func !.complete() { }
 }
 
 pack NavIntCodec
 
 impl NavRouteCodec<Int> for NavIntCodec {
-    func &.version(): Int {
-        return 1
-    }
+    func &.version(): Int = 1
 
-    func &.encode(key: Int&): SerialValue ?! NavError {
-        return SerialValue.Number("${key}")
-    }
+    func &.encode(key: Int&): SerialValue ?! NavError = .Number("${key}")
 
     func &.decode(value: SerialValue&): Int ?! NavError {
         fin decoded = serialAsInt(value) catch -1
-        if decoded < 0 { return .SnapshotMalformed }
-        return decoded
+        return if decoded < 0 then .SnapshotMalformed else decoded
     }
 }
 
-func navTestIntEqual(
-    a: Int&
-    b: Int&
-): Bool {
-    return a == b
-}
+func navTestIntEqual(a: Int&, b: Int&): Bool = a == b
 
 test "navigation assigns identity by occurrence" {
     var stack = navBackStack<Int>(1, 5)
     fin first = stack.currentItem.id
-    fin second = stack.push(1) catch navEntryIdInvalid()
-    fin third = stack.push(1) catch navEntryIdInvalid()
+    fin second = stack.push(1) catch NavEntryId::invalid
+    fin third = stack.push(1) catch NavEntryId::invalid
 
     assert stack.count == 3 panic "equal route keys must still create three occurrences"
     assert !navEntryIdEqual(first, second) panic "push reused the root identity"
@@ -2010,10 +1861,10 @@ test "transactions publish once and roll back invalid staging" {
     fin change = navTransaction<Int>(stack) { mutation ->
         mutation.push(2)
         mutation.push(3)
-    } catch navChangeNone()
+    } catch NavChange::none
 
     assert stack.count == 3 panic "transaction lost staged pushes"
-    assert stack.version == before + Long(1) && change.added == 2 panic "one transaction must publish one revision"
+    assert stack.version == before + 1 && change.added == 2 panic "one transaction must publish one revision"
 
     var small = navBackStack<Int>(1, 2)
     var failed = false
@@ -2026,12 +1877,12 @@ test "transactions publish once and roll back invalid staging" {
         failed = true
     }
     assert failed panic "capacity overflow must be reported"
-    assert small.count == 1 && small.version == Long(0) panic "failed staging changed the original stack"
+    assert small.count == 1 && small.version == 0 panic "failed staging changed the original stack"
 }
 
 test "display resolves owners and adaptive overlays by entry id" {
     var stack = navBackStack<Int>(1, 6)
-    stack.push(2) catch navEntryIdInvalid()
+    stack.push(2) catch NavEntryId::invalid
     var provider = navEntryProvider<Int>({ item -> navTestEntry(item) })
     fin environment = navEnvironment(1400.0, 900.0, .Expanded, Long(1))
     var display = navDisplay<Int>(6)
@@ -2042,7 +1893,7 @@ test "display resolves owners and adaptive overlays by entry id" {
     assert display.owners.lifecycleOf(stack.itemAt(0).id) == NavLifecycle.Active panic "visible primary owner was not activated"
     assert display.owners.lifecycleOf(stack.itemAt(1).id) == NavLifecycle.Active panic "visible detail owner was not activated"
 
-    stack.push(3) catch navEntryIdInvalid()
+    stack.push(3) catch NavEntryId::invalid
     display.sync(stack, provider, environment) catch false
     assert display.scene.overlayCount == 1 panic "dialog metadata must create an overlay"
     assert display.entryCount == 3 panic "overlay replaced its background entries"
@@ -2063,7 +1914,7 @@ test "overlay dismissal follows typed presentation policy" {
 
 test "predictive back clamps progress without mutating the stack" {
     var stack = navBackStack<Int>(1, 3)
-    stack.push(2) catch navEntryIdInvalid()
+    stack.push(2) catch NavEntryId::invalid
     fin version = stack.version
     var gesture = navBackGesture()
     gesture.begin(stack.itemAt(0).id)
@@ -2076,13 +1927,13 @@ test "predictive back clamps progress without mutating the stack" {
 test "back dispatch prefers overlay then nested depth" {
     var dispatcher = navBackDispatcher(8)
     fin child = dispatcher.child(0) catch -1
-    fin screenOwner = NavOwnerId(Long(1), Long(1))
-    fin nestedOwner = NavOwnerId(Long(2), Long(1))
-    fin overlayOwner = NavOwnerId(Long(3), Long(1))
+    fin screenOwner: NavOwnerId = .(1, 1)
+    fin nestedOwner: NavOwnerId = .(2, 1)
+    fin overlayOwner: NavOwnerId = .(3, 1)
 
-    dispatcher.register(screenOwner, child, .Screen, 1, NavTestBackHandler(true)) catch { }
-    dispatcher.register(nestedOwner, child, .Nested, 2, NavTestBackHandler(true)) catch { }
-    dispatcher.register(overlayOwner, child, .Overlay, 1, NavTestBackHandler(true)) catch { }
+    dispatcher.register(screenOwner, child, .Screen, 1, .(true)) catch { }
+    dispatcher.register(nestedOwner, child, .Nested, 2, .(true)) catch { }
+    dispatcher.register(overlayOwner, child, .Overlay, 1, .(true)) catch { }
 
     fin selected = dispatcher.dispatch(child)
     assert navOwnerIdEqual(selected, overlayOwner) panic "overlay did not win scoped back dispatch"
@@ -2092,8 +1943,8 @@ test "back dispatch prefers overlay then nested depth" {
 }
 
 test "typed results reject the wrong entry generation" {
-    fin sender = NavEntryId(Long(4), Long(1))
-    fin receiver = NavEntryId(Long(2), Long(1))
+    fin sender: NavEntryId = .(4, 1)
+    fin receiver: NavEntryId = .(2, 1)
     fin key = NavResultKey<Int>("picker.value")
     var channel = navResultChannel<Int>(key, sender, receiver, 1, .Once)
     channel.send(sender, 42) catch { }
@@ -2102,7 +1953,7 @@ test "typed results reject the wrong entry generation" {
 
     var rejected = false
     try {
-        channel.send(NavEntryId(Long(4), Long(2)), 7)
+        channel.send(.(4, 2), 7)
     } catch {
         rejected = true
     }
@@ -2111,22 +1962,19 @@ test "typed results reject the wrong entry generation" {
 
 test "snapshots preserve stable ids and advance allocation" {
     var stack = navBackStack<Int>(10, 5)
-    stack.push(20) catch navEntryIdInvalid()
-    stack.push(30) catch navEntryIdInvalid()
+    stack.push(20) catch NavEntryId::invalid
+    stack.push(30) catch NavEntryId::invalid
     fin last = stack.currentItem.id
-    fin snapshot = navSnapshot<Int>(stack, NavIntCodec()) catch NavStackSnapshot(
-        0,
-        0,
-        Long(0),
-        Array<NavItemSnapshot>(),
-        0,
-        0,
+    fin snapshot = navSnapshot<Int>(stack, .()) catch NavStackSnapshot(
+        0, 0, 0
+        Array<NavItemSnapshot>()
+        0, 0
         Array<NavOwnerSnapshot>()
     )
-    var restored = navRestore<Int>(snapshot, NavIntCodec(), 5) catch navBackStack<Int>(0)
+    var restored = navRestore<Int>(snapshot, .(), 5) catch navBackStack<Int>(0)
     assert restored.count == 3 && restored.current == 30 panic "snapshot did not restore route order"
     assert navEntryIdEqual(restored.currentItem.id, last) panic "snapshot changed entry identity"
-    fin next = restored.push(40) catch navEntryIdInvalid()
+    fin next = restored.push(40) catch NavEntryId::invalid
     assert next.value > last.value panic "restoration did not advance the identity allocator"
 }
 
@@ -2134,17 +1982,12 @@ test "deep-link plans apply atomically" {
     var pushes: Array<Int> = Array::fill<Int>(2)
     pushes[0] = 8
     pushes[1] = 9
-    fin plan = NavStackPlan<Int>(
-        7,
-        pushes,
-        Array<NavNestedPlan>(),
-        false
-    )
+    fin plan = NavStackPlan<Int>(7, pushes, Array<NavNestedPlan>(), false)
     var stack = navBackStack<Int>(1, 5)
     fin before = stack.version
-    fin change = navApplyPlan<Int>(stack, plan) catch navChangeNone()
+    fin change = navApplyPlan<Int>(stack, plan) catch NavChange::none
     assert stack.count == 3 && stack.at(0) == 7 && stack.current == 9 panic "deep-link plan exposed the wrong history"
-    assert stack.version == before + Long(1) && change.direction == NavDirection.Push panic "deep-link plan did not publish atomically"
+    assert stack.version == before + 1 && change.direction == NavDirection.Push panic "deep-link plan did not publish atomically"
 }
 
 test "top-level stack sets preserve independent histories" {
@@ -2155,14 +1998,14 @@ test "top-level stack sets preserve independent histories" {
     routeRoots[0] = 10
     routeRoots[1] = 20
     var stacks = navStackSet<Int, Int>(
-        roots,
-        routeRoots,
-        { a, b -> navTestIntEqual(a, b) },
+        roots
+        routeRoots
+        { a, b -> navTestIntEqual(a, b) }
         4
     )
-    stacks.stacks[0].push(11) catch navEntryIdInvalid()
+    stacks.stacks[0].push(11) catch NavEntryId::invalid
     stacks.select(roots[1]) catch { }
-    stacks.stacks[1].push(21) catch navEntryIdInvalid()
+    stacks.stacks[1].push(21) catch NavEntryId::invalid
     stacks.select(roots[0]) catch { }
     assert stacks.current().current == 11 panic "switching roots destroyed preserved history"
 }

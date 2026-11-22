@@ -82,7 +82,7 @@ func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface
         fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
         fin config = colliders.values[index].clone()
         if config.enabled && world.isAlive(entity) && visibleInWorld(world, entity) {
-            var surface = CollisionSurface(settings: config)
+            var surface: CollisionSurface = .(settings: config)
             var model = worldMatrix(world, entity)
             fin images = ensureStorage<HeightfieldTerrain>(world)
             fin volumes = ensureStorage<PluginObject>(world)
@@ -92,7 +92,7 @@ func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface
                     surface.terrain = readTerrainImage("${root}/${source.image}")
                     model = heightfieldMatrix(world, entity, source)
                     gradeRoadTerrain(surface.terrain, model, roads)
-                    surface.bounds = aabb3d(Vec3(-0.5,-0.5,-0.5),Vec3(0.5,0.5,0.5))
+                    surface.bounds = aabb3d(.(-0.5,-0.5,-0.5),.(0.5,0.5,0.5))
                 }
             } else if storageHas<PluginObject>(volumes, entity) {
                 fin source = storageGet<PluginObject>(volumes, entity)
@@ -100,14 +100,14 @@ func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface
                     fin data = loadLandscapeVolume(root,source.id)
                     surface.volume = data.field.clone()
                     fin field = surface.volume.&
-                    surface.bounds = aabb3d(Vec3(field.originX,field.originY,field.originZ),
+                    surface.bounds = aabb3d(.(field.originX,field.originY,field.originZ),
                         Vec3(field.worldX(field.cellsX),field.worldY(field.cellsY),field.worldZ(field.cellsZ)))
                 }
             }
             if surface.terrain.samples != 0 || surface.volume.values.size > 0 {
-                fin x = Vec3(model.m00,model.m10,model.m20)
-                fin y = Vec3(model.m01,model.m11,model.m21)
-                fin z = Vec3(model.m02,model.m12,model.m22)
+                fin x: Vec3 = .(model.m00,model.m10,model.m20)
+                fin y: Vec3 = .(model.m01,model.m11,model.m21)
+                fin z: Vec3 = .(model.m02,model.m12,model.m22)
                 fin det = x.dot(y.cross(z))
                 if absValue(det) > 0.000001 {
                     surface.offset = Vec3(model.m03,model.m13+config.surfaceOffset,model.m23)
@@ -132,7 +132,7 @@ func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface
                 }
             }
         }
-        index += 1
+        index++
     }
     if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
     return take surfaces
@@ -148,7 +148,7 @@ func releaseLandscapeColliders(surfaces: Array<CollisionSurface>!) {
 /** A world point in the surface's own space. */
 func collisionLocal(surface: CollisionSurface&, p: Vec3&): Vec3 {
     fin d = p.subtract(surface.offset)
-    return Vec3(surface.invX.dot(d),surface.invY.dot(d),surface.invZ.dot(d))
+    return .(surface.invX.dot(d),surface.invY.dot(d),surface.invZ.dot(d))
 }
 
 /** A point of the surface's own space in the world. */
@@ -167,10 +167,12 @@ func insideTerrainBounds(surface: CollisionSurface&, l: Vec3&): Bool =
  * magnitude is a local distance, so only its sign and order matter here.
  */
 func groundDistance(surface: CollisionSurface&, l: Vec3&): Double {
-    if !insideTerrainBounds(surface, l) then return 1.0
-    if surface.terrain.samples != 0 then return l.y - sampleTerrain(surface.terrain,l.x,l.z)
-    if l.y < surface.bounds.min.y || l.y > surface.bounds.max.y then return 1.0
-    return surface.volume.sample(l.x,l.y,l.z)
+    return when {
+        !insideTerrainBounds(surface, l) -> 1.0
+        surface.terrain.samples != 0 -> l.y - sampleTerrain(surface.terrain,l.x,l.z)
+        l.y < surface.bounds.min.y || l.y > surface.bounds.max.y -> 1.0
+        else -> surface.volume.sample(l.x,l.y,l.z)
+    }
 }
 
 /** The outward world normal at a local point. */
@@ -203,11 +205,9 @@ func castLandscapeSurface(surface: CollisionSurface&, origin: Vec3&, direction: 
             var lower = prior
             var upper = t
             if cursor > 0 {
-                var refine = 0
-                while refine < 14 {
+                for refine: Int in 0..<14 {
                     fin mid = (lower+upper)*0.5
                     if groundDistance(surface,start.add(span.scale(mid))) <= 0.0 then upper = mid else lower = mid
-                    refine += 1
                 }
             }
             fin at = start.add(span.scale(upper))
@@ -217,9 +217,9 @@ func castLandscapeSurface(surface: CollisionSurface&, origin: Vec3&, direction: 
                 terrainClamp(surface.settings.friction,0.0,3.0),point.x,point.y,point.z)
         }
         prior = t
-        cursor += 1
+        cursor++
     }
-    return LandscapeGroundHit()
+    return .()
 }
 
 /** Finds the nearest paved surface, including a rim that starts in contact. */
@@ -234,12 +234,12 @@ func castRoadSurface(roads: RoadNetwork&, origin: Vec3&, direction: Vec3&, lengt
 
 /** The nearest ground along a world ray over every landscape. */
 func castLandscape(surfaces: Array<CollisionSurface>&, origin: Vec3&, direction: Vec3&, length: Double): LandscapeGroundHit {
-    var nearest = LandscapeGroundHit(t: length)
+    var nearest: LandscapeGroundHit = .(t: length)
     var index = 0
     while index < surfaces.size {
         fin hit = castLandscapeSurface(surfaces[index],origin,direction,length)
         if hit.hit && (!nearest.hit || hit.t < nearest.t) then nearest = take hit
-        index += 1
+        index++
     }
     return take nearest
 }
@@ -263,9 +263,8 @@ func rayLandscape(surfaces: Array<CollisionSurface>&, origin: Vec3&, motion: Vec
  */
 func landscapeWheel(surfaces: Array<CollisionSurface>&, mount: Vec3&, down: Vec3&, forward: Vec3&,
                     radius: Double, travel: Double): LandscapeGroundHit {
-    var best = LandscapeGroundHit(t: travel)
-    var sample = 0
-    while sample < 7 {
+    var best: LandscapeGroundHit = .(t: travel)
+    for sample: Int in 0..<7 {
         fin fraction = when sample {
             0 -> 0.0
             1 -> 0.42
@@ -280,14 +279,13 @@ func landscapeWheel(surfaces: Array<CollisionSurface>&, mount: Vec3&, down: Vec3
         fin origin = mount.add(forward.scale(along)).add(down.scale(drop))
         fin hit = castLandscape(surfaces,origin,down,travel)
         if hit.hit && (!best.hit || hit.t < best.t) then best = take hit
-        sample += 1
     }
     return take best
 }
 
 /** How far a world point is inside a landscape, with the direction out of it. */
 func landscapePenetration(surfaces: Array<CollisionSurface>&, p: Vec3&): LandscapeContact {
-    var deepest = LandscapeContact()
+    var deepest: LandscapeContact = .()
     var index = 0
     while index < surfaces.size {
         fin surface = surfaces[index].&
@@ -297,18 +295,18 @@ func landscapePenetration(surfaces: Array<CollisionSurface>&, p: Vec3&): Landsca
             if road.found && depth > deepest.depth && depth < 2.0 {
                 deepest = LandscapeContact(depth,road.normal.x,road.normal.y,road.normal.z,road.friction)
             }
-            index += 1
+            index++
             continue
         }
         fin l = collisionLocal(surface,p)
         if insideTerrainBounds(surface,l) {
             var depth: Double = 0.0
-            var n = Vec3(0.0,1.0,0.0)
+            var n: Vec3 = .(0.0,1.0,0.0)
             if surface.terrain.samples != 0 {
                 fin h = sampleTerrain(surface.terrain,l.x,l.z)
                 if l.y < h {
                     // The vertical gap to the surface, measured across its local plane.
-                    n = collisionNormal(surface,Vec3(l.x,h,l.z))
+                    n = collisionNormal(surface,.(l.x,h,l.z))
                     depth = collisionWorld(surface,l.x,h,l.z).subtract(p).dot(n)
                 }
             } else if l.y >= surface.bounds.min.y && l.y <= surface.bounds.max.y {
@@ -318,11 +316,9 @@ func landscapePenetration(surfaces: Array<CollisionSurface>&, p: Vec3&): Landsca
                     depth = -d*surface.unit
                 }
             }
-            if depth > deepest.depth {
-                deepest = LandscapeContact(depth,n.x,n.y,n.z,terrainClamp(surface.settings.friction,0.0,3.0))
-            }
+            if depth > deepest.depth then deepest = LandscapeContact(depth,n.x,n.y,n.z,terrainClamp(surface.settings.friction,0.0,3.0))
         }
-        index += 1
+        index++
     }
     return take deepest
 }

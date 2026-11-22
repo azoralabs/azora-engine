@@ -28,9 +28,7 @@ pack EcsObserver {
     var _initialized: Bool
 }
 
-func ecsObserver(): EcsObserver {
-    return EcsObserver((0 - 1) as Long, (0 - 1) as Long, (0 - 1) as Long, false)
-}
+func ecsObserver(): EcsObserver = .(-1, -1, -1, false)
 
 impl EcsObserver {
     /**
@@ -39,9 +37,7 @@ impl EcsObserver {
      * Returns true exactly once for each distinct world revision.
      */
     func !.observeWorld(world: World&): Bool {
-        if self._worldRevision == world.revision {
-            return false
-        }
+        if self._worldRevision == world.revision then return false
         self._worldRevision = world.revision
         self._initialized = true
         return true
@@ -49,9 +45,7 @@ impl EcsObserver {
 
     /** Observes insertions, removals, and writes in one component storage. */
     func <T> !.observeStorage(storage: Storage<T>&): Bool {
-        if self._storageRevision == storage.revision {
-            return false
-        }
+        if self._storageRevision == storage.revision then return false
         self._storageRevision = storage.revision
         self._initialized = true
         return true
@@ -59,9 +53,7 @@ impl EcsObserver {
 
     /** Observes any independent revisioned state such as navigation. */
     func !.observeRevision(revision: Long): Bool {
-        if self._navigationRevision == revision {
-            return false
-        }
+        if self._navigationRevision == revision then return false
         self._navigationRevision = revision
         self._initialized = true
         return true
@@ -80,13 +72,11 @@ pack ReactiveResource<T> {
     var publishedRevision: Long
 }
 
-func<T> reactiveResource(value: T): ReactiveResource<T> {
-    return ReactiveResource<T>(signalInit<T>(value), (0 - 1) as Long)
-}
+func<T> reactiveResource(value: T): ReactiveResource<T> = ReactiveResource<T>(signalInit(value), -1)
 
 impl ReactiveResource<T> {
-    prop  &.value: T = signalGet<T>(self.signal)
-    prop  &.version: Long = signalVersion<T>(self.signal)
+    prop &.value: T = signalGet<T>(self.signal)
+    prop &.version: Long = signalVersion<T>(self.signal)
 
     func !.set(value: T) {
         signalSet<T>(self.signal, value)
@@ -99,16 +89,14 @@ impl ReactiveResource<T> {
      */
     func !.consumeChange(): Bool {
         fin current = signalVersion<T>(self.signal)
-        if self.publishedRevision == current {
-            return false
-        }
+        if self.publishedRevision == current then return false
         self.publishedRevision = current
         return true
     }
 }
 
 test "ecs observer consumes each world revision once" {
-    var world = World()
+    var world: World = .()
     var observer = ecsObserver()
     assert observer.observeWorld(world) panic "first world observation must invalidate"
     assert !observer.observeWorld(world) panic "unchanged world invalidated twice"

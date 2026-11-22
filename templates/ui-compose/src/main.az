@@ -49,14 +49,14 @@ import engine.ui
 import engine.ui.runner
 
 /** Action codes the buttons report. Zero means "no action". */
-fin actionRed = 1
-fin actionGreen = 2
-fin actionBlue = 3
-fin actionSlate = 4
-fin actionAddRow = 5
+inline fin actionRed = 1
+inline fin actionGreen = 2
+inline fin actionBlue = 3
+inline fin actionSlate = 4
+inline fin actionAddRow = 5
 
 /** The group the recolourable shapes carry, and the query selects on. */
-fin swatchGroup = 1
+inline fin swatchGroup = 1
 
 /**
  * Describes the whole interface, and holds the little state it needs.
@@ -93,45 +93,45 @@ react func ui(
 
     using composeIn(world) {
         Column(
-            modifier: .().fillMaxSize(),
-        ) @children {
+            modifier: .().fillMaxSize()
+        ) {
             Row(
                 modifier: .()
                     .height(56.0)
                     .fillMaxWidth()
-                    .background(0.14, 0.15, 0.18),
-                horizontalArrangement: .Start,
-                verticalAlignment: .Center,
-                spacing: 8.0,
-            ) @children {
+                    .background(0.14, 0.15, 0.18)
+                horizontalArrangement: .Start
+                verticalAlignment: .Center
+                spacing: 8.0
+            ) {
                 Button(
-                    modifier: swatch(0.78, 0.28, 0.28),
-                    action: actionRed,
-                ) @children {
+                    modifier: swatch(0.78, 0.28, 0.28)
+                    action: actionRed
+                ) {
                     Text("Red")
                 }
                 Button(
-                    modifier: swatch(0.29, 0.66, 0.38),
-                    action: actionGreen,
-                ) @children {
+                    modifier: swatch(0.29, 0.66, 0.38)
+                    action: actionGreen
+                ) {
                     Text("Green")
                 }
                 Button(
-                    modifier: swatch(0.27, 0.51, 0.86),
-                    action: actionBlue,
-                ) @children {
+                    modifier: swatch(0.27, 0.51, 0.86)
+                    action: actionBlue
+                ) {
                     Text("Blue")
                 }
                 Button(
-                    modifier: swatch(0.35, 0.38, 0.45),
-                    action: actionSlate,
-                ) @children {
+                    modifier: swatch(0.35, 0.38, 0.45)
+                    action: actionSlate
+                ) {
                     Text("Slate")
                 }
                 Button(
-                    modifier: swatch(0.45, 0.35, 0.62),
-                    action: actionAddRow,
-                ) @children {
+                    modifier: swatch(0.45, 0.35, 0.62)
+                    action: actionAddRow
+                ) {
                     Text("Add row")
                 }
             }
@@ -139,37 +139,35 @@ react func ui(
             Row(
                 modifier: .()
                     .fillMaxWidth()
-                    .weight(1.0),
-                key: "body",
-            ) @children {
+                    .weight(1.0)
+                key: "body"
+            ) {
                 // A scrolling list of rows, each holding three tagged swatches.
                 ScrollColumn(
                     modifier: .()
                         .weight(3.0)
                         .fillMaxHeight()
                         .padding(all: 12.0)
-                        .background(0.10, 0.11, 0.13),
-                    spacing: 8.0,
-                    key: "list",
-                ) @children {
-                    var index = 0
-                    while index < rows {
+                        .background(0.10, 0.11, 0.13)
+                    spacing: 8.0
+                    key: "list"
+                ) {
+                    for i: Int in 0..<rows {
                         Row(
                             modifier: .()
                                 .height(64.0)
                                 .fillMaxWidth()
                                 .padding(all: 6.0)
-                                .background(0.16, 0.17, 0.20),
-                            verticalAlignment: .Center,
-                            spacing: 8.0,
-                            key: "line-${index}",
-                        ) @children {
-                            Text("Row ${index + 1}", modifier: .().width(90.0))
+                                .background(0.16, 0.17, 0.20)
+                            verticalAlignment: .Center
+                            spacing: 8.0
+                            key: "line-${i}",
+                        ) {
+                            Text("Row ${i + 1}", modifier: .().width(90.0))
                             Shape(modifier: .().weight(1.0), group: swatchGroup)
                             Shape(modifier: .().weight(1.0), group: swatchGroup)
                             Shape(modifier: .().weight(1.0), group: swatchGroup)
                         }
-                        index = index + 1
                     }
                 }
 
@@ -179,10 +177,10 @@ react func ui(
                         .weight(1.0)
                         .fillMaxHeight()
                         .padding(all: 14.0)
-                        .background(0.13, 0.14, 0.17),
-                    verticalArrangement: .Start,
-                    spacing: 10.0,
-                ) @children {
+                        .background(0.13, 0.14, 0.17)
+                    verticalArrangement: .Start
+                    spacing: 10.0
+                ) {
                     Text("Reactive ECS UI", modifier: .().height(30.0))
                     Text("rows: ${rows}", modifier: .().height(30.0))
                     Text("tint: ${tint}", modifier: .().height(30.0))
@@ -223,10 +221,10 @@ func respond(world: World&, input: Res<UiInput>) {
  */
 @System(phase: .Update, interval: .Every(5.seconds))
 react func changeColorEach5Secs(
-    shapes: @query [TagI&, Paint!],
+    shapes: @query [TagI&, Paint!]
 ) {
-    remember var round = 1
-    round = round + 1
+    remember var round: Long = 1
+    round++
 
     var index = 0
     // One parameter per fetch term, entity first. `Paint!` is an exclusive
@@ -234,12 +232,12 @@ react func changeColorEach5Secs(
     // there is no storage to reach for here and none to put it back into.
     shapes.unpack { entity, tag, paint ->
         if entity.isValid && tag.index == swatchGroup {
-            fin h = (round * 2654435761 + index * 40503) % 1000003
+            fin h = (round * 2654435761 + (index as Long) * 40503) % 1000003
             paint.r = 0.25 + ((h % 97) as Double) / 96.0 * 0.6
             paint.g = 0.25 + (((h / 97) % 89) as Double) / 88.0 * 0.6
             paint.b = 0.25 + (((h / 8633) % 83) as Double) / 82.0 * 0.6
             paint.alpha = 1.0
-            index = index + 1
+            index++
         }
     }
 }

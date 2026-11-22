@@ -186,56 +186,40 @@ pack PhysicsSettings {
 /** A material with the friction and bounce of ordinary painted metal. */
 func physicsMaterial(friction: Double = 0.65, restitution: Double = 0.05, density: Double = 1.0): PhysicsMaterial {
     return PhysicsMaterial(
-        realClamp01(friction),
-        realClamp01(restitution),
+        realClamp01(friction)
+        realClamp01(restitution)
         realMaxOf(density, 0.0)
     )
 }
 
 /** A frictionless, perfectly elastic material — a pinball bumper. */
-func bouncyMaterial(): PhysicsMaterial {
-    return PhysicsMaterial(0.0, 1.0, 1.0)
-}
+func bouncyMaterial(): PhysicsMaterial = .(0.0, 1.0, 1.0)
 
 /** A material that absorbs everything it touches. */
-func deadMaterial(): PhysicsMaterial {
-    return PhysicsMaterial(1.0, 0.0, 1.0)
-}
+func deadMaterial(): PhysicsMaterial = .(1.0, 0.0, 1.0)
 
 /** Layers that interact with everything. */
-func allLayers(): CollisionLayers {
-    return CollisionLayers(physicsAllLayers, physicsAllLayers)
-}
+func allLayers(): CollisionLayers = .(physicsAllLayers, physicsAllLayers)
 
-func collisionLayers(memberships: Int, filters: Int): CollisionLayers {
-    return CollisionLayers(memberships, filters)
-}
+func collisionLayers(memberships: Int, filters: Int): CollisionLayers = .(memberships, filters)
 
 /** True when each of [a] and [b] is a member of a layer the other filters for. */
-func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool {
-    return (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
-}
+func layersInteract(a: CollisionLayers, b: CollisionLayers): Bool = (a.memberships & b.filters) != 0 && (b.memberships & a.filters) != 0
 
-func damping(linear: Double = 0.01, angular: Double = 0.05): Damping {
-    return Damping(realClamp01(linear), realClamp01(angular))
-}
+func damping(linear: Double = 0.01, angular: Double = 0.05): Damping = .(realClamp01(linear), realClamp01(angular))
 
-func awakeBody(threshold: Double = 0.001): Sleeping {
-    return Sleeping(true, 0.0, threshold)
-}
+func awakeBody(threshold: Double = 0.001): Sleeping = .(true, 0.0, threshold)
 
-func gravityScale(value: Double = 1.0): GravityScale {
-    return GravityScale(value)
-}
+func gravityScale(value: Double = 1.0): GravityScale = .(value)
 
 /** Default solver settings: four substeps, sleeping enabled. */
 func physicsSettings(): PhysicsSettings {
     return PhysicsSettings(
-        4,
-        physicsCorrectionRate,
-        physicsContactSlop,
-        physicsMaxDelta,
-        physicsSleepEpsilon,
+        4
+        physicsCorrectionRate
+        physicsContactSlop
+        physicsMaxDelta
+        physicsSleepEpsilon
         true
     )
 }
@@ -250,7 +234,7 @@ func physicsSettings(): PhysicsSettings {
  */
 func inverseMassFor(kind: RigidBodyKind, mass: Double): Double {
     return when kind {
-        RigidBodyKind.Dynamic -> if mass > 0.0 { 1.0 / mass } else { 0.0 }
+        .Dynamic -> if mass > 0.0 then 1.0 / mass else 0.0
         else -> 0.0
     }
 }
@@ -258,7 +242,7 @@ func inverseMassFor(kind: RigidBodyKind, mass: Double): Double {
 /** True when [kind] is moved by the solver rather than by the game. */
 func kindIsSimulated(kind: RigidBodyKind): Bool {
     return when kind {
-        RigidBodyKind.Dynamic -> true
+        .Dynamic -> true
         else -> false
     }
 }
@@ -266,7 +250,7 @@ func kindIsSimulated(kind: RigidBodyKind): Bool {
 /** True when [kind] pushes other bodies but is never pushed itself. */
 func kindIsImmovable(kind: RigidBodyKind): Bool {
     return when kind {
-        RigidBodyKind.Dynamic -> false
+        .Dynamic -> false
         else -> true
     }
 }
@@ -279,10 +263,10 @@ func kindIsImmovable(kind: RigidBodyKind): Bool {
  */
 func forceScale(mode: ForceMode, inverseMass: Double, dt: Double): Double {
     return when mode {
-        ForceMode.Force -> inverseMass * dt
-        ForceMode.Acceleration -> dt
-        ForceMode.Impulse -> inverseMass
-        ForceMode.VelocityChange -> 1.0
+        .Force -> inverseMass * dt
+        .Acceleration -> dt
+        .Impulse -> inverseMass
+        .VelocityChange -> 1.0
     }
 }
 
@@ -301,10 +285,8 @@ func updateSleep(sleep: Sleeping, speedSquared: Double, dt: Double): Bool {
         sleep.awake = true
         return true
     }
-    sleep.stillFor = sleep.stillFor + dt
-    if sleep.stillFor >= 0.25 {
-        sleep.awake = false
-    }
+    sleep.stillFor += dt
+    if sleep.stillFor >= 0.25 then sleep.awake = false
     return sleep.awake
 }
 
@@ -324,21 +306,13 @@ func realClamp01(value: Double): Double {
     }
 }
 
-func realMaxOf(a: Double, b: Double): Double {
-    return if a > b { a } else { b }
-}
+func realMaxOf(a: Double, b: Double): Double = if a > b then a else b
 
-func realMinOf(a: Double, b: Double): Double {
-    return if a < b { a } else { b }
-}
+func realMinOf(a: Double, b: Double): Double = if a < b then a else b
 
-func realClampTo(value: Double, low: Double, high: Double): Double {
-    return realMinOf(realMaxOf(value, low), high)
-}
+func realClampTo(value: Double, low: Double, high: Double): Double = realMinOf(realMaxOf(value, low), high)
 
-func absReal(value: Double): Double {
-    return if value < 0.0 { 0.0 - value } else { value }
-}
+func absReal(value: Double): Double = if value < 0.0 then -value else value
 
 func realSign(value: Double): Double {
     return when true {
@@ -349,9 +323,7 @@ func realSign(value: Double): Double {
 }
 
 /** The timestep the solver will actually use for a frame delta of [dt]. */
-func clampTimestep(dt: Double, settings: PhysicsSettings): Double {
-    return realClampTo(dt, 0.0, settings.maxDelta)
-}
+func clampTimestep(dt: Double, settings: PhysicsSettings): Double = realClampTo(dt, 0.0, settings.maxDelta)
 
 /** The number of substeps [settings] asks for, held to a sane range. */
 func substepCount(settings: PhysicsSettings): Int {
@@ -373,20 +345,20 @@ test "layer masks require agreement in both directions" {
 }
 
 test "inverse mass encodes the body kind" {
-    assert inverseMassFor(RigidBodyKind.Dynamic, 4.0) > 0.24 panic "a dynamic body must be movable"
-    assert inverseMassFor(RigidBodyKind.Static, 4.0) == 0.0 panic "a static body must be immovable"
-    assert inverseMassFor(RigidBodyKind.Kinematic, 4.0) == 0.0 panic "a kinematic body must be immovable"
-    assert inverseMassFor(RigidBodyKind.Dynamic, 0.0) == 0.0 panic "a massless dynamic body must not divide by zero"
-    assert kindIsSimulated(RigidBodyKind.Dynamic) && kindIsImmovable(RigidBodyKind.Static) panic "the kind predicates must agree with the inverse mass"
+    assert inverseMassFor(.Dynamic, 4.0) > 0.24 panic "a dynamic body must be movable"
+    assert inverseMassFor(.Static, 4.0) == 0.0 panic "a static body must be immovable"
+    assert inverseMassFor(.Kinematic, 4.0) == 0.0 panic "a kinematic body must be immovable"
+    assert inverseMassFor(.Dynamic, 0.0) == 0.0 panic "a massless dynamic body must not divide by zero"
+    assert kindIsSimulated(.Dynamic) && kindIsImmovable(.Static) panic "the kind predicates must agree with the inverse mass"
 }
 
 test "force modes scale the way their names promise" {
     fin dt = 0.5
     fin inverseMass = 0.25
-    assert forceScale(ForceMode.Force, inverseMass, dt) == 0.125 panic "a force is scaled by mass and time"
-    assert forceScale(ForceMode.Acceleration, inverseMass, dt) == 0.5 panic "an acceleration ignores mass"
-    assert forceScale(ForceMode.Impulse, inverseMass, dt) == 0.25 panic "an impulse ignores time"
-    assert forceScale(ForceMode.VelocityChange, inverseMass, dt) == 1.0 panic "a velocity change is applied whole"
+    assert forceScale(.Force, inverseMass, dt) == 0.125 panic "a force is scaled by mass and time"
+    assert forceScale(.Acceleration, inverseMass, dt) == 0.5 panic "an acceleration ignores mass"
+    assert forceScale(.Impulse, inverseMass, dt) == 0.25 panic "an impulse ignores time"
+    assert forceScale(.VelocityChange, inverseMass, dt) == 1.0 panic "a velocity change is applied whole"
 }
 
 test "a body sleeps only after staying still" {
@@ -414,7 +386,7 @@ func sceneGravity(world: World!): Vec3 {
     while index < storageLength<Gravity>(fields) {
         fin entity = storageEntityAt<Gravity>(fields, index)
         if world.isAlive(entity) && fields.values[index].enabled then return fields.values[index].acceleration
-        index += 1
+        index++
     }
-    return Vec3(0.0, 0.0, 0.0)
+    return .(0.0, 0.0, 0.0)
 }

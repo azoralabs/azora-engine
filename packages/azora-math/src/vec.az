@@ -170,7 +170,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper/ &.(rhs: T&): Self
     inline if T is Integer { inline "?! MathError" } {
         inline if T is Integer {
-            if rhs == 0 { error MathError.DivisionByZero }
+            if rhs == 0 then error MathError.DivisionByZero
         }
         return Self(
             inline for f in reflect<Self>.fields {
@@ -182,7 +182,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper/= !.(rhs: T&): Unit
     inline if T is Integer { inline "?! MathError" } {
         inline if T is Integer {
-            if rhs == 0 { error MathError.DivisionByZero }
+            if rhs == 0 then error MathError.DivisionByZero
         }
         inline for f in reflect<Self>.fields {
             self.${f.name} /= rhs
@@ -218,7 +218,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper% &.(rhs: T&): Self
     inline if T is Integer { inline "?! MathError" } {
         inline if T is Integer {
-            if rhs == 0 { error MathError.DivisionByZero }
+            if rhs == 0 then error MathError.DivisionByZero
         }
         return Self(
             inline for f in reflect<Self>.fields {
@@ -230,7 +230,7 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     oper%= !.(rhs: T&): Unit
     inline if T is Integer { inline "?! MathError" } {
         inline if T is Integer {
-            if rhs == 0 { error MathError.DivisionByZero }
+            if rhs == 0 then error MathError.DivisionByZero
         }
         inline for f in reflect<Self>.fields {
             self.${f.name} %= rhs
@@ -316,9 +316,9 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
     /**
      * Vector magnitude.
      */
-    prop  &.length: Double = sqrt(self.lengthSquared)
+    prop &.length: Double = sqrt(self.lengthSquared)
 
-    prop  &.lengthSquared: Double {
+    prop &.lengthSquared: Double {
         var result: Double = 0
         inline for f in reflect<Self>.fields {
             fin value = self.${f.name} as Double
@@ -341,15 +341,13 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
         return result
     }
 
-    func &.distanceTo(other: Self&): Double {
-        return self.subtract(other).length
-    }
+    func &.distanceTo(other: Self&): Double = self.subtract(other).length
 
     /**
      * Returns a normalized copy.
      */
-    prop  &.normalized: Self ?! MathError where T is FloatingPoint {
-        if self.length == 0 { error MathError.ZeroLength }
+    prop &.normalized: Self ?! MathError where T is FloatingPoint {
+        if self.length == 0 then error MathError.ZeroLength
         return Self(
             inline for f in reflect<Self>.fields {
                 self.${f.name} / self.length as T
@@ -362,24 +360,22 @@ impl Vec<T, N> { // automatically inherit Vec’s declaration constraints
      */
     func !.normalize() ?! MathError where T is FloatingPoint {
         fin length = self.length
-        if length == 0 { error MathError.ZeroLength }
+        if length == 0 then error MathError.ZeroLength
         fin divisor = length as T
         inline for f in reflect<Self>.fields {
             self.${f.name} /= divisor
         }
     }
 
-    func &.perpendicular(): Self where T is SignedNumber && N == 2 {
-        return Self(-self.y, self.x)
-    }
+    func &.perpendicular(): Self where T is SignedNumber && N == 2 = Self(-self.y, self.x)
 
     /**
      * Three-dimensional cross product.
      */
     func &.cross(rhs: Self&): Self where N == 3 {
         return Self(
-            self.y * rhs.z - self.z * rhs.y,
-            self.z * rhs.x - self.x * rhs.z,
+            self.y * rhs.z - self.z * rhs.y
+            self.z * rhs.x - self.x * rhs.z
             self.x * rhs.y - self.y * rhs.x
         )
     }
@@ -472,19 +468,19 @@ impl Vec<T, N> {
     inline func<I: Int> axis(value: T = 1): Vec<T, N> where I in 0..<N {
         return Vec<T, N>(
             inline for i in 0..<N {
-                if i == I { value } else { 0 as T }
+                if i == I then value else 0 as T
             }
         )
     }
 
     prop zero: Vec<T, N> = Vec<T, N>(0 as T)
     prop one: Vec<T, N> = Vec<T, N>(1 as T)
-    prop right: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 0 { 1 as T } else { 0 as T } })
-    prop up: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 1 { 1 as T } else { 0 as T } })
-    prop forward: Vec<T, N> where N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 { 1 as T } else { 0 as T } })
-    prop left: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 0 { -1 as T } else { 0 as T } })
-    prop down: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 1 { -1 as T } else { 0 as T } })
-    prop back: Vec<T, N> where T is SignedNumber && N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 { -1 as T } else { 0 as T } })
+    prop right: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 0 then 1 as T else 0 as T })
+    prop up: Vec<T, N> = Vec<T, N>(inline for i in 0..<N { if i == 1 then 1 as T else 0 as T })
+    prop forward: Vec<T, N> where N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 then 1 as T else 0 as T })
+    prop left: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 0 then -1 as T else 0 as T })
+    prop down: Vec<T, N> where T is SignedNumber = Vec<T, N>(inline for i in 0..<N { if i == 1 then -1 as T else 0 as T })
+    prop back: Vec<T, N> where T is SignedNumber && N >= 3 = Vec<T, N>(inline for i in 0..<N { if i == 2 then -1 as T else 0 as T })
 }
 
 inline for [t, Ty] in [["i", "u", "f", ""], [Int, UInt, Float, Double]] {

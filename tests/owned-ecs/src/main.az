@@ -21,8 +21,8 @@ impl OwnedResource {
 pack Tally { var counts: Array<Int> }
 
 func main() {
-    var audit = Audit()
-    var world = World()
+    var audit: Audit = .()
+    var world: World = .()
     fin entity = world.spawn()
     var store = Storage<OwnedComponent>(Array<Entity>(), Array<OwnedComponent>(), Array<Bool>(), Array<Bool>(), Long(0))
     storageInsert<OwnedComponent>(store, entity, OwnedComponent(1, audit))
@@ -38,21 +38,21 @@ func main() {
     registerStorage<OwnedComponent>(world, take store)
     world.despawn(entity)
     assert audit.destroyed == 3 panic "despawn must destroy registered components once"
-    assert storageCount<OwnedComponent>(storageOf<OwnedComponent>(world)) == 0 panic "despawn must remove the component row"
+    assert storageCount<OwnedComponent>(storageOf(world)) == 0 panic "despawn must remove the component row"
     fin next = world.spawn()
-    storageInsert<OwnedComponent>(ensureStorage<OwnedComponent>(world), next, OwnedComponent(4, audit))
+    storageInsert<OwnedComponent>(ensureStorage(world), next, .(4, audit))
     world.despawn(next)
     assert audit.destroyed == 4 panic "reused entity slot must preserve component destruction"
     if true {
-        var scopedWorld = World()
+        var scopedWorld: World = .()
         fin scopedEntity = scopedWorld.spawn()
-        storageInsert<OwnedComponent>(ensureStorage<OwnedComponent>(scopedWorld), scopedEntity, OwnedComponent(5, audit))
+        storageInsert<OwnedComponent>(ensureStorage(scopedWorld), scopedEntity, .(5, audit))
     }
     assert audit.destroyed == 5 panic "world scope cleanup must destroy registered owned components"
     // Resources: the world owns them. Replacing one destroys the old value, a
     // dropped world destroys what it holds, and a read hands out a copy.
     if true {
-        var resourceWorld = World()
+        var resourceWorld: World = .()
         insertResource<OwnedResource>(resourceWorld, OwnedResource(6, audit))
         assert audit.destroyed == 5 panic "insert must transfer the resource into the world"
         assert insertResource<OwnedResource>(resourceWorld, OwnedResource(7, audit)) panic "a second insert must report the replace"
