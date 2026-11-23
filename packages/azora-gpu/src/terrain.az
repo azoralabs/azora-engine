@@ -210,67 +210,76 @@ inline fin terrainRoadStrictness: Double = 8.0
  * them weighs [terrainRoadStrictness] times its error in choosing the level.
  */
 func buildTerrainMesh(device: Long, path: String, image: TerrainImage, paved: Long = 0): TerrainMesh {
-    var mesh: TerrainMesh = .(path, image)
-    mesh.chunksX = (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells
-    mesh.chunksZ = (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells
+    var mesh = beginTerrainMesh(path, image)
+    buildTerrainChunkBatch(device, mesh, mesh.chunksX * mesh.chunksZ, paved)
+    return take mesh
+}
+
+func beginTerrainMesh(path: String, image: TerrainImage): TerrainMesh {
+    if image.samples == 0 then return TerrainMesh(path)
+    return TerrainMesh(path, image, chunksX: (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells,
+        chunksZ: (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells)
+}
+
+/** Builds a bounded number of chunks of a pending detailed tile. */
+func buildTerrainChunkBatch(device: Long, mesh: TerrainMesh!, limit: Int, paved: Long = 0) {
+    if limit <= 0 || mesh.chunks.size >= mesh.chunksX * mesh.chunksZ then return
     fin bytes = (terrainChunkSide * terrainChunkSide * 24) as Long
     fin data = azAlloc(bytes)
-    if data == 0 then return take mesh
-    var cz = 0
-    while cz < mesh.chunksZ {
-        var cx = 0
-        while cx < mesh.chunksX {
-            var chunk: TerrainChunk = .(column: cx * terrainChunkCells, row: cz * terrainChunkCells)
-            chunk.low = 1000000.0
-            chunk.high = -1000000.0
-            var j = 0
-            while j < terrainChunkSide {
-                var i = 0
-                while i < terrainChunkSide {
-                    fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
-                    fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
-                    terrainVertex(data, j * terrainChunkSide + i, image, x, z)
-                    fin h = terrainHeight(image, x, z)
-                    if h < chunk.low then chunk.low = h
-                    if h > chunk.high then chunk.high = h
-                    i++
-                }
-                j++
+    if data == 0 then return
+    defer { azFree(data) }
+    fin image = mesh.image.&
+    var built = 0
+    while built < limit && mesh.chunks.size < mesh.chunksX * mesh.chunksZ {
+        fin cz = mesh.chunks.size / mesh.chunksX
+        fin cx = mesh.chunks.size % mesh.chunksX
+        var chunk: TerrainChunk = .(column: cx * terrainChunkCells, row: cz * terrainChunkCells)
+        chunk.low = 1000000.0
+        chunk.high = -1000000.0
+        var j = 0
+        while j < terrainChunkSide {
+            var i = 0
+            while i < terrainChunkSide {
+                fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
+                fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
+                terrainVertex(data, j * terrainChunkSide + i, image, x, z)
+                fin h = terrainHeight(image, x, z)
+                if h < chunk.low then chunk.low = h
+                if h > chunk.high then chunk.high = h
+                i++
             }
-            // Each level's error is the largest gap between the grid and what the level draws,
-            // never smaller than a finer level's, so a coarser level is never thought closer.
-            var worst: Double = 0.0
-            var rise: Double = 0.0
-            for level: Int in 0..<terrainLevels {
-                fin step = 1 << level
-                if level > 0 {
-                    for j: Int in 0..<terrainChunkSide {
-                        for i: Int in 0..<terrainChunkSide {
-                            fin drawn = levelHeight(image, chunk, step, i, j)
-                            fin grid = chunkHeight(image, chunk, i, j)
-                            fin gap = absValue(grid - drawn)
-                            if gap > worst then worst = gap
-                            if paved != 0 && drawn > grid + rise {
-                                fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
-                                fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
-                                if azPeek8(paved, (z * image.columns + x) as Long) != 0 then rise = drawn - grid
-                            }
+            j++
+        }
+        // Each level's error is the largest gap between the grid and what the level draws,
+        // never smaller than a finer level's, so a coarser level is never thought closer.
+        var worst: Double = 0.0
+        var rise: Double = 0.0
+        for level: Int in 0..<terrainLevels {
+            fin step = 1 << level
+            if level > 0 {
+                for j: Int in 0..<terrainChunkSide {
+                    for i: Int in 0..<terrainChunkSide {
+                        fin drawn = levelHeight(image, chunk, step, i, j)
+                        fin grid = chunkHeight(image, chunk, i, j)
+                        fin gap = absValue(grid - drawn)
+                        if gap > worst then worst = gap
+                        if paved != 0 && drawn > grid + rise {
+                            fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
+                            fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
+                            if azPeek8(paved, (z * image.columns + x) as Long) != 0 then rise = drawn - grid
                         }
                     }
                 }
-                fin road = rise * terrainRoadStrictness
-                chunk.errors.add(if road > worst then road else worst)
             }
-            chunk.buffer = send3(device, sel("newBufferWithBytes:length:options:"), data, bytes, 0)
-            if mesh.chunks.size == 0 || chunk.low < mesh.low then mesh.low = chunk.low
-            if mesh.chunks.size == 0 || chunk.high > mesh.high then mesh.high = chunk.high
-            mesh.chunks.add(take chunk)
-            cx++
+            fin road = rise * terrainRoadStrictness
+            chunk.errors.add(if road > worst then road else worst)
         }
-        cz++
+        chunk.buffer = send3(device, sel("newBufferWithBytes:length:options:"), data, bytes, 0)
+        if mesh.chunks.size == 0 || chunk.low < mesh.low then mesh.low = chunk.low
+        if mesh.chunks.size == 0 || chunk.high > mesh.high then mesh.high = chunk.high
+        mesh.chunks.add(take chunk)
+        built++
     }
-    azFree(data)
-    return take mesh
 }
 
 /** Chunk vertex (i, j) at [step] with the edges in [mask] folded onto a coarser neighbour. */

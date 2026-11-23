@@ -173,6 +173,11 @@ pack AzGpu {
     var velocityDepth: Long = 0
     /** Counts drawHeightfields calls, to tell which terrain meshes are still drawn. */
     var terrainFrame: Int = 0
+    var pendingTerrain: TerrainMesh = .()
+    var terrainUploadFrame: Int = -1
+    var streamingMeshFrame: Int = -1
+    var streamingMeshLoads: Int = 0
+    var streamingMeshStarted: Double = 0.0
     /** Ordinary depth (Less, writes), for passes that keep it: the sun's shadow map. */
     var depthLess: Long = 0
     /** Gathers each Photon Field sample's bounce light once, when the field is rebuilt. */
@@ -565,6 +570,8 @@ func peekMat4(buf: Long, offset: Long): Mat4 = Mat4(
 func releaseTerrains(gpu: AzGpu!) {
     releaseRoadBuffers(gpu.roads)
     gpu.roads = RoadRenderCache()
+    releaseTerrainMesh(gpu.pendingTerrain)
+    gpu.pendingTerrain = TerrainMesh()
     for terrain in gpu.terrains then releaseTerrainMesh(terrain)
     gpu.terrains.clear()
     releaseTerrainIndices(gpu.terrainIndices)
@@ -577,6 +584,28 @@ impl AzGpu {
         }
         if self.terrainIndices.buffers.size == 0 then self.terrainIndices = buildTerrainIndices(self.device)
         return self.keepTerrain(loadTerrainMesh(self.device, self.fusion.root, path))
+    }
+
+    /** Keeps displaying the preview while a detailed tile is built a few chunks per frame. */
+    func !.terrainIndexIncremental(path: String, frame: Int): Int {
+        for i: Int in 0..<self.terrains.size {
+            if self.terrains[i].path == path && self.terrains[i].gradedEntity < 0 then return i
+        }
+        if self.terrainUploadFrame == frame then return -1
+        self.terrainUploadFrame = frame
+        if self.pendingTerrain.path == "" {
+            fin image = readTerrainImage("${self.fusion.root}/${path}")
+            self.pendingTerrain = beginTerrainMesh(path, image)
+            // The file read and decode have their own frame.
+            return -1
+        }
+        buildTerrainChunkBatch(self.device, self.pendingTerrain, 10)
+        if self.pendingTerrain.chunks.size < self.pendingTerrain.chunksX * self.pendingTerrain.chunksZ then return -1
+        // Transfer the completed tile by swapping with an empty cache slot.
+        var completed = take self.pendingTerrain
+        self.pendingTerrain = TerrainMesh()
+        fin stored = self.keepTerrain(take completed)
+        return if self.terrains[stored].path == path then stored else -1
     }
 
     /** Stores [mesh] in a released slot, or a new one; answers its index. */

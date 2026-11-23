@@ -396,8 +396,14 @@ impl App {
                 fin dx = absValue(eyeX-model.m03) - (absValue(model.m00)+absValue(model.m02))*0.5
                 fin dz = absValue(eyeZ-model.m23) - (absValue(model.m20)+absValue(model.m22))*0.5
                 fin distant = dx > 13000.0 || dz > 13000.0 || eyeY > 2000.0 + model.m13
-                fin asset = if distant && surface.overviewImage != "" then self.gpu.terrainIndex(surface.overviewImage)
-                    else self.sceneTerrainIndex(entity,surface,model)
+                var asset = -1
+                if surface.overviewImage != "" && !surface.gradeRoads {
+                    if !distant && !self.gpu.casting then
+                        asset = self.gpu.terrainIndexIncremental(surface.image, self.framesRun)
+                    if asset < 0 then asset = self.gpu.terrainIndex(surface.overviewImage)
+                } else {
+                    asset = self.sceneTerrainIndex(entity, surface, model)
+                }
                 self.gpu.terrains[asset].lastUsed = self.gpu.terrainFrame
                 // Outside the view (behind the camera, beyond the sun's cascade): neither its chunks nor its foliage.
                 if !boxInClip(clip, -0.5, self.gpu.terrains[asset].low, -0.5, 0.5, self.gpu.terrains[asset].high, 0.5) {
@@ -445,31 +451,13 @@ impl App {
             fin x1 = (terrainMinInt(chunk.column+terrainChunkCells,columns-1) as Double)/((columns-1) as Double)-0.5
             fin z0 = (chunk.row as Double)/((rows-1) as Double)-0.5
             fin z1 = (terrainMinInt(chunk.row+terrainChunkCells,rows-1) as Double)/((rows-1) as Double)-0.5
-            // The box's eight corners in clip space: outside one side of the view with all of them, it is skipped.
-            var left = 0
-            var right = 0
-            var below = 0
-            var above = 0
-            var behind = 0
-            var nearest: Double = 1000000000.0
-            for corner: Int in 0..<8 {
-                fin x = if corner % 2 == 0 then x0 else x1
-                fin y = if (corner / 2) % 2 == 0 then chunk.low else chunk.high
-                fin z = if corner / 4 == 0 then z0 else z1
-                fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
-                fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
-                fin cw = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
-                if cx < -cw then left += 1
-                if cx > cw then right += 1
-                if cy < -cw then below += 1
-                if cy > cw then above += 1
-                if cw <= 0.0 then behind += 1
-                if cw < nearest then nearest = cw
-            }
-            depths[c] = nearest
-            if left == 8 || right == 8 || below == 8 || above == 8 || behind == 8 || (hidden[c] != 0 && hidden[c] == whole) {
+            if (hidden[c] != 0 && hidden[c] == whole) || !boxInClip(clip, x0, chunk.low, z0, x1, chunk.high, z1) {
                 levels[c] = -1
             } else {
+                fin nearest = clip.m30 * (if clip.m30 > 0.0 then x0 else x1) +
+                    clip.m31 * (if clip.m31 > 0.0 then chunk.low else chunk.high) +
+                    clip.m32 * (if clip.m32 > 0.0 then z0 else z1) + clip.m33
+                depths[c] = nearest
                 var level = 0
                 if tolerance > 0.0 && (!perspective || nearest > 0.05) {
                     fin perUnit = if perspective then rise/nearest else rise
@@ -663,6 +651,7 @@ impl App {
         fin transforms = ensureStorage<Transform>(world)
         fin visibility = ensureStorage<Visibility>(world)
         fin sources = ensureStorage<MeshGeometry>(world)
+        fin streamed = ensureStorage<Streamed>(world)
         for index: Int in 0..<storageLength<Mesh3d>(meshes) {
             fin entity = storageEntityAt<Mesh3d>(meshes, index)
             if !world.isAlive(entity) then continue
@@ -678,9 +667,15 @@ impl App {
                 fin z: Vec3 = .(model.m02, model.m12, model.m22)
                 // A primitive spans half a unit each way: its farthest corner. Geometry: its farthest vertex.
                 if shape != 0 {
-                    fin geometry = storageGet<MeshGeometry>(sources, entity).name
-                    prepareMeshGeometry(world, self.gpu.device, self.gpu.fusion.root, geometry)
-                    self.gpu.sceneMeshes.radii[slot] = geometryReach(world, geometry) * meshLargestAxis(x, y, z)
+                    fin source = storageGet<MeshGeometry>(sources, entity)
+                    var reach = source.radius
+                    if !storageHas<Streamed>(streamed, entity) {
+                        prepareMeshGeometry(world, self.gpu.device, self.gpu.fusion.root, source.name)
+                        if reach <= 0.0 then reach = geometryReach(world, source.name)
+                    } else if reach <= 0.0 {
+                        reach = streamedGeometry(world, self.gpu.device, self.gpu.fusion.root, entity, source.name).reach
+                    }
+                    self.gpu.sceneMeshes.radii[slot] = reach * meshLargestAxis(x, y, z)
                 } else {
                     self.gpu.sceneMeshes.radii[slot] = 0.5 * meshLargestCorner(x, y, z)
                 }
@@ -708,6 +703,7 @@ impl App {
         fin spread = if across > upward then across else upward
         fin store = ensureStorage<Mesh3d>(world)
         fin sources = ensureStorage<MeshGeometry>(world)
+        fin streamed = ensureStorage<Streamed>(world)
         for i: Int in 0..<self.gpu.sceneMeshes.rows.size {
             fin slot = self.gpu.sceneMeshes.meshSlots[i]
             fin model = self.gpu.sceneMeshes.models[slot].&
@@ -721,12 +717,32 @@ impl App {
             fin pipeline = self.scenePipeline(world, entity)
             fin turned = if store.values[row].shape == 2 then mat4Mul(model, mat4RotationZ(1.5707963267948966)) else copyMat4(model)
             if storageHas<MeshGeometry>(sources,entity) {
-                fin geometry = sceneGeometry(world,self.gpu.device,storageGet<MeshGeometry>(sources,entity).name)
+                fin path = storageGet<MeshGeometry>(sources,entity).name
+                fin geometry = if storageHas<Streamed>(streamed, entity) then
+                    self.streamedSceneMesh(world, entity, path)
+                    else sceneGeometry(world,self.gpu.device,path)
                 self.drawMeshPipeline(geometry,turned,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
             } else {
                 self.drawMeshPipeline(primitiveFor(meshes,store.values[row].shape),turned,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
             }
         }
+    }
+}
+
+impl App {
+    func !.streamedSceneMesh(world: World!, entity: Entity, path: String): Mesh {
+        fin assets = ensureStorage<GeometryAsset>(world)
+        fin at = storageIndexOf<GeometryAsset>(assets, entity)
+        if at >= 0 && assets.values[at].name == path then return .(assets.values[at].buffer, assets.values[at].count)
+        if self.gpu.streamingMeshFrame != self.framesRun {
+            self.gpu.streamingMeshFrame = self.framesRun
+            self.gpu.streamingMeshLoads = 0
+            self.gpu.streamingMeshStarted = self.timeNow()
+        }
+        if self.gpu.streamingMeshLoads >= 6 || self.timeNow() - self.gpu.streamingMeshStarted >= 0.00085 then return .(0, 0)
+        self.gpu.streamingMeshLoads++
+        fin asset = streamedGeometry(world, self.gpu.device, self.gpu.fusion.root, entity, path)
+        return .(asset.buffer, asset.count)
     }
 }
 
@@ -828,38 +844,32 @@ func sceneSlot(cache: SceneMeshCache!, world: World!, entity: Entity, pass: Int,
 /** Meshes the camera would show smaller than this many points across are not drawn. */
 inline fin sceneMeshSmallest: Double = 0.75
 
-/** Whether a sphere at ([x], [y], [z]) of [radius] reaches into the view of [clip] (near, left, right, top, bottom). */
+/** Whether a sphere at ([x], [y], [z]) of [radius] reaches into the view of [clip]. */
 func sphereInClip(clip: Mat4&, x: Double, y: Double, z: Double, radius: Double): Bool {
     fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
     fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+    fin depth = clip.m20*x+clip.m21*y+clip.m22*z+clip.m23
     fin w = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
     fin rw = radius*sqrt(clip.m30*clip.m30+clip.m31*clip.m31+clip.m32*clip.m32)
     fin rx = radius*sqrt(clip.m00*clip.m00+clip.m01*clip.m01+clip.m02*clip.m02)
     fin ry = radius*sqrt(clip.m10*clip.m10+clip.m11*clip.m11+clip.m12*clip.m12)
-    return w+rw > 0.0 && absValue(cx) <= w+rw+rx && absValue(cy) <= w+rw+ry
+    fin rz = radius*sqrt(clip.m20*clip.m20+clip.m21*clip.m21+clip.m22*clip.m22)
+    return w+rw > 0.0 && depth+rz >= 0.0 && depth-rz <= w+rw &&
+        absValue(cx) <= w+rw+rx && absValue(cy) <= w+rw+ry
 }
 
-/** Whether the box from ([x0], [y0], [z0]) to ([x1], [y1], [z1]) reaches into the view of [clip]: not all eight corners outside one side. */
+func boxPlaneInside(a: Double, b: Double, c: Double, d: Double, x0: Double, y0: Double, z0: Double,
+                    x1: Double, y1: Double, z1: Double): Bool =
+    a * (if a >= 0.0 then x1 else x0) + b * (if b >= 0.0 then y1 else y0) + c * (if c >= 0.0 then z1 else z0) + d >= 0.0
+
+/** Tests the box against all six Metal clip planes. The far plane stops loading terrain assets outside the camera's reach. */
 func boxInClip(clip: Mat4&, x0: Double, y0: Double, z0: Double, x1: Double, y1: Double, z1: Double): Bool {
-    var left = 0
-    var right = 0
-    var below = 0
-    var above = 0
-    var behind = 0
-    for corner: Int in 0..<8 {
-        fin x = if corner % 2 == 0 then x0 else x1
-        fin y = if (corner / 2) % 2 == 0 then y0 else y1
-        fin z = if corner / 4 == 0 then z0 else z1
-        fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
-        fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
-        fin cw = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
-        if cx < -cw then left += 1
-        if cx > cw then right += 1
-        if cy < -cw then below += 1
-        if cy > cw then above += 1
-        if cw <= 0.0 then behind += 1
-    }
-    return left < 8 && right < 8 && below < 8 && above < 8 && behind < 8
+    return boxPlaneInside(clip.m20, clip.m21, clip.m22, clip.m23, x0,y0,z0,x1,y1,z1) &&
+        boxPlaneInside(clip.m30-clip.m20, clip.m31-clip.m21, clip.m32-clip.m22, clip.m33-clip.m23, x0,y0,z0,x1,y1,z1) &&
+        boxPlaneInside(clip.m30+clip.m00, clip.m31+clip.m01, clip.m32+clip.m02, clip.m33+clip.m03, x0,y0,z0,x1,y1,z1) &&
+        boxPlaneInside(clip.m30-clip.m00, clip.m31-clip.m01, clip.m32-clip.m02, clip.m33-clip.m03, x0,y0,z0,x1,y1,z1) &&
+        boxPlaneInside(clip.m30+clip.m10, clip.m31+clip.m11, clip.m32+clip.m12, clip.m33+clip.m13, x0,y0,z0,x1,y1,z1) &&
+        boxPlaneInside(clip.m30-clip.m10, clip.m31-clip.m11, clip.m32-clip.m12, clip.m33-clip.m13, x0,y0,z0,x1,y1,z1)
 }
 
 /** The longest of a transform's three axes. */
@@ -1327,7 +1337,7 @@ impl App {
 
     func !.prepareRoads(world: World!) {
         fin frozen = self.gpu.roads.staticTransforms
-        fin stamp = world.revision + ensureStorage<SplineRoad>(world).revision * 7 + ensureStorage<RoadPoint>(world).revision * 13 +
+        fin stamp = (if frozen then 0 else world.revision) + ensureStorage<SplineRoad>(world).revision * 7 + ensureStorage<RoadPoint>(world).revision * 13 +
             ensureStorage<RoadJunction>(world).revision * 17 + (if frozen then 0 else ensureStorage<Transform>(world).revision * 19) +
             ensureStorage<FusionMaterial>(world).revision * 23 + ensureStorage<Visibility>(world).revision * 29
         if (frozen || self.gpu.roads.checkedFrame == self.framesRun) && self.gpu.roads.checkedStamp == stamp then return
@@ -1336,7 +1346,7 @@ impl App {
         fin layout = roadLayout(world, self.gpu.scratch)
         if layout == self.gpu.roads.layout then return
         releaseRoadBuffers(self.gpu.roads)
-        self.gpu.roads.network = buildRoadNetwork(world)
+        self.gpu.roads.network = buildRoadNetwork(world, .Render)
         self.gpu.roads.layout = layout
         self.gpu.roads.revision++
         fin ranges = self.gpu.roads.network.surfaceRanges.&

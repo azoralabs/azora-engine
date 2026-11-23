@@ -666,7 +666,7 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
 }
 
 func spawnVehicle(world: World!, start: Entity, ground: Array<CollisionSurface>&): Entity {
-    fin marker = storageGet<PlayerStart>(ensureStorage(world),start)
+    fin marker = storageGetOrDefault<PlayerStart>(ensureStorage(world),start,.())
     fin controller = storageGetOrDefault<PlayerController>(ensureStorage(world),start,.(slot: marker.slot))
     fin worldPose = worldMatrix(world,start)
     var pos: Vec3 = .(worldPose.m03,worldPose.m13,worldPose.m23)
@@ -1127,7 +1127,26 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     }
 
     // ── Integrate ──
-    position = position.add(motion.velocity.scale(dt)).add(push.scale(0.5))
+    fin travel = motion.velocity.scale(dt).add(push.scale(0.5))
+    if storageLength<CollisionMesh>(ensureStorage(world)) > 0 {
+        fin radius = config.bodyHalfWidth
+        fin halfHeight = (config.bodyHigh - config.bodyLow) * 0.5
+        fin center = position.add(.(0.0, config.bodyLow + halfHeight, 0.0))
+        fin front = forward.scale(config.bodyHalfLength - radius)
+        fin a = sweepSceneCollision(world, center.add(front), travel, radius, halfHeight)
+        fin b = sweepSceneCollision(world, center.subtract(front), travel, radius, halfHeight)
+        fin contact = if a.hit && (!b.hit || a.t <= b.t) then a else b
+        if contact.hit {
+            position = position.add(travel.scale(realMaxOf(contact.t - 0.002, 0.0)))
+            fin normal: Vec3 = .(contact.nx, contact.ny, contact.nz)
+            fin closing = motion.velocity.dot(normal)
+            if closing < 0.0 then motion.velocity = motion.velocity.subtract(normal.scale(closing))
+        } else {
+            position = position.add(travel)
+        }
+    } else {
+        position = position.add(travel)
+    }
     q = integrateQuat(q,motion.angular,dt)
     storeQuat(vehicle,q)
     q = vehicleQuat(vehicle)

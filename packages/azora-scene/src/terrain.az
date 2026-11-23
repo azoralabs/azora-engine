@@ -63,6 +63,10 @@ func terrainFile(path: String): Bool {
 
 pack TerrainCursor { var cursor: Int = 2 }
 
+bridge .C {
+    func @foreignName("az_unpack_height_samples")(output: Long, input: Long, count: Int, peak: Int): Int
+}
+
 func terrainToken(blob: Blob&, reader: TerrainCursor!): Int {
     while reader.cursor < blob.size {
         fin byte = blob.u8(reader.cursor)
@@ -111,14 +115,15 @@ func readTerrainImage(path: String): TerrainImage {
     }
     fin bytes = azAlloc((columns as Long) * (rows as Long) * 8)
     if bytes == 0 then return TerrainImage()
-    for i: Int in 0..<columns * rows {
-        var value = 0
-        if binary {
-            fin at = reader.cursor + i*stride
-            value = if narrow then blob.u8(at) else blob.u8(at)*256 + blob.u8(at+1)
-        } else {
-            value = terrainToken(blob, reader)
+    if binary {
+        if azUnpackHeightSamples(bytes, blob.data + reader.cursor as Long, columns * rows, peak) == 0 {
+            azFree(bytes)
+            return .()
         }
+        return .(columns, rows, bytes)
+    }
+    for i: Int in 0..<columns * rows {
+        fin value = terrainToken(blob, reader)
         if value < 0 || value > peak {
             azFree(bytes)
             return .()

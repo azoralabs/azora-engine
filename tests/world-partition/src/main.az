@@ -5,8 +5,10 @@ import engine.core
 import engine.ecs
 import engine.math
 import engine.scene
+import engine.scene.transforms
 import engine.procedural
 import engine.scene.terrain
+import engine.io
 import engine.roads
 import engine.foliage
 import engine.world.partition
@@ -15,6 +17,7 @@ import engine.world.partition
 // buildings), and the partition streams cells in and out around a point.
 
 func main() {
+    testAuthoredCells()
     var world: World = .()
     fin owner = world.spawn()
     storageInsert<WorldRecipe>(ensureStorage(world), owner, .())
@@ -49,7 +52,7 @@ func main() {
     fin centre: Vec3 = .(city.x, city.height, city.z)
     fin loaded = streamWorld(world, ".", centre)
     if envVar("AZORA_WORLD_VERBOSE") != "" then println("loaded ${loaded} cells, ${world.aliveCount} entities")
-    assert loaded > 3 && storageLength<HeightfieldTerrain>(ensureStorage(world)) >= loaded panic "cells around the city load with their terrain"
+    assert loaded > 3 && storageLength<HeightfieldTerrain>(ensureStorage(world)) == 0 panic "content cells contain no terrain"
     assert storageLength<SplineRoad>(ensureStorage(world)) > 10 && storageLength<Mesh3d>(ensureStorage(world)) > 100 panic "the city's streets and buildings load"
     // Each cell has an entity under the partition's, and what it brought in hangs under that.
     let states = ensureStorage<PartitionState>(world)
@@ -58,31 +61,18 @@ func main() {
         assert world.getParent(cell.group) == owner && storageHas<Streamed>(ensureStorage(world), cell.group) panic "a cell hangs under its partition"
         assert storageGet<Name>(ensureStorage(world), cell.group).value == "Cell ${cell.column}, ${cell.row}" panic "a cell is named for its place"
     }
-    fin terrains = ensureStorage<HeightfieldTerrain>(world)
-    for i: Int in 0..<storageLength<HeightfieldTerrain>(terrains) {
-        fin group = world.getParent(storageEntityAt<HeightfieldTerrain>(terrains, i))
-        assert world.getParent(group) == owner panic "a cell's terrain hangs under its cell"
-    }
-    // The overview leaves out exactly the squares of the loaded cells, grows no foliage and hangs under the partition.
+    // Procedural ground has one persistent entity and no cell-dependent holes.
     let lit = ensureStorage<WorldPartition>(world)
     lit.values[storageIndexOf<WorldPartition>(lit, owner)].overview = true
     streamWorld(world, ".", centre)
     let viewed = ensureStorage<PartitionState>(world)
-    fin overview = viewed.values[storageIndexOf<PartitionState>(viewed, owner)].overview[0]
-    fin holes = storageGet<TerrainHoles>(ensureStorage(world), overview).clone()
-    var hidden = 0
-    for square in holes.hidden then if square then hidden++
-    assert hidden == cells.size && holes.spacing == overviewCellSamples(recipe) && holes.columns == worldColumns(recipe) panic "one square left out per loaded cell"
-    for cell in cells then assert holes.hidden[cell.row * holes.columns + cell.column] panic "the loaded cells' squares are the ones left out"
-    assert world.getParent(overview) == owner && !storageGet<FoliagePaint>(ensureStorage(world), overview).enabled panic "the overview grows nothing"
+    fin land = viewed.values[storageIndexOf<PartitionState>(viewed, owner)].terrain
+    assert world.getParent(land) == owner && !storageHas<TerrainHoles>(ensureStorage(world), land) panic "the procedural land is whole"
     fin far: Vec3 = .(city.x + 30000.0, city.height, city.z)
     streamWorld(world, ".", far, 0)
     let moved = ensureStorage<PartitionState>(world)
     assert moved.values[storageIndexOf<PartitionState>(moved, owner)].cells.size == 0 &&
-        storageLength<HeightfieldTerrain>(ensureStorage(world)) == 1 panic "cells far behind unload; the overview stays"
-    var left = 0
-    for square in storageGet<TerrainHoles>(ensureStorage(world), overview).hidden then if square then left++
-    assert left == 0 panic "with no cell loaded, the overview is whole"
+        storageLength<HeightfieldTerrain>(ensureStorage(world)) == 1 && world.isAlive(land) panic "cells far behind unload; the same landscape stays"
     // A partition switched off takes what it streamed in with it.
     streamWorld(world, ".", centre)
     assert storageLength<Streamed>(ensureStorage(world)) > 100 panic "the city streams in again"
@@ -102,4 +92,46 @@ func main() {
     assert after != before && after == worldCacheName(storageGet<WorldRecipe>(ensureStorage(world), owner)) &&
         storageGet<PartitionState>(ensureStorage(world), owner).cells.size == 1 panic "a new recipe plans a new world"
     println("a world plans, streams in and streams out")
+}
+
+
+func testAuthoredCells() {
+    fin folder = ".azora-build/authored-content"
+    fin layer = ".azora-build/authored-buildings"
+    makeFolders(folder)
+    makeFolders(layer)
+    fin index = azAlloc(11)
+    for i: Int in 0..<11 then azPoke8(index, i as Long, 0)
+    fin signature = "AZCELL1"
+    for i: Int in 0..<7 then azPoke8(index, i as Long, charAt(signature, i) as Int)
+    assert writeBinaryFile("${folder}/cells.azindex", index, 11) panic "write authored cell index"
+    azPoke8(index, 7, 1)
+    assert writeBinaryFile("${layer}/cells.azindex", index, 11) panic "write supplemental cell index"
+    azFree(index)
+    assert writeTextFile("${folder}/cells.azlayers", layer) panic "write layer manifest"
+    assert writeTextFile("${folder}/0-0.azscene",
+        "{\"format\":\"azora-scene\",\"version\":2,\"entities\":[" +
+        "{\"parent\":-1,\"components\":{\"HeightfieldTerrain\":{},\"Transform\":{\"translation\":[1,2,3]}}}," +
+        "{\"parent\":0,\"components\":{\"SplineRoad\":{},\"Mesh3d\":{}}}]}") panic "write authored cell"
+    assert writeTextFile("${layer}/1-0.azscene", "{\"format\":\"azora-scene\",\"version\":2,\"entities\":[" +
+        "{\"parent\":-1,\"components\":{\"Mesh3d\":{}}}]}") panic "write supplemental cell"
+
+    var world: World = .()
+    fin ground = world.spawn()
+    storageInsert<HeightfieldTerrain>(ensureStorage(world), ground, .())
+    fin owner = world.spawn()
+    storageInsert<WorldRecipe>(ensureStorage(world), owner, .(width: 4000.0, length: 4000.0, cellSize: 2000.0))
+    storageInsert<WorldPartition>(ensureStorage(world), owner, .(loadRadius: 25.0, unloadRadius: 200.0, folder: folder))
+    fin at: Vec3 = .(-1000.0, 0.0, -1000.0)
+    assert streamWorld(world, ".", at) == 1 panic "the index selects the authored cell without an authored field"
+    fin state = storageGet<PartitionState>(ensureStorage(world), owner).&
+    assert state.authored && state.plan.roads.size == 0 panic "authored folders do not generate synthetic content"
+    assert storageLength<HeightfieldTerrain>(ensureStorage(world)) == 1 && world.isAlive(ground) panic "the original terrain stays resident"
+    fin roads = ensureStorage<SplineRoad>(world)
+    fin road = storageEntityAt<SplineRoad>(roads, 0)
+    assert storageLength<SplineRoad>(roads) == 1 && worldPosition(world, road).x == 1.0 panic "road and its transform loaded"
+    fin far: Vec3 = .(1000.0, 0.0, -1000.0)
+    assert streamWorld(world, ".", far) == 2 && !world.isAlive(road) panic "cells present only in a supplemental layer still stream"
+    assert storageLength<Mesh3d>(ensureStorage(world)) == 1 panic "the supplemental object is present"
+    assert storageLength<HeightfieldTerrain>(ensureStorage(world)) == 1 && world.isAlive(ground) panic "terrain survives cell eviction"
 }

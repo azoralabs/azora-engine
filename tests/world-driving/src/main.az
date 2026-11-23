@@ -47,5 +47,70 @@ func main() {
     for frame: Int in 0..<504 then simulateVehicle(world,driver,ground,.(1.0,0.0,false),gravity3d(),1.0/120.0)
     fin driven = storageGet<Vehicle>(ensureStorage(world),driver)
     assert driven.speed > 10.0 && driven.grounded >= 2 && worldPosition(world,driver).x > -963.0 panic "car accelerates on the highway"
+    testColliderWindow(root, item.image)
+    testCookedCollision()
     println("asphalt contact and car driving ok")
+}
+
+func testCookedCollision() {
+    // A four-metre wall with a roof triangle behind it, both in one grid bucket.
+    fin bytes = 36 + 8 + 8 + 80
+    fin data = azAlloc(bytes as Long)
+    assert data != 0 panic "allocate collision fixture"
+    defer { azFree(data) }
+    azPoke32(data, 0, 826497601)
+    azPoke32(data, 4, 65537)
+    azPoke32(data, 8, 2)
+    azPoke32(data, 12, 2)
+    azPokeF32(data, 16, -12.0)
+    azPokeF32(data, 20, -12.0)
+    azPokeF32(data, 24, 24.0)
+    azPokeF32(data, 32, 4.0)
+    azPoke32(data, 40, 2)
+    azPoke32(data, 48, 1)
+    fin wall: Array<Double> = [0.0, 0.0, -2.0, 0.0, 4.0, -2.0, 0.0, 4.0, 2.0, 1.0]
+    fin roof: Array<Double> = [0.0, 4.0, -2.0, 0.0, 4.0, 2.0, 4.0, 4.0, -2.0, 1.0]
+    for i: Int in 0..<10 {
+        azPokeF32(data, 52 + (i as Long) * 4, wall[i])
+        azPokeF32(data, 92 + (i as Long) * 4, roof[i])
+    }
+    fin asset = ".azora-build/world-driving.azcol"
+    assert writeBinaryFile(asset, data, bytes as Long) panic "write indexed collision fixture"
+    var world: World = .()
+    fin entity = world.spawn()
+    storageInsert<Collision>(ensureStorage(world), entity, .(asset: asset, reach: 6.0))
+    prepareSolidCollision(world, ".", .(0.0, 0.0, 0.0))
+    fin wallHit = sweepSceneCollision(world, .(-8.0, 1.2, 0.0), .(40.0, 0.0, 0.0), 0.6, 0.95)
+    assert wallHit.hit && absValue(wallHit.t - 0.185) < 0.001 && wallHit.nx < -0.99 panic "fast body stops at the facade"
+    fin roofHit = sweepSceneCollision(world, .(1.0, 10.0, 0.0), .(0.0, -20.0, 0.0), 0.5, 1.0)
+    assert roofHit.hit && absValue(roofHit.t - 0.25) < 0.001 && roofHit.ny > 0.99 panic "descending body hits the roof"
+    fin above = sweepSceneCollision(world, .(-8.0, 10.0, 0.0), .(40.0, 0.0, 0.0), 0.6, 0.95)
+    assert !above.hit panic "a body above the roof passes"
+    world.despawn(entity)
+    fin gone = sweepSceneCollision(world, .(-8.0, 1.2, 0.0), .(40.0, 0.0, 0.0), 0.6, 0.95)
+    assert !gone.hit panic "evicting the building releases its collider"
+}
+
+func testColliderWindow(root: String, image: String) {
+    var world: World = .()
+    for tile: Int in 0..<2 {
+        fin entity = world.spawn()
+        storageInsert<Transform>(ensureStorage(world), entity, .(translation: .((tile as Double) * 20.0, 0.0, 0.0)))
+        storageInsert<HeightfieldTerrain>(ensureStorage(world), entity,
+            .(image: image, width: 20.0, length: 20.0, elevation: 10.0, gradeRoads: false))
+        storageInsert<LandscapeCollision>(ensureStorage(world), entity, .())
+    }
+    var surfaces: Array<CollisionSurface> = []
+    var sync: ColliderSync = .()
+    defer { releaseLandscapeColliders(surfaces) }
+    syncLandscapeColliders(world, root, surfaces, sync, .(23.0, 0.0, 0.0), 5.0)
+    assert surfaces.size == 1 panic "the second tile is alone in range"
+    syncLandscapeColliders(world, root, surfaces, sync, .(10.0, 0.0, 0.0), 5.0)
+    assert surfaces.size == 2 panic "the first tile joins the second"
+    for x: Int in 0..1 {
+        fin hit = castLandscape(surfaces, .((x as Double) * 20.0, 10.0, 0.0), .(0.0, -1.0, 0.0), 20.0)
+        assert hit.hit panic "both newly added and retained tiles can be queried"
+    }
+    syncLandscapeColliders(world, root, surfaces, sync, .(0.0, 0.0, 0.0), 5.0)
+    assert surfaces.size == 1 panic "the second tile leaves the window"
 }

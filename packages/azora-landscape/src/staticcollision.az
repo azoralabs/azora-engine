@@ -1,0 +1,262 @@
+module engine.landscape.staticcollision
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.math
+import engine.physics.core
+import engine.scene
+import engine.scene.transforms
+
+/** An indexed static triangle asset in entity-local metres. Pavement supports suspension and road rays. */
+@Component
+@Inspectable(title: "Collision", serializedName: "Collision", icon: "box", category: "Physics")
+pack Collision derives Clone {
+    var enabled: Bool = true
+    var asset: String = ""
+    /** Horizontal reach from the mesh's origin, used to prefetch its collision. */
+    var reach: Double = 0.0
+    var pavement: Bool = false
+}
+
+/**
+ * AZC1 stores a 2D grid of triangle indices and local float32 vertices with friction.
+ * A tile owns the raw block. Only buckets intersecting a swept query are visited.
+ */
+@Component
+pack CollisionMesh {
+    var file: Blob = .(0, 0)
+    var columns: Int = 0
+    var rows: Int = 0
+    var triangles: Int = 0
+    var entries: Int = 0
+    var indexOffset: Int = 0
+    var dataOffset: Int = 0
+    var x: Double = 0.0
+    var z: Double = 0.0
+    var step: Double = 24.0
+    var bottom: Double = 0.0
+    var top: Double = 0.0
+    var origin: Vec3 = .(0.0, 0.0, 0.0)
+}
+
+impl CollisionMesh {
+    dtor .() { self.file.release() }
+}
+
+/** Reads an indexed collider placed at [origin]. Assets bake the body orientation and scale. */
+func readCollisionMesh(root: String, path: String, origin: Vec3&): CollisionMesh {
+    if !endsWith(path, ".azcol") || startsWith(path, "/") || indexOf(path, "..") >= 0 || indexOf(path, "\\") >= 0 then return .()
+    var file = mapBinaryFile("${root}/${path}")
+    if file.size < 36 || file.i32(0) != 826497601 {
+        file.release()
+        return .()
+    }
+    fin columns = file.u16(4)
+    fin rows = file.u16(6)
+    fin triangles = file.i32(8)
+    fin entries = file.i32(12)
+    fin step = peekFloat32(file.data, 24)
+    fin index = 36 + (columns * rows + 1) * 4
+    fin data = (index as Long) + (entries as Long) * 4
+    if columns <= 0 || rows <= 0 || columns > 1024 || rows > 1024 || triangles <= 0 || entries < triangles ||
+        !(step >= 1.0 && step <= 1024.0) || data + (triangles as Long) * 40 != file.size as Long {
+        file.release()
+        return .()
+    }
+    fin x = peekFloat32(file.data, 16)
+    fin z = peekFloat32(file.data, 20)
+    fin bottom = peekFloat32(file.data, 28)
+    fin top = peekFloat32(file.data, 32)
+    return CollisionMesh(take file, columns, rows, triangles, entries, index, data as Int, x, z, step,
+        bottom, top, origin.clone())
+}
+
+/** Translation used by early range tests even before the asset has been read. */
+@Component
+pack CollisionPlacement {
+    var position: Vec3 = .(0.0, 0.0, 0.0)
+}
+
+/** Prepares nearby solids a few assets at a time. Despawning their cell releases the asset. */
+func prepareSolidCollision(world: World!, root: String, focus: Vec3&, limit: Int = 4) {
+    if limit == 0 then return
+    fin components = ensureStorage<Collision>(world)
+    let meshes = ensureStorage<CollisionMesh>(world)
+    let placements = ensureStorage<CollisionPlacement>(world)
+    var loaded = 0
+    for i: Int in 0..<storageLength<Collision>(components) {
+        fin config = components.values[i].&
+        if !config.enabled || config.pavement || config.asset == "" then continue
+        fin entity = storageEntityAt<Collision>(components, i)
+        if storageHas<CollisionMesh>(meshes, entity) then continue
+        if !storageHas<CollisionPlacement>(placements, entity) {
+            storageInsert<CollisionPlacement>(placements, entity, .(worldPosition(world, entity)))
+        }
+        fin center = storageGet<CollisionPlacement>(placements, entity).position.&
+        if absValue(center.x - focus.x) > 180.0 + config.reach || absValue(center.z - focus.z) > 180.0 + config.reach then continue
+        storageInsert<CollisionMesh>(meshes, entity, readCollisionMesh(root, config.asset, center))
+        loaded++
+        if limit >= 0 && loaded >= limit then break
+    }
+}
+
+pack IndexedCollisionHit {
+    var t: Double = 1.0
+    var nx: Double = 0.0
+    var ny: Double = 0.0
+    var nz: Double = 0.0
+    var grip: Double = 0.0
+    var hit: Bool = false
+}
+
+/** Finds the earliest surface of the cooked asset along a finite ray or capsule motion. */
+func castCollisionMesh(mesh: CollisionMesh&, from: Vec3&, motion: Vec3&, radius: Double = 0.0,
+                       halfHeight: Double = 0.0, solid: Bool = false): IndexedCollisionHit {
+    var hit: IndexedCollisionHit = .()
+    if !mesh.file.ok() then return take hit
+    fin ox = from.x - mesh.origin.x
+    fin oy = from.y - mesh.origin.y
+    fin oz = from.z - mesh.origin.z
+    fin sx = motion.x
+    fin sy = motion.y
+    fin sz = motion.z
+    if realMaxOf(oy, oy + sy) + halfHeight < mesh.bottom || realMinOf(oy, oy + sy) - halfHeight > mesh.top then return take hit
+    fin u0 = floor((realMinOf(ox, ox + sx) - radius - mesh.x) / mesh.step) as Int
+    fin u1 = floor((realMaxOf(ox, ox + sx) + radius - mesh.x) / mesh.step) as Int
+    fin v0 = floor((realMinOf(oz, oz + sz) - radius - mesh.z) / mesh.step) as Int
+    fin v1 = floor((realMaxOf(oz, oz + sz) + radius - mesh.z) / mesh.step) as Int
+    fin firstX = if u0 > 0 then u0 else 0
+    fin lastX = if u1 < mesh.columns then u1 else mesh.columns - 1
+    fin firstZ = if v0 > 0 then v0 else 0
+    fin lastZ = if v1 < mesh.rows then v1 else mesh.rows - 1
+    if firstX > lastX || firstZ > lastZ then return take hit
+    for row: Int in firstZ..lastZ {
+        for col: Int in firstX..lastX {
+            fin cell = 36 + (row * mesh.columns + col) * 4
+            fin first = azPeek32(mesh.file.data, cell as Long)
+            fin end = azPeek32(mesh.file.data, (cell + 4) as Long)
+            if first < 0 || end > mesh.entries || first >= end then continue
+            for k: Int in first..<end {
+                fin index = azPeek32(mesh.file.data, (mesh.indexOffset + k * 4) as Long)
+                if index < 0 || index >= mesh.triangles then continue
+                fin ptr = mesh.file.data + mesh.dataOffset as Long + (index as Long) * 40
+                fin ax = azPeekF32(ptr, 0)
+                fin ay = azPeekF32(ptr, 4)
+                fin az = azPeekF32(ptr, 8)
+                fin bx = azPeekF32(ptr, 12)
+                fin bY = azPeekF32(ptr, 16)
+                fin bz = azPeekF32(ptr, 20)
+                fin cx = azPeekF32(ptr, 24)
+                fin cy = azPeekF32(ptr, 28)
+                fin cz = azPeekF32(ptr, 32)
+                fin ux = bx - ax
+                fin uy = bY - ay
+                fin uz = bz - az
+                fin vx = cx - ax
+                fin vy = cy - ay
+                fin vz = cz - az
+                fin nx = uy * vz - uz * vy
+                fin ny = uz * vx - ux * vz
+                fin nz = ux * vy - uy * vx
+                if solid && absValue(ny) < 0.000001 {
+                    fin low = realMinOf(ay, realMinOf(bY, cy))
+                    fin high = realMaxOf(ay, realMaxOf(bY, cy))
+                    if ux * ux + uz * uz > vx * vx + vz * vz {
+                        sweepWall(hit, ox, oy, oz, sx, sy, sz, radius, halfHeight, ax, az, bx, bz, low, high)
+                    } else {
+                        sweepWall(hit, ox, oy, oz, sx, sy, sz, radius, halfHeight, ax, az, cx, cz, low, high)
+                    }
+                    continue
+                }
+                if ny <= 0.000001 then continue
+                fin dot = nx * sx + ny * sy + nz * sz
+                if dot >= -0.000001 then continue
+                fin py = oy - halfHeight
+                fin t = (nx * (ax - ox) + ny * (ay - py) + nz * (az - oz)) / dot
+                if t < (if solid then 0.0 else -0.012) || t > hit.t then continue
+                fin px = ox + sx * t - ax
+                fin pz = oz + sz * t - az
+                fin s = (px * vz - pz * vx) / -ny
+                fin r = (ux * pz - uz * px) / -ny
+                if s >= -0.00001 && r >= -0.00001 && s + r <= 1.00001 {
+                    fin n = sqrt(nx * nx + ny * ny + nz * nz)
+                    hit.t = if t > 0.0 then t else 0.0
+                    hit.nx = nx / n
+                    hit.ny = ny / n
+                    hit.nz = nz / n
+                    hit.grip = azPeekF32(ptr, 36)
+                    hit.hit = true
+                }
+            }
+        }
+    }
+    return take hit
+}
+
+func sweepWall(hit: IndexedCollisionHit!, ox: Double, oy: Double, oz: Double, sx: Double, sy: Double,
+               sz: Double, radius: Double, halfHeight: Double, ax: Double, az: Double, bx: Double,
+               bz: Double, low: Double, high: Double) {
+    fin dx = bx - ax
+    fin dz = bz - az
+    fin length = sqrt(dx * dx + dz * dz)
+    if length < 0.000001 then return
+    fin ux = dx / length
+    fin uz = dz / length
+    fin distance = (ox - ax) * uz - (oz - az) * ux
+    fin side = if distance >= 0.0 then 1.0 else -1.0
+    fin nx = uz * side
+    fin nz = -ux * side
+    fin speed = sx * nx + sz * nz
+    if speed < -0.000001 {
+        fin t = realMaxOf((absValue(distance) - radius) / -speed, 0.0)
+        fin y = oy + t * sy
+        fin along = (ox + t * sx - ax) * ux + (oz + t * sz - az) * uz
+        if t <= hit.t && along >= 0.0 && along <= length && y + halfHeight > low && y - halfHeight < high {
+            hit.t = t
+            hit.nx = nx
+            hit.ny = 0.0
+            hit.nz = nz
+            hit.hit = true
+        }
+    }
+    sweepWallEnd(hit, ox - ax, oy, oz - az, sx, sy, sz, radius, halfHeight, low, high)
+    sweepWallEnd(hit, ox - bx, oy, oz - bz, sx, sy, sz, radius, halfHeight, low, high)
+}
+
+func sweepWallEnd(hit: IndexedCollisionHit!, x: Double, y: Double, z: Double, sx: Double, sy: Double, sz: Double,
+                  radius: Double, halfHeight: Double, low: Double, high: Double) {
+    fin speed = sx * sx + sz * sz
+    fin along = x * sx + z * sz
+    if speed < 0.0000001 || along >= 0.0 then return
+    fin disc = along * along - speed * (x * x + z * z - radius * radius)
+    if disc < 0.0 then return
+    fin t = realMaxOf((-along - sqrt(disc)) / speed, 0.0)
+    fin py = y + t * sy
+    if t > hit.t || py + halfHeight <= low || py - halfHeight >= high then return
+    fin nx = x + t * sx
+    fin nz = z + t * sz
+    fin length = sqrt(nx * nx + nz * nz)
+    if length < 0.000001 then return
+    hit.t = t
+    hit.nx = nx / length
+    hit.ny = 0.0
+    hit.nz = nz / length
+    hit.hit = true
+}
+
+/** Sweeps a vertical body through prepared solids, returning the first obstruction. */
+func sweepSceneCollision(world: World!, from: Vec3&, motion: Vec3&, radius: Double, halfHeight: Double): IndexedCollisionHit {
+    fin meshes = ensureStorage<CollisionMesh>(world)
+    fin settings = ensureStorage<Collision>(world)
+    var result: IndexedCollisionHit = .()
+    for i: Int in 0..<storageLength<CollisionMesh>(meshes) {
+        fin entity = storageEntityAt<CollisionMesh>(meshes, i)
+        fin slot = storageIndexOf<Collision>(settings, entity)
+        if slot < 0 || !settings.values[slot].enabled then continue
+        fin contact = castCollisionMesh(meshes.values[i], from, motion, radius, halfHeight, solid: true)
+        if contact.hit && contact.t <= result.t then result = take contact
+    }
+    return take result
+}

@@ -12,7 +12,6 @@ import engine.math.mat
 import engine.scene
 import engine.scene.terrain
 import engine.roads
-import engine.roads.grading
 exposed import engine.procedural.noise
 
 // A whole world from a recipe. [planWorld] places the settlements (cities,
@@ -20,8 +19,7 @@ exposed import engine.procedural.noise
 // with highways and country roads, lays out each settlement's street grid
 // with its junctions, and lines the streets with houses and apartment
 // blocks. [generateWorldCell] turns one square cell of that plan into what a
-// scene holds: a heightfield tile graded to the roads and a scene file with
-// the cell's roads, junctions, buildings and forest. A world partition
+// scene holds: a scene file with the cell's roads, junctions, buildings and forest. A world partition
 // (engine.world.partition) loads those cells around the player.
 //
 // Everything follows from the recipe's seed: the same recipe gives the same
@@ -37,10 +35,10 @@ pack WorldRecipe derives Clone {
     var width: Double = 116000.0
     @Range(min: 2000.0, max: 400000.0, step: 1000.0)
     var length: Double = 108000.0
-    /** A streamed cell's side, in metres, and the heightfield samples along it (a power of two plus one). */
+    /** A streamed cell's side, in metres. */
     @Range(min: 500.0, max: 8000.0, step: 100.0)
     var cellSize: Double = 2000.0
-    @Range(min: 65.0, max: 513.0, step: 64.0)
+    /** Kept for compatibility with recipes saved before terrain became independent of content cells. */
     var cellSamples: Int = 257
     /** The height of the lowest valleys, and the span a tile's 16-bit heights cover. */
     var baseHeight: Double = 0.0
@@ -445,7 +443,11 @@ func cellTop(recipe: WorldRecipe&, row: Int): Double = -recipe.length * 0.5 + (r
  * generator's revision, so a cached cell is never read for a different recipe
  * or by a generator that would now make it differently.
  */
-func worldCacheName(recipe: WorldRecipe&): String {
+func worldCacheName(recipe: WorldRecipe&): String =
+    "world${(worldRecipeKey(recipe) >> 4) & 1152921504606846975}"
+
+/** Numeric cache identity, so the streaming update does not allocate a new name each frame. */
+func worldRecipeKey(recipe: WorldRecipe&): Long {
     var print: Fingerprint = .()
     print.addInt(worldGeneratorRevision)
     print.addInt(recipe.seed)
@@ -462,17 +464,15 @@ func worldCacheName(recipe: WorldRecipe&): String {
     print.addInt(recipe.villages)
     print.addReal(recipe.blockSize)
     print.addReal(recipe.forest)
-    return "world${(print.value >> 4) & 1152921504606846975}"
+    return print.value
 }
 
 /** Counts the changes to what the generator makes; a new count regenerates every cached cell. */
-inline fin worldGeneratorRevision: Int = 2
+inline fin worldGeneratorRevision: Int = 3
 
-/** The scene file of cell ([column], [row]) of [recipe]'s world under [folder]; its heightfield sits beside it. */
+/** The content scene of cell ([column], [row]) of [recipe]'s world under [folder]. */
 func cellScenePath(folder: String, recipe: WorldRecipe&, column: Int, row: Int): String =
     "${folder}/${worldCacheName(recipe)}_cell_${column}_${row}.azscene"
-func cellImagePath(folder: String, recipe: WorldRecipe&, column: Int, row: Int): String =
-    "${folder}/${worldCacheName(recipe)}_cell_${column}_${row}.pgm"
 /**
  * Overview samples along one cell's side: 16 (a quarter of a drawn terrain
  * chunk), or fewer when a world has so many cells that the image would pass
@@ -505,76 +505,9 @@ func sceneRecord(scene: StringBuilder!, count: Int!, parent: Int, components: St
     return at
 }
 
-/**
- * Generates cell ([column], [row]): its heightfield (graded to every road that
- * reaches into it, with the same cut and fill vehicles drive on) as a 16-bit
- * image, and its scene - the terrain tile, the pieces of road whose segments
- * lie in it, its junctions, buildings and forest. Answers whether both files
- * were written into [folder] (relative to the project, which is [root]).
- */
-func generateWorldCell(recipe: WorldRecipe&, plan: WorldPlan&, root: String, folder: String, column: Int, row: Int): Bool {
-    fin left = cellLeft(recipe, column)
-    fin top = cellTop(recipe, row)
-    fin size = recipe.cellSize
-    fin samples = recipe.cellSamples
-    fin middle = recipe.baseHeight + recipe.heightRange * 0.5
-    fin margin: Double = 120.0
-    // The roads that reach the cell, as a road network to grade the tile with.
-    var grading: World = .()
-    for road in plan.roads {
-        if !roadReaches(road, left - margin, top - margin, left + size + margin, top + size + margin) then continue
-        spawnRoad(grading, road)
-    }
-    for junction in plan.junctions {
-        if junction.x < left - margin || junction.x > left + size + margin || junction.z < top - margin || junction.z > top + size + margin then continue
-        fin site = grading.spawn()
-        storageInsert<Transform>(ensureStorage(grading), site, .(translation: .(junction.x, junction.y, junction.z)))
-        storageInsert<RoadJunction>(ensureStorage(grading), site, .(kind: 1, radius: junction.radius, carriageway: 7.0))
-    }
-    fin network = buildRoadNetwork(grading)
-    // The land, then the roads cut into it.
-    fin bytes = azAlloc((samples as Long) * (samples as Long) * 8)
-    if bytes == 0 then return false
-    for j: Int in 0..<samples {
-        for i: Int in 0..<samples {
-            fin x = left + size * (i as Double) / ((samples - 1) as Double)
-            fin z = top + size * (j as Double) / ((samples - 1) as Double)
-            fin height = worldHeight(recipe, plan, x, z)
-            azPokeF64(bytes, ((j * samples + i) as Long) * 8, worldClamp((height - middle) / recipe.heightRange, -0.5, 0.5))
-        }
-    }
-    fin image: TerrainImage = .(samples, samples, bytes)
-    fin model = mat4Mul(mat4Translation(left + size * 0.5, middle, top + size * 0.5), mat4Scale(size, recipe.heightRange, size))
-    gradeRoadTerrain(image, model, network)
-    fin written = writeHeightImage("${root}/${cellImagePath(folder, recipe, column, row)}", image)
-    azFree(bytes)
-    if !written then return false
-    return writeTextFile("${root}/${cellScenePath(folder, recipe, column, row)}", cellScene(recipe, plan, folder, column, row))
-}
-
-/** Whether any point of [road] lies inside the box. */
-func roadReaches(road: WorldRoad&, x0: Double, z0: Double, x1: Double, z1: Double): Bool {
-    for p in road.points {
-        if p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1 then return true
-    }
-    return false
-}
-
-/** Adds [road] to [world] as a Spline Road and its points, for grading. */
-func spawnRoad(world: World!, road: WorldRoad&) {
-    if road.points.size < 2 then return
-    fin entity = world.spawn()
-    fin first = road.points[0].&
-    storageInsert<Transform>(ensureStorage(world), entity, .(translation: .(first.x, first.y, first.z)))
-    storageInsert<SplineRoad>(ensureStorage(world), entity, roadStyle(road.kind))
-    for i: Int in 0..<road.points.size {
-        fin point = world.spawn()
-        world.setParent(point, entity)
-        fin p = road.points[i].&
-        storageInsert<Transform>(ensureStorage(world), point, .(translation: .(p.x - first.x, p.y - first.y, p.z - first.z)))
-        storageInsert<RoadPoint>(ensureStorage(world), point, .(order: i))
-    }
-}
+/** Generates a content cell as a scene under [folder], relative to project [root]. */
+func generateWorldCell(recipe: WorldRecipe&, plan: WorldPlan&, root: String, folder: String, column: Int, row: Int): Bool =
+    writeTextFile("${root}/${cellScenePath(folder, recipe, column, row)}", cellScene(recipe, plan, column, row))
 
 func roadStyle(kind: Int): SplineRoad = when kind {
     0 -> SplineRoad(forwardLanes: 2, reverseLanes: 2, laneWidth: 3.6, shoulder: 1.6, gradingWidth: 44.0)
@@ -602,23 +535,14 @@ func writeHeightImage(path: String, image: TerrainImage&): Bool {
     return written
 }
 
-/** The scene of cell ([column], [row]): terrain tile, road pieces, junctions, buildings, forest. */
-func cellScene(recipe: WorldRecipe&, plan: WorldPlan&, folder: String, column: Int, row: Int): String {
+/** The content scene of cell ([column], [row]): road pieces, junctions, buildings and forest. */
+func cellScene(recipe: WorldRecipe&, plan: WorldPlan&, column: Int, row: Int): String {
     fin left = cellLeft(recipe, column)
     fin top = cellTop(recipe, row)
     fin size = recipe.cellSize
-    fin middle = recipe.baseHeight + recipe.heightRange * 0.5
     var scene: StringBuilder = .()
     var count = 0
     scene.append("{\"format\": \"azora-scene\", \"version\": 2, \"entities\": [\n    ")
-    sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"Terrain ${column},${row}\"}, " +
-        "\"Transform\": {\"translation\": ${vecText(left + size * 0.5, middle, top + size * 0.5)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
-        "\"HeightfieldTerrain\": {\"image\": \"${cellImagePath(folder, recipe, column, row)}\", \"width\": ${formatDecimal(size, 3)}, \"length\": ${formatDecimal(size, 3)}, " +
-        "\"elevation\": ${formatDecimal(recipe.heightRange, 3)}, \"detailError\": 2.5, \"gradeRoads\": false}, " +
-        "\"LandscapeCollision\": {\"enabled\": true, \"friction\": 1.12, \"surfaceOffset\": 0}, " +
-        "\"FusionMaterial\": {\"asset\": \"Materials/landscape.azmaterial\"}, " +
-        "\"StandardMaterial\": {\"color\": [0.29, 0.38, 0.21, 1], \"roughness\": 0.9, \"metallic\": 0, \"emission\": 0}, " +
-        "\"FoliagePaint\": {\"enabled\": true, \"grassDensity\": 1.3, \"grassHeight\": 0.36, \"seed\": ${recipe.seed + column * 131 + row * 17}, \"strokes\": \"\"}")
     // Road pieces: the runs of segments whose middles lie in this cell.
     for road in plan.roads {
         var start = -1
@@ -719,9 +643,7 @@ func forestRecords(recipe: WorldRecipe&, plan: WorldPlan&, scene: StringBuilder!
 /**
  * The whole world at low resolution as one 16-bit heightfield over every
  * cell, [overviewCellSamples] samples along a cell's side from cell (0, 0)'s
- * corner: the mountains on the horizon. Its samples fall on the cells'
- * edges, so the square of it under a loaded cell can be left out exactly
- * (see `TerrainHoles`).
+ * corner. Its lifetime is independent of which content cells are loaded.
  */
 func generateWorldOverview(recipe: WorldRecipe&, plan: WorldPlan&, path: String): Bool {
     fin middle = recipe.baseHeight + recipe.heightRange * 0.5

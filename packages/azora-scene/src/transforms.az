@@ -8,8 +8,10 @@ import engine.scene
 
 /** [entity]'s own transform as a matrix (identity when it has none). */
 func localMatrix(world: World!, entity: Entity): Mat4 {
-    if !storageHas<Transform>(ensureStorage(world), entity) then return mat4Identity()
-    fin t = storageGet<Transform>(ensureStorage(world), entity).clone()
+    fin transforms = ensureStorage<Transform>(world)
+    fin index = storageIndexOf<Transform>(transforms, entity)
+    if index < 0 then return mat4Identity()
+    fin t = transforms.values[index].&
     return trsMatrix(t.translation, t.rotation, t.scale)
 }
 
@@ -34,11 +36,12 @@ func worldPosition(world: World!, entity: Entity): Vec3 {
 
 /** Whether [entity] and every parent are visible. */
 func visibleInWorld(world: World!, entity: Entity): Bool {
+    fin visibility = ensureStorage<Visibility>(world)
     var current = entity
     var depth = 0
     while world.isAlive(current) && depth < 64 {
-        if storageHas<Visibility>(ensureStorage(world), current) &&
-            !storageGet<Visibility>(ensureStorage(world), current).visible { return false }
+        fin index = storageIndexOf<Visibility>(visibility, current)
+        if index >= 0 && !visibility.values[index].visible then return false
         current = world.getParent(current)
         depth++
     }

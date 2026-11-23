@@ -1,0 +1,50 @@
+module engine.world.partition.cooked
+
+import engine.core
+import engine.ecs
+import engine.io
+import engine.landscape.staticcollision
+import engine.render.geometry
+import engine.scene
+
+/**
+ * AZRC metadata refers to separately indexed collision and prepared render assets.
+ * Records have a fixed header and three counted paths. Their alignment follows
+ * the double precision placement fields so they can be read directly.
+ */
+func readCookedCell(world: World!, file: Blob&, entities: Array<Entity>!): Bool {
+    if file.size < 8 || file.i32(0) != 1129470529 then return false
+    fin count = file.i32(4)
+    if count < 0 || count > (file.size - 8) / 56 then return false
+    var cursor = 8
+    for i: Int in 0..<count {
+        if !file.has(cursor, 52) then return false
+        fin meshLength = file.u16(cursor)
+        fin colliderLength = file.u16(cursor + 2)
+        fin materialLength = file.u16(cursor + 4)
+        fin flags = file.u16(cursor + 6)
+        fin paths = cursor + 52
+        fin length = meshLength + colliderLength + materialLength
+        if !file.has(paths, length) || (meshLength == 0 && colliderLength == 0) then return false
+        fin radius = azPeekF32(file.data, (cursor + 32) as Long)
+        fin entity = world.spawn()
+        entities.add(entity)
+        storageInsert<Transform>(ensureStorage(world), entity,
+            .(translation: .(file.f64(cursor + 8), file.f64(cursor + 16), file.f64(cursor + 24))))
+        if meshLength > 0 {
+            fin mesh = file.text(paths, meshLength)
+            storageInsert<Mesh3d>(ensureStorage(world), entity, .())
+            storageInsert<MeshGeometry>(ensureStorage(world), entity, .(name: mesh, radius: radius))
+            storageInsert<StandardMaterial>(ensureStorage(world), entity,
+                .(color: .(azPeekF32(file.data, (cursor + 36) as Long), azPeekF32(file.data, (cursor + 40) as Long),
+                    azPeekF32(file.data, (cursor + 44) as Long), 1.0),
+                  roughness: azPeekF32(file.data, (cursor + 48) as Long)))
+        }
+        if colliderLength > 0 then storageInsert<Collision>(ensureStorage(world), entity,
+            .(asset: file.text(paths + meshLength, colliderLength), reach: radius, pavement: flags == 1))
+        if materialLength > 0 then storageInsert<FusionMaterial>(ensureStorage(world), entity,
+            .(asset: file.text(paths + meshLength + colliderLength, materialLength)))
+        cursor = ((paths + length + 7) / 8) * 8
+    }
+    return cursor == file.size
+}

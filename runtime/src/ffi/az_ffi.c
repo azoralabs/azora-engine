@@ -187,7 +187,32 @@ void    az_copy(int64_t dst, int64_t src, int64_t n) { memcpy((void*)dst, (void*
 int64_t az_peek64(int64_t p, int64_t off) { return *(int64_t*)((char*)p + off); }
 int32_t az_peek32(int64_t p, int64_t off) { return *(int32_t*)((char*)p + off); }
 int32_t az_peek8(int64_t p, int64_t off)  { return *(uint8_t*)((char*)p + off); }
+double  az_peek_f32(int64_t p, int64_t off) {
+    float value;
+    memcpy(&value, (const char*)p + off, sizeof(value));
+    return (double)value;
+}
 double  az_peek_f64(int64_t p, int64_t off) { return *(double*)((char*)p + off); }
+
+/* Convert the validated PGM payload in one pass without crossing the ABI per sample. */
+int32_t az_unpack_height_samples(int64_t output, int64_t input, int32_t count, int32_t peak) {
+    const uint8_t *source = (const uint8_t *)input;
+    double *samples = (double *)output;
+    const double scale = 1.0 / peak;
+    if (peak < 256) {
+        for (int32_t i = 0; i < count; ++i) {
+            if (source[i] > peak) return 0;
+            samples[i] = source[i] * scale - 0.5;
+        }
+    } else {
+        for (int32_t i = 0; i < count; ++i) {
+            const int32_t value = (source[2 * i] << 8) | source[2 * i + 1];
+            if (value > peak) return 0;
+            samples[i] = value * scale - 0.5;
+        }
+    }
+    return 1;
+}
 
 void az_poke64(int64_t p, int64_t off, int64_t v)  { *(int64_t*)((char*)p + off) = v; }
 void az_poke32(int64_t p, int64_t off, int32_t v)  { *(int32_t*)((char*)p + off) = v; }

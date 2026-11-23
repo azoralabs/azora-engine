@@ -13,7 +13,11 @@ import engine.scene
 /** Extra geometry for a Mesh3d, sharing one vertex buffer across all its instances. */
 @Component
 @Inspectable(title: "Mesh Geometry", icon: "box", category: "Rendering", order: 11)
-pack MeshGeometry derives Clone { var name: String = "" }
+pack MeshGeometry derives Clone {
+    var name: String = ""
+    /** A cooked bounding radius, which lets the renderer cull before opening the asset. */
+    var radius: Double = 0.0
+}
 
 @Component
 pack GeometryAsset {
@@ -33,7 +37,7 @@ func geometryIndex(world: World!, name: String): Int {
     fin assets = ensureStorage<GeometryAsset>(world)
     var i = 0
     while i < storageLength<GeometryAsset>(assets) {
-        if assets.values[i].name == name then return i
+        if assets.values[i].name == name && world.isResource(storageEntityAt<GeometryAsset>(assets, i)) then return i
         i++
     }
     return -1
@@ -51,6 +55,16 @@ func prepareMeshGeometry(world: World!, device: Long, root: String, name: String
     fin file = loadMeshFile(device, root, name)
     fin owner = world.spawnResource(name)
     storageInsert<GeometryAsset>(ensureStorage(world), owner, .(name, [], file.buffer, file.count, file.reach))
+}
+
+/** Meshes owned by a streamed entity release their Metal buffer with the entity. */
+func streamedGeometry(world: World!, device: Long, root: String, entity: Entity, name: String): GeometryAsset& {
+    let assets = ensureStorage<GeometryAsset>(world)
+    fin at = storageIndexOf<GeometryAsset>(assets, entity)
+    if at >= 0 && assets.values[at].name == name then return assets.values[at].&
+    fin file = loadMeshFile(device, root, name)
+    storageInsert<GeometryAsset>(assets, entity, .(name, [], file.buffer, file.count, file.reach))
+    return storageGet<GeometryAsset>(assets, entity)
 }
 
 func sceneGeometry(world: World!, device: Long, name: String): Mesh {

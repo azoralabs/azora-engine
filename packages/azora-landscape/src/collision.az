@@ -14,6 +14,7 @@ import engine.roads
 import engine.roads.grading
 import engine.landscape.field
 import engine.landscape.volume
+exposed import engine.landscape.staticcollision
 
 @Component
 @Inspectable(title: "Landscape Collision", serializedName: "LandscapeCollision", icon: "mountain", category: "Physics")
@@ -34,6 +35,7 @@ pack CollisionSurface {
     var terrain: TerrainImage = .()
     var roads: RoadNetwork = .()
     var pavement: Bool = false
+    var pavedMesh: CollisionMesh = .()
     var volume: Field = .()
     var offset: Vec3 = .(0.0,0.0,0.0)
     var axisX: Vec3 = .(1.0,0.0,0.0)
@@ -50,6 +52,12 @@ pack CollisionSurface {
     var settings: LandscapeCollision = .()
     /** The landscape entity this collider was read from; invalid for the pavement. */
     var owner: Entity = .(-1, 0)
+}
+
+impl CollisionSurface {
+    dtor .() {
+        if self.terrain.samples != 0 then azFree(self.terrain.samples)
+    }
 }
 
 /** Where a cast met the ground: `t` is the travelled fraction or distance the caller asked for. */
@@ -77,7 +85,7 @@ pack LandscapeContact derives Clone {
 
 func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface> {
     var surfaces: Array<CollisionSurface> = []
-    var roads = buildRoadNetwork(world)
+    var roads = buildRoadNetwork(world, .Collision)
     fin colliders = ensureStorage<LandscapeCollision>(world)
     for index: Int in 0..<storageLength<LandscapeCollision>(colliders) {
         fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
@@ -139,8 +147,6 @@ func landscapeCollider(world: World!, root: String, entity: Entity, config: Land
             }
             surface.owner = entity
             return take surface
-        } else if surface.terrain.samples != 0 {
-            azFree(surface.terrain.samples)
         }
     }
     return .()
@@ -149,9 +155,12 @@ func landscapeCollider(world: World!, root: String, entity: Entity, config: Land
 /** Which colliders a world held when [syncLandscapeColliders] last matched it. */
 pack ColliderSync {
     var colliders: Long = -1
+    var heights: Long = -1
     var roads: Long = -1
+    var cooked: Long = -1
     var focus: Vec3 = .(0.0,0.0,0.0)
     var radius: Double = -1.0
+    var root: String = ""
 }
 
 /** Heightfields outside a game's local physics window can stay in the scene for rendering. */
@@ -173,60 +182,125 @@ func landscapeInRange(world: World!, entity: Entity, focus: Vec3&, radius: Doubl
 func syncLandscapeColliders(world: World!, root: String, surfaces: Array<CollisionSurface>!, state: ColliderSync!,
                             focus: Vec3 = Vec3(0.0,0.0,0.0), radius: Double = -1.0) {
     fin colliders = ensureStorage<LandscapeCollision>(world)
+    fin fields = ensureStorage<HeightfieldTerrain>(world)
+    fin cooked = ensureStorage<Collision>(world)
     fin roadsNow = ensureStorage<SplineRoad>(world).revision + ensureStorage<RoadPoint>(world).revision * 7 +
         ensureStorage<RoadJunction>(world).revision * 13
     fin sameRange = radius == state.radius && (radius < 0.0 ||
         (absValue(focus.x-state.focus.x) < radius*0.25 && absValue(focus.z-state.focus.z) < radius*0.25))
-    if colliders.revision == state.colliders && roadsNow == state.roads && sameRange then return
+    fin changedTerrain = colliders.revision != state.colliders || fields.revision != state.heights || state.root != root
+    fin changedRoads = roadsNow != state.roads
+    fin refreshTerrain = changedTerrain || changedRoads || !sameRange
+    if !refreshTerrain && cooked.revision == state.cooked then return
     state.colliders = colliders.revision
+    state.heights = fields.revision
     state.roads = roadsNow
-    state.focus = focus.clone()
+    state.cooked = cooked.revision
+    if refreshTerrain then state.focus = focus.clone()
     state.radius = radius
-    var roads = buildRoadNetwork(world)
+    state.root = root
+
+    var pavement = -1
     var i = 0
     while i < surfaces.size {
-        fin gone = surfaces[i].pavement || !world.isAlive(surfaces[i].owner) ||
-            !storageHas<LandscapeCollision>(colliders, surfaces[i].owner) ||
-            !landscapeInRange(world, surfaces[i].owner, focus, radius)
+        fin entity = surfaces[i].owner
+        fin baked = surfaces[i].pavement && entity.isValid
+        fin gone = if baked then !world.isAlive(entity) || !pavementInRange(world, entity, focus, radius)
+            else if surfaces[i].pavement then changedRoads else refreshTerrain && (changedTerrain ||
+            !world.isAlive(entity) || !landscapeInRange(world, entity, focus, radius) ||
+            (changedRoads && storageHas<HeightfieldTerrain>(fields, entity) &&
+             storageGet<HeightfieldTerrain>(fields, entity).gradeRoads))
         if gone {
-            if surfaces[i].terrain.samples != 0 then azFree(surfaces[i].terrain.samples)
             surfaces.removeAt(i)
         } else {
+            if surfaces[i].pavement && !baked then pavement = i
             i++
         }
     }
+    if changedRoads {
+        var roads = buildRoadNetwork(world, .Collision)
+        syncTerrainSurfaces(world, root, surfaces, focus, radius, roads)
+        if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
+    } else if refreshTerrain && pavement >= 0 {
+        // The road object remains valid when the surface array grows.
+        fin roads = surfaces[pavement].roads.&
+        syncTerrainSurfaces(world, root, surfaces, focus, radius, roads)
+    } else if refreshTerrain {
+        fin empty: RoadNetwork = .()
+        syncTerrainSurfaces(world, root, surfaces, focus, radius, empty)
+    }
+    syncPavedMeshes(world, root, surfaces, focus, radius)
+}
+
+func pavementInRange(world: World!, entity: Entity, focus: Vec3&, radius: Double): Bool {
+    fin configs = ensureStorage<Collision>(world)
+    fin at = storageIndexOf<Collision>(configs, entity)
+    if at < 0 || !configs.values[at].enabled || !configs.values[at].pavement then return false
+    if radius < 0.0 then return true
+    fin center = worldPosition(world, entity)
+    fin span = configs.values[at].reach + radius
+    return absValue(center.x - focus.x) <= span && absValue(center.z - focus.z) <= span
+}
+
+func syncPavedMeshes(world: World!, root: String, surfaces: Array<CollisionSurface>!, focus: Vec3&, radius: Double) {
+    fin configs = ensureStorage<Collision>(world)
+    for i: Int in 0..<storageLength<Collision>(configs) {
+        fin cfg = configs.values[i].&
+        if !cfg.pavement || !cfg.enabled then continue
+        fin entity = storageEntityAt<Collision>(configs, i)
+        var known = false
+        for existing in surfaces {
+            if existing.owner == entity {
+                known = true
+                break
+            }
+        }
+        if known || !pavementInRange(world, entity, focus, radius) then continue
+        var baked = readCollisionMesh(root, cfg.asset, worldPosition(world, entity))
+        if baked.file.ok() then surfaces.add(CollisionSurface(pavement: true, pavedMesh: take baked, owner: entity))
+    }
+}
+
+func syncTerrainSurfaces(world: World!, root: String, surfaces: Array<CollisionSurface>!, focus: Vec3&, radius: Double,
+                         roads: RoadNetwork&) {
+    fin colliders = ensureStorage<LandscapeCollision>(world)
     for index: Int in 0..<storageLength<LandscapeCollision>(colliders) {
         fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
-        fin config = colliders.values[index].clone()
+        fin config = colliders.values[index].&
         if !config.enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) ||
            !landscapeInRange(world, entity, focus, radius) then continue
         var known = false
-        for surface in surfaces {
-            if surface.owner == entity then known = true
+        for existing in surfaces {
+            if existing.owner == entity {
+                known = true
+                break
+            }
         }
         if known then continue
         var surface = landscapeCollider(world, root, entity, config, roads)
         if surface.owner.isValid then surfaces.add(take surface)
     }
-    if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
 }
 
 func releaseLandscapeColliders(surfaces: Array<CollisionSurface>!) {
-    for surface in surfaces {
-        if surface.terrain.samples != 0 then azFree(surface.terrain.samples)
-    }
     surfaces.clear()
 }
 
 /** A world point in the surface's own space. */
 func collisionLocal(surface: CollisionSurface&, p: Vec3&): Vec3 {
-    fin d = p.subtract(surface.offset)
-    return .(surface.invX.dot(d),surface.invY.dot(d),surface.invZ.dot(d))
+    fin x = p.x - surface.offset.x
+    fin y = p.y - surface.offset.y
+    fin z = p.z - surface.offset.z
+    return .(surface.invX.x*x + surface.invX.y*y + surface.invX.z*z,
+        surface.invY.x*x + surface.invY.y*y + surface.invY.z*z,
+        surface.invZ.x*x + surface.invZ.y*y + surface.invZ.z*z)
 }
 
 /** A point of the surface's own space in the world. */
 func collisionWorld(surface: CollisionSurface&, x: Double, y: Double, z: Double): Vec3 =
-    surface.offset.add(surface.axisX.scale(x)).add(surface.axisY.scale(y)).add(surface.axisZ.scale(z))
+    .(surface.offset.x + surface.axisX.x*x + surface.axisY.x*y + surface.axisZ.x*z,
+      surface.offset.y + surface.axisX.y*x + surface.axisY.y*y + surface.axisZ.y*z,
+      surface.offset.z + surface.axisX.z*x + surface.axisY.z*y + surface.axisZ.z*z)
 
 /** A gradient of the surface's own space as a world normal. */
 func collisionNormalOf(surface: CollisionSurface&, x: Double, y: Double, z: Double): Vec3 =
@@ -266,9 +340,20 @@ func collisionNormal(surface: CollisionSurface&, l: Vec3&): Vec3 {
  * A ray that starts in the ground hits at distance zero; `t` is in metres.
  */
 func castLandscapeSurface(surface: CollisionSurface&, origin: Vec3&, direction: Vec3&, length: Double): LandscapeGroundHit {
-    if surface.pavement then return castRoadSurface(surface.roads,origin,direction,length)
+    if surface.pavement {
+        if !surface.pavedMesh.file.ok() then return castRoadSurface(surface.roads,origin,direction,length)
+        fin hit = castCollisionMesh(surface.pavedMesh, origin, direction.scale(length))
+        if !hit.hit then return .()
+        fin p = origin.add(direction.scale(hit.t * length))
+        return LandscapeGroundHit(true, hit.t * length, p.y, hit.nx, hit.ny, hit.nz, hit.grip, p.x, p.y, p.z)
+    }
     fin start = collisionLocal(surface,origin)
-    fin span = collisionLocal(surface,origin.add(direction.scale(length))).subtract(start)
+    fin end = collisionLocal(surface,origin.add(direction.scale(length)))
+    if (start.x < surface.bounds.min.x && end.x < surface.bounds.min.x) ||
+       (start.x > surface.bounds.max.x && end.x > surface.bounds.max.x) ||
+       (start.z < surface.bounds.min.z && end.z < surface.bounds.min.z) ||
+       (start.z > surface.bounds.max.z && end.z > surface.bounds.max.z) then return .()
+    fin span = end.subtract(start)
     fin steps = clampInt(ceil(length/surface.step),1,512)
     var prior: Double = 0.0
     var cursor = 0
@@ -303,6 +388,13 @@ func castRoadSurface(roads: RoadNetwork&, origin: Vec3&, direction: Vec3&, lengt
     fin surface = hit.surface.&
     return LandscapeGroundHit(true,hit.distance,surface.height,surface.normal.x,surface.normal.y,surface.normal.z,
         surface.friction,p.x,surface.height,p.z)
+}
+
+/** The top paved surface below [ceiling] in a bounded vertical window. */
+func pavedMeshHeight(mesh: CollisionMesh&, x: Double, z: Double, ceiling: Double, depth: Double): RoadHeight {
+    fin hit = castCollisionMesh(mesh, Vec3(x, ceiling, z), Vec3(0.0, -depth, 0.0))
+    if !hit.hit then return .()
+    return .(true, ceiling - hit.t * depth, Vec3(hit.nx, hit.ny, hit.nz), hit.grip)
 }
 
 /** The nearest ground along a world ray over every landscape. */
@@ -363,7 +455,8 @@ func landscapePenetration(surfaces: Array<CollisionSurface>&, p: Vec3&): Landsca
     while index < surfaces.size {
         fin surface = surfaces[index].&
         if surface.pavement {
-            fin road = roadSurfaceAt(surface.roads,p.x,p.z)
+            fin road = if surface.pavedMesh.file.ok() then pavedMeshHeight(surface.pavedMesh, p.x, p.z, p.y + 2.0, 4.0)
+                else roadSurfaceAt(surface.roads,p.x,p.z)
             fin depth = (road.height-p.y)*road.normal.y
             if road.found && depth > deepest.depth && depth < 2.0 {
                 deepest = LandscapeContact(depth,road.normal.x,road.normal.y,road.normal.z,road.friction)

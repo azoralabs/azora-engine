@@ -214,13 +214,14 @@ func serialElementOr(value: SerialValue&, index: Int, fallback: Double): Double 
  * Each starts from its declared default, so a field the file leaves out reads
  * as it would on a freshly added component.
  */
-func readComponents(world: World!, entity: Entity, components: List<SerialField>&) {
+func readComponents(world: World!, entity: Entity, components: List<SerialField>&, contentOnly: Bool = false) {
     var recognized: Array<String> = []
+    fin ground = contentOnly && cellGroundRecord(components)
     inline for C in reflect<*>.withAnnot<Inspectable> {
         fin serialized = reflect<C>.annotMeta<Inspectable>.serializedName
         fin declared = if serialized != "" then memberIndex(components, serialized) else -1
         fin at = if declared >= 0 then declared else memberIndex(components, reflect<C>.declName)
-        if at >= 0 {
+        if at >= 0 && (!ground || !cellGroundComponent(components[at].name)) {
             recognized.add(components[at].name)
             var value = C()
             when components[at].value {
@@ -260,12 +261,32 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
         }
     }
     for component in components {
-        if !recognized.contains(component.name) {
+        if (!ground || !cellGroundComponent(component.name)) && !recognized.contains(component.name) {
             fin encoded = encodeSerialValue(component.value, serializerOptions()) catch ""
             if encoded != "" then setExternalComponent(world, entity, component.name, encoded)
         }
     }
 }
+
+/** Ground records can still serve as transform parents for authored cell objects. */
+func cellGroundRecord(components: List<SerialField>&): Bool {
+    if memberIndex(components, "HeightfieldTerrain") >= 0 then return true
+    fin at = memberIndex(components, "PluginObject")
+    if at >= 0 {
+        when components[at].value {
+            .Object(fields) -> {
+                fin plugin = memberIndex(fields, "plugin")
+                if plugin >= 0 then return (serialAsText(fields[plugin].value) catch "") == "azora.flex-landscape"
+            }
+            else -> { }
+        }
+    }
+    return false
+}
+
+func cellGroundComponent(name: String): Bool =
+    name == "HeightfieldTerrain" || name == "LandscapeCollision" || name == "TerrainHoles" ||
+    name == "FoliagePaint" || name == "PluginObject"
 
 /**
  * Loads the scene in [text] into [world], which should be empty.
@@ -281,10 +302,13 @@ func readScene(world: World!, text: String): Int {
 /**
  * Adds the entities of scene [text] to [world], appending each one spawned to
  * [spawned] (a streaming system unloads them later); answers how many, or -1
- * when the text is not a scene.
+ * when the text is not a scene. Content cells retain object transforms and
+ * leave the landscape and its collision to the main scene.
  */
-func readSceneInto(world: World!, text: String, spawned: Array<Entity>!): Int {
-    fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+func readSceneInto(world: World!, text: String, spawned: Array<Entity>!, contentOnly: Bool = false): Int {
+    var options = serializerOptions()
+    options.reuseTokens = true
+    fin root = decodeSerialValue(text, options) catch SerialValue.Null
     fin first = spawned.size
     var parents: Array<Int> = []
     when root {
@@ -306,7 +330,7 @@ func readSceneInto(world: World!, text: String, spawned: Array<Entity>!): Int {
                                 fin componentsAt = memberIndex(fields, "components")
                                 if componentsAt >= 0 {
                                     when fields[componentsAt].value {
-                                        .Object(components) -> readComponents(world, entity, components)
+                                        .Object(components) -> readComponents(world, entity, components, contentOnly)
                                         else -> { }
                                     }
                                 }

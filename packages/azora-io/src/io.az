@@ -43,6 +43,7 @@ bridge .C {
     func @foreignName("az_peek64")(p: Long, off: Long): Long
     func @foreignName("az_peek32")(p: Long, off: Long): Int
     func @foreignName("az_peek8")(p: Long, off: Long): Int
+    func @foreignName("az_peek_f32")(p: Long, off: Long): Double
     func @foreignName("az_peek_f64")(p: Long, off: Long): Double
     func @foreignName("az_poke64")(p: Long, off: Long, v: Long)
     func @foreignName("az_poke32")(p: Long, off: Long, v: Int)
@@ -129,6 +130,13 @@ func asciiChar(code: Int): String {
 pack Blob {
     var data: Long
     var size: Int
+    var mapped: Bool = false
+}
+
+bridge .C {
+    func @foreignName("mmap")(address: Long, length: Long, protection: Int, flags: Int, fd: Int, offset: Long): Long
+    func @foreignName("munmap")(address: Long, length: Long): Int
+    func @foreignName("fileno")(stream: Long): Int
 }
 
 /** An empty blob, used for every failure path. */
@@ -170,6 +178,19 @@ func readFile(path: String): Blob {
         return blobEmpty()
     }
     return .(buffer, read as Int)
+}
+
+/** Maps read-only structured assets so only the queried pages have to be read. */
+func mapBinaryFile(path: String): Blob {
+    fin stream = fopen(path, "rb")
+    if stream == 0 then return blobEmpty()
+    defer { fclose(stream) }
+    if fseek(stream, 0, seekEnd) != 0 then return blobEmpty()
+    fin length = ftell(stream)
+    if length <= 0 || length > 2147483647 then return blobEmpty()
+    fin data = mmap(0, length, 1, 2, fileno(stream), 0)
+    if data == -1 || data == 0 then return readFile(path)
+    return .(data, length as Int, mapped: true)
 }
 
 /** Creates the folder [path] and every missing parent (rwxr-xr-x); folders that exist are left as they are. */
@@ -290,7 +311,7 @@ impl Blob {
             }
         }
         azPoke8(result, written as Long, 0)
-        return if written == 0 then "" else strSlice(azCstring(result, 0), 0, written)
+        return if written == 0 then "" else azCstring(result, 0)
     }
 
     /** Whether the bytes at [offset] equal the ASCII [expected]. */
@@ -301,9 +322,12 @@ impl Blob {
 
     /** Releases the blob's memory. Safe to call on an empty blob. */
     func !.release() {
-        if self.data != 0 then azFree(self.data)
+        if self.data != 0 {
+            if self.mapped then munmap(self.data, self.size as Long) else azFree(self.data)
+        }
         self.data = 0
         self.size = 0
+        self.mapped = false
     }
 }
 
