@@ -31,6 +31,7 @@ import engine.platform
 import engine.gpu
 import engine.gpu.draw
 exposed import engine.render.geometry
+exposed import engine.render.skinning
 import engine.scene
 exposed import engine.scene.transforms
 exposed import engine.scene.terrain
@@ -41,6 +42,7 @@ import engine.landscape.volume
 import engine.foliage
 import engine.foliage.gpu
 import engine.gpu.terrain
+exposed import engine.water
 import engine.material.fusion.metal
 import engine.lighting.photon
 import engine.atmosphere
@@ -375,6 +377,9 @@ impl App {
         fin across = sqrt(view.m00*view.m00+view.m01*view.m01+view.m02*view.m02)*(self.width() as Double)*0.5
         fin upward = sqrt(view.m10*view.m10+view.m11*view.m11+view.m12*view.m12)*(self.height() as Double)*0.5
         fin spread = if across > upward then across else upward
+        fin eyeX = peekFloat32(self.gpu.viewProj, 64)
+        fin eyeY = peekFloat32(self.gpu.viewProj, 68)
+        fin eyeZ = peekFloat32(self.gpu.viewProj, 72)
         var drawn = 0
         self.gpu.terrainFrame++
         var index = 0
@@ -383,9 +388,17 @@ impl App {
             if visibleInWorld(world, entity) && world.isAlive(entity) {
                 fin surface = items.values[index].clone()
                 fin model = heightfieldMatrix(world, entity, surface)
-                fin asset = self.sceneTerrainIndex(entity,surface,model)
-                self.gpu.terrains[asset].lastUsed = self.gpu.terrainFrame
                 fin clip = mat4Mul(copyMat4(view), copyMat4(model))
+                if !boxInClip(clip, -0.5, -0.5, -0.5, 0.5, 0.5, 0.5) {
+                    index++
+                    continue
+                }
+                fin dx = absValue(eyeX-model.m03) - (absValue(model.m00)+absValue(model.m02))*0.5
+                fin dz = absValue(eyeZ-model.m23) - (absValue(model.m20)+absValue(model.m22))*0.5
+                fin distant = dx > 13000.0 || dz > 13000.0 || eyeY > 2000.0 + model.m13
+                fin asset = if distant && surface.overviewImage != "" then self.gpu.terrainIndex(surface.overviewImage)
+                    else self.sceneTerrainIndex(entity,surface,model)
+                self.gpu.terrains[asset].lastUsed = self.gpu.terrainFrame
                 // Outside the view (behind the camera, beyond the sun's cascade): neither its chunks nor its foliage.
                 if !boxInClip(clip, -0.5, self.gpu.terrains[asset].low, -0.5, 0.5, self.gpu.terrains[asset].high, 0.5) {
                     index++
@@ -543,7 +556,7 @@ impl App {
     }
 
     /** Draws every visible mesh in [world] under the view already begun. */
-    func !.drawScene(world: World!, meshes: PrimitiveMeshes&, sculpted: Bool = true) {
+    func !.drawScene(world: World!, meshes: PrimitiveMeshes&, sculpted: Bool = true, elapsed: Double = 0.0) {
         if self.gpu.localLights != 0 {
             // The eye setMaterialEye left in the uniforms picks the nearest lights.
             fin eye: Vec3 = .(peekFloat32(self.gpu.viewProj, 64), peekFloat32(self.gpu.viewProj, 68), peekFloat32(self.gpu.viewProj, 72))
@@ -555,6 +568,8 @@ impl App {
         self.drawHeightfields(world)
         self.drawRoads()
         if sculpted then self.drawSculptedLandscapes(world)
+        self.drawSkinnedMeshes(world, self.gpu.fusion.root)
+        self.drawWater(world, self.gpu.fusion.root, elapsed)
     }
 
     /**
@@ -662,9 +677,13 @@ impl App {
                 fin y: Vec3 = .(model.m01, model.m11, model.m21)
                 fin z: Vec3 = .(model.m02, model.m12, model.m22)
                 // A primitive spans half a unit each way: its farthest corner. Geometry: its farthest vertex.
-                self.gpu.sceneMeshes.radii[slot] = if shape != 0 then
-                    geometryReach(world, storageGet<MeshGeometry>(sources, entity).name) * meshLargestAxis(x, y, z) else
-                    0.5 * meshLargestCorner(x, y, z)
+                if shape != 0 {
+                    fin geometry = storageGet<MeshGeometry>(sources, entity).name
+                    prepareMeshGeometry(world, self.gpu.device, self.gpu.fusion.root, geometry)
+                    self.gpu.sceneMeshes.radii[slot] = geometryReach(world, geometry) * meshLargestAxis(x, y, z)
+                } else {
+                    self.gpu.sceneMeshes.radii[slot] = 0.5 * meshLargestCorner(x, y, z)
+                }
                 self.gpu.sceneMeshes.models[slot] = model
                 self.gpu.sceneMeshes.sizes[slot] = size
                 self.gpu.sceneMeshes.shapes[slot] = shape
@@ -1245,6 +1264,9 @@ func roadLayout(world: World!, scratch: Long): Long {
             layout = roadKeyReal(layout, s.gradingWidth, scratch)
             layout = roadKeyReal(layout, s.friction, scratch)
             layout = roadKeyPart(layout, if s.markings then 1 else 0)
+            layout = roadKeyPart(layout, if s.yellowCenterline then 1 else 0)
+            layout = roadKeyPart(layout, if s.centeredOneWay then 1 else 0)
+            layout = roadKeyReal(layout, s.sampleSpacing, scratch)
             layout = roadKeyPart(layout, if s.isBridge then 1 else 0)
             layout = roadKeyReal(layout, s.pierDepth, scratch)
             layout = roadKeyReal(layout, s.pierSpacing, scratch)
@@ -1297,11 +1319,18 @@ func uploadRoadMesh(device: Long, network: RoadNetwork&, asset: String, material
 }
 
 impl App {
+    /** Opt in for games that move actors but leave the authored road hierarchies in place. */
+    func !.cacheStaticRoadTransforms() {
+        self.gpu.roads.staticTransforms = true
+        self.gpu.roads.checkedStamp = -1
+    }
+
     func !.prepareRoads(world: World!) {
+        fin frozen = self.gpu.roads.staticTransforms
         fin stamp = world.revision + ensureStorage<SplineRoad>(world).revision * 7 + ensureStorage<RoadPoint>(world).revision * 13 +
-            ensureStorage<RoadJunction>(world).revision * 17 + ensureStorage<Transform>(world).revision * 19 +
+            ensureStorage<RoadJunction>(world).revision * 17 + (if frozen then 0 else ensureStorage<Transform>(world).revision * 19) +
             ensureStorage<FusionMaterial>(world).revision * 23 + ensureStorage<Visibility>(world).revision * 29
-        if self.gpu.roads.checkedFrame == self.framesRun && self.gpu.roads.checkedStamp == stamp then return
+        if (frozen || self.gpu.roads.checkedFrame == self.framesRun) && self.gpu.roads.checkedStamp == stamp then return
         self.gpu.roads.checkedFrame = self.framesRun
         self.gpu.roads.checkedStamp = stamp
         fin layout = roadLayout(world, self.gpu.scratch)
@@ -1310,9 +1339,14 @@ impl App {
         self.gpu.roads.network = buildRoadNetwork(world)
         self.gpu.roads.layout = layout
         self.gpu.roads.revision++
-        for part in self.gpu.roads.network.surfaceRanges {
-            fin asset = roadMaterialAsset(world,part.owner)
-            self.gpu.roads.surfaces.add(uploadRoadMesh(self.gpu.device,self.gpu.roads.network,asset,0,part.first,part.limit))
+        fin ranges = self.gpu.roads.network.surfaceRanges.&
+        var start = 0
+        while start < ranges.size {
+            fin asset = roadMaterialAsset(world,ranges[start].owner)
+            var end = start + 1
+            while end < ranges.size && roadMaterialAsset(world,ranges[end].owner) == asset then end++
+            self.gpu.roads.surfaces.add(uploadRoadMesh(self.gpu.device,self.gpu.roads.network,asset,0,ranges[start].first,ranges[end-1].limit))
+            start = end
         }
         for material: Int in 1..<5 {
             fin mesh = uploadRoadMesh(self.gpu.device,self.gpu.roads.network,"",material,0,self.gpu.roads.network.triangles.size)

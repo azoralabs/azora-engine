@@ -1,0 +1,127 @@
+module engine.water
+
+import std.traits
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.gpu.draw
+import engine.gpu.meshfile
+import engine.io
+import engine.math.mat
+import engine.objc
+import engine.platform
+import engine.scene
+import engine.scene.transforms
+import engine.water.shader
+
+/** A surface mesh with a repeatable wave texture and an optional shoreline mask in local X/Z. */
+@Component
+@Inspectable(title: "Water Surface", icon: "waves", category: "Rendering", order: 16)
+pack WaterSurface derives Clone {
+    var mesh: String = ""
+    var waves: String = ""
+    var mask: String = ""
+    var color: Rgba = .(0.08, 0.33, 0.45, 1.0)
+    var maskWidth: Double = 1.0
+    var maskLength: Double = 1.0
+    var waveScale: Double = 45.0
+    var speed: Double = 0.08
+    var strength: Double = 0.26
+}
+
+@Component
+pack WaterPipeline {
+    var device: Long
+    var pipeline: Long
+}
+
+impl WaterPipeline {
+    dtor .() { send0(self.pipeline, sel("release")) }
+}
+
+@Component
+pack WaterAssets {
+    var device: Long
+    var key: String
+    var mesh: MeshFile
+    var waves: Long
+    var mask: Long
+}
+
+impl WaterAssets {
+    dtor .() {
+        send0(self.mesh.buffer, sel("release"))
+        send0(self.waves, sel("release"))
+        send0(self.mask, sel("release"))
+    }
+}
+
+func waterPipeline(world: World!, device: Long): Long {
+    let cache = ensureStorage<WaterPipeline>(world)
+    for row: Int in 0..<storageLength<WaterPipeline>(cache) {
+        if cache.values[row].device == device then return cache.values[row].pipeline
+    }
+    fin pipeline = compileWater(device)
+    storageInsert<WaterPipeline>(cache, world.spawnResource("Water pipeline"), .(device, pipeline))
+    return pipeline
+}
+
+func waterAssets(app: App&, world: World!, root: String, surface: WaterSurface&): Int {
+    let cache = ensureStorage<WaterAssets>(world)
+    fin key = "${root}\n${surface.mesh}\n${surface.waves}\n${surface.mask}"
+    fin device = app.gpu.device
+    for row: Int in 0..<storageLength<WaterAssets>(cache) {
+        if cache.values[row].device == device && cache.values[row].key == key then return row
+    }
+    fin mesh = loadMeshFile(device, root, surface.mesh)
+    fin waves = if projectAssetPath(surface.waves) then app.loadImage("${root}/${surface.waves}").texture else 0
+    fin mask = if projectAssetPath(surface.mask) then app.loadImage("${root}/${surface.mask}").texture else 0
+    fin row = storageLength<WaterAssets>(cache)
+    storageInsert<WaterAssets>(cache, world.spawnResource("Water assets"), .(device, key, mesh, waves, mask))
+    return row
+}
+
+impl App {
+    func !.drawWater(world: World!, root: String, elapsed: Double) {
+        let gpu: AzGpu! = self.gpu
+        fin surfaces = ensureStorage<WaterSurface>(world)
+        if storageLength<WaterSurface>(surfaces) == 0 || gpu.casting || !gpu.hasEncoder then return
+        fin pipeline = waterPipeline(world, gpu.device)
+        if pipeline == 0 then return
+        for row: Int in 0..<storageLength<WaterSurface>(surfaces) {
+            fin entity = storageEntityAt<WaterSurface>(surfaces, row)
+            if !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+            fin surface = surfaces.values[row].clone()
+            if surface.mesh == "" then continue
+            fin index = waterAssets(self, world, root, surface)
+            let asset: WaterAssets& = ensureStorage<WaterAssets>(world).values[index].&
+            if asset.mesh.buffer == 0 || asset.waves == 0 || (surface.mask != "" && asset.mask == 0) then continue
+            send1(gpu.enc, sel("setRenderPipelineState:"), pipeline)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+            azCopy(gpu.scratch, gpu.viewProj, 64)
+            pokeMat4(gpu.scratch, 64, worldMatrix(world, entity))
+            azCopy(gpu.scratch + 128, gpu.viewProj + 64, 12)
+            azPokeF32(gpu.scratch, 140, elapsed)
+            azPokeF32(gpu.scratch, 144, gpu.lightX)
+            azPokeF32(gpu.scratch, 148, gpu.lightY)
+            azPokeF32(gpu.scratch, 152, gpu.lightZ)
+            azPokeF32(gpu.scratch, 156, surface.strength)
+            azPokeF32(gpu.scratch, 160, surface.color.r)
+            azPokeF32(gpu.scratch, 164, surface.color.g)
+            azPokeF32(gpu.scratch, 168, surface.color.b)
+            azPokeF32(gpu.scratch, 172, surface.speed)
+            azPokeF32(gpu.scratch, 176, surface.maskWidth)
+            azPokeF32(gpu.scratch, 180, surface.maskLength)
+            azPokeF32(gpu.scratch, 184, surface.waveScale)
+            azPokeF32(gpu.scratch, 188, if asset.mask != 0 then 1.0 else 0.0)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh.buffer, 0, 0)
+            send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 192, 1)
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, 192, 1)
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), asset.waves, 0)
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if asset.mask != 0 then asset.mask else asset.waves, 1)
+            send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, asset.mesh.count as Long)
+            gpu.mode = -1
+            gpu.meshPipeline = 0
+        }
+    }
+}

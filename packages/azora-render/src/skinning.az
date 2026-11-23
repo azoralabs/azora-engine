@@ -1,0 +1,240 @@
+module engine.render.skinning
+
+import std.io
+import std.traits
+import engine.ecs
+import engine.gpu
+import engine.gpu.draw
+import engine.gpu.meshfile
+import engine.io
+import engine.math.mat
+import engine.objc
+import engine.platform
+import engine.scene
+import engine.scene.transforms
+
+pack SkinClip derives (Copy, Clone) {
+    var first: Int = 0
+    var count: Int = 1
+    var rate: Double = 24.0
+}
+
+/** An indexed skin with an albedo atlas and baked joint palettes. Playhead is in seconds. */
+@Component
+pack SkinnedMesh derives Clone {
+    var mesh: String = ""
+    var texture: String = ""
+    var clip: SkinClip = .()
+    var playhead: Double = 0.0
+    var previousClip: SkinClip = .()
+    var previousPlayhead: Double = 0.0
+    var transition: Double = 1.0
+}
+
+@Component
+pack SkinPipeline {
+    var device: Long
+    var handle: Long
+}
+
+impl SkinPipeline {
+    dtor .() { send0(self.handle, sel("release")) }
+}
+
+@Component
+pack SkinAsset {
+    var device: Long
+    var key: String
+    var mesh: Long = 0
+    var indexOffset: Long = 0
+    var paletteOffset: Long = 0
+    var indexCount: Int = 0
+    var joints: Int = 0
+    var frames: Int = 0
+    var albedo: Long = 0
+}
+
+impl SkinAsset {
+    dtor .() {
+        send0(self.mesh, sel("release"))
+        send0(self.albedo, sel("release"))
+    }
+}
+
+func readSkin(app: App&, root: String, actor: SkinnedMesh&, key: String): SkinAsset {
+    var asset: SkinAsset = .(app.gpu.device, key)
+    if !projectAssetPath(actor.mesh) || !endsWith(actor.mesh, ".azskin") || !projectAssetPath(actor.texture) then return take asset
+    var file = readFile("${root}/${actor.mesh}")
+    defer { file.release() }
+    if file.size < 20 || !file.matches(0, "AZS1") then return take asset
+    fin vertices = file.i32(4)
+    fin indices = file.i32(8)
+    fin joints = file.i32(12)
+    fin frames = file.i32(16)
+    if vertices <= 0 || vertices > 1000000 || indices <= 0 || indices > 6000000 || indices % 3 != 0 ||
+        joints <= 0 || joints > 256 || frames <= 0 || frames > 5000 then return take asset
+    fin indexOffset = (vertices as Long) * 64
+    fin afterIndices = indexOffset + (indices as Long) * 4
+    fin paletteOffset = ((afterIndices + 15) / 16) * 16
+    fin size = paletteOffset + (joints as Long) * (frames as Long) * 64
+    if size != (file.size as Long) - 20 then return take asset
+    for i: Int in 0..<indices {
+        fin vertex = file.i32(20 + (indexOffset as Int) + i * 4)
+        if vertex < 0 || vertex >= vertices then return take asset
+    }
+    asset.mesh = send3(asset.device, sel("newBufferWithBytes:length:options:"), file.data + 20, size, 0)
+    asset.albedo = app.loadImage("${root}/${actor.texture}").texture
+    asset.indexCount = indices
+    asset.indexOffset = indexOffset
+    asset.paletteOffset = paletteOffset
+    asset.joints = joints
+    asset.frames = frames
+    return take asset
+}
+
+func skinAssetIndex(app: App&, world: World!, root: String, actor: SkinnedMesh&): Int {
+    let cache = ensureStorage<SkinAsset>(world)
+    fin key = "${root}\n${actor.mesh}\n${actor.texture}"
+    for row: Int in 0..<storageLength<SkinAsset>(cache) {
+        if cache.values[row].device == app.gpu.device && cache.values[row].key == key then return row
+    }
+    fin row = storageLength<SkinAsset>(cache)
+    storageInsert<SkinAsset>(cache, world.spawnResource("Skinned mesh assets"), readSkin(app, root, actor, key))
+    return row
+}
+
+func skinPipeline(world: World!, device: Long): Long {
+    let pipelines = ensureStorage<SkinPipeline>(world)
+    for row: Int in 0..<storageLength<SkinPipeline>(pipelines) {
+        if pipelines.values[row].device == device then return pipelines.values[row].handle
+    }
+    fin pipeline = compileSkinPipeline(device)
+    storageInsert<SkinPipeline>(pipelines, world.spawnResource("Skin pipeline"), .(device, pipeline))
+    return pipeline
+}
+
+pack SkinPose {
+    var first: Long = 0
+    var next: Long = 0
+    var fraction: Double = 0.0
+}
+
+func skinPose(asset: SkinAsset&, clip: SkinClip&, playhead: Double): SkinPose {
+    fin first = if clip.first >= 0 && clip.first < asset.frames then clip.first else 0
+    fin count = if clip.count > 0 && clip.count <= asset.frames - first then clip.count else 1
+    fin position = if playhead > 0.0 && clip.rate > 0.0 then playhead * clip.rate else 0.0
+    fin stride = (asset.joints as Long) * 64
+    fin cursor = (position as Int) % count
+    return .(asset.paletteOffset + ((first + cursor) as Long) * stride,
+        asset.paletteOffset + ((first + (cursor + 1) % count) as Long) * stride, position - ((position as Int) as Double))
+}
+
+impl App {
+    func !.drawSkinnedMeshes(world: World!, root: String) {
+        let gpu: AzGpu! = self.gpu
+        fin actors = ensureStorage<SkinnedMesh>(world)
+        if storageLength<SkinnedMesh>(actors) == 0 || !gpu.hasEncoder || gpu.casting then return
+        for row: Int in 0..<storageLength<SkinnedMesh>(actors) {
+            fin entity = storageEntityAt<SkinnedMesh>(actors, row)
+            if !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+            fin actor = actors.values[row].clone()
+            fin index = skinAssetIndex(self, world, root, actor)
+            let asset: SkinAsset& = ensureStorage<SkinAsset>(world).values[index].&
+            if asset.mesh == 0 || asset.albedo == 0 then continue
+            fin pipeline = skinPipeline(world, gpu.device)
+            if pipeline == 0 then return
+            fin pose = skinPose(asset, actor.clip, actor.playhead)
+            fin previous = if actor.transition < 1.0 then skinPose(asset, actor.previousClip, actor.previousPlayhead) else pose
+            send1(gpu.enc, sel("setRenderPipelineState:"), pipeline)
+            send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+            azCopy(gpu.scratch, gpu.viewProj, 64)
+            pokeMat4(gpu.scratch, 64, worldMatrix(world, entity))
+            azPokeF32(gpu.scratch, 128, gpu.lightX)
+            azPokeF32(gpu.scratch, 132, gpu.lightY)
+            azPokeF32(gpu.scratch, 136, gpu.lightZ)
+            azPokeF32(gpu.scratch, 140, pose.fraction)
+            azPokeF32(gpu.scratch, 144, previous.fraction)
+            azPokeF32(gpu.scratch, 148, actor.transition)
+            azPokeF32(gpu.scratch, 152, asset.joints as Double)
+            azPokeF32(gpu.scratch, 156, 0.0)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, 0, 0)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, pose.first, 1)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, pose.next, 2)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, previous.first, 3)
+            send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, previous.next, 4)
+            send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 160, 5)
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), asset.albedo, 0)
+            send5(gpu.enc, sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:"),
+                3, asset.indexCount as Long, 1, asset.mesh, asset.indexOffset)
+            gpu.mode = -1
+            gpu.meshPipeline = 0
+        }
+    }
+}
+
+func skinMetalSource(): String = "#include <metal_stdlib>
+using namespace metal;
+struct SkinUniforms { float4x4 clip, model; float4 lightFrame, blend; };
+struct SkinVertex { float4 position [[position]]; float2 uv; float light; };
+float4x4 palette(const device float4x4* bones, uint4 joints, float4 weights) {
+    return bones[joints.x]*weights.x + bones[joints.y]*weights.y + bones[joints.z]*weights.z + bones[joints.w]*weights.w;
+}
+vertex SkinVertex skin_vertex(uint id [[vertex_id]], const device float* vertices [[buffer(0)]],
+                              const device float4x4* pose [[buffer(1)]], const device float4x4* next [[buffer(2)]],
+                              const device float4x4* previous [[buffer(3)]], const device float4x4* older [[buffer(4)]],
+                              constant SkinUniforms& u [[buffer(5)]]) {
+    const device float* v = vertices + id * 16;
+    uint4 joints = min(uint4(v[8],v[9],v[10],v[11]), uint4(uint(u.blend.z)-1));
+    float4 weights = float4(v[12],v[13],v[14],v[15]);
+    float4 p = float4(v[0],v[1],v[2],1);
+    float4 n = float4(v[3],v[4],v[5],0);
+    float4x4 a = palette(pose,joints,weights), b = palette(next,joints,weights);
+    float4 moved = mix(a*p,b*p,u.lightFrame.w), normal = mix(a*n,b*n,u.lightFrame.w);
+    if (u.blend.y < 1) {
+        a = palette(previous,joints,weights); b = palette(older,joints,weights);
+        moved = mix(mix(a*p,b*p,u.blend.x),moved,u.blend.y);
+        normal = mix(mix(a*n,b*n,u.blend.x),normal,u.blend.y);
+    }
+    float diffuse = saturate(dot(normalize((u.model * normal).xyz), normalize(u.lightFrame.xyz)));
+    return { u.clip * u.model * moved, float2(v[6],v[7]), 0.60 + 0.40*diffuse };
+}
+fragment float4 skin_fragment(SkinVertex in [[stage_in]], texture2d<float> albedo [[texture(0)]]) {
+    constexpr sampler tex(coord::normalized, address::clamp_to_edge, filter::linear);
+    float4 color = albedo.sample(tex, in.uv);
+    if (color.a < 0.48) discard_fragment();
+    return float4(color.rgb / max(color.a, 0.48) * in.light, 1);
+}
+"
+
+func compileSkinPipeline(device: Long): Long {
+    fin diagnostic = azAlloc(8)
+    defer { azFree(diagnostic) }
+    azPoke64(diagnostic, 0, 0)
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(skinMetalSource()), 0, diagnostic)
+    if library == 0 {
+        fin message = azPeek64(diagnostic, 0)
+        if message != 0 then println("Azora Skin: ${nsStringText(send0(message, sel("localizedDescription")))}")
+        return 0
+    }
+    defer { send0(library, sel("release")) }
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("skin_vertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("skin_fragment"))
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer {
+        send0(vertex, sel("release"))
+        send0(fragment, sel("release"))
+        send0(descriptor, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), 80)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, diagnostic)
+    if pipeline == 0 {
+        fin message = azPeek64(diagnostic, 0)
+        if message != 0 then println("Azora Skin: ${nsStringText(send0(message, sel("localizedDescription")))}")
+    }
+    return pipeline
+}

@@ -43,6 +43,13 @@ pack WorldPartition derives Clone {
     var cellsPerFrame: Int = 1
     /** The project folder generated cells are cached in (made when missing). */
     var folder: String = ".azora-build"
+    /** Reads authored <column>-<row>.azscene cells from folder. Missing cells are empty. */
+    var authored: Bool = false
+    /** Maximum cells read before the first game frame. Negative loads everything in range. */
+    var startupCells: Int = -1
+    /** Minimum number of game frames between stream updates. */
+    @Range(min: 1.0, max: 60.0, step: 1.0)
+    var updateInterval: Int = 1
     /** Draw the whole world coarsely beyond the loaded cells. */
     var overview: Bool = true
 }
@@ -105,7 +112,7 @@ func streamWorld(world: World!, root: String, center: Vec3&, limit: Int = -1): I
     fin recipe = storageGet<WorldRecipe>(ensureStorage(world), owner).clone()
     fin settings = storageGet<WorldPartition>(ensureStorage(world), owner).clone()
     if !storageHas<PartitionState>(ensureStorage(world), owner) then storageInsert<PartitionState>(ensureStorage(world), owner, .())
-    fin name = worldCacheName(recipe)
+    fin name = if settings.authored then "${settings.folder}/${recipe.width}/${recipe.length}/${recipe.cellSize}" else worldCacheName(recipe)
     // A changed recipe is a different world: what was loaded goes, and it is planned again.
     if storageGet<PartitionState>(ensureStorage(world), owner).planned && storageGet<PartitionState>(ensureStorage(world), owner).recipe != name {
         unloadPartition(world, owner)
@@ -117,14 +124,14 @@ func streamWorld(world: World!, root: String, center: Vec3&, limit: Int = -1): I
         fin index = storageIndexOf<PartitionState>(fresh, owner)
         fresh.values[index].cells.clear()
         fresh.values[index].overview.clear()
-        fresh.values[index].plan = planWorld(recipe)
+        if !settings.authored then fresh.values[index].plan = planWorld(recipe)
         fresh.values[index].planned = true
         fresh.values[index].recipe = name
-        println("World Partition: ${fresh.values[index].plan.towns.size} settlements, ${fresh.values[index].plan.roads.size} roads, ${fresh.values[index].plan.junctions.size} junctions, ${fresh.values[index].plan.buildings.size} buildings")
+        if !settings.authored then println("World Partition: ${fresh.values[index].plan.towns.size} settlements, ${fresh.values[index].plan.roads.size} roads, ${fresh.values[index].plan.junctions.size} junctions, ${fresh.values[index].plan.buildings.size} buildings")
     }
     let states = ensureStorage<PartitionState>(world)
     fin at = storageIndexOf<PartitionState>(states, owner)
-    if settings.overview && states.values[at].overview.size == 0 then loadOverview(world, root, recipe, settings, owner)
+    if !settings.authored && settings.overview && states.values[at].overview.size == 0 then loadOverview(world, root, recipe, settings, owner)
     if !settings.overview && states.values[at].overview.size > 0 {
         for entity in states.values[at].overview then if world.isAlive(entity) then world.despawn(entity)
         states.values[at].overview.clear()
@@ -245,10 +252,12 @@ func cellLoaded(cells: Array<LoadedCell>&, column: Int, row: Int): Bool {
  */
 func loadCell(world: World!, root: String, recipe: WorldRecipe&, settings: WorldPartition&, plan: WorldPlan&, cell: LoadedCell!,
               owner: Entity) {
-    fin scenePath = "${root}/${cellScenePath(settings.folder, recipe, cell.column, cell.row)}"
+    fin scenePath = if settings.authored then "${root}/${settings.folder}/${cell.column}-${cell.row}.azscene"
+        else "${root}/${cellScenePath(settings.folder, recipe, cell.column, cell.row)}"
     var file = readFile(scenePath)
     if !file.ok() {
         file.release()
+        if settings.authored then return
         makeFolders("${root}/${settings.folder}")
         if !generateWorldCell(recipe, plan, root, settings.folder, cell.column, cell.row) {
             println("World Partition: could not write cell ${cell.column},${cell.row} into ${root}/${settings.folder}")
@@ -309,13 +318,17 @@ inline fin overviewDrop: Double = 4.0
 @System(phase: .Startup)
 func startWorldPartition(frame: Game!) {
     fin start = playerStartPosition(frame.world)
-    streamWorld(frame.world, ".", start)
+    fin owner = worldPartitionEntity(frame.world)
+    fin limit = if owner.isValid then storageGet<WorldPartition>(ensureStorage(frame.world), owner).startupCells else -1
+    streamWorld(frame.world, ".", start, limit)
 }
 
 /** Every frame, a cell or so around the camera. */
 @System(phase: .PreUpdate)
 func streamWorldPartition(frame: Game!) {
-    streamWorldAround(frame.world, ".", frame.camera.target)
+    fin owner = worldPartitionEntity(frame.world)
+    fin interval = if owner.isValid then storageGet<WorldPartition>(ensureStorage(frame.world), owner).updateInterval else 1
+    if interval <= 1 || frame.window.framesRun % interval == 0 then streamWorldAround(frame.world, ".", frame.camera.target)
 }
 
 /**

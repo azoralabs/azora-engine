@@ -72,6 +72,8 @@ pack Game {
     var paused: Bool = false
     var action: Int = 0
     var interpolation: Double = 0.0
+    /** Set false while an opaque screen covers the world. The 2D UI still renders. */
+    var drawWorld: Bool = true
 }
 
 impl Game { func fromGame(frame: Game!): Game! = frame }
@@ -293,7 +295,7 @@ react func drawGameScene(frame: Game!, plan: SystemPlan&, meshes: PrimitiveMeshe
     frame.window.setMaterialEye(camera.position())
     frame.window.applySceneLight(frame.world, elapsed)
     frame.window.updateScenePhotons(frame.world, camera.target, elapsed)
-    frame.window.drawScene(frame.world, meshes)
+    frame.window.drawScene(frame.world, meshes, elapsed: elapsed)
     if (frame.stages.volumes || (physicalSky && frame.atmosphere.ready)) && gpu.scenePass.active {
         frame.window.suspendScenePass()
         frame.view.encoder = 0
@@ -384,7 +386,7 @@ scope {
         }
 
         fin rect: ViewRect = .(0.0, 0.0, window.width() as Double, window.height() as Double)
-        drawGameScene(frame, plan, meshes, rect)
+        if frame.drawWorld then drawGameScene(frame, plan, meshes, rect)
         overlay.begin()
         dispatchGame(plan, .Render, frame)
         overlay.commit()

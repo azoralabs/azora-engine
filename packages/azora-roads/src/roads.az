@@ -36,6 +36,12 @@ pack SplineRoad derives Clone {
     var pierDepth: Double = 35.0
     @Range(min: 12.0, max: 100.0, step: 1.0)
     var pierSpacing: Double = 34.0
+    var yellowCenterline: Bool = true
+    /** Places a one-way carriageway symmetrically on its spline. */
+    var centeredOneWay: Bool = false
+    /** Maximum distance between generated sections. Existing knots stay on the pavement. */
+    @Range(min: 1.0, max: 32.0, step: 1.0)
+    var sampleSpacing: Double = 3.0
 }
 
 @Component
@@ -214,7 +220,7 @@ pack RoadSpan derives Clone {
     var style: SplineRoad
 }
 
-func roadPolyline(knots: Array<RoadKnot>&, closed: Bool): Array<Vec3> {
+func roadPolyline(knots: Array<RoadKnot>&, closed: Bool, sampleSpacing: Double = 3.0): Array<Vec3> {
     var points: Array<Vec3> = []
     if knots.size < 2 then return take points
     var i = 0
@@ -228,7 +234,7 @@ func roadPolyline(knots: Array<RoadKnot>&, closed: Bool): Array<Vec3> {
         fin d = if j + 1 < knots.size then knots[j+1].point else if isLoop then knots[0].point else knots[j].point
         fin length = roadHorizontal(b,c)
         if length > 0.02 {
-            fin steps = roadLimit(ceil(length / 3.0) as Double, 1.0, 32768.0) as Int
+            fin steps = roadLimit(ceil(length / roadLimit(sampleSpacing, 1.0, 32.0)) as Double, 1.0, 32768.0) as Int
             var k = 0
             while k < steps {
                 points.add(roadSpline(a,b,c,d,(k as Double)/(steps as Double)))
@@ -256,11 +262,18 @@ func roadSections(points: Array<Vec3>&, isLoop: Bool): Array<RoadSection> {
     return take sections
 }
 
+func roadLateralOffset(style: SplineRoad&): Double {
+    fin fw = roadLaneCount(style.forwardLanes)
+    fin rv = roadLaneCount(style.reverseLanes)
+    return if style.centeredOneWay && (fw == 0 || rv == 0)
+        then ((rv-fw) as Double)*roadLimit(style.laneWidth,2.5,5.0)*0.5 else 0.0
+}
+
 func roadLeft(style: SplineRoad&): Double =
-    (roadLaneCount(style.reverseLanes) as Double) * roadLimit(style.laneWidth, 2.5, 5.0) + roadLimit(style.shoulder, 0.0, 5.0)
+    (roadLaneCount(style.reverseLanes) as Double) * roadLimit(style.laneWidth, 2.5, 5.0) + roadLimit(style.shoulder, 0.0, 5.0) - roadLateralOffset(style)
 
 func roadRight(style: SplineRoad&): Double =
-    (roadLaneCount(style.forwardLanes) as Double) * roadLimit(style.laneWidth, 2.5, 5.0) + roadLimit(style.shoulder, 0.0, 5.0)
+    (roadLaneCount(style.forwardLanes) as Double) * roadLimit(style.laneWidth, 2.5, 5.0) + roadLimit(style.shoulder, 0.0, 5.0) + roadLateralOffset(style)
 
 func roadEdge(section: RoadSection&, offset: Double, crossfall: Double, lift: Double): Vec3 =
     Vec3(section.center.x + section.right.x*offset, section.center.y - absValue(offset)*crossfall + lift,
@@ -439,13 +452,15 @@ func roadSpanGeometry(triangles: Array<RoadTriangle>!, span: RoadSpan&, paint: B
     fin fw = roadLaneCount(style.forwardLanes)
     fin rv = roadLaneCount(style.reverseLanes)
     fin lane = roadLimit(style.laneWidth, 2.5, 5.0)
-    if fw > 0 then roadLine(triangles,span,lane*(fw as Double),fall,1,false)
-    if rv > 0 then roadLine(triangles,span,-lane*(rv as Double),fall,1,false)
-    roadLine(triangles,span,0.0,fall,if fw > 0 && rv > 0 then 2 else 1,fw > 0 && rv > 0)
+    fin offset = roadLateralOffset(style)
+    if fw > 0 || offset != 0.0 then roadLine(triangles,span,offset+lane*(fw as Double),fall,1,false)
+    if rv > 0 || offset != 0.0 then roadLine(triangles,span,offset-lane*(rv as Double),fall,1,false)
+    fin twoWay = fw > 0 && rv > 0
+    if offset == 0.0 then roadLine(triangles,span,0.0,fall,if twoWay && style.yellowCenterline then 2 else 1,twoWay)
     var i = 1
     while i < fw || i < rv {
-        if i < fw then roadLine(triangles,span,lane*(i as Double),fall,1,true)
-        if i < rv then roadLine(triangles,span,-lane*(i as Double),fall,1,true)
+        if i < fw then roadLine(triangles,span,offset+lane*(i as Double),fall,1,true)
+        if i < rv then roadLine(triangles,span,offset-lane*(i as Double),fall,1,true)
         i++
     }
 }
@@ -654,7 +669,7 @@ func buildRoadNetwork(world: World!): RoadNetwork {
         fin style = roads.values[i].&
         if world.isAlive(entity) && visibleInWorld(world,entity) && style.enabled && roadLaneCount(style.forwardLanes)+roadLaneCount(style.reverseLanes) > 0 {
             fin knots = roadKnotsOf(knotTable, i)
-            fin sections = roadSections(roadPolyline(knots,style.closed),style.closed && knots.size > 2)
+            fin sections = roadSections(roadPolyline(knots,style.closed,style.sampleSpacing),style.closed && knots.size > 2)
             fin first = network.triangles.size
             var j = 1
             while j < sections.size {

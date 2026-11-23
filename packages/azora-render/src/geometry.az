@@ -1,14 +1,18 @@
 module engine.render.geometry
 
 import std.math
+import std.traits
 import engine.core
 import engine.ecs
 import engine.gpu
+import engine.gpu.meshfile
 import engine.io
 import engine.objc
+import engine.scene
 
 /** Extra geometry for a Mesh3d, sharing one vertex buffer across all its instances. */
 @Component
+@Inspectable(title: "Mesh Geometry", icon: "box", category: "Rendering", order: 11)
 pack MeshGeometry derives Clone { var name: String = "" }
 
 @Component
@@ -41,12 +45,20 @@ func registerGeometry(world: World!, name: String, vertices: Array<Double>) {
     storageInsert<GeometryAsset>(ensureStorage(world),entity,.(name,take vertices))
 }
 
+/** A scene may also refer to a project-relative .azmesh asset. */
+func prepareMeshGeometry(world: World!, device: Long, root: String, name: String) {
+    if !endsWith(name, ".azmesh") || geometryIndex(world, name) >= 0 then return
+    fin file = loadMeshFile(device, root, name)
+    fin owner = world.spawnResource(name)
+    storageInsert<GeometryAsset>(ensureStorage(world), owner, .(name, [], file.buffer, file.count, file.reach))
+}
+
 func sceneGeometry(world: World!, device: Long, name: String): Mesh {
     fin i = geometryIndex(world,name)
     if i < 0 then return Mesh(0,0)
     let assets = ensureStorage<GeometryAsset>(world)
     let asset: GeometryAsset! = assets.values[i]
-    if asset.buffer == 0 {
+    if asset.buffer == 0 && asset.vertices.size > 0 {
         fin bytes = azAlloc((asset.vertices.size as Long)*4)
         if bytes == 0 then return Mesh(0,0)
         defer { azFree(bytes) }

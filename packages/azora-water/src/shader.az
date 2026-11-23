@@ -1,0 +1,82 @@
+module engine.water.shader
+
+import std.io
+import engine.objc
+import engine.io
+
+func waterMetalSource(): String = "#include <metal_stdlib>
+using namespace metal;
+struct WaterUniforms {
+    float4x4 clip;
+    float4x4 model;
+    float4 eyeTime;
+    float4 lightStrength;
+    float4 colorSpeed;
+    float4 dimensions;
+};
+struct SurfacePoint { float4 position [[position]]; float3 world; float2 local; };
+vertex SurfacePoint water_vertex(uint id [[vertex_id]], const device float* mesh [[buffer(0)]],
+                                 constant WaterUniforms& u [[buffer(1)]]) {
+    float3 local = float3(mesh[id*6], mesh[id*6+1], mesh[id*6+2]);
+    float4 world = u.model * float4(local, 1.0);
+    return { u.clip * world, world.xyz, local.xz };
+}
+fragment float4 water_fragment(SurfacePoint in [[stage_in]], constant WaterUniforms& u [[buffer(1)]],
+                               texture2d<float> waves [[texture(0)]], texture2d<float> shore [[texture(1)]]) {
+    constexpr sampler repeatWaves(coord::normalized, address::repeat, filter::linear);
+    constexpr sampler clampShore(coord::normalized, address::clamp_to_edge, filter::linear);
+    float foam = 0.0;
+    if (u.dimensions.w > 0.5) {
+        float2 uv = in.local / max(u.dimensions.xy, 1.0) + 0.5;
+        float mask = shore.sample(clampShore, uv).r;
+        if (mask < 0.49) discard_fragment();
+        foam = (1.0 - smoothstep(0.49, 0.86, mask))*0.42;
+    }
+    float2 waveUV = in.world.xz / max(u.dimensions.z, 0.01);
+    float drift = u.eyeTime.w * u.colorSpeed.w;
+    float2 ripple = waves.sample(repeatWaves, waveUV + float2(drift, drift*0.37)).rg;
+    ripple += waves.sample(repeatWaves, waveUV*0.63 + float2(-drift*0.31, drift*0.8)).gr;
+    float footprint = max(length(dfdx(waveUV)), length(dfdy(waveUV)));
+    ripple = (ripple - 1.0) * (1.0 - smoothstep(0.02, 0.4, footprint));
+    float3 n = normalize(float3(ripple.x*u.lightStrength.w, 1.0, ripple.y*u.lightStrength.w));
+    float3 v = normalize(u.eyeTime.xyz - in.world);
+    float3 l = normalize(u.lightStrength.xyz);
+    float fresnel = 0.025 + 0.52*pow(1.0 - saturate(dot(n,v)), 5.0);
+    float spec = pow(saturate(dot(n, normalize(l+v))), 95.0)*0.45;
+    float3 color = mix(u.colorSpeed.rgb*(0.85 + saturate(dot(l,n))*0.25), float3(0.33,0.56,0.72), fresnel);
+    return float4(mix(color + spec, float3(0.68,0.84,0.86), foam), 1.0);
+}
+"
+
+func compileWater(device: Long): Long {
+    fin failure = azAlloc(8)
+    defer { azFree(failure) }
+    azPoke64(failure, 0, 0)
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(waterMetalSource()), 0, failure)
+    if library == 0 {
+        fin diagnostic = azPeek64(failure, 0)
+        if diagnostic != 0 then println("Azora Water: ${nsStringText(send0(diagnostic, sel("localizedDescription")))}")
+        return 0
+    }
+    defer { send0(library, sel("release")) }
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("water_vertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("water_fragment"))
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer {
+        send0(vertex, sel("release"))
+        send0(fragment, sel("release"))
+        send0(descriptor, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    fin color = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setPixelFormat:"), 80)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, failure)
+    if pipeline == 0 {
+        fin diagnostic = azPeek64(failure, 0)
+        if diagnostic != 0 then println("Azora Water: ${nsStringText(send0(diagnostic, sel("localizedDescription")))}")
+    }
+    return pipeline
+}

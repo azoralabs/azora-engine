@@ -1,0 +1,28 @@
+module engine.gpu.meshfile
+
+import engine.gpu
+import engine.io
+import engine.objc
+
+pack MeshFile {
+    var buffer: Long = 0
+    var count: Int = 0
+    var reach: Double = 0.0
+}
+
+func projectAssetPath(path: String): Bool {
+    return path != "" && !startsWith(path, "/") && indexOf(path, "\\") < 0 && indexOf(path, "..") < 0
+}
+
+/** AZM1 contains a little-endian radius, then triangles of float32 positions and normals. */
+func loadMeshFile(device: Long, root: String, path: String): MeshFile {
+    if !projectAssetPath(path) || !endsWith(path, ".azmesh") then return .()
+    var file = readFile("${root}/${path}")
+    defer { file.release() }
+    fin bytes = file.size - 8
+    if bytes <= 0 || bytes > 33554432 || bytes % 72 != 0 || !file.matches(0, "AZM1") then return .()
+    fin radius = peekFloat32(file.data, 4)
+    if !(radius > 0.0 && radius < 100000000.0) then return .()
+    fin buffer = send3(device, sel("newBufferWithBytes:length:options:"), file.data + 8, bytes as Long, 0)
+    return .(buffer, bytes / 24, radius)
+}

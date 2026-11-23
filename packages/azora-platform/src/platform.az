@@ -156,17 +156,18 @@ func requestActivation(nsapp: Long) {
     else send1(nsapp, sel("activateIgnoringOtherApps:"), 1)
 }
 
-/**
- * Moves into the folder AZORA_WORKING_DIRECTORY names, when it is set. A game
- * launched as an app bundle (tools/build.sh run) starts in "/", yet reads its
- * scene, terrain and materials relative to its project folder.
- */
+/** Opens project-relative assets from a run environment or a development app bundle. */
 func enterWorkingDirectory() {
-    fin folder = envVar("AZORA_WORKING_DIRECTORY")
-    if folder == "" then return
     fin pool = objcAutoreleasePoolPush()
-    send1(send0(cls("NSFileManager"), sel("defaultManager")), sel("changeCurrentDirectoryPath:"), nsString(folder))
-    objcAutoreleasePoolPop(pool)
+    defer { objcAutoreleasePoolPop(pool) }
+    var folder = nsString(envVar("AZORA_WORKING_DIRECTORY"))
+    if send0(folder, sel("length")) == 0 {
+        fin bundle = send0(cls("NSBundle"), sel("mainBundle"))
+        fin relative = send1(bundle, sel("objectForInfoDictionaryKey:"), nsString("AzoraProjectRelativeDirectory"))
+        if send1(relative, sel("isKindOfClass:"), cls("NSString")) == 0 then return
+        folder = send1(send0(bundle, sel("bundlePath")), sel("stringByAppendingPathComponent:"), relative)
+    }
+    send1(send0(cls("NSFileManager"), sel("defaultManager")), sel("changeCurrentDirectoryPath:"), folder)
 }
 
 /** The decimal number [text] starts with from [from]; 0 when it starts with none. */

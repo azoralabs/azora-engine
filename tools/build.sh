@@ -255,6 +255,7 @@ if [ "$ACTION" = "run" ]; then
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>AzoraProjectRelativeDirectory</key><string>../..</string>
 </dict></plist>
 PLIST
     LOG="$BUILD_DIR/run.log"
@@ -272,7 +273,8 @@ PLIST
     EXECUTABLE="$(cd "$BUNDLE/Contents/MacOS" && pwd -P)/$APP_NAME"
     if ! /usr/bin/open -n -F "${ENVIRONMENT[@]}" --stdout "$LOG" --stderr "$LOG" "$BUNDLE" 2>>"$LOG"; then
         cat "$LOG"
-        exit 1
+        export AZORA_WORKING_DIRECTORY="$PROJECT_DIR"
+        exec "$EXECUTABLE"
     fi
     GAME=""
     for _ in $(seq 1 100); do

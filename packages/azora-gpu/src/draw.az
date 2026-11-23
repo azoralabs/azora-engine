@@ -532,6 +532,15 @@ impl App {
         self.drawImageQuad(x, y, w, h, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, tex)
     }
 
+    /** Draws an image through a circular screen-space mask. Adjacent tiles share one mask. */
+    func !.drawCircularSprite(tex: Long, x: Double, y: Double, w: Double, h: Double,
+                               centerX: Double, centerY: Double, radius: Double) {
+        if tex == 0 || radius <= 0.0 then return
+        fin scale = self.gpu.scale
+        self.drawQuad2dShaped(x,y,w,h,0.0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,tex,4.0,
+                              centerX*scale,centerY*scale,radius*scale,0.0)
+    }
+
     /**
      * Draws a sub-rectangle mirrored horizontally.
      *
