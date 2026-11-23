@@ -178,11 +178,11 @@ pack Light3d derives Clone {
 
 /**
  * The wind over the scene: how fast it blows, from which compass bearing (0
- * north, the world's -Z; 90 east, +X), and how it gusts and wavers. Rain,
- * snow, particles, clouds and the wind's own sound follow it.
+ * north, the world's -Z; 90 east, +X), how it gusts and wavers, and how loud
+ * it is heard. Rain, snow, dust, particles and the clouds follow it.
  */
 @Component
-@Inspectable(title: "Wind", serializedName: "Wind", icon: "wind", category: "Environment", order: 19)
+@Inspectable(title: "Wind", serializedName: "Wind", icon: "wind", category: "Weather", order: 33)
 pack Wind derives Clone {
     var enabled: Bool = true
     /** Metres per second between gusts. */
@@ -200,6 +200,8 @@ pack Wind derives Clone {
     /** How far its bearing wavers, as a share of 30 degrees. */
     @Range(min: 0.0, max: 1.0, step: 0.01)
     var turbulence: Double = 0.2
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var volume: Double = 1.0
 }
 
 /** A smooth value noise of [t] in 0..1, the same for the same [t] and [salt]. */
@@ -239,6 +241,16 @@ pack Sprite derives Clone {
     var width: Double = 1.0
     @Range(min: 0.0, max: 100000.0, step: 1.0)
     var height: Double = 1.0
+}
+
+/**
+ * Marks an entity a streaming system brought in (a world partition cell's
+ * terrain, roads, buildings): it belongs to the run, not to the scene, so it
+ * is never written into the scene file, and [cell] names what to unload with.
+ */
+@Component
+pack Streamed derives Clone {
+    var cell: Long = 0
 }
 
 /** Spawn marker read by gameplay when the scene starts. */

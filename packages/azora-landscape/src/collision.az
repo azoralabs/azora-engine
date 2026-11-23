@@ -48,6 +48,8 @@ pack CollisionSurface {
     /** World metres per local unit, for the volume's signed distances. */
     var unit: Double = 1.0
     var settings: LandscapeCollision = .()
+    /** The landscape entity this collider was read from; invalid for the pavement. */
+    var owner: Entity = .(-1, 0)
 }
 
 /** Where a cast met the ground: `t` is the travelled fraction or distance the caller asked for. */
@@ -77,65 +79,117 @@ func loadLandscapeColliders(world: World!, root: String): Array<CollisionSurface
     var surfaces: Array<CollisionSurface> = []
     var roads = buildRoadNetwork(world)
     fin colliders = ensureStorage<LandscapeCollision>(world)
-    var index = 0
-    while index < storageLength<LandscapeCollision>(colliders) {
+    for index: Int in 0..<storageLength<LandscapeCollision>(colliders) {
         fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
         fin config = colliders.values[index].clone()
         if config.enabled && world.isAlive(entity) && visibleInWorld(world, entity) {
-            var surface: CollisionSurface = .(settings: config)
-            var model = worldMatrix(world, entity)
-            fin images = ensureStorage<HeightfieldTerrain>(world)
-            fin volumes = ensureStorage<PluginObject>(world)
-            if storageHas<HeightfieldTerrain>(images, entity) {
-                fin source = storageGet<HeightfieldTerrain>(images, entity).clone()
-                if terrainFile(source.image) {
-                    surface.terrain = readTerrainImage("${root}/${source.image}")
-                    model = heightfieldMatrix(world, entity, source)
-                    gradeRoadTerrain(surface.terrain, model, roads)
-                    surface.bounds = aabb3d(.(-0.5,-0.5,-0.5),.(0.5,0.5,0.5))
-                }
-            } else if storageHas<PluginObject>(volumes, entity) {
-                fin source = storageGet<PluginObject>(volumes, entity)
-                if source.plugin == "azora.flex-landscape" && source.id > 0 {
-                    fin data = loadLandscapeVolume(root,source.id)
-                    surface.volume = data.field.clone()
-                    fin field = surface.volume.&
-                    surface.bounds = aabb3d(.(field.originX,field.originY,field.originZ),
-                        Vec3(field.worldX(field.cellsX),field.worldY(field.cellsY),field.worldZ(field.cellsZ)))
-                }
-            }
-            if surface.terrain.samples != 0 || surface.volume.values.size > 0 {
-                fin x: Vec3 = .(model.m00,model.m10,model.m20)
-                fin y: Vec3 = .(model.m01,model.m11,model.m21)
-                fin z: Vec3 = .(model.m02,model.m12,model.m22)
-                fin det = x.dot(y.cross(z))
-                if absValue(det) > 0.000001 {
-                    surface.offset = Vec3(model.m03,model.m13+config.surfaceOffset,model.m23)
-                    surface.axisX = x.clone()
-                    surface.axisY = y.clone()
-                    surface.axisZ = z.clone()
-                    surface.invX = y.cross(z).scale(1.0/det)
-                    surface.invY = z.cross(x).scale(1.0/det)
-                    surface.invZ = x.cross(y).scale(1.0/det)
-                    if surface.terrain.samples != 0 {
-                        // A heightfield is planar inside each triangle: a quarter cell never jumps a ridge.
-                        fin cellX = x.length/((surface.terrain.columns-1) as Double)
-                        fin cellZ = z.length/((surface.terrain.rows-1) as Double)
-                        surface.step = terrainClamp((if cellX < cellZ then cellX else cellZ)*0.25,0.02,4.0)
-                    } else {
-                        surface.unit = (x.length+y.length+z.length)/3.0
-                        surface.step = terrainClamp(surface.volume.cell*surface.unit*0.35,0.02,4.0)
-                    }
-                    surfaces.add(take surface)
-                } else if surface.terrain.samples != 0 {
-                    azFree(surface.terrain.samples)
-                }
-            }
+            var surface = landscapeCollider(world, root, entity, config, roads)
+            if surface.owner.isValid then surfaces.add(take surface)
         }
-        index++
     }
     if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
     return take surfaces
+}
+
+/** The collider of one landscape [entity] (heightfield or volume); its owner is invalid when there is none. */
+func landscapeCollider(world: World!, root: String, entity: Entity, config: LandscapeCollision&, roads: RoadNetwork&): CollisionSurface {
+    var surface: CollisionSurface = .(settings: config.clone())
+    var model = worldMatrix(world, entity)
+    fin images = ensureStorage<HeightfieldTerrain>(world)
+    fin volumes = ensureStorage<PluginObject>(world)
+    if storageHas<HeightfieldTerrain>(images, entity) {
+        fin source = storageGet<HeightfieldTerrain>(images, entity).clone()
+        if terrainFile(source.image) {
+            surface.terrain = readTerrainImage("${root}/${source.image}")
+            model = heightfieldMatrix(world, entity, source)
+            if source.gradeRoads then gradeRoadTerrain(surface.terrain, model, roads)
+            surface.bounds = aabb3d(.(-0.5,-0.5,-0.5),.(0.5,0.5,0.5))
+        }
+    } else if storageHas<PluginObject>(volumes, entity) {
+        fin source = storageGet<PluginObject>(volumes, entity)
+        if source.plugin == "azora.flex-landscape" && source.id > 0 {
+            fin data = loadLandscapeVolume(root,source.id)
+            surface.volume = data.field.clone()
+            fin field = surface.volume.&
+            surface.bounds = aabb3d(.(field.originX,field.originY,field.originZ),
+                Vec3(field.worldX(field.cellsX),field.worldY(field.cellsY),field.worldZ(field.cellsZ)))
+        }
+    }
+    if surface.terrain.samples != 0 || surface.volume.values.size > 0 {
+        fin x: Vec3 = .(model.m00,model.m10,model.m20)
+        fin y: Vec3 = .(model.m01,model.m11,model.m21)
+        fin z: Vec3 = .(model.m02,model.m12,model.m22)
+        fin det = x.dot(y.cross(z))
+        if absValue(det) > 0.000001 {
+            surface.offset = Vec3(model.m03,model.m13+config.surfaceOffset,model.m23)
+            surface.axisX = x.clone()
+            surface.axisY = y.clone()
+            surface.axisZ = z.clone()
+            surface.invX = y.cross(z).scale(1.0/det)
+            surface.invY = z.cross(x).scale(1.0/det)
+            surface.invZ = x.cross(y).scale(1.0/det)
+            if surface.terrain.samples != 0 {
+                // A heightfield is planar inside each triangle: a quarter cell never jumps a ridge.
+                fin cellX = x.length/((surface.terrain.columns-1) as Double)
+                fin cellZ = z.length/((surface.terrain.rows-1) as Double)
+                surface.step = terrainClamp((if cellX < cellZ then cellX else cellZ)*0.25,0.02,4.0)
+            } else {
+                surface.unit = (x.length+y.length+z.length)/3.0
+                surface.step = terrainClamp(surface.volume.cell*surface.unit*0.35,0.02,4.0)
+            }
+            surface.owner = entity
+            return take surface
+        } else if surface.terrain.samples != 0 {
+            azFree(surface.terrain.samples)
+        }
+    }
+    return .()
+}
+
+/** Which colliders a world held when [syncLandscapeColliders] last matched it. */
+pack ColliderSync {
+    var colliders: Long = -1
+    var roads: Long = -1
+}
+
+/**
+ * Keeps [surfaces] matching the landscapes and roads [world] holds now, as a
+ * world partition streams cells in and out: a landscape that went away loses
+ * its collider, a new one is read, and the pavement is rebuilt when the roads
+ * changed. Nothing is read again when nothing changed (storage revisions).
+ */
+func syncLandscapeColliders(world: World!, root: String, surfaces: Array<CollisionSurface>!, state: ColliderSync!) {
+    fin colliders = ensureStorage<LandscapeCollision>(world)
+    fin roadsNow = ensureStorage<SplineRoad>(world).revision + ensureStorage<RoadPoint>(world).revision * 7 +
+        ensureStorage<RoadJunction>(world).revision * 13
+    if colliders.revision == state.colliders && roadsNow == state.roads then return
+    state.colliders = colliders.revision
+    state.roads = roadsNow
+    var roads = buildRoadNetwork(world)
+    var i = 0
+    while i < surfaces.size {
+        fin gone = surfaces[i].pavement || !world.isAlive(surfaces[i].owner) ||
+            !storageHas<LandscapeCollision>(colliders, surfaces[i].owner)
+        if gone {
+            if surfaces[i].terrain.samples != 0 then azFree(surfaces[i].terrain.samples)
+            surfaces.removeAt(i)
+        } else {
+            i++
+        }
+    }
+    for index: Int in 0..<storageLength<LandscapeCollision>(colliders) {
+        fin entity = storageEntityAt<LandscapeCollision>(colliders, index)
+        fin config = colliders.values[index].clone()
+        if !config.enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+        var known = false
+        for surface in surfaces {
+            if surface.owner == entity then known = true
+        }
+        if known then continue
+        var surface = landscapeCollider(world, root, entity, config, roads)
+        if surface.owner.isValid then surfaces.add(take surface)
+    }
+    if roads.triangles.size > 0 then surfaces.add(CollisionSurface(roads: take roads, pavement: true))
 }
 
 func releaseLandscapeColliders(surfaces: Array<CollisionSurface>!) {

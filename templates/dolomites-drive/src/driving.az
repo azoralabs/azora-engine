@@ -6,6 +6,7 @@ import engine.game
 import engine.input
 import engine.platform
 import engine.vehicles
+import engine.landscape
 import dolomites.components
 
 func axis(positive: Bool, negative: Bool): Double = (if positive then 1.0 else 0.0) - (if negative then 1.0 else 0.0)
@@ -17,21 +18,29 @@ func readControls(frame: Game!, drivers: @query [Driver!, Vehicle&]) {
     if window.framesRun % 30 == 1 && frame.paused then window.diagnose("drive paused")
     if frame.paused then return
     drivers.unpack { player, driver, vehicle ->
-        if window.keyJustPressed(.Space) {
-            setVehicleKind(frame.world, player, if vehicle.motorcycle then .Car else .Motorcycle)
-        }
+        // V swaps the car and the motorcycle, keeping the speed.
+        if window.keyJustPressed(.V) then setVehicleKind(frame.world, player, if vehicle.motorcycle then .Car else .Motorcycle)
         // G switches the headlights, H sounds the horn while held.
         if window.keyJustPressed(.G) then setHeadlights(frame.world, player, !headlightsOn(frame.world, player))
         soundHorn(frame.world, player, window.keyDown(.H))
+        // W/↑ drives, S/↓ brakes to a stop and then reverses, B is the brake
+        // pedal alone, Space (or Shift) the handbrake.
         driver.input = DriveInput(
             axis(window.keyDown(.W) || window.keyDown(.Up), window.keyDown(.S) || window.keyDown(.Down))
             axis(window.keyDown(.D) || window.keyDown(.Right), window.keyDown(.A) || window.keyDown(.Left))
-            window.keyDown(.Shift)
+            window.keyDown(.Space) || window.keyDown(.Shift)
+            if window.keyDown(.B) then 1.0 else 0.0
         )
         if window.framesRun % 30 == 1 {
             window.diagnose("drive throttle=${driver.input.throttle} steer=${driver.input.steer} speed=${vehicle.speed} gear=${vehicle.gear} rpm=${vehicle.rpm} grounded=${vehicle.grounded} motorcycle=${vehicle.motorcycle} dt=${frame.time.deltaSecs}")
         }
     }
+}
+
+/** The driven vehicle's ground follows the cells the world partition streams in and out. */
+@System(phase: .PreUpdate, runAfter: "streamWorldPartition")
+func keepCourse(frame: Game!, courses: @query [Course!]) {
+    courses.unpack { player, course -> syncLandscapeColliders(frame.world, ".", course.terrain, course.sync) }
 }
 
 @System(phase: .FixedUpdate)

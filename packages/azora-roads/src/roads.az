@@ -78,8 +78,76 @@ func roadKnots(world: World!, road: Entity): Array<RoadKnot> {
         }
         i++
     }
-    // Stable ordering also makes scenes with duplicate order values deterministic.
-    i = 1
+    sortRoadKnots(knots)
+    return take knots
+}
+
+/** Every road's knots in one array, road after road: road r's are [knots] from [starts][r] up to [starts][r + 1]. */
+pack RoadKnotTable {
+    var knots: Array<RoadKnot> = []
+    var starts: Array<Int> = []
+}
+
+/**
+ * Every road's knots, by the road's row in the SplineRoad storage, in one
+ * pass over the knots, each placed by its road's world transform made once (a
+ * pass over every knot per road was quadratic in a streamed world's thousands
+ * of knots). [roadKnotsOf] takes one road's out, as [roadKnots] gives them.
+ */
+func roadKnotTable(world: World!): RoadKnotTable {
+    fin roads = ensureStorage<SplineRoad>(world)
+    fin points = ensureStorage<RoadPoint>(world)
+    fin transforms = ensureStorage<Transform>(world)
+    fin count = storageLength<SplineRoad>(roads)
+    // Which road each knot belongs to (-1: none), and how many each road has.
+    var owners: Array<Int> = []
+    var table: RoadKnotTable = .()
+    for r: Int in 0..(count) then table.starts.add(0)
+    for i: Int in 0..<storageLength<RoadPoint>(points) {
+        fin point = storageEntityAt<RoadPoint>(points, i)
+        fin road = if world.isAlive(point) then storageIndexOf<SplineRoad>(roads, world.getParent(point)) else -1
+        owners.add(road)
+        if road >= 0 then table.starts[road + 1] += 1
+    }
+    for r: Int in 0..<count then table.starts[r + 1] += table.starts[r]
+    var next: Array<Int> = []
+    for r: Int in 0..<count then next.add(table.starts[r])
+    for i: Int in 0..<table.starts[count] then table.knots.add(RoadKnot(0, Vec3(0.0, 0.0, 0.0)))
+    var poses: Array<Mat4> = []
+    var posed: Array<Bool> = []
+    for r: Int in 0..<count {
+        poses.add(mat4Identity())
+        posed.add(false)
+    }
+    for i: Int in 0..<owners.size {
+        fin road = owners[i]
+        if road < 0 then continue
+        if !posed[road] {
+            poses[road] = worldMatrix(world, storageEntityAt<SplineRoad>(roads, road))
+            posed[road] = true
+        }
+        // A knot's own rotation and scale do not move its origin: the road's transform of its translation.
+        fin at = storageIndexOf<Transform>(transforms, storageEntityAt<RoadPoint>(points, i))
+        fin local = if at >= 0 then transforms.values[at].translation.clone() else Vec3(0.0, 0.0, 0.0)
+        fin m = poses[road].&
+        table.knots[next[road]] = RoadKnot(points.values[i].order, Vec3(m.m00*local.x+m.m01*local.y+m.m02*local.z+m.m03,
+            m.m10*local.x+m.m11*local.y+m.m12*local.z+m.m13, m.m20*local.x+m.m21*local.y+m.m22*local.z+m.m23))
+        next[road] += 1
+    }
+    return take table
+}
+
+/** Road [road]'s knots out of [table], in order (see [roadKnots]). */
+func roadKnotsOf(table: RoadKnotTable&, road: Int): Array<RoadKnot> {
+    var knots: Array<RoadKnot> = []
+    for i: Int in table.starts[road]..<table.starts[road + 1] then knots.add(table.knots[i].clone())
+    sortRoadKnots(knots)
+    return take knots
+}
+
+/** Orders [knots] by their order values, keeping knots of equal order as they came (deterministic scenes). */
+func sortRoadKnots(knots: Array<RoadKnot>!) {
+    var i = 1
     while i < knots.size {
         var k = i
         while k > 0 && knots[k].order < knots[k-1].order {
@@ -90,7 +158,6 @@ func roadKnots(world: World!, road: Entity): Array<RoadKnot> {
         }
         i++
     }
-    return take knots
 }
 
 func roadLimit(value: Double, low: Double, high: Double): Double =
@@ -199,18 +266,25 @@ func roadEdge(section: RoadSection&, offset: Double, crossfall: Double, lift: Do
     Vec3(section.center.x + section.right.x*offset, section.center.y - absValue(offset)*crossfall + lift,
          section.center.z + section.right.z*offset)
 
+/** A road triangle's three corners, (x0, y0, z0) to (x2, y2, z2), as plain numbers: one allocation a triangle, not four. */
 pack RoadTriangle derives Clone {
-    var a: Vec3
-    var b: Vec3
-    var c: Vec3
+    var x0: Double
+    var y0: Double
+    var z0: Double
+    var x1: Double
+    var y1: Double
+    var z1: Double
+    var x2: Double
+    var y2: Double
+    var z2: Double
     /** 0 asphalt, 1 white paint, 2 centre paint, 3 bridge concrete, 4 barrier. */
     var material: Int = 0
     var friction: Double = 1.2
 }
 
 func roadNormal(triangle: RoadTriangle&): Vec3 {
-    fin u: Vec3 = .(triangle.b.x-triangle.a.x,triangle.b.y-triangle.a.y,triangle.b.z-triangle.a.z)
-    fin v: Vec3 = .(triangle.c.x-triangle.a.x,triangle.c.y-triangle.a.y,triangle.c.z-triangle.a.z)
+    fin u: Vec3 = .(triangle.x1-triangle.x0,triangle.y1-triangle.y0,triangle.z1-triangle.z0)
+    fin v: Vec3 = .(triangle.x2-triangle.x0,triangle.y2-triangle.y0,triangle.z2-triangle.z0)
     return roadUnit(u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x)
 }
 
@@ -232,13 +306,19 @@ pack RoadNetwork {
     var junctions: Array<RoadJunctionSite> = []
     var triangles: Array<RoadTriangle> = []
     var surfaceRanges: Array<RoadSurfaceRange> = []
-    var grid: Array<RoadBucket> = []
+    /**
+     * Spans and pavement triangles by grid bucket ([roadBucketAt]): bucket b's
+     * spans are [bucketSpans] from [spanStarts][b] up to [spanStarts][b + 1],
+     * its triangles likewise. Empty until [bucketRoadGeometry].
+     */
+    var spanStarts: Array<Int> = []
+    var bucketSpans: Array<Int> = []
+    var triangleStarts: Array<Int> = []
+    var bucketTriangles: Array<Int> = []
 }
 
-pack RoadBucket {
-    var spans: Array<Int> = []
-    var triangles: Array<Int> = []
-}
+/** Whether [bucketRoadGeometry] filled the grid: a network with something on it. */
+prop RoadNetwork&.bucketed: Bool = self.spanStarts.size > 0
 
 inline fin roadGridSize = 32768
 inline fin roadBucketWidth = 32.0
@@ -252,8 +332,8 @@ func roadBucketAt(x: Int, z: Int): Int {
 func roadTriangle(triangles: Array<RoadTriangle>!, a: Vec3&, b: Vec3&, c: Vec3&, material: Int, grip: Double) {
     fin up = (b.z-a.z)*(c.x-a.x)-(b.x-a.x)*(c.z-a.z)
     if absValue(up) > 0.000001 {
-        if up > 0.0 then triangles.add(RoadTriangle(a.clone(),b.clone(),c.clone(),material,grip))
-        else triangles.add(RoadTriangle(a.clone(),c.clone(),b.clone(),material,grip))
+        if up > 0.0 then triangles.add(RoadTriangle(a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z,material,grip))
+        else triangles.add(RoadTriangle(a.x,a.y,a.z,c.x,c.y,c.z,b.x,b.y,b.z,material,grip))
     }
 }
 
@@ -296,8 +376,8 @@ func roadLine(triangles: Array<RoadTriangle>!, span: RoadSpan&, offset: Double, 
 
 /** Vertical architecture is render-only; the upper asphalt remains the road collision plane. */
 func bridgeFace(triangles: Array<RoadTriangle>!, a: Vec3&, b: Vec3&, c: Vec3&, d: Vec3&, material: Int) {
-    triangles.add(RoadTriangle(a.clone(),b.clone(),c.clone(),material,0.0))
-    triangles.add(RoadTriangle(a.clone(),c.clone(),d.clone(),material,0.0))
+    triangles.add(RoadTriangle(a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z,material,0.0))
+    triangles.add(RoadTriangle(a.x,a.y,a.z,c.x,c.y,c.z,d.x,d.y,d.z,material,0.0))
 }
 
 func bridgeSide(triangles: Array<RoadTriangle>!, span: RoadSpan&, offset: Double, fall: Double, outer: Double) {
@@ -417,53 +497,136 @@ func roadPaintAt(junctions: Array<RoadJunctionSite>&, span: RoadSpan&): Bool {
     return true
 }
 
+/**
+ * Junction sites in square cells as wide as the widest one reaches, so a span
+ * asks only the sites near it: bucket b's sites are [sites] from [starts][b]
+ * up to [starts][b + 1].
+ */
+pack RoadJunctionGrid {
+    var cell: Double = 1.0
+    var sites: Array<Int> = []
+    var starts: Array<Int> = []
+}
+
+inline fin roadJunctionBuckets = 4096
+
+func roadJunctionGrid(junctions: Array<RoadJunctionSite>&): RoadJunctionGrid {
+    var grid: RoadJunctionGrid = .()
+    for site in junctions then if site.config.radius+2.0 > grid.cell then grid.cell = site.config.radius+2.0
+    var buckets: Array<Int> = []
+    for b: Int in 0..(roadJunctionBuckets) then grid.starts.add(0)
+    for site in junctions {
+        fin bucket = roadJunctionBucket(floor(site.center.x/grid.cell) as Int, floor(site.center.z/grid.cell) as Int)
+        buckets.add(bucket)
+        grid.starts[bucket + 1] += 1
+    }
+    for b: Int in 0..<roadJunctionBuckets then grid.starts[b + 1] += grid.starts[b]
+    var next: Array<Int> = []
+    for b: Int in 0..<roadJunctionBuckets then next.add(grid.starts[b])
+    for i: Int in 0..<junctions.size then grid.sites.add(0)
+    for i: Int in 0..<junctions.size {
+        grid.sites[next[buckets[i]]] = i
+        next[buckets[i]] += 1
+    }
+    return take grid
+}
+
+func roadJunctionBucket(x: Int, z: Int): Int {
+    fin hash = (x * 73856093) ^ (z * 19349663)
+    return (hash % roadJunctionBuckets + roadJunctionBuckets) % roadJunctionBuckets
+}
+
+/** Whether a point lies outside every junction's paint-free circle: [roadPaintAt] for one end, asking [grid]'s nearby cells. */
+func roadPaintFree(junctions: Array<RoadJunctionSite>&, grid: RoadJunctionGrid&, p: Vec3&): Bool {
+    fin x = floor(p.x/grid.cell) as Int
+    fin z = floor(p.z/grid.cell) as Int
+    for dz: Int in -1..1 {
+        for dx: Int in -1..1 {
+            fin bucket = roadJunctionBucket(x+dx,z+dz)
+            for k: Int in grid.starts[bucket]..<grid.starts[bucket + 1] {
+                fin site = junctions[grid.sites[k]].&
+                if roadHorizontal(site.center,p) < site.config.radius+2.0 then return false
+            }
+        }
+    }
+    return true
+}
+
+/**
+ * Files every span and pavement triangle under the grid buckets it touches,
+ * in two passes (count, then place) into flat arrays: one allocation per
+ * array, not one growing list per bucket.
+ */
 func bucketRoadGeometry(network: RoadNetwork!) {
-    var index = 0
-    while index < roadGridSize {
-        network.grid.add(RoadBucket())
-        index++
-    }
-    index = 0
-    while index < network.spans.size {
-        fin span = network.spans[index].&
-        fin padding = roadLimit(span.style.gradingWidth,4.0,120.0) + roadMax(roadLeft(span.style),roadRight(span.style)) + 24.0
-        fin a = span.start.center.&
-        fin b = span.end.center.&
-        var z = roadBucketCoordinate((if a.z < b.z then a.z else b.z)-padding)
-        fin z1 = roadBucketCoordinate((if a.z > b.z then a.z else b.z)+padding)
-        while z <= z1 {
-            var x = roadBucketCoordinate((if a.x < b.x then a.x else b.x)-padding)
+    var last: Array<Int> = .() * roadGridSize
+    // Spans: twice over the same cells, counting first.
+    var spanCounts: Array<Int> = .() * (roadGridSize + 1)
+    for pass: Int in 0..<2 {
+        for b: Int in 0..<roadGridSize then last[b] = -1
+        var next: Array<Int> = []
+        if pass == 1 {
+            for b: Int in 0..<roadGridSize then spanCounts[b + 1] += spanCounts[b]
+            for b: Int in 0..<roadGridSize then next.add(spanCounts[b])
+            network.bucketSpans = .() * spanCounts[roadGridSize]
+        }
+        for index: Int in 0..<network.spans.size {
+            fin span = network.spans[index].&
+            fin padding = roadLimit(span.style.gradingWidth,4.0,120.0) + roadMax(roadLeft(span.style),roadRight(span.style)) + 24.0
+            fin a = span.start.center.&
+            fin b = span.end.center.&
+            fin x0 = roadBucketCoordinate((if a.x < b.x then a.x else b.x)-padding)
             fin x1 = roadBucketCoordinate((if a.x > b.x then a.x else b.x)+padding)
-            while x <= x1 {
-                fin bucket = roadBucketAt(x,z)
-                fin list = network.grid[bucket].spans.&
-                if list.size == 0 || list[list.size-1] != index then network.grid[bucket].spans.add(index)
-                x++
-            }
-            z++
-        }
-        index++
-    }
-    index = 0
-    while index < network.triangles.size {
-        fin tri = network.triangles[index].&
-        if tri.material == 0 {
-            var z = roadBucketCoordinate(roadMin(tri.a.z,roadMin(tri.b.z,tri.c.z)))
-            fin highZ = roadBucketCoordinate(roadMax(tri.a.z,roadMax(tri.b.z,tri.c.z)))
-            while z <= highZ {
-                var x = roadBucketCoordinate(roadMin(tri.a.x,roadMin(tri.b.x,tri.c.x)))
-                fin highX = roadBucketCoordinate(roadMax(tri.a.x,roadMax(tri.b.x,tri.c.x)))
-                while x <= highX {
+            fin z0 = roadBucketCoordinate((if a.z < b.z then a.z else b.z)-padding)
+            fin z1 = roadBucketCoordinate((if a.z > b.z then a.z else b.z)+padding)
+            for z: Int in z0..z1 {
+                for x: Int in x0..x1 {
                     fin bucket = roadBucketAt(x,z)
-                    fin list = network.grid[bucket].triangles.&
-                    if list.size == 0 || list[list.size-1] != index then network.grid[bucket].triangles.add(index)
-                    x++
+                    if last[bucket] == index then continue
+                    last[bucket] = index
+                    if pass == 0 {
+                        spanCounts[bucket + 1] += 1
+                    } else {
+                        network.bucketSpans[next[bucket]] = index
+                        next[bucket] += 1
+                    }
                 }
-                z++
             }
         }
-        index++
     }
+    network.spanStarts = take spanCounts
+    // Pavement triangles, the same way.
+    var triangleCounts: Array<Int> = .() * (roadGridSize + 1)
+    for pass: Int in 0..<2 {
+        for b: Int in 0..<roadGridSize then last[b] = -1
+        var next: Array<Int> = []
+        if pass == 1 {
+            for b: Int in 0..<roadGridSize then triangleCounts[b + 1] += triangleCounts[b]
+            for b: Int in 0..<roadGridSize then next.add(triangleCounts[b])
+            network.bucketTriangles = .() * triangleCounts[roadGridSize]
+        }
+        for index: Int in 0..<network.triangles.size {
+            fin tri = network.triangles[index].&
+            if tri.material != 0 then continue
+            fin x0 = roadBucketCoordinate(roadMin(tri.x0,roadMin(tri.x1,tri.x2)))
+            fin x1 = roadBucketCoordinate(roadMax(tri.x0,roadMax(tri.x1,tri.x2)))
+            fin z0 = roadBucketCoordinate(roadMin(tri.z0,roadMin(tri.z1,tri.z2)))
+            fin z1 = roadBucketCoordinate(roadMax(tri.z0,roadMax(tri.z1,tri.z2)))
+            for z: Int in z0..z1 {
+                for x: Int in x0..x1 {
+                    fin bucket = roadBucketAt(x,z)
+                    if last[bucket] == index then continue
+                    last[bucket] = index
+                    if pass == 0 {
+                        triangleCounts[bucket + 1] += 1
+                    } else {
+                        network.bucketTriangles[next[bucket]] = index
+                        next[bucket] += 1
+                    }
+                }
+            }
+        }
+    }
+    network.triangleStarts = take triangleCounts
 }
 
 func buildRoadNetwork(world: World!): RoadNetwork {
@@ -483,18 +646,21 @@ func buildRoadNetwork(world: World!): RoadNetwork {
         i++
     }
     fin roads = ensureStorage<SplineRoad>(world)
+    fin knotTable = roadKnotTable(world)
+    fin near = roadJunctionGrid(network.junctions)
     i = 0
     while i < storageLength<SplineRoad>(roads) {
         fin entity = storageEntityAt<SplineRoad>(roads,i)
         fin style = roads.values[i].&
         if world.isAlive(entity) && visibleInWorld(world,entity) && style.enabled && roadLaneCount(style.forwardLanes)+roadLaneCount(style.reverseLanes) > 0 {
-            fin knots = roadKnots(world,entity)
+            fin knots = roadKnotsOf(knotTable, i)
             fin sections = roadSections(roadPolyline(knots,style.closed),style.closed && knots.size > 2)
             fin first = network.triangles.size
             var j = 1
             while j < sections.size {
                 fin span: RoadSpan = .(sections[j-1].clone(),sections[j].clone(),style.clone())
-                roadSpanGeometry(network.triangles,span,roadPaintAt(network.junctions,span))
+                fin paint = roadPaintFree(network.junctions,near,span.start.center) && roadPaintFree(network.junctions,near,span.end.center)
+                roadSpanGeometry(network.triangles,span,paint)
                 network.spans.add(take span)
                 j++
             }
@@ -516,21 +682,21 @@ pack RoadHeight {
 /** The topmost paved triangle below the sample, with the exact rendered plane. */
 func roadSurfaceAt(network: RoadNetwork&, x: Double, z: Double): RoadHeight {
     var result: RoadHeight = .()
-    if network.grid.size == 0 then return take result
-    fin bucket = network.grid[roadBucketAt(roadBucketCoordinate(x),roadBucketCoordinate(z))].&
-    for i in bucket.triangles {
-        fin tri = network.triangles[i].&
-        fin ux = tri.b.x-tri.a.x
-        fin uz = tri.b.z-tri.a.z
-        fin vx = tri.c.x-tri.a.x
-        fin vz = tri.c.z-tri.a.z
-        fin dx = x-tri.a.x
-        fin dz = z-tri.a.z
+    if !network.bucketed then return take result
+    fin bucket = roadBucketAt(roadBucketCoordinate(x),roadBucketCoordinate(z))
+    for k: Int in network.triangleStarts[bucket]..<network.triangleStarts[bucket + 1] {
+        fin tri = network.triangles[network.bucketTriangles[k]].&
+        fin ux = tri.x1-tri.x0
+        fin uz = tri.z1-tri.z0
+        fin vx = tri.x2-tri.x0
+        fin vz = tri.z2-tri.z0
+        fin dx = x-tri.x0
+        fin dz = z-tri.z0
         fin det = ux*vz-uz*vx
         fin s = (dx*vz-dz*vx)/det
         fin t = (ux*dz-uz*dx)/det
         if s >= -0.00001 && t >= -0.00001 && s+t <= 1.00001 {
-            fin height = tri.a.y+s*(tri.b.y-tri.a.y)+t*(tri.c.y-tri.a.y)
+            fin height = tri.y0+s*(tri.y1-tri.y0)+t*(tri.y2-tri.y0)
             if !result.found || height > result.height then result = RoadHeight(true,height,roadNormal(tri),tri.friction)
         }
     }
@@ -545,7 +711,7 @@ pack RoadRayHit {
 /** Exact ray contact with asphalt, using the same triangles as rendering. */
 func castPavement(network: RoadNetwork&, origin: Vec3&, direction: Vec3&, length: Double): RoadRayHit {
     var hit: RoadRayHit = .()
-    if network.grid.size == 0 || length < 0.0 then return take hit
+    if !network.bucketed || length < 0.0 then return take hit
     fin below = roadSurfaceAt(network,origin.x,origin.z)
     if below.found && origin.y <= below.height && origin.y > below.height-2.0 then return RoadRayHit(0.0,take below)
     // Traverse each horizontal grid cell crossed by the ray. For a vertical
@@ -566,24 +732,25 @@ func castPavement(network: RoadNetwork&, origin: Vec3&, direction: Vec3&, length
     var visited = 0
     while visited < visits && entered <= limit {
         visited++
-        fin bucket = network.grid[roadBucketAt(x,z)].&
-        for i in bucket.triangles {
+        fin bucket = roadBucketAt(x,z)
+        for k: Int in network.triangleStarts[bucket]..<network.triangleStarts[bucket + 1] {
+            fin i = network.bucketTriangles[k]
             fin tri = network.triangles[i].&
-            fin ux = tri.b.x-tri.a.x
-            fin uy = tri.b.y-tri.a.y
-            fin uz = tri.b.z-tri.a.z
-            fin vx = tri.c.x-tri.a.x
-            fin vy = tri.c.y-tri.a.y
-            fin vz = tri.c.z-tri.a.z
+            fin ux = tri.x1-tri.x0
+            fin uy = tri.y1-tri.y0
+            fin uz = tri.z1-tri.z0
+            fin vx = tri.x2-tri.x0
+            fin vy = tri.y2-tri.y0
+            fin vz = tri.z2-tri.z0
             fin nx = uy*vz-uz*vy
             fin ny = uz*vx-ux*vz
             fin nz = ux*vy-uy*vx
             fin dot = direction.x*nx+direction.y*ny+direction.z*nz
             if dot >= -0.000001 then continue
-            fin t = ((tri.a.x-origin.x)*nx+(tri.a.y-origin.y)*ny+(tri.a.z-origin.z)*nz)/dot
+            fin t = ((tri.x0-origin.x)*nx+(tri.y0-origin.y)*ny+(tri.z0-origin.z)*nz)/dot
             if t < entered-0.00001 || t > limit then continue
-            fin px = origin.x+t*direction.x-tri.a.x
-            fin pz = origin.z+t*direction.z-tri.a.z
+            fin px = origin.x+t*direction.x-tri.x0
+            fin pz = origin.z+t*direction.z-tri.z0
             fin a = (px*vz-pz*vx)/(-ny)
             fin b = (ux*pz-uz*px)/(-ny)
             if a >= -0.00001 && b >= -0.00001 && a+b <= 1.00001 {

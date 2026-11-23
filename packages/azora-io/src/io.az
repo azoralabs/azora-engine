@@ -29,9 +29,10 @@ bridge .C {
     func ftell(stream: Long): Long
     func fread(ptr: Long, size: Long, count: Long, stream: Long): Long
     func fputs(text: String, stream: Long): Int
-    func fflush(stream: Long): Int
+    func fwrite(ptr: Long, size: Long, count: Long, stream: Long): Long
     func remove(path: String): Int
     func rename(oldPath: String, newPath: String): Int
+    func mkdir(path: String, mode: Int): Int
 
     // Raw memory (az_ffi.c). Declared once here, for the whole engine: this is
     // the lowest module every consumer of raw buffers already imports, and a
@@ -171,6 +172,13 @@ func readFile(path: String): Blob {
     return .(buffer, read as Int)
 }
 
+/** Creates the folder [path] and every missing parent (rwxr-xr-x); folders that exist are left as they are. */
+func makeFolders(path: String) {
+    for at: Int in 1..stringLength(path) {
+        if at == stringLength(path) || charAt(path, at) == '/' then mkdir(substring(path, 0, at), 493)
+    }
+}
+
 /**
  * Atomically replaces a UTF-8 text file.
  *
@@ -183,10 +191,11 @@ func writeTextFile(path: String, content: String): Bool {
     fin temporary = path + ".tmp"
     fin stream = fopen(temporary, "wb")
     if stream == 0 then return false
+    // fclose flushes and reports a failed flush; a separate fflush bridge
+    // clashed with the compiler runtime's own declaration of it at link time.
     fin written = fputs(content, stream) >= 0
-    fin flushed = fflush(stream) == 0
     fin closed = fclose(stream) == 0
-    if !written || !flushed || !closed {
+    if !written || !closed {
         remove(temporary)
         return false
     }
@@ -295,5 +304,60 @@ impl Blob {
         if self.data != 0 then azFree(self.data)
         self.data = 0
         self.size = 0
+    }
+}
+
+/**
+ * Writes [size] raw bytes from [bytes] to [path], replacing it. Text files go
+ * through [writeTextFile]; this is for binary data (a 16-bit heightmap tile)
+ * that holds zero bytes a C string would stop at.
+ */
+func writeBinaryFile(path: String, bytes: Long, size: Long): Bool {
+    fin stream = fopen(path, "wb")
+    if stream == 0 then return false
+    fin written = fwrite(bytes, 1, size, stream) == size
+    fin closed = fclose(stream) == 0
+    return written && closed
+}
+
+// ── Fingerprints ────────────────────────────────────────────────────────
+
+/**
+ * A running 64-bit fingerprint (FNV-1a over 64-bit words) of the values fed
+ * to it, for telling "the same inputs as last frame" from "changed".
+ *
+ * Systems that rebuild a cache when their inputs change fingerprint those
+ * inputs every frame instead of formatting them into a text key: text built
+ * every frame is never freed by the LLVM backend, and formatting numbers is
+ * slow besides. A fingerprint allocates nothing per value.
+ */
+pack Fingerprint {
+    var value: Long = -3750763034362895579
+    /** Eight bytes that turn a Double into its bits; made on first use. */
+    var scratch: Long = 0
+}
+
+impl Fingerprint {
+    dtor .() { if self.scratch != 0 then azFree(self.scratch) }
+
+    /** Mixes in one 64-bit word. */
+    func !.add(part: Long) { self.value = (self.value ^ part ^ (part >> 32)) * 1099511628211 }
+
+    func !.addInt(part: Int) { self.add(part as Long) }
+
+    func !.addBool(part: Bool) { self.add(if part then 1 else 0) }
+
+    /** Mixes in a Double's exact bits: any change at all changes the fingerprint. */
+    func !.addReal(part: Double) {
+        if self.scratch == 0 then self.scratch = azAlloc(8)
+        azPokeF64(self.scratch, 0, part)
+        self.add(azPeek64(self.scratch, 0))
+    }
+
+    /** Mixes in [part]'s length and characters (decoded once, in order). */
+    func !.addText(part: String) {
+        fin chars = toChars(part)
+        self.add(chars.size as Long)
+        for c in chars then self.add((c as Int) as Long)
     }
 }

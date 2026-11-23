@@ -26,6 +26,7 @@ import engine.ui.compose
 import engine.ui.paint
 import engine.ui.systems
 import engine.weather
+import std.os::{envVar}
 
 /** A scene game declares one configuration named game in its entry module. */
 pack GameConfig {
@@ -33,7 +34,14 @@ pack GameConfig {
     fin width: Int = 1280
     fin height: Int = 760
     fin scene: String = "scene.azscene"
-    fin fixedHz: Int = 60
+    /**
+     * Physics steps per second when nothing overrides it. The simulation runs
+     * at this fixed rate, whatever the frame rate, and each frame is drawn
+     * between the last two steps by the time left over (as Unreal's fixed
+     * physics with interpolation). AZORA_PHYSICS_RATE (Studio's Preferences,
+     * "Physics steps per second") sets it for a run.
+     */
+    fin physicsRate: Int = 120
     fin maxFrameSeconds: Double = 0.08
 }
 
@@ -315,11 +323,18 @@ func customGameRenderStage(plan: SystemPlan&, phase: SystemPhase): Bool {
     return false
 }
 
+/** Physics steps per second for this run: AZORA_PHYSICS_RATE when it names one (10 to 1000), else the game's. */
+func physicsRateOf(config: GameConfig&): Int {
+    fin asked = leadingNumber(envVar("AZORA_PHYSICS_RATE"))
+    return if asked >= 10 && asked <= 1000 then asked else config.physicsRate
+}
+
 react func runSceneGame(config: GameConfig&)
-in assert config.fixedHz > 0 && config.maxFrameSeconds > 0.0 panic "invalid game clock"
+in assert config.physicsRate > 0 && config.maxFrameSeconds > 0.0 panic "invalid game clock"
 scope {
     fin plan = systemPlan()
     assert !plan.cyclic panic plan.cycleReport
+    enterWorkingDirectory()
     var world: World = .()
     var file = readFile(config.scene)
     fin loaded = file.ok() && readScene(world, file.text(0, file.size)) >= 0
@@ -345,7 +360,8 @@ scope {
         customGameRenderStage(plan,.RenderTransparent))
     frame.view.matrices = azAlloc(sceneViewMatrixBytes)
     defer { azFree(frame.view.matrices) }
-    world.setFixedTimestep(1.0 / (config.fixedHz as Double))
+    fin rate = physicsRateOf(config)
+    world.setFixedTimestep(1.0 / (rate as Double))
     frame.time.setFixedDelta(world.fixedTimestep)
     dispatchGame(plan, .Startup, frame)
 
@@ -361,6 +377,7 @@ scope {
         if !frame.paused && !wasPaused {
             world.progress(frame.time.deltaSecs)
             while world.consumeFixedStep() then dispatchGame(plan, .FixedUpdate, frame)
+            // What is drawn this frame lies between the last two steps by the time left over.
             frame.interpolation = world.fixedAccumulator / world.fixedTimestep
             dispatchGame(plan, .Update, frame)
             dispatchGame(plan, .PostUpdate, frame)
@@ -391,40 +408,45 @@ scope {
 
 // Weather stages
 
-@System(phase: .PostUpdate)
-func simulateWeather(frame: Game!, skies: @query [AetherSky&]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        if !row.1.enabled || !visibleInWorld(frame.world,row.0) then continue
-        if !storageHas<AetherWeather>(ensureStorage(frame.world),row.0) {
-            storageRemove<AtmosphereConditions>(ensureStorage(frame.world),row.0)
-            return
-        }
-        let states = ensureStorage<AetherState>(frame.world)
-        if !storageHas<AetherState>(states, row.0) then storageInsert<AetherState>(states, row.0, .())
-        let store = ensureStorage<AetherState>(frame.world)
-        previewWeather(frame.world, row.0, store.values[storageIndexOf<AetherState>(store, row.0)],
-            frame.time.elapsedSecs, frame.time.deltaSecs, frame.camera.position(), frame.camera.right())
-        return
+/**
+ * The weather's runtime on the Atmosphere's entity, made when it is first
+ * needed: its state; the precipitation pools once Rain, Snow or Dust is in
+ * the scene; the storm once Thunder is; the voices once there is rain or
+ * wind to hear. A scene without them pays for none of it.
+ */
+@System(phase: .PreUpdate)
+func prepareWeather(frame: Game!) {
+    fin owner = atmosphereEntity(frame.world)
+    if !frame.world.isAlive(owner) then return
+    if !storageHas<AetherState>(ensureStorage(frame.world), owner) then storageInsert<AetherState>(ensureStorage(frame.world), owner, .())
+    fin parts = weatherParts(frame.world)
+    if (parts.rain.enabled || parts.snow.enabled || parts.dust.enabled) && !storageHas<AetherPrecipitation>(ensureStorage(frame.world), owner) {
+        storageInsert<AetherPrecipitation>(ensureStorage(frame.world), owner, aetherPrecipitation(frame.window.gpu.device, frame.window.gpu.queue))
+    }
+    if parts.thunder.enabled && !storageHas<AetherStorm>(ensureStorage(frame.world), owner) {
+        storageInsert<AetherStorm>(ensureStorage(frame.world), owner, aetherStorm(frame.window.gpu.device, frame.audio.rate as Double))
+    }
+    if (parts.rain.enabled || frame.world.isAlive(sceneWindEntity(frame.world))) && !storageHas<AetherSound>(ensureStorage(frame.world), owner) {
+        storageInsert<AetherSound>(ensureStorage(frame.world), owner, aetherSound())
     }
 }
 
-/** Puts the precipitation pools on every Aether Sphere before the first frame. */
-@System(phase: .Startup)
-func startAetherPrecipitation(frame: Game!, skies: @query [AetherSky&]) {
-    var owners: Array<Entity> = []
-    while skies.hasNext() then owners.add(skies.nextEntity())
-    for owner in owners {
-        if !storageHas<AetherWeather>(ensureStorage(frame.world),owner) then continue
-        storageInsert<AetherPrecipitation>(ensureStorage<AetherPrecipitation>(frame.world), owner,
-            aetherPrecipitation(frame.window.gpu.device, frame.window.gpu.queue))
-    }
+/** Moves the weather on and hands it to the atmosphere's renderer. */
+@System(phase: .PostUpdate)
+func simulateWeather(frame: Game!) {
+    fin owner = atmosphereEntity(frame.world)
+    if !frame.world.isAlive(owner) then return
+    let store = ensureStorage<AetherState>(frame.world)
+    fin at = storageIndexOf<AetherState>(store, owner)
+    if at < 0 then return
+    previewWeather(frame.world, owner, store.values[at], frame.time.elapsedSecs, frame.time.deltaSecs, frame.camera.position(),
+        frame.camera.right())
 }
 
 /**
- * Moves rain and snow one step, on the GPU, in a command buffer committed
- * before the frame's: the drops' collisions read the depth the last frame
- * left, and their hits spawn the splashes.
+ * Moves rain, snow and dust one step, on the GPU, in a command buffer
+ * committed before the frame's: the drops' collisions read the depth the last
+ * frame left, and their hits spawn the splashes.
  */
 @System(phase: .RenderSky)
 func simulateAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherState&, AetherPrecipitation!]) {
@@ -434,13 +456,15 @@ func simulateAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, Aether
         let state: AetherState& = row.2
         let rain: AetherPrecipitation! = row.3
         if !sky.enabled || !rain.ready || !ensureParticles(frame) then continue
-        fin weather = storageGetOrDefault<AetherWeather>(ensureStorage(frame.world), row.0, .())
-        fin reach = weatherClamp(weather.splashDistance, 5.0, 80.0)
+        fin parts = weatherParts(frame.world)
+        // How far and how much landing drops splash: the Rain's settings.
+        fin reach = weatherClamp(parts.rain.splashDistance, 5.0, 80.0)
         if absValue(reach - rain.reach) > 0.5 then sizeImpacts(rain, frame.window.gpu.device, frame.window.gpu.queue, reach)
-        fin splashes = weatherClamp(weather.splashes, 0.0, 1.0)
-        fin falling = weatherClamp(state.current.rain, 0.0, 1.0)
-        fin snowing = weatherClamp(state.current.snow, 0.0, 1.0)
-        if falling <= 0.0 && snowing <= 0.0 && rain.rings.active == 0 && rain.puffs.active == 0 then return
+        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
+        fin falling = weatherClamp(state.rain, 0.0, 1.0)
+        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
+        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
+        if falling <= 0.0 && snowing <= 0.0 && dusting <= 0.0 && rain.rings.active == 0 && rain.puffs.active == 0 then return
         fin commands = send0(frame.window.gpu.queue, sel("commandBuffer"))
         fin seen = particleViewOf(frame, commands)
         fin eye: Vec3 = .(seen.eyeX, seen.eyeY, seen.eyeZ)
@@ -459,6 +483,9 @@ func simulateAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, Aether
         rain.flakesNear.simulate(frame.particles, flakeEmitter(9.0, true), seen, eye, snowing)
         rain.flakesFar.simulate(frame.particles, flakeEmitter(35.0, false), seen, eye, snowing)
         rain.puffs.spawnFromHits(frame.particles, puffEmitter(), seen, rain.flakesNear, 1, 2)
+        fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
+        rain.motesNear.simulate(frame.particles, moteEmitter(12.0, mote, parts.dust.color), seen, eye, dusting)
+        rain.motesFar.simulate(frame.particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, eye, dusting)
         send0(commands, sel("commit"))
         // Under AZORA_GPU_TIMING the frame's GPU time counts this command buffer too.
         if frame.window.gpu.timing {
@@ -469,7 +496,7 @@ func simulateAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, Aether
     }
 }
 
-/** Draws rain, snow and their splashes over the finished view, soft against what the scene drew. */
+/** Draws rain, snow, dust and their splashes over the finished view, soft against what the scene drew. */
 @System(phase: .RenderTransparent)
 func drawAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherState&, AetherPrecipitation&]) {
     while skies.hasNext() {
@@ -478,10 +505,11 @@ func drawAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherStat
         let state: AetherState& = row.2
         let rain: AetherPrecipitation& = row.3
         if !sky.enabled || !rain.ready || !frame.particles.ready || frame.view.encoder == 0 || frame.view.depth == 0 then continue
-        fin falling = weatherClamp(state.current.rain, 0.0, 1.0)
-        fin snowing = weatherClamp(state.current.snow, 0.0, 1.0)
-        fin weather = storageGetOrDefault<AetherWeather>(ensureStorage(frame.world), row.0, .())
-        fin splashes = weatherClamp(weather.splashes, 0.0, 1.0)
+        fin parts = weatherParts(frame.world)
+        fin falling = weatherClamp(state.rain, 0.0, 1.0)
+        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
+        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
+        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
         fin seen = particleViewOf(frame, 0)
         fin encoder = frame.view.encoder
         fin depth = frame.view.depth
@@ -497,20 +525,14 @@ func drawAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherStat
             rain.flakesFar.draw(frame.particles, flakeEmitter(35.0, false), seen, encoder, depth, still)
             rain.flakesNear.draw(frame.particles, flakeEmitter(9.0, true), seen, encoder, depth, still)
         }
+        if dusting > 0.0 {
+            fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
+            rain.motesFar.draw(frame.particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, encoder, depth, still)
+            rain.motesNear.draw(frame.particles, moteEmitter(12.0, mote, parts.dust.color), seen, encoder, depth, still)
+        }
         frame.window.gpu.mode = -1
         frame.window.gpu.meshPipeline = 0
         return
-    }
-}
-
-/** Gives every Aether Sphere its storm before the first frame. */
-@System(phase: .Startup)
-func startAetherStorm(frame: Game!, skies: @query [AetherSky&]) {
-    var owners: Array<Entity> = []
-    while skies.hasNext() then owners.add(skies.nextEntity())
-    for owner in owners {
-        if !storageHas<AetherWeather>(ensureStorage(frame.world),owner) then continue
-        storageInsert<AetherStorm>(ensureStorage(frame.world), owner, aetherStorm(frame.window.gpu.device, frame.audio.rate as Double))
     }
 }
 
@@ -556,8 +578,8 @@ func mixAetherThunder(frame: Game!, skies: @query [AetherSky&, AetherStorm!]) {
         let sky: AetherSky& = row.1
         let storm: AetherStorm! = row.2
         if !sky.enabled || frame.audio.frames <= 0 then continue
-        fin audio = storageGetOrDefault<AetherAudio>(ensureStorage(frame.world), row.0, .())
-        mixThunder(storm, frame.audio.mix, frame.audio.frames, frame.audio.rate as Double, if audio.enabled then audio.thunder * audio.master else 0.0)
+        fin thunder = weatherParts(frame.world).thunder
+        mixThunder(storm, frame.audio.mix, frame.audio.frames, frame.audio.rate as Double, if thunder.enabled then thunder.volume else 1.0)
         return
     }
 }
@@ -571,19 +593,12 @@ func mixAetherWeather(frame: Game!, skies: @query [AetherSky&, AetherState&, Aet
         let state: AetherState& = row.2
         let sound: AetherSound! = row.3
         if !sky.enabled || frame.audio.frames <= 0 then continue
-        fin audio = storageGetOrDefault<AetherAudio>(ensureStorage(frame.world), row.0, .())
-        mixWeather(sound, state, audio, frame.audio.mix, frame.audio.frames, frame.audio.rate as Double, state.wetness)
+        fin rain = weatherParts(frame.world).rain
+        fin windy = sceneWindEntity(frame.world)
+        fin windVolume = if frame.world.isAlive(windy) then storageGet<Wind>(ensureStorage(frame.world), windy).volume else 0.0
+        mixWeather(sound, state, if rain.enabled then rain.volume else 1.0, windVolume, frame.audio.mix, frame.audio.frames,
+            frame.audio.rate as Double)
         return
     }
 }
 
-/** Gives every Aether Sphere its weather voices before the first frame. */
-@System(phase: .Startup)
-func startAetherSound(frame: Game!, skies: @query [AetherSky&]) {
-    var owners: Array<Entity> = []
-    while skies.hasNext() then owners.add(skies.nextEntity())
-    for owner in owners {
-        if !storageHas<AetherWeather>(ensureStorage(frame.world),owner) then continue
-        storageInsert<AetherSound>(ensureStorage(frame.world), owner, aetherSound())
-    }
-}

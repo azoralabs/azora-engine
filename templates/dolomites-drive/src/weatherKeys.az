@@ -1,14 +1,90 @@
 module dolomites.weatherKeys
 
+import std.math
 import engine.core
 import engine.ecs
 import engine.game
 import engine.input
 import engine.platform
+import engine.scene
 import engine.atmosphere
 import engine.weather
 
-/** N moves the weather on to the next preset; T sets the clock an hour on, Shift+T an hour back; L strikes lightning ahead. */
+/** The weathers N steps through, each a setting of the scene's weather parts. */
+enum WeatherLook {
+    Clear
+    Cloudy
+    Rain
+    Thunderstorm
+    Snow
+    DustStorm
+}
+
+/** One look: cloud cover and kind, rain, snow and dust intensity, lightning strikes a minute, wind in m/s. */
+pack LookSettings derives Clone {
+    var cover: Double = 0.0
+    var kind: Double = 0.5
+    var rain: Double = 0.0
+    var snow: Double = 0.0
+    var dust: Double = 0.0
+    var strikes: Double = 0.0
+    var wind: Double = 2.0
+}
+
+func lookSettings(look: WeatherLook): LookSettings = when look {
+    .Clear -> .(0.08, 0.45, 0.0, 0.0, 0.0, 0.0, 2.0)
+    .Cloudy -> .(0.55, 0.55, 0.0, 0.0, 0.0, 0.0, 4.0)
+    .Rain -> .(0.9, 0.35, 0.7, 0.0, 0.0, 0.0, 6.0)
+    .Thunderstorm -> .(1.0, 0.9, 1.0, 0.0, 0.0, 6.0, 11.0)
+    .Snow -> .(0.95, 0.25, 0.0, 0.7, 0.0, 0.0, 4.0)
+    .DustStorm -> .(0.2, 0.3, 0.0, 0.0, 0.85, 0.0, 14.0)
+}
+
+func nextLook(look: WeatherLook): WeatherLook = when look {
+    .Clear -> .Cloudy
+    .Cloudy -> .Rain
+    .Rain -> .Thunderstorm
+    .Thunderstorm -> .Snow
+    .Snow -> .DustStorm
+    .DustStorm -> .Clear
+}
+
+/** Which look N set last, on the Atmosphere's entity. */
+@Component
+pack WeatherCycle {
+    var look: WeatherLook = .Clear
+}
+
+/**
+ * Sets the scene's weather parts as [look] has them: every Volumetric
+ * Clouds, Rain, Snow, Dust, Thunder and Wind. A part the scene lacks is added
+ * to [owner] (the Atmosphere's entity) when the look needs it.
+ */
+func applyLook(world: World!, owner: Entity, look: LookSettings&) {
+    if storageLength<AetherClouds>(ensureStorage(world)) == 0 then storageInsert<AetherClouds>(ensureStorage(world), owner, .())
+    if storageLength<Rain>(ensureStorage(world)) == 0 && look.rain > 0.0 then storageInsert<Rain>(ensureStorage(world), owner, .())
+    if storageLength<Snow>(ensureStorage(world)) == 0 && look.snow > 0.0 then storageInsert<Snow>(ensureStorage(world), owner, .())
+    if storageLength<Dust>(ensureStorage(world)) == 0 && look.dust > 0.0 then storageInsert<Dust>(ensureStorage(world), owner, .())
+    if storageLength<Thunder>(ensureStorage(world)) == 0 && look.strikes > 0.0 then storageInsert<Thunder>(ensureStorage(world), owner, .())
+    if storageLength<Wind>(ensureStorage(world)) == 0 then storageInsert<Wind>(ensureStorage(world), owner, .(direction: 250.0))
+    let clouds = ensureStorage<AetherClouds>(world)
+    for i: Int in 0..<storageLength<AetherClouds>(clouds) {
+        clouds.values[i].coverage = look.cover
+        clouds.values[i].cloudType = look.kind
+    }
+    let rains = ensureStorage<Rain>(world)
+    for i: Int in 0..<storageLength<Rain>(rains) then rains.values[i].intensity = look.rain
+    let snows = ensureStorage<Snow>(world)
+    for i: Int in 0..<storageLength<Snow>(snows) then snows.values[i].intensity = look.snow
+    let dusts = ensureStorage<Dust>(world)
+    for i: Int in 0..<storageLength<Dust>(dusts) then dusts.values[i].intensity = look.dust
+    let storms = ensureStorage<Thunder>(world)
+    for i: Int in 0..<storageLength<Thunder>(storms) then storms.values[i].strikesPerMinute = look.strikes
+    let winds = ensureStorage<Wind>(world)
+    for i: Int in 0..<storageLength<Wind>(winds) then winds.values[i].speed = look.wind
+}
+
+/** N moves the weather on to the next look; T sets the clock an hour on, Shift+T an hour back; L strikes lightning ahead. */
 @System(phase: .PreUpdate)
 func changeWeather(frame: Game!) {
     if frame.paused then return
@@ -16,34 +92,41 @@ func changeWeather(frame: Game!) {
     fin next = window.keyJustPressed(.N)
     fin later = window.keyJustPressed(.T)
     if window.keyJustPressed(.L) then lightningNow(frame.world, frame.time.elapsedSecs, frame.camera.position(), frame.camera.forward())
-    if !next && !later then return
+    fin owner = atmosphereEntity(frame.world)
+    if !frame.world.isAlive(owner) then return
     if next {
-        let weathers = ensureStorage<AetherWeather>(frame.world)
-        var i = 0
-        while i < storageLength<AetherWeather>(weathers) {
-            weathers.values[i].preset = presetName(nextPreset(presetNamed(weathers.values[i].preset)))
-            i++
-        }
+        if !storageHas<WeatherCycle>(ensureStorage(frame.world), owner) then storageInsert<WeatherCycle>(ensureStorage(frame.world), owner, .())
+        let cycles = ensureStorage<WeatherCycle>(frame.world)
+        fin at = storageIndexOf<WeatherCycle>(cycles, owner)
+        cycles.values[at].look = nextLook(cycles.values[at].look)
+        applyLook(frame.world, owner, lookSettings(cycles.values[at].look))
     }
     if later {
         fin step: Double = if window.keyDown(.Shift) then -1.0 else 1.0
         let skies = ensureStorage<AetherSky>(frame.world)
-        var i = 0
-        while i < storageLength<AetherSky>(skies) {
+        for i: Int in 0..<storageLength<AetherSky>(skies) {
             fin moved = skies.values[i].hour + step
             skies.values[i].hour = if moved >= 24.0 then moved - 24.0 else if moved < 0.0 then moved + 24.0 else moved
-            i++
         }
     }
 }
 
-/** The weather and the clock, for the HUD. */
+/** [text] with [part] after it, a dot between. */
+func joined(text: String, part: String): String = if text == "" then part else "${text} · ${part}"
+
+/** The weather the scene's parts make, and the clock, for the HUD. */
 func weatherLabel(frame: Game!): String {
-    fin weathers = ensureStorage<AetherWeather>(frame.world)
-    fin skies = ensureStorage<AetherSky>(frame.world)
-    if storageLength<AetherWeather>(weathers) == 0 || storageLength<AetherSky>(skies) == 0 then return ""
-    fin hour = skies.values[0].hour
+    fin owner = atmosphereEntity(frame.world)
+    if !frame.world.isAlive(owner) then return ""
+    fin parts = weatherParts(frame.world)
+    var what = ""
+    if parts.rain.enabled && parts.rain.intensity > 0.0 then what = joined(what, "Rain ${round(parts.rain.intensity * 100.0)}%")
+    if parts.snow.enabled && parts.snow.intensity > 0.0 then what = joined(what, "Snow ${round(parts.snow.intensity * 100.0)}%")
+    if parts.dust.enabled && parts.dust.intensity > 0.0 then what = joined(what, "Dust ${round(parts.dust.intensity * 100.0)}%")
+    if parts.thunder.enabled && parts.thunder.strikesPerMinute > 0.0 then what = joined(what, "Thunder")
+    if what == "" then what = "Dry"
+    fin hour = storageGet<AetherSky>(ensureStorage(frame.world), owner).hour
     fin whole = hour as Int
     fin minutes = ((hour - (whole as Double)) * 60.0) as Int
-    return "${weathers.values[0].preset}  ${whole}:${if minutes < 10 then "0" else ""}${minutes}"
+    return "${what}  ${whole}:${if minutes < 10 then "0" else ""}${minutes}"
 }

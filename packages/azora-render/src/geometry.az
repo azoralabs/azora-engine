@@ -1,5 +1,6 @@
 module engine.render.geometry
 
+import std.math
 import engine.core
 import engine.ecs
 import engine.gpu
@@ -16,6 +17,8 @@ pack GeometryAsset {
     var vertices: Array<Double>
     var buffer: Long = 0
     var count: Int = 0
+    /** How far its farthest vertex lies from its origin; negative until measured. */
+    var reach: Double = -1.0
 }
 
 impl GeometryAsset {
@@ -52,4 +55,24 @@ func sceneGeometry(world: World!, device: Long, name: String): Mesh {
         asset.count = asset.vertices.size/6
     }
     return .(asset.buffer,asset.count)
+}
+
+/** How far geometry [name]'s farthest vertex lies from its origin (0 when there is no such geometry). */
+func geometryReach(world: World!, name: String): Double {
+    fin i = geometryIndex(world,name)
+    if i < 0 then return 0.0
+    let assets = ensureStorage<GeometryAsset>(world)
+    let asset: GeometryAsset! = assets.values[i]
+    if asset.reach < 0.0 {
+        var farthest: Double = 0.0
+        for v: Int in 0..<(asset.vertices.size / 6) {
+            fin x = asset.vertices[v * 6]
+            fin y = asset.vertices[v * 6 + 1]
+            fin z = asset.vertices[v * 6 + 2]
+            fin d = x * x + y * y + z * z
+            if d > farthest then farthest = d
+        }
+        asset.reach = sqrt(farthest)
+    }
+    return asset.reach
 }

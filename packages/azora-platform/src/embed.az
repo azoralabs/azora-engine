@@ -1,0 +1,145 @@
+module engine.platform.embed
+
+import engine.objc
+import engine.io
+
+// A game played inside an editor (Studio's Play In Editor) runs in its own
+// process and shares one file mapped into both: a header both read and write,
+// and three frame slots the game draws straight into. The game renders a frame
+// into the slot after the last one it published, publishes it once the GPU has
+// finished it, and the editor shows the newest published slot - zero copies on
+// either side, and with three slots the game never draws into one the editor
+// may still be showing. The editor writes what the game is to do (its size,
+// pause, quit) and its keyboard and mouse into the header.
+
+bridge .C {
+    func mmap(address: Long, length: Long, protection: Int, flags: Int, descriptor: Int, offset: Long): Long
+    func munmap(address: Long, length: Long): Int
+}
+
+/** The header's size: the frame slots start after it. */
+inline fin embedHeaderBytes: Long = 16384
+/** The largest frame a slot holds, in pixels; a larger view is drawn stretched from it. */
+inline fin embedMaxWidth: Int = 4096
+inline fin embedMaxHeight: Int = 2560
+/** A slot's bytes: a frame of the largest size, rows of [embedRowBytes]. */
+inline fin embedSlotBytes: Long = 41943040
+inline fin embedSlots: Int = 3
+/** The whole mapping: the header and the slots. */
+inline fin embedBytes: Long = 125845504
+
+/** Identifies a link and its layout ("AZPE", version 1). */
+inline fin embedMagic: Int = 1095389253
+
+// Header fields, by byte offset. Editor to game unless marked otherwise.
+/** Int32: the magic; Int32: the version. */
+inline fin embedAtMagic: Long = 0
+/** Int32 each: the frame size the editor shows, in pixels. */
+inline fin embedAtWidth: Long = 8
+inline fin embedAtHeight: Long = 12
+/** Game to editor, Int64: how many frames were published (0: none yet). */
+inline fin embedAtPublished: Long = 16
+/** Game to editor, Int32 each: the published frame's width, height, row bytes and slot. */
+inline fin embedAtFrameWidth: Long = 24
+inline fin embedAtFrameHeight: Long = 28
+inline fin embedAtFrameRow: Long = 32
+inline fin embedAtFrameSlot: Long = 36
+/** Int32 each: the editor asks the game to end; to hold still; whether the game has the keyboard. */
+inline fin embedAtQuit: Long = 40
+inline fin embedAtPaused: Long = 44
+inline fin embedAtFocused: Long = 48
+/** Game to editor, Int32: 1 once the game runs, 2 once it has ended. */
+inline fin embedAtAlive: Long = 52
+/** Double: the editor's pixels per point. */
+inline fin embedAtScale: Long = 56
+/** Double each: the pointer in the frame, in points from its top-left; the wheel's running totals. */
+inline fin embedAtMouseX: Long = 64
+inline fin embedAtMouseY: Long = 72
+inline fin embedAtWheelX: Long = 80
+inline fin embedAtWheelY: Long = 88
+/** Byte each: left, right and middle button held; then each button's press count (wrapping). */
+inline fin embedAtButtons: Long = 96
+inline fin embedAtClicks: Long = 100
+/** Byte per engine key code: held. */
+inline fin embedAtKeys: Long = 1024
+/** Byte per engine key code: how many times it was pressed, wrapping - a press is never lost between frames. */
+inline fin embedAtPresses: Long = 4096
+
+/** A mapped link: the file handle that keeps it open, and the mapping. */
+pack EmbedLink {
+    var handle: Long = 0
+    var region: Long = 0
+    var bytes: Long = 0
+}
+
+/**
+ * Maps the link file at [path] into this process. With [create] it is made
+ * (or reset) first: sized, and its header cleared and stamped. The region is
+ * 0 when it could not be mapped.
+ */
+func openEmbedLink(path: String, create: Bool): EmbedLink {
+    var link: EmbedLink = .()
+    fin pool = objcAutoreleasePoolPush()
+    if create {
+        send3(send0(cls("NSFileManager"), sel("defaultManager")), sel("createFileAtPath:contents:attributes:"), nsString(path), 0, 0)
+    }
+    fin handle = send1(cls("NSFileHandle"), sel("fileHandleForUpdatingAtPath:"), nsString(path))
+    if handle != 0 {
+        send0(handle, sel("retain"))
+        if create then send1(handle, sel("truncateFileAtOffset:"), embedBytes)
+        // PROT_READ | PROT_WRITE, MAP_SHARED: both processes see the same pages.
+        fin region = mmap(0, embedBytes, 3, 1, send0(handle, sel("fileDescriptor")) as Int, 0)
+        if region != 0 && region != -1 {
+            link.handle = handle
+            link.region = region
+            link.bytes = embedBytes
+            if create {
+                for at: Long in 0..<(embedHeaderBytes / 8) then azPoke64(region, at * 8, 0)
+                azPoke32(region, embedAtMagic, embedMagic)
+                azPoke32(region, embedAtMagic + 4, 1)
+            }
+        } else {
+            send0(handle, sel("closeFile"))
+            send0(handle, sel("release"))
+        }
+    }
+    objcAutoreleasePoolPop(pool)
+    if link.region != 0 && azPeek32(link.region, embedAtMagic) != embedMagic then closeEmbedLink(link)
+    return take link
+}
+
+/** Unmaps [link] and closes its file. */
+func closeEmbedLink(link: EmbedLink!) {
+    if link.region != 0 then munmap(link.region, link.bytes)
+    if link.handle != 0 {
+        send0(link.handle, sel("closeFile"))
+        send0(link.handle, sel("release"))
+    }
+    link.region = 0
+    link.handle = 0
+    link.bytes = 0
+}
+
+/** The bytes of a row of a frame [width] pixels wide: aligned for a texture read straight from memory. */
+func embedRowBytes(width: Int): Long = (((width as Long) * 4 + 255) / 256) * 256
+
+/** Where slot [slot] starts in the mapping. */
+func embedSlotOffset(slot: Int): Long = embedHeaderBytes + (slot as Long) * embedSlotBytes
+
+/** A Metal buffer over the whole mapping of [link], made with [device]; nothing is copied. */
+func embedBuffer(device: Long, link: EmbedLink&): Long =
+    if link.region == 0 then 0 else send4(device, sel("newBufferWithBytesNoCopy:length:options:deallocator:"), link.region, link.bytes, 0, 0)
+
+/**
+ * A BGRA8 texture of [width] x [height] over slot [slot] of [buffer], to draw
+ * into and to sample: the slot's memory itself.
+ */
+func embedSlotTexture(buffer: Long, slot: Int, width: Int, height: Int): Long {
+    if buffer == 0 then return 0
+    fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+        80, width as Long, height as Long, 0)
+    // Shared storage; shader read and render target.
+    send1(descriptor, sel("setStorageMode:"), 0)
+    send1(descriptor, sel("setUsage:"), 5)
+    return send3(buffer, sel("newTextureWithDescriptor:offset:bytesPerRow:"), descriptor, embedSlotOffset(slot), embedRowBytes(width))
+}

@@ -154,7 +154,9 @@ func componentsAzon(world: World!, entity: Entity): String {
 }
 
 /** Whether [id] is a live entity a scene file should hold. */
-func sceneEntity(world: World&, id: Int): Bool = world.alive[id] && !world.resourceMarks[id]
+/** Whether entity [id] is written into the scene: alive, not a resource, not streamed in. */
+func sceneEntity(world: World!, id: Int): Bool =
+    world.alive[id] && !world.resourceMarks[id] && !storageHas<Streamed>(ensureStorage(world), world.entityAt(id))
 
 /** The whole scene in [world] as AZON text. */
 func writeScene(world: World!): String {
@@ -272,8 +274,18 @@ func readComponents(world: World!, entity: Entity, components: List<SerialField>
  * version understands - in which case nothing was added.
  */
 func readScene(world: World!, text: String): Int {
-    fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
     var spawned: Array<Entity> = []
+    return readSceneInto(world, text, spawned)
+}
+
+/**
+ * Adds the entities of scene [text] to [world], appending each one spawned to
+ * [spawned] (a streaming system unloads them later); answers how many, or -1
+ * when the text is not a scene.
+ */
+func readSceneInto(world: World!, text: String, spawned: Array<Entity>!): Int {
+    fin root = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+    fin first = spawned.size
     var parents: Array<Int> = []
     when root {
         .Object(members) -> {
@@ -309,11 +321,9 @@ func readScene(world: World!, text: String): Int {
         }
         else -> return -1
     }
-    var index = 0
-    while index < spawned.size {
+    for index: Int in 0..<parents.size {
         fin parent = parents[index]
-        if parent >= 0 && parent < spawned.size && parent != index then world.setParent(spawned[index], spawned[parent])
-        index++
+        if parent >= 0 && parent < parents.size && parent != index then world.setParent(spawned[first + index], spawned[first + parent])
     }
-    return spawned.size
+    return spawned.size - first
 }

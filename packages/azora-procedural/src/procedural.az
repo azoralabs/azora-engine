@@ -1,0 +1,745 @@
+module engine.procedural
+
+import std.io
+import std.math
+import std.string
+import std.traits
+import engine.core
+import engine.ecs
+import engine.io
+import engine.math
+import engine.math.mat
+import engine.scene
+import engine.scene.terrain
+import engine.roads
+import engine.roads.grading
+exposed import engine.procedural.noise
+
+// A whole world from a recipe. [planWorld] places the settlements (cities,
+// towns, villages) on the lowlands inside a ring of mountains, joins them
+// with highways and country roads, lays out each settlement's street grid
+// with its junctions, and lines the streets with houses and apartment
+// blocks. [generateWorldCell] turns one square cell of that plan into what a
+// scene holds: a heightfield tile graded to the roads and a scene file with
+// the cell's roads, junctions, buildings and forest. A world partition
+// (engine.world.partition) loads those cells around the player.
+//
+// Everything follows from the recipe's seed: the same recipe gives the same
+// world on every machine, so only the recipe is stored with the scene.
+
+/** The recipe of a procedural world, kept on the entity that holds its World Partition. */
+@Component
+@Inspectable(title: "World Recipe", serializedName: "WorldRecipe", icon: "map", category: "World", order: 50)
+pack WorldRecipe derives Clone {
+    var seed: Int = 2026
+    /** The world's extent east-west and north-south, in metres. */
+    @Range(min: 2000.0, max: 400000.0, step: 1000.0)
+    var width: Double = 116000.0
+    @Range(min: 2000.0, max: 400000.0, step: 1000.0)
+    var length: Double = 108000.0
+    /** A streamed cell's side, in metres, and the heightfield samples along it (a power of two plus one). */
+    @Range(min: 500.0, max: 8000.0, step: 100.0)
+    var cellSize: Double = 2000.0
+    @Range(min: 65.0, max: 513.0, step: 64.0)
+    var cellSamples: Int = 257
+    /** The height of the lowest valleys, and the span a tile's 16-bit heights cover. */
+    var baseHeight: Double = 0.0
+    var heightRange: Double = 3600.0
+    @Range(min: 0.0, max: 5000.0, step: 50.0)
+    var mountainHeight: Double = 2300.0
+    @Range(min: 0.0, max: 800.0, step: 10.0)
+    var hillHeight: Double = 160.0
+    @Range(min: 0.0, max: 60.0, step: 1.0)
+    var cities: Int = 4
+    @Range(min: 0.0, max: 120.0, step: 1.0)
+    var towns: Int = 14
+    @Range(min: 0.0, max: 400.0, step: 1.0)
+    var villages: Int = 46
+    /** Street spacing in a city; towns and villages space theirs wider. */
+    @Range(min: 50.0, max: 300.0, step: 5.0)
+    var blockSize: Double = 105.0
+    /** Forest groves per square kilometre of countryside. */
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var forest: Double = 0.9
+}
+
+/** A settlement: 0 village, 1 town, 2 city. */
+pack WorldTown derives Clone {
+    var x: Double = 0.0
+    var z: Double = 0.0
+    var radius: Double = 300.0
+    var height: Double = 0.0
+    var kind: Int = 0
+    /** The street grid's turn, radians. */
+    var angle: Double = 0.0
+}
+
+/** A road as points every few tens of metres, heights included: 0 highway, 1 country road, 2 street. */
+pack WorldRoad derives Clone {
+    var points: Array<Vec3> = []
+    var kind: Int = 1
+}
+
+/** A crossing where streets meet. */
+pack WorldJunction derives Clone {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var z: Double = 0.0
+    var radius: Double = 7.0
+}
+
+/** A building: 0 house (pitched roof), 1 apartment block. [yaw] in degrees. */
+pack WorldBuilding derives Clone {
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var z: Double = 0.0
+    var yaw: Double = 0.0
+    var width: Double = 10.0
+    var depth: Double = 9.0
+    var height: Double = 6.0
+    var kind: Int = 0
+    var shade: Double = 0.0
+}
+
+/** Everything [planWorld] decided. */
+pack WorldPlan {
+    var towns: Array<WorldTown> = []
+    var roads: Array<WorldRoad> = []
+    var junctions: Array<WorldJunction> = []
+    var buildings: Array<WorldBuilding> = []
+}
+
+// ── Terrain ─────────────────────────────────────────────────────────────
+
+func worldClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+/**
+ * The land before roads and settlements: rolling hills in the middle, and
+ * mountains that rise toward the edges and in a few ranges inside.
+ */
+func worldBaseHeight(recipe: WorldRecipe&, x: Double, z: Double): Double {
+    fin u = x / (recipe.width * 0.5)
+    fin v = z / (recipe.length * 0.5)
+    fin r = sqrt(u * u + v * v)
+    fin s = recipe.seed
+    fin hills = fbm(s, x / 2400.0, z / 2400.0, 5) * recipe.hillHeight
+    fin rolling = fbm(s + 11, x / 9000.0, z / 9000.0, 3) * recipe.hillHeight * 1.7
+    fin border = smoothRange(0.6, 0.97, r)
+    fin inner = smoothRange(0.55, 0.85, fbm(s + 23, x / 16000.0, z / 16000.0, 2) * 0.5 + 0.5) * 0.3
+    fin mass = clampUnit(border + inner)
+    fin peaks = ridged(s + 5, x / 5200.0, z / 5200.0, 6)
+    fin mountains = mass * recipe.mountainHeight * (0.3 + 0.7 * peaks)
+    return recipe.baseHeight + 140.0 + hills + rolling + mountains
+}
+
+/** The land with every settlement's ground levelled around it. */
+func worldHeight(recipe: WorldRecipe&, plan: WorldPlan&, x: Double, z: Double): Double {
+    var height = worldBaseHeight(recipe, x, z)
+    for town in plan.towns {
+        fin dx = x - town.x
+        fin dz = z - town.z
+        fin reach = town.radius * 1.6
+        if absValue(dx) > reach || absValue(dz) > reach then continue
+        fin d = sqrt(dx * dx + dz * dz)
+        fin level = 1.0 - smoothRange(town.radius * 1.05, reach, d)
+        height += (town.height - height) * level
+    }
+    return height
+}
+
+// ── Plan ────────────────────────────────────────────────────────────────
+
+/** Settlements, roads, junctions and buildings of the whole world. */
+func planWorld(recipe: WorldRecipe&): WorldPlan {
+    var plan: WorldPlan = .()
+    placeTowns(recipe, plan)
+    connectTowns(recipe, plan)
+    for t: Int in 0..<plan.towns.size then layOutTown(recipe, plan, t)
+    return take plan
+}
+
+/** Cities, towns and villages on the lowlands, spaced so none crowds another. */
+func placeTowns(recipe: WorldRecipe&, plan: WorldPlan!) {
+    var random = rng(recipe.seed, 1)
+    fin total = recipe.cities + recipe.towns + recipe.villages
+    for i: Int in 0..<total {
+        fin kind = if i < recipe.cities then 2 else if i < recipe.cities + recipe.towns then 1 else 0
+        fin radius = when kind {
+            2 -> random.between(1100.0, 1500.0)
+            1 -> random.between(520.0, 800.0)
+            else -> random.between(170.0, 280.0)
+        }
+        for attempt: Int in 0..<60 {
+            fin u = random.between(-0.62, 0.62)
+            fin v = random.between(-0.62, 0.62)
+            if u * u + v * v > 0.36 then continue
+            fin x = u * recipe.width * 0.5
+            fin z = v * recipe.length * 0.5
+            var clear = true
+            for other in plan.towns {
+                fin dx = other.x - x
+                fin dz = other.z - z
+                fin gap = other.radius + radius + (if kind == 0 then 1800.0 else 4000.0)
+                if dx * dx + dz * dz < gap * gap then clear = false
+            }
+            if !clear then continue
+            plan.towns.add(WorldTown(x, z, radius, worldBaseHeight(recipe, x, z), kind, random.between(0.0, 1.5707963)))
+            break
+        }
+    }
+}
+
+/**
+ * Roads between settlements: a minimum spanning tree over all of them (so
+ * every village is reached), plus each town's two nearest towns (so the
+ * highways form loops). Between towns a road is a highway.
+ */
+func connectTowns(recipe: WorldRecipe&, plan: WorldPlan!) {
+    fin count = plan.towns.size
+    if count < 2 then return
+    var joined: Array<Bool> = .() * count
+    var edges: Array<Int> = []
+    joined[0] = true
+    for round: Int in 1..<count {
+        var bestA = -1
+        var bestB = -1
+        var best: Double = 1.0e30
+        for a: Int in 0..<count {
+            if !joined[a] then continue
+            for b: Int in 0..<count {
+                if joined[b] then continue
+                fin d = townDistance(plan, a, b)
+                if d < best {
+                    best = d
+                    bestA = a
+                    bestB = b
+                }
+            }
+        }
+        if bestB < 0 then break
+        joined[bestB] = true
+        edges.add(bestA * 100000 + bestB)
+    }
+    for a: Int in 0..<count {
+        if plan.towns[a].kind == 0 then continue
+        for pick: Int in 0..<2 {
+            var nearest = -1
+            var best: Double = 1.0e30
+            for b: Int in 0..<count {
+                if b == a || plan.towns[b].kind == 0 || hasEdge(edges, a, b) then continue
+                fin d = townDistance(plan, a, b)
+                if d < best {
+                    best = d
+                    nearest = b
+                }
+            }
+            if nearest >= 0 && best < 26000.0 then edges.add(a * 100000 + nearest)
+        }
+    }
+    for edge in edges {
+        fin a = edge / 100000
+        fin b = edge % 100000
+        fin highway = plan.towns[a].kind > 0 && plan.towns[b].kind > 0
+        plan.roads.add(roadBetween(recipe, plan, a, b, if highway then 0 else 1))
+    }
+}
+
+func townDistance(plan: WorldPlan&, a: Int, b: Int): Double {
+    fin dx = plan.towns[a].x - plan.towns[b].x
+    fin dz = plan.towns[a].z - plan.towns[b].z
+    return sqrt(dx * dx + dz * dz)
+}
+
+func hasEdge(edges: Array<Int>&, a: Int, b: Int): Bool {
+    for edge in edges {
+        if edge == a * 100000 + b || edge == b * 100000 + a then return true
+    }
+    return false
+}
+
+/**
+ * A road from settlement [a]'s centre to [b]'s, meandering across the land,
+ * its heights smoothed and its grade held under 7 %, as a road engineer would
+ * cut and fill it.
+ */
+func roadBetween(recipe: WorldRecipe&, plan: WorldPlan&, a: Int, b: Int, kind: Int): WorldRoad {
+    fin from = plan.towns[a].&
+    fin to = plan.towns[b].&
+    fin dx = to.x - from.x
+    fin dz = to.z - from.z
+    fin length = sqrt(dx * dx + dz * dz)
+    fin spacing: Double = 60.0
+    fin steps = (length / spacing) as Int + 1
+    fin sideX = -dz / length
+    fin sideZ = dx / length
+    var road: WorldRoad = .(kind: kind)
+    var heights: Array<Double> = []
+    var xs: Array<Double> = []
+    var zs: Array<Double> = []
+    fin swing = worldClamp(length * 0.06, 80.0, 900.0)
+    for i: Int in 0..steps {
+        fin t = (i as Double) / (steps as Double)
+        // The meander fades at both ends, so the road enters a settlement straight.
+        fin taper = smoothRange(0.0, 0.12, t) * smoothRange(0.0, 0.12, 1.0 - t)
+        fin wobble = fbm(recipe.seed + 31 + a * 7 + b * 13, t * length / 4000.0, 0.5, 3) * swing * taper
+        fin x = from.x + dx * t + sideX * wobble
+        fin z = from.z + dz * t + sideZ * wobble
+        xs.add(x)
+        zs.add(z)
+        heights.add(worldHeight(recipe, plan, x, z))
+    }
+    var smooth = smoothedHeights(heights, 6)
+    smooth[0] = from.height
+    smooth[smooth.size - 1] = to.height
+    limitGrade(smooth, spacing, 0.07)
+    for i: Int in 0..<xs.size then road.points.add(Vec3(xs[i], smooth[i], zs[i]))
+    return take road
+}
+
+/** [heights] averaged over [reach] points each side. */
+func smoothedHeights(heights: Array<Double>&, reach: Int): Array<Double> {
+    var result: Array<Double> = []
+    for i: Int in 0..<heights.size {
+        var sum: Double = 0.0
+        var count: Double = 0.0
+        for j: Int in (i - reach)..(i + reach) {
+            if j < 0 || j >= heights.size then continue
+            sum += heights[j]
+            count += 1.0
+        }
+        result.add(sum / count)
+    }
+    return take result
+}
+
+/** Keeps every rise between points [spacing] apart under [grade], both ways, the ends held. */
+func limitGrade(heights: Array<Double>!, spacing: Double, grade: Double) {
+    fin step = spacing * grade
+    for i: Int in 1..<heights.size - 1 {
+        heights[i] = worldClamp(heights[i], heights[i - 1] - step, heights[i - 1] + step)
+    }
+    var i = heights.size - 2
+    while i > 0 {
+        heights[i] = worldClamp(heights[i], heights[i + 1] - step, heights[i + 1] + step)
+        i--
+    }
+}
+
+/**
+ * A settlement's streets, junctions and buildings: a grid turned to the
+ * town's angle with a crossing at its centre (where the roads arrive),
+ * apartment blocks toward a city's centre, houses everywhere else.
+ */
+func layOutTown(recipe: WorldRecipe&, plan: WorldPlan!, index: Int) {
+    fin town = plan.towns[index].clone()
+    var random = rng(recipe.seed, 1000 + index)
+    fin spacing = when town.kind {
+        2 -> recipe.blockSize
+        1 -> recipe.blockSize * 1.25
+        else -> town.radius
+    }
+    fin lines = (town.radius / spacing) as Int
+    fin ax = cos(town.angle)
+    fin az = sin(town.angle)
+    // Each grid line both ways: along the town's axis and across it.
+    for axis: Int in 0..<2 {
+        fin dirX = if axis == 0 then ax else -az
+        fin dirZ = if axis == 0 then az else ax
+        fin offX = -dirZ
+        fin offZ = dirX
+        for line: Int in -lines..lines {
+            fin offset = (line as Double) * spacing
+            fin half2 = town.radius * town.radius - offset * offset
+            if half2 <= spacing * spacing * 0.25 then continue
+            fin half = sqrt(half2)
+            var street: WorldRoad = .(kind: 2)
+            fin count = (half * 2.0 / 30.0) as Int + 1
+            for i: Int in 0..count {
+                fin along = -half + 2.0 * half * (i as Double) / (count as Double)
+                street.points.add(Vec3(town.x + offX * offset + dirX * along, town.height, town.z + offZ * offset + dirZ * along))
+            }
+            plan.roads.add(take street)
+            // Junctions where this line crosses the other axis' lines (once, from axis 0).
+            if axis == 0 {
+                for cross: Int in -lines..lines {
+                    fin along = (cross as Double) * spacing
+                    if offset * offset + along * along > town.radius * town.radius * 0.92 then continue
+                    plan.junctions.add(WorldJunction(town.x + offX * offset + dirX * along, town.height,
+                        town.z + offZ * offset + dirZ * along, if town.kind == 0 then 8.0 else 9.5))
+                }
+            }
+            lineStreet(recipe, plan, town, dirX, dirZ, offX, offZ, offset, half, spacing, random)
+        }
+    }
+}
+
+/** Buildings along both sides of one street, between its crossings. */
+func lineStreet(recipe: WorldRecipe&, plan: WorldPlan!, town: WorldTown&, dirX: Double, dirZ: Double,
+                offX: Double, offZ: Double, offset: Double, half: Double, spacing: Double, random: Rng!) {
+    fin yaw = atan2(dirX, dirZ) / degreesToRadians
+    for side: Int in 0..<2 {
+        fin sign = if side == 0 then 1.0 else -1.0
+        var along = -half + 14.0
+        while along < half - 14.0 {
+            // Keep clear of the crossing streets.
+            fin cell = along - spacing * floor(along / spacing + 0.5)
+            fin cx = town.x + offX * offset + dirX * along
+            fin cz = town.z + offZ * offset + dirZ * along
+            fin centreDistance = sqrt((cx - town.x) * (cx - town.x) + (cz - town.z) * (cz - town.z)) / town.radius
+            fin block = town.kind == 2 && centreDistance < 0.5
+            fin width = if block then random.between(22.0, 40.0) else random.between(8.5, 13.0)
+            fin depth = if block then random.between(13.0, 17.0) else random.between(8.0, 11.0)
+            fin setback = if block then 9.0 else 11.0
+            if absValue(cell) < setback + width * 0.5 + 4.0 && town.kind > 0 {
+                along += 6.0
+                continue
+            }
+            fin reach = setback + depth * 0.5
+            fin x = cx + offX * sign * reach
+            fin z = cz + offZ * sign * reach
+            if (x - town.x) * (x - town.x) + (z - town.z) * (z - town.z) < town.radius * town.radius * 0.95 &&
+                !nearHighway(plan, x, z, depth + 14.0) {
+                fin floors = if block then (random.between(5.0, 13.0) as Int) else (if random.next() < 0.55 then 2 else 1)
+                plan.buildings.add(WorldBuilding(x, town.height, z, yaw, width, depth, (floors as Double) * 3.1 + 0.4,
+                    if block then 1 else 0, random.next()))
+            }
+            along += width + (if block then 9.0 else random.between(6.0, 12.0))
+        }
+    }
+}
+
+/** Whether a highway or country road passes within [reach] metres of ([x], [z]). */
+func nearHighway(plan: WorldPlan&, x: Double, z: Double, reach: Double): Bool {
+    for road in plan.roads {
+        if road.kind == 2 then continue
+        for i: Int in 0..<road.points.size - 1 {
+            fin a = road.points[i].&
+            fin b = road.points[i + 1].&
+            if absValue(a.x - x) > 400.0 && absValue(a.z - z) > 400.0 then continue
+            if segmentDistance(x, z, a.x, a.z, b.x, b.z) < reach then return true
+        }
+    }
+    return false
+}
+
+func segmentDistance(x: Double, z: Double, ax: Double, az: Double, bx: Double, bz: Double): Double {
+    fin dx = bx - ax
+    fin dz = bz - az
+    fin len2 = dx * dx + dz * dz
+    fin t = if len2 > 0.0 then worldClamp(((x - ax) * dx + (z - az) * dz) / len2, 0.0, 1.0) else 0.0
+    fin px = ax + dx * t - x
+    fin pz = az + dz * t - z
+    return sqrt(px * px + pz * pz)
+}
+
+// ── Cells ───────────────────────────────────────────────────────────────
+
+/** The cell's column and row count, and where cell (0, 0) starts. */
+func worldColumns(recipe: WorldRecipe&): Int = (recipe.width / recipe.cellSize) as Int + 1
+func worldRows(recipe: WorldRecipe&): Int = (recipe.length / recipe.cellSize) as Int + 1
+func cellLeft(recipe: WorldRecipe&, column: Int): Double = -recipe.width * 0.5 + (column as Double) * recipe.cellSize
+func cellTop(recipe: WorldRecipe&, row: Int): Double = -recipe.length * 0.5 + (row as Double) * recipe.cellSize
+
+/**
+ * What generated files are named after: every field of [recipe] and the
+ * generator's revision, so a cached cell is never read for a different recipe
+ * or by a generator that would now make it differently.
+ */
+func worldCacheName(recipe: WorldRecipe&): String {
+    var print: Fingerprint = .()
+    print.addInt(worldGeneratorRevision)
+    print.addInt(recipe.seed)
+    print.addReal(recipe.width)
+    print.addReal(recipe.length)
+    print.addReal(recipe.cellSize)
+    print.addInt(recipe.cellSamples)
+    print.addReal(recipe.baseHeight)
+    print.addReal(recipe.heightRange)
+    print.addReal(recipe.mountainHeight)
+    print.addReal(recipe.hillHeight)
+    print.addInt(recipe.cities)
+    print.addInt(recipe.towns)
+    print.addInt(recipe.villages)
+    print.addReal(recipe.blockSize)
+    print.addReal(recipe.forest)
+    return "world${(print.value >> 4) & 1152921504606846975}"
+}
+
+/** Counts the changes to what the generator makes; a new count regenerates every cached cell. */
+inline fin worldGeneratorRevision: Int = 2
+
+/** The scene file of cell ([column], [row]) of [recipe]'s world under [folder]; its heightfield sits beside it. */
+func cellScenePath(folder: String, recipe: WorldRecipe&, column: Int, row: Int): String =
+    "${folder}/${worldCacheName(recipe)}_cell_${column}_${row}.azscene"
+func cellImagePath(folder: String, recipe: WorldRecipe&, column: Int, row: Int): String =
+    "${folder}/${worldCacheName(recipe)}_cell_${column}_${row}.pgm"
+/**
+ * Overview samples along one cell's side: 16 (a quarter of a drawn terrain
+ * chunk), or fewer when a world has so many cells that the image would pass
+ * the 2049 samples a heightfield may have.
+ */
+func overviewCellSamples(recipe: WorldRecipe&): Int {
+    fin cells = if worldColumns(recipe) > worldRows(recipe) then worldColumns(recipe) else worldRows(recipe)
+    return if cells * 16 < 2049 then 16 else if cells * 8 < 2049 then 8 else 4
+}
+
+/** The overview heightfield of [recipe]'s whole world under [folder]. */
+func worldOverviewPath(folder: String, recipe: WorldRecipe&): String =
+    "${folder}/${worldCacheName(recipe)}_overview_${overviewCellSamples(recipe)}.pgm"
+
+/** The road knots as a scene: a Spline Road entity at the first point, its points as children. */
+func roadKind(kind: Int): String = when kind {
+    0 -> "\"forwardLanes\": 2, \"reverseLanes\": 2, \"laneWidth\": 3.6, \"shoulder\": 1.6, \"gradingWidth\": 44"
+    1 -> "\"forwardLanes\": 1, \"reverseLanes\": 1, \"laneWidth\": 3.4, \"shoulder\": 0.9, \"gradingWidth\": 30"
+    else -> "\"forwardLanes\": 1, \"reverseLanes\": 1, \"laneWidth\": 3.2, \"shoulder\": 1.4, \"gradingWidth\": 12"
+}
+
+func vecText(x: Double, y: Double, z: Double): String = "[${formatDecimal(x, 3)}, ${formatDecimal(y, 3)}, ${formatDecimal(z, 3)}]"
+
+/** Appends an entity record to [scene]; answers its position (the next records name it as parent). */
+func sceneRecord(scene: StringBuilder!, count: Int!, parent: Int, components: String): Int {
+    if count > 0 then scene.append(",\n    ")
+    scene.append("{\"parent\": ${parent}, \"components\": {${components}}}")
+    fin at = count
+    count += 1
+    return at
+}
+
+/**
+ * Generates cell ([column], [row]): its heightfield (graded to every road that
+ * reaches into it, with the same cut and fill vehicles drive on) as a 16-bit
+ * image, and its scene - the terrain tile, the pieces of road whose segments
+ * lie in it, its junctions, buildings and forest. Answers whether both files
+ * were written into [folder] (relative to the project, which is [root]).
+ */
+func generateWorldCell(recipe: WorldRecipe&, plan: WorldPlan&, root: String, folder: String, column: Int, row: Int): Bool {
+    fin left = cellLeft(recipe, column)
+    fin top = cellTop(recipe, row)
+    fin size = recipe.cellSize
+    fin samples = recipe.cellSamples
+    fin middle = recipe.baseHeight + recipe.heightRange * 0.5
+    fin margin: Double = 120.0
+    // The roads that reach the cell, as a road network to grade the tile with.
+    var grading: World = .()
+    for road in plan.roads {
+        if !roadReaches(road, left - margin, top - margin, left + size + margin, top + size + margin) then continue
+        spawnRoad(grading, road)
+    }
+    for junction in plan.junctions {
+        if junction.x < left - margin || junction.x > left + size + margin || junction.z < top - margin || junction.z > top + size + margin then continue
+        fin site = grading.spawn()
+        storageInsert<Transform>(ensureStorage(grading), site, .(translation: .(junction.x, junction.y, junction.z)))
+        storageInsert<RoadJunction>(ensureStorage(grading), site, .(kind: 1, radius: junction.radius, carriageway: 7.0))
+    }
+    fin network = buildRoadNetwork(grading)
+    // The land, then the roads cut into it.
+    fin bytes = azAlloc((samples as Long) * (samples as Long) * 8)
+    if bytes == 0 then return false
+    for j: Int in 0..<samples {
+        for i: Int in 0..<samples {
+            fin x = left + size * (i as Double) / ((samples - 1) as Double)
+            fin z = top + size * (j as Double) / ((samples - 1) as Double)
+            fin height = worldHeight(recipe, plan, x, z)
+            azPokeF64(bytes, ((j * samples + i) as Long) * 8, worldClamp((height - middle) / recipe.heightRange, -0.5, 0.5))
+        }
+    }
+    fin image: TerrainImage = .(samples, samples, bytes)
+    fin model = mat4Mul(mat4Translation(left + size * 0.5, middle, top + size * 0.5), mat4Scale(size, recipe.heightRange, size))
+    gradeRoadTerrain(image, model, network)
+    fin written = writeHeightImage("${root}/${cellImagePath(folder, recipe, column, row)}", image)
+    azFree(bytes)
+    if !written then return false
+    return writeTextFile("${root}/${cellScenePath(folder, recipe, column, row)}", cellScene(recipe, plan, folder, column, row))
+}
+
+/** Whether any point of [road] lies inside the box. */
+func roadReaches(road: WorldRoad&, x0: Double, z0: Double, x1: Double, z1: Double): Bool {
+    for p in road.points {
+        if p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1 then return true
+    }
+    return false
+}
+
+/** Adds [road] to [world] as a Spline Road and its points, for grading. */
+func spawnRoad(world: World!, road: WorldRoad&) {
+    if road.points.size < 2 then return
+    fin entity = world.spawn()
+    fin first = road.points[0].&
+    storageInsert<Transform>(ensureStorage(world), entity, .(translation: .(first.x, first.y, first.z)))
+    storageInsert<SplineRoad>(ensureStorage(world), entity, roadStyle(road.kind))
+    for i: Int in 0..<road.points.size {
+        fin point = world.spawn()
+        world.setParent(point, entity)
+        fin p = road.points[i].&
+        storageInsert<Transform>(ensureStorage(world), point, .(translation: .(p.x - first.x, p.y - first.y, p.z - first.z)))
+        storageInsert<RoadPoint>(ensureStorage(world), point, .(order: i))
+    }
+}
+
+func roadStyle(kind: Int): SplineRoad = when kind {
+    0 -> SplineRoad(forwardLanes: 2, reverseLanes: 2, laneWidth: 3.6, shoulder: 1.6, gradingWidth: 44.0)
+    1 -> SplineRoad(forwardLanes: 1, reverseLanes: 1, laneWidth: 3.4, shoulder: 0.9, gradingWidth: 30.0)
+    else -> SplineRoad(forwardLanes: 1, reverseLanes: 1, laneWidth: 3.2, shoulder: 1.4, gradingWidth: 12.0)
+}
+
+/** Writes [image] as a binary 16-bit PGM (P5, big-endian). */
+func writeHeightImage(path: String, image: TerrainImage&): Bool {
+    fin header = "P5\n${image.columns} ${image.rows}\n65535\n"
+    fin headerBytes = toChars(header)
+    fin count = (image.columns as Long) * (image.rows as Long)
+    fin size = (headerBytes.size as Long) + count * 2
+    fin bytes = azAlloc(size)
+    if bytes == 0 then return false
+    for i: Int in 0..<headerBytes.size then azPoke8(bytes, i as Long, (headerBytes[i] as Int))
+    fin start = headerBytes.size as Long
+    for i: Long in 0..<count {
+        fin value = (worldClamp(azPeekF64(image.samples, i * 8) + 0.5, 0.0, 1.0) * 65535.0 + 0.5) as Int
+        azPoke8(bytes, start + i * 2, value / 256)
+        azPoke8(bytes, start + i * 2 + 1, value % 256)
+    }
+    fin written = writeBinaryFile(path, bytes, size)
+    azFree(bytes)
+    return written
+}
+
+/** The scene of cell ([column], [row]): terrain tile, road pieces, junctions, buildings, forest. */
+func cellScene(recipe: WorldRecipe&, plan: WorldPlan&, folder: String, column: Int, row: Int): String {
+    fin left = cellLeft(recipe, column)
+    fin top = cellTop(recipe, row)
+    fin size = recipe.cellSize
+    fin middle = recipe.baseHeight + recipe.heightRange * 0.5
+    var scene: StringBuilder = .()
+    var count = 0
+    scene.append("{\"format\": \"azora-scene\", \"version\": 2, \"entities\": [\n    ")
+    sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"Terrain ${column},${row}\"}, " +
+        "\"Transform\": {\"translation\": ${vecText(left + size * 0.5, middle, top + size * 0.5)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
+        "\"HeightfieldTerrain\": {\"image\": \"${cellImagePath(folder, recipe, column, row)}\", \"width\": ${formatDecimal(size, 3)}, \"length\": ${formatDecimal(size, 3)}, " +
+        "\"elevation\": ${formatDecimal(recipe.heightRange, 3)}, \"detailError\": 2.5, \"gradeRoads\": false}, " +
+        "\"LandscapeCollision\": {\"enabled\": true, \"friction\": 1.12, \"surfaceOffset\": 0}, " +
+        "\"FusionMaterial\": {\"asset\": \"Materials/landscape.azmaterial\"}, " +
+        "\"StandardMaterial\": {\"color\": [0.29, 0.38, 0.21, 1], \"roughness\": 0.9, \"metallic\": 0, \"emission\": 0}, " +
+        "\"FoliagePaint\": {\"enabled\": true, \"grassDensity\": 1.3, \"grassHeight\": 0.36, \"seed\": ${recipe.seed + column * 131 + row * 17}, \"strokes\": \"\"}")
+    // Road pieces: the runs of segments whose middles lie in this cell.
+    for road in plan.roads {
+        var start = -1
+        for i: Int in 0..<road.points.size {
+            fin inside = i < road.points.size - 1 && segmentInCell(road.points[i], road.points[i + 1], left, top, size)
+            if inside && start < 0 then start = i
+            if !inside && start >= 0 {
+                roadPiece(scene, count, road, start, i)
+                start = -1
+            }
+        }
+    }
+    for junction in plan.junctions {
+        if junction.x < left || junction.x >= left + size || junction.z < top || junction.z >= top + size then continue
+        sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"Junction\"}, " +
+            "\"Transform\": {\"translation\": ${vecText(junction.x, junction.y, junction.z)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
+            "\"RoadJunction\": {\"enabled\": true, \"kind\": 1, \"radius\": ${formatDecimal(junction.radius, 2)}, \"carriageway\": 7}, " +
+            "\"FusionMaterial\": {\"asset\": \"Materials/asphalt.azmaterial\"}")
+    }
+    for building in plan.buildings {
+        if building.x < left || building.x >= left + size || building.z < top || building.z >= top + size then continue
+        buildingRecords(scene, count, building)
+    }
+    forestRecords(recipe, plan, scene, count, column, row)
+    scene.append("\n]}\n")
+    return scene.build()
+}
+
+func segmentInCell(a: Vec3&, b: Vec3&, left: Double, top: Double, size: Double): Bool {
+    fin x = (a.x + b.x) * 0.5
+    fin z = (a.z + b.z) * 0.5
+    return x >= left && x < left + size && z >= top && z < top + size
+}
+
+/** Points [first] to [last] of [road] (shared with the neighbouring pieces at both ends) as one Spline Road. */
+func roadPiece(scene: StringBuilder!, count: Int!, road: WorldRoad&, first: Int, last: Int) {
+    fin origin = road.points[first].&
+    fin entity = sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"${if road.kind == 0 then "Highway" else if road.kind == 1 then "Road" else "Street"}\"}, " +
+        "\"Transform\": {\"translation\": ${vecText(origin.x, origin.y, origin.z)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
+        "\"SplineRoad\": {\"enabled\": true, \"closed\": false, ${roadKind(road.kind)}, \"crossfall\": 2, \"friction\": 1.2, \"markings\": true, \"isBridge\": false}, " +
+        "\"FusionMaterial\": {\"asset\": \"Materials/asphalt.azmaterial\"}")
+    for i: Int in first..last {
+        fin p = road.points[i].&
+        sceneRecord(scene, count, entity, "\"Transform\": {\"translation\": ${vecText(p.x - origin.x, p.y - origin.y, p.z - origin.z)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
+            "\"RoadPoint\": {\"order\": ${i - first}}")
+    }
+}
+
+/** A building: a root at its footprint's centre, its walls, and for a house a pitched roof. */
+func buildingRecords(scene: StringBuilder!, count: Int!, building: WorldBuilding&) {
+    fin root = sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"${if building.kind == 1 then "Apartment Block" else "House"}\"}, " +
+        "\"Transform\": {\"translation\": ${vecText(building.x, building.y - 0.6, building.z)}, \"rotation\": [0, ${formatDecimal(building.yaw, 2)}, 0], \"scale\": [1, 1, 1]}")
+    fin wall = when {
+        building.kind == 1 -> "[${formatDecimal(0.62 + building.shade * 0.25, 3)}, ${formatDecimal(0.6 + building.shade * 0.2, 3)}, ${formatDecimal(0.56 + building.shade * 0.15, 3)}, 1]"
+        building.shade < 0.35 -> "[0.86, 0.82, 0.72, 1]"
+        building.shade < 0.7 -> "[0.9, 0.86, 0.8, 1]"
+        else -> "[0.78, 0.7, 0.58, 1]"
+    }
+    sceneRecord(scene, count, root, "\"Transform\": {\"translation\": ${vecText(0.0, building.height * 0.5, 0.0)}, \"rotation\": [0, 0, 0], \"scale\": ${vecText(building.width, building.height, building.depth)}}, " +
+        "\"Mesh3d\": {\"shape\": 0, \"size\": 1}, \"StandardMaterial\": {\"color\": ${wall}, \"roughness\": 0.85, \"metallic\": 0, \"emission\": 0}")
+    if building.kind == 0 {
+        // A box turned 45° about the ridge, flattened by its parent: a gable roof whose lower half hides in the walls.
+        fin pivot = sceneRecord(scene, count, root, "\"Transform\": {\"translation\": ${vecText(0.0, building.height, 0.0)}, \"rotation\": [0, 0, 0], \"scale\": [1, 0.62, 1]}")
+        fin side = building.depth * 0.7071 * 1.12
+        fin roof = if building.shade < 0.5 then "[0.45, 0.17, 0.12, 1]" else "[0.24, 0.24, 0.26, 1]"
+        sceneRecord(scene, count, pivot, "\"Transform\": {\"translation\": [0, 0, 0], \"rotation\": [45, 0, 0], \"scale\": ${vecText(building.width + 0.8, side, side)}}, " +
+            "\"Mesh3d\": {\"shape\": 0, \"size\": 1}, \"StandardMaterial\": {\"color\": ${roof}, \"roughness\": 0.8, \"metallic\": 0, \"emission\": 0}")
+    }
+}
+
+/** Forest groves on the cell's countryside: away from settlements and roads, below the bare peaks. */
+func forestRecords(recipe: WorldRecipe&, plan: WorldPlan&, scene: StringBuilder!, count: Int!, column: Int, row: Int) {
+    fin left = cellLeft(recipe, column)
+    fin top = cellTop(recipe, row)
+    fin size = recipe.cellSize
+    var random = rng(recipe.seed, 50000 + column * 1000 + row)
+    fin groves = (recipe.forest * size * size / 1000000.0 + random.next()) as Int
+    for g: Int in 0..<groves {
+        fin x = left + random.between(0.08, 0.92) * size
+        fin z = top + random.between(0.08, 0.92) * size
+        fin radius = random.between(140.0, 420.0)
+        var clear = true
+        for town in plan.towns {
+            fin dx = town.x - x
+            fin dz = town.z - z
+            fin gap = town.radius + radius + 60.0
+            if dx * dx + dz * dz < gap * gap then clear = false
+        }
+        if !clear || worldBaseHeight(recipe, x, z) > recipe.baseHeight + recipe.mountainHeight * 0.75 then continue
+        fin y = worldHeight(recipe, plan, x, z)
+        sceneRecord(scene, count, -1, "\"Name\": {\"value\": \"Forest\"}, " +
+            "\"Transform\": {\"translation\": ${vecText(x, y, z)}, \"rotation\": [0, 0, 0], \"scale\": [1, 1, 1]}, " +
+            "\"ForestGrove\": {\"enabled\": true, \"seed\": ${recipe.seed + g * 97 + column * 7 + row * 3}, \"radius\": ${formatDecimal(radius, 1)}, " +
+            "\"trees\": ${(radius * radius * 0.005) as Int}, \"height\": ${formatDecimal(random.between(10.0, 19.0), 1)}}")
+    }
+}
+
+/**
+ * The whole world at low resolution as one 16-bit heightfield over every
+ * cell, [overviewCellSamples] samples along a cell's side from cell (0, 0)'s
+ * corner: the mountains on the horizon. Its samples fall on the cells'
+ * edges, so the square of it under a loaded cell can be left out exactly
+ * (see `TerrainHoles`).
+ */
+func generateWorldOverview(recipe: WorldRecipe&, plan: WorldPlan&, path: String): Bool {
+    fin middle = recipe.baseHeight + recipe.heightRange * 0.5
+    fin perCell = overviewCellSamples(recipe)
+    fin columns = worldColumns(recipe) * perCell + 1
+    fin rows = worldRows(recipe) * perCell + 1
+    fin step = recipe.cellSize / (perCell as Double)
+    fin bytes = azAlloc((columns as Long) * (rows as Long) * 8)
+    if bytes == 0 then return false
+    for j: Int in 0..<rows {
+        for i: Int in 0..<columns {
+            fin x = cellLeft(recipe, 0) + step * (i as Double)
+            fin z = cellTop(recipe, 0) + step * (j as Double)
+            azPokeF64(bytes, ((j * columns + i) as Long) * 8, worldClamp((worldHeight(recipe, plan, x, z) - middle) / recipe.heightRange, -0.5, 0.5))
+        }
+    }
+    fin image: TerrainImage = .(columns, rows, bytes)
+    fin written = writeHeightImage(path, image)
+    azFree(bytes)
+    return written
+}

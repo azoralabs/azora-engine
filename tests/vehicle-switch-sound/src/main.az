@@ -1,0 +1,102 @@
+import std.io
+import std.os
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.physics.d3
+import engine.landscape
+import engine.vehicles
+import engine.audio.dsp
+
+// Switching between the car and the motorcycle must sound like one engine
+// handing over to another: no burst, no lasting distortion. Each second is
+// rendered as a game renders it (simulate a step, render a block) and its
+// peak and loudness compared before and after the switch.
+
+pack Loudness {
+    var peak: Double = 0.0
+    var rms: Double = 0.0
+    var broken: Bool = false
+}
+
+/** One second of [vehicle] idling then revving, rendered in 512-frame blocks. */
+func listen(world: World!, vehicle: Entity, ground: Array<CollisionSurface>&, throttle: Double, blocks: Int = 94): Loudness {
+    var heard: Loudness = .()
+    var sum: Double = 0.0
+    var count = 0
+    for block: Int in 0..<blocks {
+        for step: Int in 0..<5 then simulateVehicle(world, vehicle, ground, .(throttle, 0.0, false), gravity3d(), 1.0 / 480.0)
+        fin buffer = renderVehicleSound(world, vehicle, 512, false, 1.0)
+        for i: Int in 0..<512 {
+            fin x = sample(buffer, i)
+            if x != x || x > 1.0e6 || x < -1.0e6 then heard.broken = true
+            fin size = absValue(x)
+            if size > heard.peak then heard.peak = size
+            sum += x * x
+            count++
+        }
+    }
+    heard.rms = sqrt(sum / (count as Double))
+    return take heard
+}
+
+func realMax(a: Double, b: Double): Double = if a > b then a else b
+
+func main() {
+    var world: World = .()
+    fin surface = world.spawn()
+    storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(world), surface,
+        HeightfieldTerrain(image: "Terrain/flat.pgm", width: 4000.0, length: 4000.0, elevation: 1.0))
+    storageInsert<LandscapeCollision>(ensureStorage(world), surface, .())
+    fin start = world.spawn()
+    storageInsert<PlayerStart>(ensureStorage(world), start, .())
+    storageInsert<Transform>(ensureStorage(world), start, .(translation: .(0.0, 2.0, 0.0)))
+    storageInsert<VehicleSetup>(ensureStorage(world), start, .(sport: true))
+    var ground = loadLandscapeColliders(world, ".")
+    defer { releaseLandscapeColliders(ground) }
+    fin vehicle = spawnVehicle(world, start, ground)
+    fin verbose = envVar("AZORA_SOUND_VERBOSE") != ""
+    var heard: Array<Loudness> = []
+    var labels: Array<String> = []
+    for round: Int in 0..<3 {
+        for kind: Int in 0..<2 {
+            fin bike = kind == 1
+            storageInsert<Velocity3D>(ensureStorage(world), vehicle, velocity3d(.(0.0, 0.0, 0.0)))
+            fin before = listen(world, vehicle, ground, 1.0, 24)
+            setVehicleKind(world, vehicle, if bike then .Motorcycle else .Car)
+            fin name = if bike then "bike" else "car"
+            // The handover: the old engine fades under the new one, louder than neither.
+            fin handover = listen(world, vehicle, ground, 0.0, 24)
+            fin settled = listen(world, vehicle, ground, 1.0, 24)
+            if verbose then println("${name} handover ${round}: before ${formatDecimal(before.peak, 3)} during ${formatDecimal(handover.peak, 3)} after ${formatDecimal(settled.peak, 3)}")
+            if round > 0 || kind > 0 then assert handover.peak <= realMax(before.peak, settled.peak) * 1.1 + 0.02 panic "${name}: no burst while the engines hand over"
+            heard.add(listen(world, vehicle, ground, 0.0))
+            labels.add("${name} idle ${round}")
+            heard.add(listen(world, vehicle, ground, 1.0))
+            labels.add("${name} rev ${round}")
+        }
+    }
+    // At speed: the same engine heard right after a switch and after a second of its own.
+    setVehicleKind(world, vehicle, .Car)
+    listen(world, vehicle, ground, 1.0)
+    listen(world, vehicle, ground, 1.0)
+    fin steady = listen(world, vehicle, ground, 0.3)
+    setVehicleKind(world, vehicle, .Motorcycle)
+    listen(world, vehicle, ground, 0.3)
+    setVehicleKind(world, vehicle, .Car)
+    fin switched = listen(world, vehicle, ground, 0.3)
+    if verbose then println("car at speed: steady peak ${formatDecimal(steady.peak, 3)} rms ${formatDecimal(steady.rms, 4)}, after switching peak ${formatDecimal(switched.peak, 3)} rms ${formatDecimal(switched.rms, 4)}")
+    assert switched.rms < steady.rms * 1.6 + 0.01 panic "a switch at speed does not make the engine scream"
+    for i: Int in 0..<heard.size {
+        if verbose then println("${labels[i]}: peak ${formatDecimal(heard[i].peak, 3)} rms ${formatDecimal(heard[i].rms, 4)} broken ${heard[i].broken}")
+        assert !heard[i].broken panic "${labels[i]}: the signal stays finite"
+    }
+    // The same engine sounds the same however many switches came before.
+    for i: Int in 4..<heard.size {
+        fin first = heard[i % 4]
+        assert heard[i].peak < first.peak * 1.5 + 0.05 && heard[i].rms < first.rms * 1.5 + 0.01 panic "${labels[i]}: no louder after switching than the first time"
+    }
+    println("switching vehicles keeps each engine's sound")
+}

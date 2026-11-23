@@ -1,0 +1,340 @@
+module engine.world.partition
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.math
+import engine.scene
+import engine.scene.io
+import engine.scene.terrain
+import engine.scene.transforms
+import engine.foliage
+import engine.game
+import engine.procedural
+
+// A world partition streams a big world in square cells: the cells around
+// the player are in the scene, the rest are not, so memory and drawing stay
+// bounded however large the world is. Each cell is generated from the
+// entity's World Recipe the first time it is needed and cached as files in
+// the project's build folder; after that loading a cell reads its scene. A
+// low-resolution overview of the whole world fills the horizon.
+//
+// Streamed entities carry the Streamed marker: they are never saved into the
+// scene, and their cell unloads them together. Each loaded cell has an entity
+// of its own ("Cell 12, 9") under the partition's, and what the cell brought
+// in hangs under it, so an editor lists the streamed world by cell. Where a
+// cell is loaded, the overview's square under it is left out (`TerrainHoles`):
+// the coarse ground never shows through or over the detailed one.
+
+/** Streams the world its entity's World Recipe describes around the player. */
+@Component
+@Inspectable(title: "World Partition", serializedName: "WorldPartition", icon: "grid-3x3", category: "World", order: 51)
+pack WorldPartition derives Clone {
+    var enabled: Bool = true
+    /** Cells whose centres lie this close to the player are loaded, and unloaded past [unloadRadius]. */
+    @Range(min: 500.0, max: 30000.0, step: 250.0)
+    var loadRadius: Double = 5000.0
+    @Range(min: 500.0, max: 40000.0, step: 250.0)
+    var unloadRadius: Double = 6500.0
+    /** At most this many cells come in per frame, so streaming never stalls a frame for long. */
+    @Range(min: 1.0, max: 16.0, step: 1.0)
+    var cellsPerFrame: Int = 1
+    /** The project folder generated cells are cached in (made when missing). */
+    var folder: String = ".azora-build"
+    /** Draw the whole world coarsely beyond the loaded cells. */
+    var overview: Bool = true
+}
+
+/** A loaded cell and every entity it brought in, its own [group] entity last. */
+pack LoadedCell derives Clone {
+    var column: Int = 0
+    var row: Int = 0
+    /** The cell's entity: the partition's child, and the parent of what the cell's scene has at its top. */
+    var group: Entity = .(-1, 0)
+    var entities: Array<Entity> = []
+}
+
+/** A partition's run-time state: the world's plan and its loaded cells (never saved). */
+@Component
+pack PartitionState {
+    var plan: WorldPlan = .()
+    var planned: Bool = false
+    /** The recipe the plan and the loaded cells come from (see [worldCacheName]). */
+    var recipe: String = ""
+    var cells: Array<LoadedCell> = []
+    var overview: Array<Entity> = []
+}
+
+/** The first enabled World Partition with a World Recipe, or an invalid entity. */
+func worldPartitionEntity(world: World!): Entity {
+    fin partitions = ensureStorage<WorldPartition>(world)
+    for i: Int in 0..<storageLength<WorldPartition>(partitions) {
+        fin entity = storageEntityAt<WorldPartition>(partitions, i)
+        if partitions.values[i].enabled && world.isAlive(entity) && storageHas<WorldRecipe>(ensureStorage(world), entity) then return entity
+    }
+    return .(-1, 0)
+}
+
+/**
+ * Brings [world]'s partition up to date around [center]: unloads the cells
+ * past the unload radius, then loads (generating when not yet cached) the
+ * nearest missing cells within the load radius - at most [limit] of them, or
+ * every one when [limit] is negative. [root] is the project folder. Answers
+ * how many cells came in or went.
+ */
+func streamWorld(world: World!, root: String, center: Vec3&, limit: Int = -1): Int {
+    fin owner = worldPartitionEntity(world)
+    fin here = partitionPoint(world, owner, center)
+    // A partition switched off, removed or no longer first unloads what it brought in.
+    var other = 0
+    while other < storageLength<PartitionState>(ensureStorage(world)) {
+        fin holder = storageEntityAt<PartitionState>(ensureStorage(world), other)
+        if holder != owner {
+            unloadPartition(world, holder)
+            storageRemove<PartitionState>(ensureStorage(world), holder)
+        } else {
+            other++
+        }
+    }
+    if !owner.isValid {
+        despawnStreamed(world)
+        return 0
+    }
+    fin recipe = storageGet<WorldRecipe>(ensureStorage(world), owner).clone()
+    fin settings = storageGet<WorldPartition>(ensureStorage(world), owner).clone()
+    if !storageHas<PartitionState>(ensureStorage(world), owner) then storageInsert<PartitionState>(ensureStorage(world), owner, .())
+    fin name = worldCacheName(recipe)
+    // A changed recipe is a different world: what was loaded goes, and it is planned again.
+    if storageGet<PartitionState>(ensureStorage(world), owner).planned && storageGet<PartitionState>(ensureStorage(world), owner).recipe != name {
+        unloadPartition(world, owner)
+    }
+    if !storageGet<PartitionState>(ensureStorage(world), owner).planned {
+        // Whatever is streamed in now belongs to no plan (its partition was deleted with its state).
+        despawnStreamed(world)
+        let fresh = ensureStorage<PartitionState>(world)
+        fin index = storageIndexOf<PartitionState>(fresh, owner)
+        fresh.values[index].cells.clear()
+        fresh.values[index].overview.clear()
+        fresh.values[index].plan = planWorld(recipe)
+        fresh.values[index].planned = true
+        fresh.values[index].recipe = name
+        println("World Partition: ${fresh.values[index].plan.towns.size} settlements, ${fresh.values[index].plan.roads.size} roads, ${fresh.values[index].plan.junctions.size} junctions, ${fresh.values[index].plan.buildings.size} buildings")
+    }
+    let states = ensureStorage<PartitionState>(world)
+    fin at = storageIndexOf<PartitionState>(states, owner)
+    if settings.overview && states.values[at].overview.size == 0 then loadOverview(world, root, recipe, settings, owner)
+    if !settings.overview && states.values[at].overview.size > 0 {
+        for entity in states.values[at].overview then if world.isAlive(entity) then world.despawn(entity)
+        states.values[at].overview.clear()
+    }
+    var changed = false
+    var unloaded = 0
+    // Unload what is now too far.
+    var i = 0
+    while i < states.values[at].cells.size {
+        fin cell = states.values[at].cells[i].&
+        if cellDistance(recipe, cell.column, cell.row, here) > settings.unloadRadius {
+            for entity in cell.entities then if world.isAlive(entity) then world.despawn(entity)
+            states.values[at].cells.removeAt(i)
+            changed = true
+            unloaded++
+        } else {
+            i++
+        }
+    }
+    // Load the nearest missing cells.
+    var loaded = 0
+    loop {
+        if limit >= 0 && loaded >= limit then break
+        var bestColumn = -1
+        var bestRow = -1
+        var best = settings.loadRadius
+        fin columns = worldColumns(recipe)
+        fin rows = worldRows(recipe)
+        fin c0 = ((here.x + recipe.width * 0.5 - settings.loadRadius) / recipe.cellSize) as Int - 1
+        fin r0 = ((here.z + recipe.length * 0.5 - settings.loadRadius) / recipe.cellSize) as Int - 1
+        fin span = (settings.loadRadius * 2.0 / recipe.cellSize) as Int + 3
+        for r: Int in r0..(r0 + span) {
+            for c: Int in c0..(c0 + span) {
+                if c < 0 || r < 0 || c >= columns || r >= rows then continue
+                fin d = cellDistance(recipe, c, r, here)
+                if d >= best || cellLoaded(states.values[at].cells, c, r) then continue
+                best = d
+                bestColumn = c
+                bestRow = r
+            }
+        }
+        if bestColumn < 0 then break
+        var cell: LoadedCell = .(bestColumn, bestRow)
+        loadCell(world, root, recipe, settings, states.values[at].plan, cell, owner)
+        states.values[at].cells.add(take cell)
+        loaded++
+        changed = true
+    }
+    if changed || (states.values[at].overview.size > 0 && !storageHas<TerrainHoles>(ensureStorage(world), states.values[at].overview[0])) {
+        holeOverview(world, recipe, states.values[at])
+    }
+    return loaded + unloaded
+}
+
+/** [point] in [owner]'s own frame: the cells lie in it, so a moved World Partition takes its world along. */
+func partitionPoint(world: World!, owner: Entity, point: Vec3&): Vec3 {
+    if !owner.isValid || !world.isAlive(owner) then return point.clone()
+    fin m = mat4Inverse(worldMatrix(world, owner))
+    return .(m.m00 * point.x + m.m01 * point.y + m.m02 * point.z + m.m03,
+        m.m10 * point.x + m.m11 * point.y + m.m12 * point.z + m.m13,
+        m.m20 * point.x + m.m21 * point.y + m.m22 * point.z + m.m23)
+}
+
+/** Leaves the overview's square out under every loaded cell of [state], and only there. */
+func holeOverview(world: World!, recipe: WorldRecipe&, state: PartitionState&) {
+    if state.overview.size == 0 || !world.isAlive(state.overview[0]) then return
+    fin columns = worldColumns(recipe)
+    var holes: TerrainHoles = .(spacing: overviewCellSamples(recipe), columns: columns)
+    holes.hidden = .() * (columns * worldRows(recipe))
+    for cell in state.cells then holes.hidden[cell.row * columns + cell.column] = true
+    storageInsert<TerrainHoles>(ensureStorage(world), state.overview[0], take holes)
+}
+
+/** Despawns every streamed entity in [world], whichever partition brought it in. */
+func despawnStreamed(world: World!) {
+    fin streamed = ensureStorage<Streamed>(world)
+    if storageLength<Streamed>(streamed) == 0 then return
+    var gone: Array<Entity> = []
+    for i: Int in 0..<storageLength<Streamed>(streamed) then gone.add(storageEntityAt<Streamed>(streamed, i))
+    for entity in gone then if world.isAlive(entity) then world.despawn(entity)
+}
+
+/** Despawns every cell and the overview [owner]'s partition brought in, and forgets its plan. */
+func unloadPartition(world: World!, owner: Entity) {
+    let states = ensureStorage<PartitionState>(world)
+    fin at = storageIndexOf<PartitionState>(states, owner)
+    if at < 0 then return
+    for cell in states.values[at].cells {
+        for entity in cell.entities then if world.isAlive(entity) then world.despawn(entity)
+    }
+    for entity in states.values[at].overview then if world.isAlive(entity) then world.despawn(entity)
+    let again = ensureStorage<PartitionState>(world)
+    fin index = storageIndexOf<PartitionState>(again, owner)
+    again.values[index].cells.clear()
+    again.values[index].overview.clear()
+    again.values[index].plan = .()
+    again.values[index].planned = false
+    again.values[index].recipe = ""
+}
+
+func cellDistance(recipe: WorldRecipe&, column: Int, row: Int, center: Vec3&): Double {
+    fin dx = cellLeft(recipe, column) + recipe.cellSize * 0.5 - center.x
+    fin dz = cellTop(recipe, row) + recipe.cellSize * 0.5 - center.z
+    return sqrt(dx * dx + dz * dz)
+}
+
+func cellLoaded(cells: Array<LoadedCell>&, column: Int, row: Int): Bool {
+    for cell in cells {
+        if cell.column == column && cell.row == row then return true
+    }
+    return false
+}
+
+/**
+ * Reads cell ([cell.column], [cell.row]) into [world], generating its files
+ * first when they are not cached, under an entity of its own that hangs
+ * under [owner]'s.
+ */
+func loadCell(world: World!, root: String, recipe: WorldRecipe&, settings: WorldPartition&, plan: WorldPlan&, cell: LoadedCell!,
+              owner: Entity) {
+    fin scenePath = "${root}/${cellScenePath(settings.folder, recipe, cell.column, cell.row)}"
+    var file = readFile(scenePath)
+    if !file.ok() {
+        file.release()
+        makeFolders("${root}/${settings.folder}")
+        if !generateWorldCell(recipe, plan, root, settings.folder, cell.column, cell.row) {
+            println("World Partition: could not write cell ${cell.column},${cell.row} into ${root}/${settings.folder}")
+            return
+        }
+        file = readFile(scenePath)
+    }
+    if file.ok() then readSceneInto(world, file.text(0, file.size), cell.entities)
+    file.release()
+    fin group = world.spawn()
+    storageInsert<Name>(ensureStorage(world), group, .("Cell ${cell.column}, ${cell.row}"))
+    if world.isAlive(owner) then world.setParent(group, owner)
+    for entity in cell.entities then if !world.isAlive(world.getParent(entity)) then world.setParent(entity, group)
+    cell.group = group
+    cell.entities.add(group)
+    fin key = (cell.column as Long) * 65536 + (cell.row as Long)
+    for entity in cell.entities then storageInsert<Streamed>(ensureStorage(world), entity, .(cell: key))
+}
+
+/**
+ * The whole world, coarse and a little low, around the streamed cells: its
+ * square under each loaded cell is left out (see [holeOverview]), it grows no
+ * foliage, and it hangs under [owner]'s entity.
+ */
+func loadOverview(world: World!, root: String, recipe: WorldRecipe&, settings: WorldPartition&, owner: Entity) {
+    let states = ensureStorage<PartitionState>(world)
+    fin at = storageIndexOf<PartitionState>(states, owner)
+    fin image = worldOverviewPath(settings.folder, recipe)
+    var file = readFile("${root}/${image}")
+    fin cached = file.ok()
+    file.release()
+    if !cached then makeFolders("${root}/${settings.folder}")
+    if !cached && !generateWorldOverview(recipe, states.values[at].plan, "${root}/${image}") then return
+    fin width = (worldColumns(recipe) as Double) * recipe.cellSize
+    fin length = (worldRows(recipe) as Double) * recipe.cellSize
+    fin entity = world.spawn()
+    storageInsert<Name>(ensureStorage(world), entity, .("World Overview"))
+    // A few metres low: where it meets a loaded cell its coarse edge stays under the cell's own.
+    storageInsert<Transform>(ensureStorage(world), entity, .(translation: .(cellLeft(recipe, 0) + width * 0.5,
+        recipe.baseHeight + recipe.heightRange * 0.5 - overviewDrop, cellTop(recipe, 0) + length * 0.5)))
+    storageInsert<HeightfieldTerrain>(ensureStorage(world), entity, .(image: image, width: width, length: length,
+        elevation: recipe.heightRange, detailError: 3.0, gradeRoads: false))
+    storageInsert<FoliagePaint>(ensureStorage(world), entity, .(enabled: false))
+    if world.isAlive(owner) then world.setParent(entity, owner)
+    storageInsert<FusionMaterial>(ensureStorage(world), entity, .(asset: "Materials/landscape.azmaterial"))
+    storageInsert<StandardMaterial>(ensureStorage(world), entity, .(color: .(0.29, 0.38, 0.21, 1.0), roughness: 0.9))
+    storageInsert<Streamed>(ensureStorage(world), entity, .(cell: -1))
+    let again = ensureStorage<PartitionState>(world)
+    again.values[storageIndexOf<PartitionState>(again, owner)].overview.add(entity)
+}
+
+/** How far the overview sits below the ground it stands for, in metres. */
+inline fin overviewDrop: Double = 4.0
+
+// ── In a game ───────────────────────────────────────────────────────────
+
+/** Before anything spawns on the ground: the cells around the camera, all at once. */
+@System(phase: .Startup)
+func startWorldPartition(frame: Game!) {
+    fin start = playerStartPosition(frame.world)
+    streamWorld(frame.world, ".", start)
+}
+
+/** Every frame, a cell or so around the camera. */
+@System(phase: .PreUpdate)
+func streamWorldPartition(frame: Game!) {
+    streamWorldAround(frame.world, ".", frame.camera.target)
+}
+
+/**
+ * One frame of streaming around [center] (a game's camera, an editor's view):
+ * as many new cells as the partition's `cellsPerFrame` allows, and with no
+ * enabled partition, whatever one streamed in before goes.
+ */
+func streamWorldAround(world: World!, root: String, center: Vec3&): Int {
+    fin owner = worldPartitionEntity(world)
+    fin perFrame = if owner.isValid then storageGet<WorldPartition>(ensureStorage(world), owner).cellsPerFrame else 0
+    return streamWorld(world, root, center, perFrame)
+}
+
+/** Where the first enabled Player Start stands, or the origin. */
+func playerStartPosition(world: World!): Vec3 {
+    fin starts = ensureStorage<PlayerStart>(world)
+    for i: Int in 0..<storageLength<PlayerStart>(starts) {
+        fin entity = storageEntityAt<PlayerStart>(starts, i)
+        if starts.values[i].enabled && world.isAlive(entity) then return worldPosition(world, entity)
+    }
+    return .(0.0, 0.0, 0.0)
+}

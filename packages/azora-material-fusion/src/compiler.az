@@ -136,13 +136,14 @@ func compileFusionGraph(document: FusionGraph&): FusionProgram {
 }
 
 /** Stable key for cached shader libraries; source equality is checked before use. */
+/**
+ * A hash of a shader's source, naming its cached library. The characters are
+ * decoded once: `charAt` in a loop walked the UTF-8 from the start at every
+ * character, and a material's 60 KB source took seconds - at every launch.
+ */
 func fusionSourceKey(source: String): Long {
     var key: Long = 2166136261
-    var index = 0
-    while index < stringLength(source) {
-        key = key * 16777619 + ((charAt(source, index) as Int) as Long)
-        index++
-    }
+    for c in toChars(source) then key = key * 16777619 + ((c as Int) as Long)
     return key
 }
 

@@ -25,4 +25,20 @@ func main() {
     fin saved = storageValueAt<FoliagePaint>(ensureStorage(reopened),0)
     assert saved.strokes == text && absValue(saved.grassDensity-1.3) < 0.001 panic "density and both stamps survive a round trip"
     println("foliage paint erase and round trip ok")
+    // Without a Foliage Type, each shape draws as it always did, at the landscape's distances.
+    fin paint: FoliagePaint = .(grassDistance: 120.0, treeDistance: 5600.0)
+    fin grass = foliageTypeFor(world, grassFoliage, paint)
+    fin firs = foliageTypeFor(world, firFoliage, paint)
+    assert grass.shape == grassFoliage && grass.viewDistance == 120.0 && grass.tileSize == 18.0 panic "default grass"
+    assert firs.shape == firFoliage && firs.viewDistance == 5600.0 && firs.budget == 48000 && firs.roadMargin == 4.0 panic "default firs, budget grown with the area seen"
+    // The scene's first enabled type of a shape takes over, and round-trips.
+    fin off = world.spawn()
+    storageInsert<FoliageType>(ensureStorage(world), off, .(enabled: false, shape: firFoliage, viewDistance: 900.0))
+    fin type = world.spawn()
+    storageInsert<FoliageType>(ensureStorage(world), type, .(shape: firFoliage, viewDistance: 3400.0, density: 0.5, maxSlope: 0.7))
+    fin chosen = foliageTypeFor(world, firFoliage, paint)
+    assert chosen.viewDistance == 3400.0 && chosen.density == 0.5 && foliageTypeFor(world, grassFoliage, paint).viewDistance == 120.0 panic "the enabled fir type is used"
+    var again: World = .()
+    assert readScene(again, writeScene(world)) == 3 && foliageTypeFor(again, firFoliage, paint).maxSlope == 0.7 panic "foliage types survive a round trip"
+    println("foliage types ok")
 }

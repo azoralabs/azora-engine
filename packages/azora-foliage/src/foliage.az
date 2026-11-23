@@ -4,6 +4,8 @@ import std.math
 import std.serializer
 import std.traits
 import engine.core
+import engine.ecs
+import engine.io
 import engine.math
 import engine.scene
 
@@ -20,6 +22,12 @@ pack FoliagePaint derives Clone {
     @Range(min: 0.08, max: 1.2, step: 0.02)
     var grassHeight: Double = 0.32
     var seed: Int = 8291
+    /** How far grass is drawn, in metres, when the scene has no Grass Foliage Type (older scenes). */
+    @Range(min: 20.0, max: 600.0, step: 5.0)
+    var grassDistance: Double = 84.0
+    /** How far trees are drawn, in metres, when the scene has no Fir Foliage Type (older scenes). */
+    @Range(min: 200.0, max: 20000.0, step: 50.0)
+    var treeDistance: Double = 2800.0
     @Hidden
     var strokes: String = ""
 }
@@ -36,6 +44,77 @@ pack ForestGrove derives Clone {
     var trees: Int = 460
     @Range(min: 1.0, max: 40.0, step: 0.5)
     var height: Double = 12.0
+}
+
+/**
+ * A kind of plant scattered over every landscape, and how it is drawn: how
+ * far it is seen, how many at most, where it may grow. A landscape's Foliage
+ * (its grass cover and brush strokes) and the Forest Groves say where plants
+ * stand and how dense; the type of their shape makes and draws them. The
+ * first enabled type of each shape is the one used; a shape with none uses
+ * [defaultFoliageType], which takes the landscape Foliage's view distances.
+ */
+@Component
+@Inspectable(title: "Foliage Type", serializedName: "FoliageType", icon: "sprout", category: "Landscape")
+pack FoliageType derives Clone {
+    var enabled: Bool = true
+    /** The plant drawn: grass tufts or fir trees. */
+    @Choice(options: "Grass|Fir")
+    var shape: Int = 0
+    /** Multiplies the density the cover, strokes and groves ask for. */
+    @Range(min: 0.0, max: 4.0, step: 0.05)
+    var density: Double = 1.0
+    /** Multiplies the height the cover, strokes and groves ask for. */
+    @Range(min: 0.1, max: 4.0, step: 0.05)
+    var height: Double = 1.0
+    /** How far it is drawn, in metres; plants shrink away over the last [fade] of it. */
+    @Range(min: 20.0, max: 20000.0, step: 10.0)
+    var viewDistance: Double = 84.0
+    @Range(min: 0.0, max: 1.0, step: 0.02)
+    var fade: Double = 0.34
+    /** At most this many plants a frame, nearest first. */
+    @Range(min: 1000.0, max: 400000.0, step: 1000.0)
+    var budget: Int = 42000
+    /** No plant on ground steeper than this (rise over run). */
+    @Range(min: 0.0, max: 3.0, step: 0.01)
+    var maxSlope: Double = 0.82
+    /** No plant nearer a road's edge than this, in metres. */
+    @Range(min: 0.0, max: 20.0, step: 0.05)
+    var roadMargin: Double = 0.55
+    /** The side of a tile, in metres: plants are made, kept and dropped a tile at a time. */
+    @Range(min: 4.0, max: 400.0, step: 2.0)
+    var tileSize: Double = 18.0
+}
+
+/** How many plant shapes the renderer draws: grass and fir. */
+inline fin foliageShapes: Int = 2
+
+/** A view distance's plant budget: [base] at [reference] metres, growing with the area seen, up to 16 times. */
+func foliageBudget(base: Int, distance: Double, reference: Double): Int {
+    fin scale = foliageClamp(distance * distance / (reference * reference), 0.25, 16.0)
+    return ((base as Double) * scale) as Int
+}
+
+/** The type a shape draws with when the scene has none: what grass and firs always were, at [paint]'s view distances. */
+func defaultFoliageType(shape: Int, paint: FoliagePaint&): FoliageType {
+    if shape == firFoliage {
+        fin distance = foliageClamp(paint.treeDistance, 200.0, 20000.0)
+        return .(shape: firFoliage, viewDistance: distance, fade: 0.1, budget: foliageBudget(12000, distance, 2800.0),
+            maxSlope: 1.05, roadMargin: 4.0, tileSize: 140.0)
+    }
+    fin distance = foliageClamp(paint.grassDistance, 20.0, 600.0)
+    return .(shape: grassFoliage, viewDistance: distance, budget: foliageBudget(42000, distance, 84.0))
+}
+
+/** The type [shape] draws with in [world]: its first enabled Foliage Type, or [defaultFoliageType]. */
+func foliageTypeFor(world: World!, shape: Int, paint: FoliagePaint&): FoliageType {
+    fin types = ensureStorage<FoliageType>(world)
+    for i: Int in 0..<storageLength<FoliageType>(types) {
+        if types.values[i].enabled && types.values[i].shape == shape && world.isAlive(storageEntityAt<FoliageType>(types, i)) {
+            return types.values[i].clone()
+        }
+    }
+    return defaultFoliageType(shape, paint)
 }
 
 pack FoliageStamp derives Clone {
@@ -57,6 +136,16 @@ func foliageMaximum(a: Double, b: Double): Double = if a > b then a else b
 
 func foliageStampText(stamp: FoliageStamp&): String =
     "${stamp.species},${formatDecimal(stamp.x,8)},${formatDecimal(stamp.z,8)},${formatDecimal(stamp.radius,3)},${formatDecimal(stamp.density,4)},${formatDecimal(stamp.height,3)};"
+
+/** Mixes every field of [stamp] into [print]: what a tile's plants are made from. */
+func foliageStampPrint(print: Fingerprint!, stamp: FoliageStamp&) {
+    print.addInt(stamp.species)
+    print.addReal(stamp.x)
+    print.addReal(stamp.z)
+    print.addReal(stamp.radius)
+    print.addReal(stamp.density)
+    print.addReal(stamp.height)
+}
 
 func foliageReal(text: String, fallback: Double): Double = serialAsReal(serialNumber(text) catch SerialValue.Null) catch fallback
 

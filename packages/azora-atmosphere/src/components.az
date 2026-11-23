@@ -57,17 +57,21 @@ pack AetherSky derives Clone {
     var exposure: Double = 1.0
 }
 
-/** The cloud layer: how much of the sky it covers, what kind of cloud, where and how dense. */
+/**
+ * The cloud layer, set by hand: how much of the sky it covers, what kind of
+ * cloud, where and how dense. The rest of the weather leaves it as it is;
+ * the scene's Wind carries it along. It works wherever it is in the scene.
+ */
 @Component
-@Inspectable(title: "Volumetric Clouds", serializedName: "AetherClouds", icon: "cloud", category: "Atmosphere", order: 31)
+@Inspectable(title: "Volumetric Clouds", serializedName: "AetherClouds", icon: "cloud", category: "Weather", order: 31)
 pack AetherClouds derives Clone {
     var enabled: Bool = true
-    /** Share of the sky under cloud; the weather's own value is used while this is negative. */
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var coverage: Double = -1.0
-    /** 0 flat stratus, 0.5 cumulus, 1 towering cumulonimbus; negative follows the weather. */
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var cloudType: Double = -1.0
+    /** Share of the sky under cloud. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var coverage: Double = 0.45
+    /** 0 flat stratus, 0.5 cumulus, 1 towering cumulonimbus. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var cloudType: Double = 0.5
     /** Bottom of the layer above the world origin, and its depth, in metres. */
     @Range(min: 200.0, max: 8000.0, step: 10.0)
     var baseAltitude: Double = 1400.0
@@ -85,12 +89,14 @@ pack AetherClouds derives Clone {
 }
 
 
-/** Simulation inputs for the rendered atmosphere. Defaults describe a fair sky. */
+/**
+ * What the weather gives the rendered atmosphere: how far the clouds have
+ * drifted, the air's haze (and how much of it is dust, of [dustColor]), the
+ * lightning's flash, the ground's wetness and snow, the wind. Defaults are
+ * still, clear air.
+ */
 @Component
 pack AtmosphereConditions derives Clone {
-    var coverage: Double = 0.32
-    var cloudType: Double = 0.35
-    var density: Double = 1.0
     var driftX: Double = 0.0
     var driftZ: Double = 0.0
     var fogDensity: Double = 0.0
@@ -102,6 +108,19 @@ pack AtmosphereConditions derives Clone {
     var snow: Double = 0.0
     var windX: Double = 0.0
     var windZ: Double = 0.0
+    /** The share of the haze that is dust, and its colour. */
+    var dust: Double = 0.0
+    var dustColor: Rgba = .(0.74, 0.6, 0.42, 1.0)
+}
+
+/** The scene's cloud layer: its first enabled, shown Volumetric Clouds, or none (switched off). */
+func sceneClouds(world: World!): AetherClouds {
+    fin layers = ensureStorage<AetherClouds>(world)
+    for i: Int in 0..<storageLength<AetherClouds>(layers) {
+        fin entity = storageEntityAt<AetherClouds>(layers, i)
+        if layers.values[i].enabled && world.isAlive(entity) && visibleInWorld(world, entity) then return layers.values[i].clone()
+    }
+    return .(enabled: false)
 }
 
 func atmosphereEntity(world: World!): Entity {

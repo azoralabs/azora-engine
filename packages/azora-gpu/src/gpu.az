@@ -69,6 +69,13 @@ bridge .C {
 
 // ── State ───────────────────────────────────────────────────────────────
 
+
+/**
+ * The depth a 3D pass clears to: the far plane. Depth is reversed (near 1, far
+ * 0, see mat4Perspective), so scene passes test with Greater.
+ */
+inline fin farDepth: Double = 0.0
+
 pack AzGpu {
     var ok: Bool
     var device: Long
@@ -164,6 +171,10 @@ pack AzGpu {
     var motionPreviousCount: Int = 0
     var velocityPipeline: Long = 0
     var velocityDepth: Long = 0
+    /** Counts drawHeightfields calls, to tell which terrain meshes are still drawn. */
+    var terrainFrame: Int = 0
+    /** Ordinary depth (Less, writes), for passes that keep it: the sun's shadow map. */
+    var depthLess: Long = 0
     /** Gathers each Photon Field sample's bounce light once, when the field is rebuilt. */
     var irradiancePipeline: Long = 0
     /**
@@ -182,6 +193,10 @@ pack AzGpu {
     var detailStrength: Double = 0.9
     /** True while meshes are drawn into [detailMap]: depth only, the sun's view. */
     var casting: Bool = false
+    /** The frame's colour texture: the window's drawable, or the slot an editor shows (Play In Editor). */
+    var target: Long = 0
+    /** The scene's meshes with their world transforms, gathered once a frame. */
+    var sceneMeshes: SceneMeshCache = .()
     var focusX: Double = 0.0
     var focusY: Double = 0.0
     var focusZ: Double = 0.0
@@ -232,6 +247,54 @@ pack ScenePass {
 pack Mesh {
     var buffer: Long
     var count: Int
+}
+
+/**
+ * A scene's visible meshes gathered once a frame: each one's storage row and
+ * slot, whose world transform and bounding radius the Photon Field, the sun's
+ * cascade and the camera's view all read, so none of them walks the hierarchy
+ * again.
+ *
+ * Slots remember every entity on a mesh's parent chain across frames: its
+ * Transform values, its own matrix and its world matrix. A world matrix is
+ * made again only when its entity's Transform values or a parent's world
+ * changed, so a still scene costs a comparison per entity a frame, not its
+ * matrices (values are compared, so a Transform changed in place through a
+ * query is seen too).
+ */
+pack SceneMeshCache {
+    /** The frame and the scene revisions the list was gathered at; -1 before the first. */
+    var frame: Int = -1
+    var stamp: Long = -1
+    /** Counts the gatherings; a slot brought up to date in this one is not walked again. */
+    var pass: Int = 0
+    /** The visible meshes: rows of the Mesh3d storage, in storage order, and their slots. */
+    var rows: Array<Int> = []
+    var meshSlots: Array<Int> = []
+    /** Each entity's slot plus one, by entity id (0: none yet). */
+    var slots: Array<Int> = []
+    /** Per slot: the entity it holds (id and generation), and whether it is new to it. */
+    var ids: Array<Int> = []
+    var generations: Array<Int> = []
+    var fresh: Array<Bool> = []
+    /** Per slot: its Transform's values (9 a slot) and whether it had one. */
+    var values: Array<Double> = []
+    var placed: Array<Bool> = []
+    var locals: Array<Mat4> = []
+    var worlds: Array<Mat4> = []
+    /** Per slot: the frame it was brought up to date at, whether its world changed then, its parent's slot (-1: a root). */
+    var updated: Array<Int> = []
+    var moved: Array<Bool> = []
+    var parents: Array<Int> = []
+    /** Per slot: whether it or a parent is hidden. */
+    var hidden: Array<Bool> = []
+    /** Per slot of a mesh: its model (world times its size), bounding radius, and the size and geometry revision they were made for. */
+    var models: Array<Mat4> = []
+    var radii: Array<Double> = []
+    var sizes: Array<Double> = []
+    var shapes: Array<Long> = []
+    /** The chain being walked: entity ids from the mesh up. */
+    var chain: Array<Int> = []
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
@@ -314,10 +377,11 @@ func gpuInit(scale: Double): AzGpu {
         return gpuFailed()
     }
 
-    // Depth-stencil states: compare Less + write for 3D, Always for UI.
+    // Depth-stencil states: compare Greater + write for 3D (depth is reversed:
+    // near 1, far 0, see mat4Perspective), Always for UI.
     fin dsOn = newObject("MTLDepthStencilDescriptor")
     defer { send0(dsOn, sel("release")) }
-    send1(dsOn, sel("setDepthCompareFunction:"), 1)
+    send1(dsOn, sel("setDepthCompareFunction:"), 4)
     send1(dsOn, sel("setDepthWriteEnabled:"), 1)
     fin depthOn = send1(device, sel("newDepthStencilStateWithDescriptor:"), dsOn)
 
@@ -355,10 +419,17 @@ func gpuInit(scale: Double): AzGpu {
     gpu.whiteTexture = whiteTexel(device)
     gpu.velocityPipeline = makeVelocityPipeline(device, lib)
     fin nearer = newObject("MTLDepthStencilDescriptor")
-    send1(nearer, sel("setDepthCompareFunction:"), 3)
+    send1(nearer, sel("setDepthCompareFunction:"), 6)
     send1(nearer, sel("setDepthWriteEnabled:"), 0)
     gpu.velocityDepth = send1(device, sel("newDepthStencilStateWithDescriptor:"), nearer)
     send0(nearer, sel("release"))
+    // The sun's shadow map keeps ordinary depth (its orthographic view needs no
+    // more precision): Less, with writes.
+    fin ordinary = newObject("MTLDepthStencilDescriptor")
+    send1(ordinary, sel("setDepthCompareFunction:"), 1)
+    send1(ordinary, sel("setDepthWriteEnabled:"), 1)
+    gpu.depthLess = send1(device, sel("newDepthStencilStateWithDescriptor:"), ordinary)
+    send0(ordinary, sel("release"))
     gpu.motionCurrent = azAlloc((motionCapacity as Long) * motionRecord)
     gpu.motionPrevious = azAlloc((motionCapacity as Long) * motionRecord)
     fin gather = send1(lib, sel("newFunctionWithName:"), nsString("photon_irradiance"))
@@ -403,6 +474,7 @@ func gpuShutdown(gpu: AzGpu!) {
     gpu.detailReady = false
     if gpu.velocityPipeline != 0 then send0(gpu.velocityPipeline, sel("release"))
     if gpu.velocityDepth != 0 then send0(gpu.velocityDepth, sel("release"))
+    if gpu.depthLess != 0 then send0(gpu.depthLess, sel("release"))
     if gpu.motionCurrent != 0 then azFree(gpu.motionCurrent)
     if gpu.motionPrevious != 0 then azFree(gpu.motionPrevious)
     gpu.velocityPipeline = 0
@@ -504,8 +576,35 @@ impl AzGpu {
             if self.terrains[i].path == path && self.terrains[i].gradedEntity < 0 then return i
         }
         if self.terrainIndices.buffers.size == 0 then self.terrainIndices = buildTerrainIndices(self.device)
-        self.terrains.add(loadTerrainMesh(self.device, self.fusion.root, path))
+        return self.keepTerrain(loadTerrainMesh(self.device, self.fusion.root, path))
+    }
+
+    /** Stores [mesh] in a released slot, or a new one; answers its index. */
+    func !.keepTerrain(mesh: TerrainMesh): Int {
+        var kept = take mesh
+        kept.lastUsed = self.terrainFrame
+        for i: Int in 0..<self.terrains.size {
+            if self.terrains[i].path == "" && self.terrains[i].chunks.size == 0 {
+                self.terrains[i] = take kept
+                return i
+            }
+        }
+        self.terrains.add(take kept)
         return self.terrains.size - 1
+    }
+
+    /**
+     * Releases the meshes no heightfield drew in the last [frames] terrain
+     * frames - the tiles of world partition cells that were unloaded. Their
+     * slots stay, empty, for the next tile.
+     */
+    func !.releaseUnusedTerrains(frames: Int) {
+        for i: Int in 0..<self.terrains.size {
+            if self.terrains[i].path != "" && self.terrains[i].lastUsed < self.terrainFrame - frames {
+                releaseTerrainMesh(self.terrains[i])
+                self.terrains[i] = TerrainMesh()
+            }
+        }
     }
 }
 
@@ -735,7 +834,7 @@ func beginScenePass(gpu: AzGpu!) {
     send1(depth, sel("setTexture:"), gpu.scenePass.depth)
     send1(depth, sel("setLoadAction:"), 2)
     send1(depth, sel("setStoreAction:"), 1)
-    azSendF1(depth, sel("setClearDepth:"), 1.0)
+    azSendF1(depth, sel("setClearDepth:"), farDepth)
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), pass)
     gpu.mode = -1
     gpu.meshPipeline = 0
@@ -842,7 +941,7 @@ func resolveScenePass(gpu: AzGpu!) {
     gpu.motionCount = 0
     fin read = if gpu.scenePass.readA then gpu.scenePass.historyA else gpu.scenePass.historyB
     fin write = if gpu.scenePass.readA then gpu.scenePass.historyB else gpu.scenePass.historyA
-    fin screen = send0(gpu.drawable, sel("texture"))
+    fin screen = gpu.target
 
     fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
     fin attachments = send0(pass, sel("colorAttachments"))
@@ -904,7 +1003,7 @@ func resolveScenePass(gpu: AzGpu!) {
     send1(depth, sel("setTexture:"), gpu.depthTex)
     send1(depth, sel("setLoadAction:"), 2)
     send1(depth, sel("setStoreAction:"), 0)
-    azSendF1(depth, sel("setClearDepth:"), 1.0)
+    azSendF1(depth, sel("setClearDepth:"), farDepth)
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), next)
     gpu.mode = -1
     gpu.meshPipeline = 0

@@ -1,0 +1,310 @@
+import std.io
+import std.os
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.io
+import engine.physics.d3
+import engine.landscape
+import engine.vehicles
+import engine.roads
+import engine.io
+
+// Vehicle stability, measured the way a player drives: the scene's own
+// landscape when AZORA_STABILITY_SCENE names one (run from that project's
+// folder), else flat ground. Each run prints what it saw; main asserts the
+// limits a drivable vehicle stays within.
+
+/** What one scripted drive saw. */
+pack Drive {
+    /** Steps with no wheel on the ground, while the vehicle was meant to roll on it. */
+    var airborne: Int = 0
+    /** The largest roll and pitch, degrees. */
+    var roll: Double = 0.0
+    var pitch: Double = 0.0
+    /** Times the body turned past 60° from upright. */
+    var rollovers: Int = 0
+    /** Vertical speed's spread at rest (m/s): a vehicle that hops at rest moves here. */
+    var restBounce: Double = 0.0
+    var speed: Double = 0.0
+}
+
+/** The world, its colliders and a vehicle at the scene's start (or on flat ground). */
+pack Course {
+    var world: World = .()
+    var ground: Array<CollisionSurface> = []
+    var vehicle: Entity = .(-1, 0)
+}
+
+func course(scene: String, bike: Bool): Course {
+    var run: Course = .()
+    if scene != "" {
+        var file = readFile(scene)
+        if file.ok() then readScene(run.world, file.text(0, file.size))
+        file.release()
+    } else {
+        fin surface = run.world.spawn()
+        storageInsert<HeightfieldTerrain>(ensureStorage<HeightfieldTerrain>(run.world), surface,
+            HeightfieldTerrain(image: "Terrain/flat.pgm", width: 4000.0, length: 4000.0, elevation: 1.0))
+        storageInsert<LandscapeCollision>(ensureStorage(run.world), surface, .())
+        fin start = run.world.spawn()
+        storageInsert<PlayerStart>(ensureStorage(run.world), start, .())
+        storageInsert<Transform>(ensureStorage(run.world), start, .(translation: .(0.0, 2.0, 0.0)))
+        storageInsert<VehicleSetup>(ensureStorage(run.world), start, .(sport: true))
+    }
+    // The start's setup says car or bike; this run decides.
+    fin starts = ensureStorage<PlayerStart>(run.world)
+    fin start = storageEntityAt<PlayerStart>(starts, 0)
+    var setup = storageGetOrDefault<VehicleSetup>(ensureStorage(run.world), start, .())
+    setup.motorcycle = bike
+    storageInsert<VehicleSetup>(ensureStorage(run.world), start, take setup)
+    run.ground = loadLandscapeColliders(run.world, ".")
+    run.vehicle = spawnVehicle(run.world, start, run.ground)
+    return take run
+}
+
+/** Drives [steps] fixed steps of 1/120 s with [input], adding what happened to [seen]. */
+func drive(run: Course!, input: DriveInput&, steps: Int, seen: Drive!, rest: Bool = false) {
+    fin dt: Double = 1.0 / 120.0
+    var low: Double = 1000.0
+    var high: Double = -1000.0
+    for step: Int in 0..<steps {
+        simulateVehicle(run.world, run.vehicle, run.ground, input, gravity3d(), dt)
+        fin state = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle)
+        fin up = vehicleQuat(state).rotate(.(0.0, 1.0, 0.0))
+        if state.grounded == 0 then seen.airborne++
+        if up.y < 0.5 then seen.rollovers++
+        fin roll = absValue(state.roll) / degreesToRadians
+        fin pitch = absValue(state.pitch) / degreesToRadians
+        if roll > seen.roll then seen.roll = roll
+        if pitch > seen.pitch then seen.pitch = pitch
+        seen.speed = state.speed
+        if envVar("AZORA_STABILITY_TRACE") != "" && step % 12 == 0 && step >= envVar("AZORA_STABILITY_FROM").length * 0 + (if envVar("AZORA_STABILITY_FROM") == "" then 0 else 600) && step < (if envVar("AZORA_STABILITY_FROM") == "" then 360 else 960) {
+            fin p = storageGet<Transform3D>(ensureStorage(run.world), run.vehicle).position
+            fin v = storageGet<Velocity3D>(ensureStorage(run.world), run.vehicle)
+            var wheels = ""
+            for w in state.wheels then wheels += " [${formatDecimal(w.length, 3)} ${if w.contact then 1 else 0} ${formatDecimal(w.load, 0)} ${formatDecimal(w.omega, 1)}]"
+            println("  ${step} y ${formatDecimal(p.y, 3)} vy ${formatDecimal(v.linear.y, 3)} w ${formatDecimal(v.angular.x, 3)},${formatDecimal(v.angular.y, 3)},${formatDecimal(v.angular.z, 3)} pitch ${formatDecimal(state.pitch / degreesToRadians, 2)} v ${formatDecimal(state.speed, 2)} g ${state.grounded}${wheels}")
+        }
+        if rest && step > steps / 2 {
+            fin vy = storageGet<Velocity3D>(ensureStorage(run.world), run.vehicle).linear.y
+            if vy < low then low = vy
+            if vy > high then high = vy
+        }
+    }
+    if rest then seen.restBounce = high - low
+}
+
+func report(name: String, seen: Drive&) {
+    println("${name}: airborne ${seen.airborne} roll ${formatDecimal(seen.roll, 1)} pitch ${formatDecimal(seen.pitch, 1)} rollovers ${seen.rollovers} bounce ${formatDecimal(seen.restBounce, 3)} speed ${formatDecimal(seen.speed * 3.6, 0)}")
+}
+
+func trial(scene: String, bike: Bool): Array<Drive> {
+    var results: Array<Drive> = []
+    var run = course(scene, bike)
+    defer { releaseLandscapeColliders(run.ground) }
+    // At rest: settles, no hopping.
+    var still: Drive = .()
+    drive(run, .(0.0, 0.0, false), 600, still, rest: true)
+    results.add(take still)
+    // Full throttle straight for eight seconds.
+    var launch: Drive = .()
+    drive(run, .(1.0, 0.0, false), 960, launch)
+    results.add(take launch)
+    // Weaving at speed: a keyboard's full lock, a second each way.
+    var weave: Drive = .()
+    for turn: Int in 0..<6 then drive(run, .(1.0, if turn % 2 == 0 then 1.0 else -1.0, false), 120, weave)
+    results.add(take weave)
+    // Full lock held while braking, then while accelerating again.
+    var hold: Drive = .()
+    drive(run, .(-1.0, 1.0, false), 180, hold)
+    drive(run, .(1.0, 1.0, false), 360, hold)
+    results.add(take hold)
+    return take results
+}
+
+/** A vehicle given [speed] m/s forward on flat ground, then driven with [input] for three seconds. */
+func cruise(bike: Bool, speed: Double, input: DriveInput&): Drive {
+    var run = course("", bike)
+    defer { releaseLandscapeColliders(run.ground) }
+    var settle: Drive = .()
+    drive(run, .(0.0, 0.0, false), 240, settle)
+    fin heading = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle).yaw
+    storageInsert<Velocity3D>(ensureStorage(run.world), run.vehicle, velocity3d(vehicleForward(heading).scale(speed)))
+    // The wheels roll with the body, as they would have reached that speed.
+    let vehicles = ensureStorage<Vehicle>(run.world)
+    fin at = storageIndexOf<Vehicle>(vehicles, run.vehicle)
+    fin radius = configuredVehicle(run.world, run.vehicle, if bike then .Motorcycle else .Car).wheelRadius
+    for w: Int in 0..<vehicles.values[at].wheels.size then vehicles.values[at].wheels[w].omega = speed / radius
+    var seen: Drive = .()
+    drive(run, input, 360, seen)
+    return take seen
+}
+
+/** The span nearest to [at] (horizontally), or -1; [along] gets the fraction along it. */
+func nearestSpan(network: RoadNetwork&, at: Vec3&): Int {
+    var best = -1
+    var bestDistance: Double = 1.0e12
+    for i: Int in 0..<network.spans.size {
+        fin a = network.spans[i].start.center.&
+        fin b = network.spans[i].end.center.&
+        fin dx = b.x - a.x
+        fin dz = b.z - a.z
+        fin length2 = dx * dx + dz * dz
+        if length2 <= 0.000001 then continue
+        fin t = roadLimit(((at.x - a.x) * dx + (at.z - a.z) * dz) / length2, 0.0, 1.0)
+        fin px = a.x + t * dx - at.x
+        fin pz = a.z + t * dz - at.z
+        fin d = px * px + pz * pz
+        if d < bestDistance {
+            bestDistance = d
+            best = i
+        }
+    }
+    return best
+}
+
+/** Whether span [b] continues span [a] (its start is [a]'s end). */
+func continues(network: RoadNetwork&, a: Int, b: Int): Bool {
+    if b < 0 || b >= network.spans.size then return false
+    fin end = network.spans[a].end.center.&
+    fin start = network.spans[b].start.center.&
+    return absValue(end.x - start.x) + absValue(end.z - start.z) < 0.01
+}
+
+/** Where the road centre is [ahead] metres further on from span [span], driving [forward] along it. */
+func roadAhead(network: RoadNetwork&, span: Int, at: Vec3&, forward: Bool, ahead: Double): Vec3 {
+    var index = span
+    var left = ahead
+    var from: Vec3 = .(at.x, at.y, at.z)
+    for hop: Int in 0..<200 {
+        fin s = network.spans[index].&
+        fin to = if forward then s.end.center.clone() else s.start.center.clone()
+        fin dx = to.x - from.x
+        fin dz = to.z - from.z
+        fin length = sqrt(dx * dx + dz * dz)
+        if length >= left then return Vec3(from.x + dx / length * left, to.y, from.z + dz / length * left)
+        left -= length
+        from = to.clone()
+        fin next = if forward then index + 1 else index - 1
+        if (forward && !continues(network, index, next)) || (!forward && !continues(network, next, index)) then return from.clone()
+        index = next
+    }
+    return from.clone()
+}
+
+/** Drives along the road the vehicle starts on at [target] km/h for [steps] steps, like a careful player. */
+func followRoad(scene: String, bike: Bool, target: Double, steps: Int): Drive {
+    var run = course(scene, bike)
+    defer { releaseLandscapeColliders(run.ground) }
+    fin network = buildRoadNetwork(run.world)
+    var seen: Drive = .()
+    var offRoad = 0
+    var travelled: Double = 0.0
+    fin dt: Double = 1.0 / 120.0
+    for step: Int in 0..<steps {
+        fin state = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle)
+        fin at = storageGet<Transform3D>(ensureStorage(run.world), run.vehicle).position.clone()
+        var input: DriveInput = .()
+        fin span = nearestSpan(network, at)
+        if span >= 0 {
+            fin s = network.spans[span].&
+            fin heading = vehicleForward(state.yaw)
+            fin forward = (s.end.center.x - s.start.center.x) * heading.x + (s.end.center.z - s.start.center.z) * heading.z >= 0.0
+            fin look = roadAhead(network, span, at, forward, 8.0 + absValue(state.speed) * 0.6)
+            fin far = roadAhead(network, span, at, forward, 30.0 + absValue(state.speed) * 2.0)
+            fin wanted = atan2(-(look.x - at.x), -(look.z - at.z))
+            var turn = wanted - state.yaw
+            turn = atan2(sin(turn), cos(turn))
+            input.steer = roadLimit(-turn * 2.5, -1.0, 1.0)
+            // Slow for the bend ahead, as a driver reads it.
+            fin bend = atan2(-(far.x - look.x), -(far.z - look.z)) - wanted
+            fin sharp = absValue(atan2(sin(bend), cos(bend)))
+            fin speed = target / 3.6 * roadLimit(1.0 - sharp * 1.2, 0.35, 1.0)
+            input.throttle = roadLimit((speed - state.speed) * 0.4, -1.0, 1.0)
+            fin surface = roadSurfaceAt(network, at.x, at.z)
+            if !surface.found then offRoad++
+        }
+        simulateVehicle(run.world, run.vehicle, run.ground, input, gravity3d(), dt)
+        fin after = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle)
+        fin up = vehicleQuat(after).rotate(.(0.0, 1.0, 0.0))
+        if after.grounded == 0 then seen.airborne++
+        if up.y < 0.5 then seen.rollovers++
+        fin roll = absValue(after.roll) / degreesToRadians
+        if roll > seen.roll then seen.roll = roll
+        travelled += absValue(after.speed) * dt
+        seen.speed = after.speed
+    }
+    seen.pitch = offRoad as Double
+    seen.restBounce = travelled
+    return take seen
+}
+
+func main() {
+    if envVar("AZORA_STABILITY_ROAD") != "" {
+        fin scene = envVar("AZORA_STABILITY_SCENE")
+        fin targets: Array<Double> = [60.0, 90.0, 120.0]
+        for bike: Int in 0..<2 {
+            for target in targets {
+                fin seen = followRoad(scene, bike == 1, target, 120 * 60)
+                println("${if bike == 1 then "bike" else "car"} road ${target}: airborne ${seen.airborne} roll ${formatDecimal(seen.roll, 1)} rollovers ${seen.rollovers} offroad ${seen.pitch as Int} metres ${seen.restBounce as Int} end speed ${formatDecimal(seen.speed * 3.6, 0)}")
+            }
+        }
+        return
+    }
+    if envVar("AZORA_STABILITY_REVERSE") != "" {
+        for bike: Int in 0..<2 {
+            var run = course("", bike == 1)
+            var settle: Drive = .()
+            drive(run, .(0.0, 0.0, false), 120, settle)
+            fin heading = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle).yaw
+            storageInsert<Velocity3D>(ensureStorage(run.world), run.vehicle, velocity3d(vehicleForward(heading).scale(27.8)))
+            let vehicles = ensureStorage<Vehicle>(run.world)
+            fin at = storageIndexOf<Vehicle>(vehicles, run.vehicle)
+            fin radius = configuredVehicle(run.world, run.vehicle, if bike == 1 then .Motorcycle else .Car).wheelRadius
+            for w: Int in 0..<vehicles.values[at].wheels.size then vehicles.values[at].wheels[w].omega = 27.8 / radius
+            vehicles.values[at].gear = 4
+            var stoppedAt = -1
+            var reversingAt = -1
+            for step: Int in 0..<1200 {
+                simulateVehicle(run.world, run.vehicle, run.ground, .(-1.0, 0.0, false), gravity3d(), 1.0 / 120.0)
+                fin state = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle)
+                if stoppedAt < 0 && state.speed < 0.3 then stoppedAt = step
+                if reversingAt < 0 && state.speed < -1.0 then reversingAt = step
+                if step % 60 == 0 then println("  ${step} speed ${formatDecimal(state.speed * 3.6, 1)} gear ${state.gear} rpm ${formatDecimal(state.rpm, 0)}")
+            }
+            fin end = storageGet<Vehicle>(ensureStorage(run.world), run.vehicle)
+            println("${if bike == 1 then "bike" else "car"}: stopped from 100 km/h in ${formatDecimal((stoppedAt as Double) / 120.0, 2)} s, reversing at ${formatDecimal((reversingAt as Double) / 120.0, 2)} s, end ${formatDecimal(end.speed * 3.6, 1)} km/h gear ${end.gear}")
+            releaseLandscapeColliders(run.ground)
+        }
+        return
+    }
+    if envVar("AZORA_STABILITY_CRUISE") != "" {
+        report("bike coast 30", cruise(true, 30.0, .(0.0, 0.0, false)))
+        report("bike throttle 30", cruise(true, 30.0, .(1.0, 0.0, false)))
+        report("car coast 30", cruise(false, 30.0, .(0.0, 0.0, false)))
+        return
+    }
+    fin scene = envVar("AZORA_STABILITY_SCENE")
+    fin names = ["rest", "launch", "weave", "lock"]
+    fin only = envVar("AZORA_STABILITY_ONLY")
+    fin verbose = envVar("AZORA_STABILITY_VERBOSE") != "" || scene != ""
+    for bike: Int in 0..<2 {
+        if (only == "bike" && bike == 0) || (only == "car" && bike == 1) then continue
+        fin drives = trial(scene, bike == 1)
+        if verbose {
+            for i: Int in 0..<drives.size then report("${if bike == 1 then "bike" else "car"} ${names[i]}", drives[i])
+            continue
+        }
+        // On flat ground a vehicle stays on its wheels, upright and level.
+        for i: Int in 0..<drives.size {
+            assert drives[i].rollovers == 0 panic "${names[i]}: no rollover on flat ground"
+        }
+        assert drives[1].airborne == 0 && drives[2].airborne == 0 panic "launch and weave keep a wheel on flat ground"
+        assert drives[1].pitch < (if bike == 1 then 1.5 else 3.0) panic "launch keeps the body level (the motorcycle no longer hops)"
+        if bike == 0 then assert drives[2].roll < 8.0 && drives[3].roll < 8.0 panic "the car corners flat"
+    }
+    if !verbose then println("vehicles stay on their wheels on flat ground")
+}

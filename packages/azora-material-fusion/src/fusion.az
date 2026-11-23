@@ -309,18 +309,24 @@ func fusionAssetPath(path: String): Bool =
 func fusionTexturePath(path: String): Bool =
     (endsWith(path, ".aztexture") || endsWith(path, ".aztex")) && fusionRelativePath(path)
 
+/**
+ * Whether [path] stays inside the project: relative, with no empty, `.` or
+ * `..` segment and no character a path is never written with. Read in place,
+ * one character at a time: it runs for every draw that names a material, and
+ * a segment cut out as text each time was never freed.
+ */
 func fusionRelativePath(path: String): Bool {
-    if startsWith(path, "/") || indexOf(path, "\\") >= 0 || indexOf(path, "\"") >= 0 ||
-        indexOf(path, "\n") >= 0 || indexOf(path, "\r") >= 0 then return false
+    fin length = stringLength(path)
+    if length == 0 || charAt(path, 0) == '/' then return false
     var start = 0
-    var index = 0
-    while index <= stringLength(path) {
-        if index == stringLength(path) || charAt(path, index) == '/' {
-            fin part = substring(path, start, index)
-            if part == "" || part == "." || part == ".." then return false
-            start = index + 1
-        }
-        index++
+    for index: Int in 0..length {
+        fin end = index == length
+        fin c = if end then '/' else charAt(path, index)
+        if c == '\\' || c == '"' || c == '\n' || c == '\r' then return false
+        if c != '/' then continue
+        fin size = index - start
+        if size == 0 || (size == 1 && charAt(path, start) == '.') || (size == 2 && charAt(path, start) == '.' && charAt(path, start + 1) == '.') then return false
+        start = index + 1
     }
     return true
 }

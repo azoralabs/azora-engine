@@ -39,6 +39,7 @@ module engine.platform
 
 import engine.input
 import engine.gpu
+import engine.platform.embed
 import engine.objc
 import engine.io
 import engine.core
@@ -109,6 +110,34 @@ pack App {
     var traceEvents: Long = 0
     var tracePath: String = ""
     var traceSaved: Double = 0.0
+    /** Play In Editor: the link to the editor this game draws into, when it runs inside one (AZORA_EMBED). */
+    var embed: AzEmbed = .()
+}
+
+/**
+ * What a game played inside an editor keeps of its link (engine.platform.embed):
+ * the mapping, a Metal buffer and a texture per slot over it, the frame being
+ * finished, and the presses and wheel already turned into its input.
+ */
+pack AzEmbed {
+    var link: EmbedLink = .()
+    var buffer: Long = 0
+    var targets: Array<Long> = []
+    var width: Int = 0
+    var height: Int = 0
+    var scale: Double = 2.0
+    /** Frames drawn; the next goes into slot `frames % embedSlots`. */
+    var frames: Long = 0
+    /** The last frame's command buffer, kept until its pixels are published, and its slot's size. */
+    var pending: Long = 0
+    var pendingWidth: Int = 0
+    var pendingHeight: Int = 0
+    /** Press counts already turned into key presses (2048 keys, then 3 buttons). */
+    var seen: Long = 0
+    var wheelX: Double = 0.0
+    var wheelY: Double = 0.0
+    /** When the next frame is due, on the display's beat. */
+    var due: Double = 0.0
 }
 
 /** Whether [object] answers [selector]. */
@@ -127,6 +156,19 @@ func requestActivation(nsapp: Long) {
     else send1(nsapp, sel("activateIgnoringOtherApps:"), 1)
 }
 
+/**
+ * Moves into the folder AZORA_WORKING_DIRECTORY names, when it is set. A game
+ * launched as an app bundle (tools/build.sh run) starts in "/", yet reads its
+ * scene, terrain and materials relative to its project folder.
+ */
+func enterWorkingDirectory() {
+    fin folder = envVar("AZORA_WORKING_DIRECTORY")
+    if folder == "" then return
+    fin pool = objcAutoreleasePoolPush()
+    send1(send0(cls("NSFileManager"), sel("defaultManager")), sel("changeCurrentDirectoryPath:"), nsString(folder))
+    objcAutoreleasePoolPop(pool)
+}
+
 /** The decimal number [text] starts with from [from]; 0 when it starts with none. */
 func leadingNumber(text: String, from: Int = 0): Int {
     var value = 0
@@ -142,6 +184,9 @@ func leadingNumber(text: String, from: Int = 0): Int {
 
 /// Creates the window and GPU renderer. Check `.ok` before entering the loop.
 func appInit(title: String, width: Int, height: Int): App {
+    // Played inside an editor's viewport: no window, the frames go to the editor.
+    fin link = envVar("AZORA_EMBED")
+    if link != "" then return appInitEmbedded(link)
     fin pool = objcAutoreleasePoolPush()
     // AZORA_WINDOW_SIZE=WxH (points) overrides the size asked for, for benchmarks.
     fin requested = envVar("AZORA_WINDOW_SIZE")
@@ -173,11 +218,7 @@ func appInit(title: String, width: Int, height: Int): App {
 
     // GPU device + CAMetalLayer backing the content view.
     var gpu = gpuInit(scale)
-    // The rendering a player chose: Studio passes its Preferences to the game it runs.
-    gpu.indirectLighting = envVar("AZORA_RENDER_LIGHTING") != "standard"
-    gpu.virtualShadows = envVar("AZORA_RENDER_SHADOWS") != "computed"
-    gpu.upscale = envVar("AZORA_RENDER_UPSCALING") == "temporal"
-    gpu.timing = envVar("AZORA_GPU_TIMING") == "1"
+    applyRenderPreferences(gpu)
     if !gpu.ok {
         send0(window, sel("release"))
         objcAutoreleasePoolPop(pool)
@@ -224,6 +265,70 @@ func appInit(title: String, width: Int, height: Int): App {
     return take app
 }
 
+/** The rendering a player chose: Studio passes its Preferences to the game it runs. */
+func applyRenderPreferences(gpu: AzGpu!) {
+    gpu.indirectLighting = envVar("AZORA_RENDER_LIGHTING") != "standard"
+    gpu.virtualShadows = envVar("AZORA_RENDER_SHADOWS") != "computed"
+    // Temporal upscaling unless asked not to: the scene at half resolution,
+    // reconstructed, is what holds 120 FPS full screen on a laptop's panel.
+    gpu.upscale = envVar("AZORA_RENDER_UPSCALING") != "native"
+    gpu.timing = envVar("AZORA_GPU_TIMING") == "1"
+}
+
+/**
+ * The App of a game played inside an editor (Play In Editor): no window, no
+ * Dock icon, never the active application - it draws into the frame slots of
+ * the link at [path] and takes its keyboard and mouse from the editor.
+ */
+func appInitEmbedded(path: String): App {
+    fin pool = objcAutoreleasePoolPush()
+    fin nsapp = send0(cls("NSApplication"), sel("sharedApplication"))
+    // NSApplicationActivationPolicyProhibited.
+    send1(nsapp, sel("setActivationPolicy:"), 2)
+    send0(nsapp, sel("finishLaunching"))
+    var link = openEmbedLink(path, false)
+    if link.region == 0 {
+        println("azora-engine: no Play In Editor link at ${path}")
+        objcAutoreleasePoolPop(pool)
+        return appFailed()
+    }
+    fin given = azPeekF64(link.region, embedAtScale)
+    fin scale = if given > 0.0 then given else 2.0
+    var gpu = gpuInit(scale)
+    applyRenderPreferences(gpu)
+    if !gpu.ok {
+        closeEmbedLink(link)
+        objcAutoreleasePoolPop(pool)
+        return appFailed()
+    }
+    fin layer = gpu.layer
+    fin now = CACurrentMediaTime()
+    var app = App(
+        true
+        AzWindow(0, 0, layer, scale)
+        take gpu
+        AzInput(azAlloc(4656))
+        AzTime(now, now, 1.0 / 60.0)
+        0.10, 0.10, 0.12
+        pool
+        false
+        false
+    )
+    for at: Long in 0..<4656 then azPoke8(app.inp.state, at, 0)
+    app.embed.scale = scale
+    app.embed.buffer = embedBuffer(app.gpu.device, link)
+    // Presses made before the game started are not presses now.
+    app.embed.seen = azAlloc(4096)
+    for key: Long in 0..<2048 then azPoke8(app.embed.seen, key, azPeek8(link.region, embedAtPresses + key))
+    for button: Long in 0..<3 then azPoke8(app.embed.seen, 2048 + button, azPeek8(link.region, embedAtClicks + button))
+    app.embed.wheelX = azPeekF64(link.region, embedAtWheelX)
+    app.embed.wheelY = azPeekF64(link.region, embedAtWheelY)
+    azPoke32(link.region, embedAtAlive, 1)
+    app.embed.link = take link
+    app.frameLimit = leadingNumber(envVar("AZORA_FRAME_LIMIT"))
+    return take app
+}
+
 /// A dead App value returned when initialization fails.
 func appFailed(): App {
     fin gpu = gpuFailed()
@@ -253,6 +358,7 @@ impl App {
         self.pool = objcAutoreleasePoolPush()
 
         self.pumpEvents()
+        if self.embed.link.region != 0 then self.readEmbeddedInput()
         self.traceInput()
         // A game started by another app asks again until it is first active:
         // the launcher may hand activation over after the first request.
@@ -273,6 +379,21 @@ impl App {
         // request any code can make - including a reactive effect, which has no
         // window to call quit() on.
         if self.closing || exitRequested() then return false
+        if self.embed.link.region != 0 {
+            fin region = self.embed.link.region
+            if azPeek32(region, embedAtQuit) != 0 then return false
+            // Held still by the editor: no frame, and no time passes, until it lets go or asks the game to end.
+            if azPeek32(region, embedAtPaused) != 0 {
+                while azPeek32(region, embedAtPaused) != 0 && azPeek32(region, embedAtQuit) == 0 then
+                    azSendF1(cls("NSThread"), sel("sleepForTimeInterval:"), 0.02)
+                if azPeek32(region, embedAtQuit) != 0 then return false
+                self.clk.last = CACurrentMediaTime()
+                self.clk.owed = 0.0
+            }
+            gpuBeginFrame(self)
+            self.clk.delta = self.pacedDelta(CACurrentMediaTime())
+            return true
+        }
         // The window server may map the window a few frames late; only treat
         // "not visible" as closed once it has been visible. A minimized window
         // and a hidden application (⌘H) are not visible either, and neither is
@@ -325,7 +446,8 @@ impl App {
 
     /** Seconds between refreshes of the screen the window is on; 0 when unknown. */
     func &.refreshInterval(): Double {
-        fin screen = send0(self.win.handle, sel("screen"))
+        // Played inside an editor there is no window: the main screen's beat.
+        fin screen = if self.win.handle == 0 then send0(cls("NSScreen"), sel("mainScreen")) else send0(self.win.handle, sel("screen"))
         if screen == 0 || !responds(screen, "maximumFramesPerSecond") then return 0.0
         fin rate = send0(screen, sel("maximumFramesPerSecond"))
         return if rate > 0 && rate < 1000 then 1.0 / (rate as Double) else 0.0
@@ -364,7 +486,7 @@ impl App {
 
     /// Finishes the frame and presents it.
     func !.present() {
-        if self.captureFrame > 0 && self.framesRun == self.captureFrame then gpuEndFrameCaptured(self, self.capturePath)
+        if self.captureFrame > 0 && self.framesRun == self.captureFrame && self.embed.link.region == 0 then gpuEndFrameCaptured(self, self.capturePath)
         else gpuEndFrame(self)
         // About two seconds at 60 Hz: long enough that text which blinks or
         // alternates stays cached, short enough that churn cannot accumulate.
@@ -402,6 +524,7 @@ impl App {
         }
         // Every cached text texture belongs to this device.
         self.releaseStaleText(-1)
+        if self.embed.link.region != 0 then self.closeEmbedded()
         gpuShutdown(self.gpu)
         send0(self.win.handle, sel("close"))
         send0(self.win.handle, sel("release"))
@@ -431,6 +554,11 @@ impl App {
 
     /// Content bounds component (2 = width, 3 = height) in points.
     func &.boundsSize(index: Long): Double {
+        if self.embed.link.region != 0 {
+            // Inside an editor: the frame it asked for, in points.
+            fin pixels = if index == 2 then azPeek32(self.embed.link.region, embedAtWidth) else azPeek32(self.embed.link.region, embedAtHeight)
+            return (if pixels > 0 then pixels else 720) as Double / self.embed.scale
+        }
         azSendOutQuad(self.win.content, sel("bounds"), self.gpu.scratch)
         return azPeekF64(self.gpu.scratch, index * 8)
     }
@@ -455,11 +583,13 @@ impl App {
 
     /// Mouse position in window points, origin top-left.
     func &.mouseX(): Double {
+        if self.embed.link.region != 0 then return azPeekF64(self.embed.link.region, embedAtMouseX)
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
         return azPeekF64(self.gpu.scratch, 0)
     }
 
     func &.mouseY(): Double {
+        if self.embed.link.region != 0 then return azPeekF64(self.embed.link.region, embedAtMouseY)
         azSendOutPair(self.win.handle, sel("mouseLocationOutsideOfEventStream"), self.gpu.scratch)
         fin y = azPeekF64(self.gpu.scratch, Long(8))
         return self.boundsSize(3) - y
@@ -668,6 +798,60 @@ impl App {
     /// How much a trackpad pinch grew this frame (0.1 is 10% larger); 0 when none.
     func &.pinch(): Double = azPeekF64(self.inp.state, 4640)
 
+    /**
+     * Takes this frame's keyboard and mouse from the editor (Play In Editor):
+     * keys held, each press counted since the last frame (so a tap between
+     * two frames still presses), buttons, clicks and the wheel. While the
+     * editor keeps the keyboard itself nothing is held.
+     */
+    func !.readEmbeddedInput() {
+        fin region = self.embed.link.region
+        fin focused = azPeek32(region, embedAtFocused) != 0
+        for key: Int in 0..<2048 {
+            fin at = key as Long
+            self.setKey(key, if focused && azPeek8(region, embedAtKeys + at) != 0 then 1 else 0)
+            fin count = azPeek8(region, embedAtPresses + at)
+            if count != azPeek8(self.embed.seen, at) {
+                azPoke8(self.embed.seen, at, count)
+                if focused then azPoke8(self.inp.state, 2048 + at, azPeek8(self.inp.state, 2048 + at) | 1)
+            }
+        }
+        for button: Int in 0..<3 {
+            fin at = button as Long
+            self.setMouse(button, if focused && azPeek8(region, embedAtButtons + at) != 0 then 1 else 0)
+            fin count = azPeek8(region, embedAtClicks + at)
+            if count != azPeek8(self.embed.seen, 2048 + at) {
+                azPoke8(self.embed.seen, 2048 + at, count)
+                if focused then azPoke8(self.inp.state, 4100 + at, 1)
+            }
+        }
+        fin wheelX = azPeekF64(region, embedAtWheelX)
+        fin wheelY = azPeekF64(region, embedAtWheelY)
+        if focused {
+            azPokeF64(self.inp.state, 4104, azPeekF64(self.inp.state, 4104) + wheelX - self.embed.wheelX)
+            azPokeF64(self.inp.state, 4112, azPeekF64(self.inp.state, 4112) + wheelY - self.embed.wheelY)
+        }
+        self.embed.wheelX = wheelX
+        self.embed.wheelY = wheelY
+    }
+
+    /** Lets the editor go: the last frame waited for, the slots and buffer released, the link marked ended and unmapped. */
+    func !.closeEmbedded() {
+        if self.embed.pending != 0 {
+            send0(self.embed.pending, sel("waitUntilCompleted"))
+            send0(self.embed.pending, sel("release"))
+            self.embed.pending = 0
+        }
+        for target in self.embed.targets then if target != 0 then send0(target, sel("release"))
+        self.embed.targets.clear()
+        if self.embed.buffer != 0 then send0(self.embed.buffer, sel("release"))
+        self.embed.buffer = 0
+        azPoke32(self.embed.link.region, embedAtAlive, 2)
+        closeEmbedLink(self.embed.link)
+        if self.embed.seen != 0 then azFree(self.embed.seen)
+        self.embed.seen = 0
+    }
+
     func &.setKey(key: Int, down: Int) {
         if key < 0 || key >= 2048 then return
         if down != 0 {
@@ -766,19 +950,30 @@ func gamepadAxis(gamepad: Long, axis: GamepadAxis): Long {
 // ── Frame ───────────────────────────────────────────────────────────────
 
 func gpuBeginFrame(app: App!) {
+    var pw: Long = 0
+    var ph: Long = 0
+    var target: Long = 0
+    if app.embed.link.region != 0 {
+        // Inside an editor: the slot after the last one published, at the size the editor asks for.
+        target = embeddedTarget(app)
+        pw = app.embed.width as Long
+        ph = app.embed.height as Long
+    } else {
+        // Match the drawable to the current view size.
+        azSendOutQuad(app.win.content, sel("bounds"), app.gpu.scratch)
+        pw = (azPeekF64(app.gpu.scratch, Long(16)) * app.gpu.scale) as Long
+        ph = (azPeekF64(app.gpu.scratch, Long(24)) * app.gpu.scale) as Long
+        if pw >= 1 && ph >= 1 {
+            azSendPair(app.gpu.layer, sel("setDrawableSize:"), pw as Double, ph as Double)
+            app.gpu.drawable = send0(app.gpu.layer, sel("nextDrawable"))
+            if app.gpu.drawable != 0 then target = send0(app.gpu.drawable, sel("texture"))
+        }
+    }
     let gpu: AzGpu! = app.gpu
-
-    // Match the drawable to the current view size.
-    azSendOutQuad(app.win.content, sel("bounds"), gpu.scratch)
-    fin wPts = azPeekF64(gpu.scratch, Long(16))
-    fin hPts = azPeekF64(gpu.scratch, Long(24))
-    fin pw = (wPts * gpu.scale) as Long
-    fin ph = (hPts * gpu.scale) as Long
-    if pw < 1 || ph < 1 {
+    if target == 0 || pw < 1 || ph < 1 {
         gpu.hasEncoder = false
         return
     }
-    azSendPair(gpu.layer, sel("setDrawableSize:"), pw as Double, ph as Double)
 
     // (Re)create the depth texture on resize.
     if gpu.depthTex == 0 || gpu.depthW != pw || gpu.depthH != ph {
@@ -791,17 +986,12 @@ func gpuBeginFrame(app: App!) {
         gpu.depthH = ph
     }
 
-    gpu.drawable = send0(gpu.layer, sel("nextDrawable"))
-    if gpu.drawable == 0 {
-        gpu.hasEncoder = false
-        return
-    }
-
+    gpu.target = target
     gpu.cmd = send0(gpu.queue, sel("commandBuffer"))
     fin rp = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
 
     fin ca = send1(send0(rp, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), Long(0))
-    send1(ca, sel("setTexture:"), send0(gpu.drawable, sel("texture")))
+    send1(ca, sel("setTexture:"), target)
     send1(ca, sel("setLoadAction:"), 2)
     send1(ca, sel("setStoreAction:"), 1)
     azSendQuad(ca, sel("setClearColor:"), app.clearR, app.clearG, app.clearB, 1.0)
@@ -810,11 +1000,81 @@ func gpuBeginFrame(app: App!) {
     send1(da, sel("setTexture:"), gpu.depthTex)
     send1(da, sel("setLoadAction:"), 2)
     send1(da, sel("setStoreAction:"), 0)
-    azSendF1(da, sel("setClearDepth:"), 1.0)
+    azSendF1(da, sel("setClearDepth:"), farDepth)
 
     gpu.enc = send1(gpu.cmd, sel("renderCommandEncoderWithDescriptor:"), rp)
     gpu.hasEncoder = true
     gpu.mode = -1
+}
+
+/**
+ * The texture of the slot this frame draws into (Play In Editor), the slots
+ * made again over the link's memory when the editor asks for another size.
+ */
+func embeddedTarget(app: App!): Long {
+    fin region = app.embed.link.region
+    fin askedWidth = azPeek32(region, embedAtWidth)
+    fin askedHeight = azPeek32(region, embedAtHeight)
+    fin width = if askedWidth < 1 then 1280 else if askedWidth > embedMaxWidth then embedMaxWidth else askedWidth
+    fin height = if askedHeight < 1 then 720 else if askedHeight > embedMaxHeight then embedMaxHeight else askedHeight
+    if width != app.embed.width || height != app.embed.height || app.embed.targets.size != embedSlots {
+        // A slot the editor still shows keeps its memory; only the views over it change.
+        if app.embed.pending != 0 {
+            send0(app.embed.pending, sel("waitUntilCompleted"))
+        }
+        for old in app.embed.targets then if old != 0 then send0(old, sel("release"))
+        app.embed.targets.clear()
+        for slot: Int in 0..<embedSlots then app.embed.targets.add(embedSlotTexture(app.embed.buffer, slot, width, height))
+        app.embed.width = width
+        app.embed.height = height
+    }
+    return app.embed.targets[(app.embed.frames % (embedSlots as Long)) as Int]
+}
+
+/**
+ * Finishes a frame drawn for an editor (Play In Editor): commits it, then
+ * publishes the frame before it (finished by now, or waited for), keeps this
+ * one to publish next time, and waits for the display's next beat - there is
+ * no drawable to hold the loop to the screen.
+ */
+func gpuEndEmbeddedFrame(app: App!) {
+    if !app.gpu.hasEncoder then return
+    resolveScenePass(app.gpu)
+    send0(app.gpu.enc, sel("endEncoding"))
+    fin commands = app.gpu.cmd
+    send0(commands, sel("commit"))
+    publishEmbedded(app)
+    send0(commands, sel("retain"))
+    app.embed.pending = commands
+    app.embed.pendingWidth = app.embed.width
+    app.embed.pendingHeight = app.embed.height
+    app.embed.frames++
+    app.gpu.enc = 0
+    app.gpu.cmd = 0
+    app.gpu.drawable = 0
+    app.gpu.hasEncoder = false
+    fin interval = app.refreshInterval()
+    if interval > 0.0 {
+        fin now = CACurrentMediaTime()
+        if app.embed.due < now - interval then app.embed.due = now
+        app.embed.due += interval
+        if app.embed.due > now then azSendF1(cls("NSThread"), sel("sleepForTimeInterval:"), app.embed.due - now)
+    }
+}
+
+/** Publishes the frame kept from last time, once the GPU has finished it: its size, then one more published frame. */
+func publishEmbedded(app: App!) {
+    if app.embed.pending == 0 then return
+    send0(app.embed.pending, sel("waitUntilCompleted"))
+    send0(app.embed.pending, sel("release"))
+    app.embed.pending = 0
+    fin region = app.embed.link.region
+    azPoke32(region, embedAtFrameWidth, app.embed.pendingWidth)
+    azPoke32(region, embedAtFrameHeight, app.embed.pendingHeight)
+    azPoke32(region, embedAtFrameRow, embedRowBytes(app.embed.pendingWidth) as Int)
+    // The slot follows from the count: frame n (from 1) is in slot (n - 1) % slots.
+    azPoke32(region, embedAtFrameSlot, ((app.embed.frames - 1) % (embedSlots as Long)) as Int)
+    azPoke64(region, embedAtPublished, app.embed.frames)
 }
 
 /**
@@ -864,6 +1124,10 @@ func gpuEndFrameCaptured(app: App!, path: String) {
 }
 
 func gpuEndFrame(app: App!) {
+    if app.embed.link.region != 0 {
+        gpuEndEmbeddedFrame(app)
+        return
+    }
     let gpu: AzGpu! = app.gpu
     if !gpu.hasEncoder then return
     // A scene pass nothing ended still reaches the screen.

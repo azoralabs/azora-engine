@@ -119,13 +119,21 @@ func mat4RotationZ(rad: Double): Mat4 {
 }
 
 /// Right-handed perspective projection (depth 0..1, Metal/Vulkan convention).
+/**
+ * A perspective projection with reversed depth: the near plane lands at depth
+ * 1 and the far plane at 0. A float depth buffer then holds about the same
+ * relative precision at every distance; with the near plane at 0 it held
+ * under a metre at two kilometres, so a road 35 cm over its ground flickered
+ * through it in the distance. Depth tests compare with Greater, and depth
+ * clears to 0.
+ */
 func mat4Perspective(fovYDeg: Double, aspect: Double, zNear: Double, zFar: Double): Mat4 {
     fin f = 1.0 / tan((fovYDeg * 3.14159265358979 / 180.0) * 0.5)
-    fin range = zNear - zFar
+    fin range = zFar - zNear
     return Mat4(
         f / aspect, 0.0, 0.0, 0.0
         0.0, f, 0.0, 0.0
-        0.0, 0.0, zFar / range, zNear * zFar / range
+        0.0, 0.0, zNear / range, zNear * zFar / range
         0.0, 0.0, -1.0, 0.0
     )
 }

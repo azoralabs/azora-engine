@@ -26,6 +26,26 @@ pack HeightfieldTerrain derives Clone {
      */
     @Range(min: 0.0, max: 32.0, step: 0.5)
     var detailError: Double = 4.0
+    /**
+     * Whether the scene's roads cut and fill this heightfield. A tile whose
+     * generator graded it already (azora-procedural) says no, so streaming a
+     * road in does not grade every loaded tile again.
+     */
+    var gradeRoads: Bool = true
+}
+
+/**
+ * Squares of a heightfield that are not drawn, [spacing] image samples a
+ * side and [columns] of them across, row after row from the image's first
+ * sample; `true` in [hidden] leaves one out. [spacing] must be 8, 16 or 32,
+ * so a square is a sixteenth, a quarter or the whole of a drawn chunk. A
+ * World Partition hides its overview where its detailed cells are loaded.
+ */
+@Component
+pack TerrainHoles derives Clone {
+    var spacing: Int = 16
+    var columns: Int = 0
+    var hidden: Array<Bool> = []
 }
 
 pack TerrainImage derives Clone {

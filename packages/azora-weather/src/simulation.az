@@ -6,29 +6,42 @@ import engine.math
 import engine.scene
 import engine.atmosphere
 import engine.weather.components
-import engine.weather.presets
+import engine.weather.state
 import engine.weather.storm
+import engine.render.scene::{sceneWindEntity, sceneWind}
 
-/** Supplies the atmospheric renderer with the current weather. */
+/**
+ * Moves the weather on [owner] (the Atmosphere's entity) [dt] seconds on and
+ * supplies the atmospheric renderer with it. Each part is found wherever it
+ * is in the scene and does only its own work: Rain and Snow fall, soak and
+ * whiten the ground and grey the air; Dust hazes the air in its colour; the
+ * Wind blows and carries the clouds; Thunder strikes. The clouds are as their
+ * own component sets them.
+ */
 func previewWeather(world: World!, owner: Entity, state: AetherState!, elapsed: Double, dt: Double, eye: Vec3&, right: Vec3&) {
-    fin weather = storageGetOrDefault<AetherWeather>(ensureStorage(world), owner, .(enabled: false))
-    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage(world), owner, .(enabled: false))
-    fin windy = world.isAlive(sceneWindEntity(world))
-    fin blowing = sceneWind(world, elapsed)
-    stepWeather(state, if weather.enabled then weather else AetherWeather(), dt, windy, blowing.x, blowing.z)
-    var air = AtmosphereConditions(coverage: state.current.coverage, cloudType: state.current.cloudType,
-        density: state.current.density, driftX: state.driftX, driftZ: state.driftZ)
-    fin fog = state.current.fog * state.current.fog
-    fin wet = state.current.rain + state.current.snow
-    air.fogDensity = fog * 22.0 + state.current.rain * 0.9 + state.current.snow * 1.6
-    air.fogFalloff = (3.5 * fog + 1.2 * wet) / (if fog + wet > 0.001 then fog + wet else 0.001)
+    fin parts = weatherParts(world)
+    followParts(state, parts, dt)
+    fin windy = sceneWindEntity(world)
+    fin steady = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).speed else 0.0
+    blowWind(state, sceneWind(world, elapsed), steady, dt)
+    soakGround(state, parts, dt)
+    var air = AtmosphereConditions(driftX: state.driftX, driftZ: state.driftZ)
+    // The haze, per kilometre at the ground: rain and snow grey the distance, dust thickens it in its colour and hugs the ground.
+    fin rainHaze = state.rain * 0.9 * weatherClamp(parts.rain.haze, 0.0, 2.0)
+    fin snowHaze = state.snow * 1.6 * weatherClamp(parts.snow.haze, 0.0, 2.0)
+    fin dustHaze = state.dust * state.dust * 8.0 * weatherClamp(parts.dust.haze, 0.0, 2.0)
+    fin haze = rainHaze + snowHaze + dustHaze
+    air.fogDensity = haze
+    air.fogFalloff = if haze > 0.0001 then (1.2 * (rainHaze + snowHaze) + 2.5 * dustHaze) / haze else 1.2
+    air.dust = if haze > 0.0001 then dustHaze / haze else 0.0
+    air.dustColor = parts.dust.color.clone()
     let storms = ensureStorage<AetherStorm>(world)
     fin stormAt = storageIndexOf<AetherStorm>(storms, owner)
     if stormAt >= 0 {
-        fin cover = if !clouds.enabled then 0.0 else if clouds.coverage >= 0.0 then clouds.coverage else air.coverage
-        fin lit = stepStorm(storms.values[stormAt], elapsed, dt, state.current.lightning, cover,
-            clouds.baseAltitude, eye.x, eye.y, eye.z, right.x, right.z)
-        air.flash = lit.y
+        fin lit = stepStorm(storms.values[stormAt], elapsed, dt, state.lightning, sceneClouds(world).baseAltitude,
+            eye.x, eye.y, eye.z, right.x, right.z)
+        fin bright = if parts.thunder.enabled then weatherClamp(parts.thunder.brightness, 0.0, 3.0) else 1.0
+        air.flash = lit.y * bright
         air.flashX = lit.x
         air.flashZ = lit.z
     }

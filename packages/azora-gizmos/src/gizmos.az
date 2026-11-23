@@ -154,7 +154,17 @@ pack EditorCamera derives Clone {
     var halfHeight: Double = 6.0
     var near: Double = 0.05
     var far: Double = 800.0
+    /**
+     * Flying speed in metres per second, as an editor's camera speed setting
+     * sets it; 0 flies at a speed that follows the distance to the orbit
+     * centre (a close-up creeps, an overview sweeps).
+     */
+    var speed: Double = 0.0
 }
+
+/** The slowest and the fastest an editor camera flies, metres per second. */
+inline fin cameraSlowest: Double = 0.25
+inline fin cameraFastest: Double = 4000.0
 
 impl EditorCamera {
     func &.forward(): Vec3 {
@@ -193,12 +203,13 @@ impl EditorCamera {
 
     func &.projection(aspect: Double): Mat4 {
         if self.orthographic {
+            // Reversed depth, as [mat4Perspective]: near 1, far (1000 units) 0.
             fin halfWidth = self.halfHeight * aspect
-            fin range = self.near - 1000.0
+            fin range = 1000.0 - self.near
             return Mat4(
                 1.0 / halfWidth, 0.0, 0.0, 0.0
                 0.0, 1.0 / self.halfHeight, 0.0, 0.0
-                0.0, 0.0, 1.0 / range, self.near / range
+                0.0, 0.0, 1.0 / range, 1000.0 / range
                 0.0, 0.0, 0.0, 1.0
             )
         }
@@ -265,7 +276,8 @@ impl EditorCamera {
             self.target = v3add(self.target, .(right * step, forward * step, 0.0))
             return
         }
-        fin speed = (if self.distance < 2.0 then 2.0 else self.distance) * 0.9 * boost
+        fin base = if self.speed > 0.0 then self.speed else (if self.distance < 2.0 then 2.0 else self.distance) * 0.9
+        fin speed = base * boost
         fin step = speed * seconds
         fin motion = v3add(v3add(v3scale(self.forward(), forward * step), v3scale(self.right(), right * step)), .(0.0, up * step, 0.0))
         self.target = v3add(self.target, motion)
@@ -280,8 +292,18 @@ impl EditorCamera {
     /** Moves in (positive [steps]) or out. */
     func !.zoom(steps: Double) {
         fin factor = powr(0.88, steps)
-        self.distance = clampValue(self.distance * factor, 0.2, 500.0)
-        self.halfHeight = clampValue(self.halfHeight * factor, 0.1, 500.0)
+        self.distance = clampValue(self.distance * factor, 0.2, 50000.0)
+        self.halfHeight = clampValue(self.halfHeight * factor, 0.1, 50000.0)
+    }
+
+    /**
+     * Speeds the flying up (positive [steps]) or down, a fifth per step, as
+     * the wheel does in an editor while the right button flies the camera.
+     * A camera on the automatic speed starts from the speed it flew at.
+     */
+    func !.changeSpeed(steps: Double) {
+        fin from = if self.speed > 0.0 then self.speed else (if self.distance < 2.0 then 2.0 else self.distance) * 0.9
+        self.speed = clampValue(from * powr(1.2, steps), cameraSlowest, cameraFastest)
     }
 
     /** Centres on [point], far enough back to see [radius] around it. */

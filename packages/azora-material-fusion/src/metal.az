@@ -140,9 +140,10 @@ impl FusionLibrary {
     }
 
     func !.resolve(device: Long, path: String): Long {
-        if !fusionAssetPath(path) then return 0
+        // A loaded material was checked when it loaded; only a new path is.
         fin index = self.index(path)
-        return if index >= 0 then self.items[index].pipeline.handle else self.reload(device, path).handle
+        if index >= 0 then return self.items[index].pipeline.handle
+        return if fusionAssetPath(path) then self.reload(device, path).handle else 0
     }
 
     func &.bindTextures(encoder: Long, pipeline: Long) {

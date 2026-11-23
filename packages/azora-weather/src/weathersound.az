@@ -6,9 +6,8 @@ import engine.ecs
 import engine.io
 import engine.audio.dsp
 import engine.audio.output
-import engine.atmosphere.components
 import engine.weather.components
-import engine.weather.presets
+import engine.weather.state
 
 /** Drops heard at once on each side, and the numbers each one keeps (amplitude, phase, pitch, glide, decay, click). */
 inline fin dropVoices: Int = 24
@@ -113,12 +112,14 @@ func pickDrop(sound: AetherSound!, side: Int, loud: Double) {
 
 /**
  * Adds [frames] of rain and wind for [state]'s weather into [mix] (stereo,
- * interleaved), at the levels [audio] sets.
+ * interleaved): the rain at the Rain's [rainVolume], the wind at the Wind's
+ * [windVolume].
  */
-func mixWeather(sound: AetherSound!, state: AetherState&, audio: AetherAudio&, mix: Long, frames: Int, rate: Double, wetness: Double) {
-    fin targetRain = if audio.enabled then weatherClamp(state.current.rain, 0.0, 1.0) else 0.0
-    fin speed = weatherClamp(sqrt(state.windX * state.windX + state.windZ * state.windZ), 0.0, 40.0)
-    fin targetWind = if audio.enabled then speed else 0.0
+func mixWeather(sound: AetherSound!, state: AetherState&, rainVolume: Double, windVolume: Double, mix: Long, frames: Int, rate: Double) {
+    fin targetRain = weatherClamp(state.rain, 0.0, 1.0)
+    fin targetWind = weatherClamp(sqrt(state.windX * state.windX + state.windZ * state.windZ), 0.0, 40.0)
+    fin speed = targetWind
+    fin wetness = state.wetness
     // The rain's colour: bright clicks, a little fuller in a downpour; the far wash is high and faint.
     sound.hissLeft.highpass(1500.0 - 500.0 * targetRain, 0.6, rate)
     sound.hissRight.highpass(1500.0 - 500.0 * targetRain, 0.6, rate)
@@ -132,9 +133,8 @@ func mixWeather(sound: AetherSound!, state: AetherState&, audio: AetherAudio&, m
     sound.whistleLeft.bandpass(900.0 + 60.0 * speed, 14.0, rate)
     sound.whistleRight.bandpass(980.0 + 60.0 * speed, 14.0, rate)
     sound.windLow.lowpass(140.0, 0.7, rate)
-    fin master = audio.master
-    fin rainLevel = audio.rain * master
-    fin windLevel = audio.wind * master
+    fin rainLevel = weatherClamp(rainVolume, 0.0, 2.0)
+    fin windLevel = weatherClamp(windVolume, 0.0, 2.0)
     // Impacts per second on each side: thousands of tiny ones, a few hundred heard one by one, ringing on wet ground.
     fin crackles = 5200.0 / rate
     fin crackleFade = exp(-1.0 / (0.00035 * rate))

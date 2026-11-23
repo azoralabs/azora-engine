@@ -11,6 +11,14 @@ import engine.vehicles
 import engine.landscape
 import dolomites.components
 
+/**
+ * A camera that follows a vehicle from behind. It moves in the same
+ * simulation sub-steps as the vehicle (see [stepChaseCamera]), with easings
+ * that close the same share of the gap however the time is cut up: eased
+ * once per frame by the frame's time, it lagged a different distance after a
+ * short frame than after a long one, and whenever the frame rate dipped the
+ * car seemed to jump back and forth in front of it.
+ */
 @Component
 pack ChaseCamera {
     var heading: Double
@@ -18,6 +26,10 @@ pack ChaseCamera {
     fin pitch: Double
     /** Degrees the camera looks further down to keep its eye off the ground, eased toward what the slope asks. */
     var lift: Double = 0.0
+    /** Heading, focus and lift one step earlier. */
+    var lastHeading: Double = 0.0
+    var lastFocus: Vec3 = .(0.0, 0.0, 0.0)
+    var lastLift: Double = 0.0
 }
 
 func attachChaseCamera(frame: Game!, player: Entity) {
@@ -26,26 +38,49 @@ func attachChaseCamera(frame: Game!, player: Entity) {
     fin position = presentedPosition(frame.world, player)
     fin pitch = -atan2(controller.cameraHeight, controller.cameraDistance) / degreesToRadians
     frame.camera = EditorCamera(target: position.clone(), yaw: vehicle.yaw / degreesToRadians,
-        pitch: pitch, distance: controller.cameraDistance, fov: 58.0, far: 17000.0)
+        pitch: pitch, distance: controller.cameraDistance, fov: 58.0, far: 60000.0)
     storageInsert<ChaseCamera>(ensureStorage<ChaseCamera>(frame.world), player,
-        ChaseCamera(vehicle.yaw, take position, pitch))
+        ChaseCamera(vehicle.yaw, position.clone(), pitch, lastHeading: vehicle.yaw, lastFocus: position.clone()))
 }
 
-@System(phase: .PostUpdate)
-func followVehicle(frame: Game!, cameras: @query [ChaseCamera!, Vehicle&, Course&]) {
+/** The share of the way an easing at [rate] per second closes in [seconds], the same however the time is cut up. */
+func easing(rate: Double, seconds: Double): Double = 1.0 - exp(-rate * seconds)
+
+/** One fixed step of every chase camera, right after its vehicle's. */
+@System(phase: .FixedUpdate, runAfter: "driveVehicle")
+func stepChaseCamera(world: World!, time: Time&, cameras: @query [ChaseCamera!, Vehicle&, Course&]) {
     cameras.unpack { player, chase, vehicle, course ->
-        fin dt = frame.time.deltaSecs
+        fin controller = storageGetOrDefault<PlayerController>(ensureStorage(world), player, .())
+        fin dt = time.fixedDeltaSecs
+        chase.lastHeading = chase.heading
+        chase.lastFocus = chase.focus.clone()
+        chase.lastLift = chase.lift
         fin turn = vehicle.yaw - chase.heading
-        chase.heading += atan2(sin(turn), cos(turn)) * vehicleClamp(dt * 4.5, 0.0, 1.0)
-        fin position = presentedPosition(frame.world, player)
-        chase.focus = chase.focus.add(position.subtract(chase.focus).scale(vehicleClamp(dt * 12.0, 0.0, 1.0)))
-        frame.camera.yaw = chase.heading / degreesToRadians
-        frame.camera.target = chase.focus.add(.(0.0, 0.55, 0.0)).add(vehicleForward(chase.heading).scale(1.6))
+        chase.heading += atan2(sin(turn), cos(turn)) * easing(4.5, dt)
+        fin position: Vec3 = .(vehicle.x, vehicle.y, vehicle.z)
+        chase.focus = chase.focus.add(position.subtract(chase.focus).scale(easing(12.0, dt)))
         // Rising quickly enough never to sink into the slope, settling back slowly enough never to bob.
-        fin needed = liftOverGround(frame.camera, chase.pitch, course.terrain)
-        fin rate = if needed > chase.lift then 14.0 else 2.5
-        chase.lift += (needed - chase.lift) * vehicleClamp(dt * rate, 0.0, 1.0)
-        frame.camera.pitch = chase.pitch - chase.lift
+        var eye: EditorCamera = .(target: aimOf(chase.focus, chase.heading), yaw: chase.heading / degreesToRadians,
+            pitch: chase.pitch, distance: controller.cameraDistance)
+        fin needed = liftOverGround(eye, chase.pitch, course.terrain)
+        chase.lift += (needed - chase.lift) * easing(if needed > chase.lift then 14.0 else 2.5, dt)
+    }
+}
+
+/** Where the camera looks: a little above and ahead of the vehicle. */
+func aimOf(focus: Vec3&, heading: Double): Vec3 = focus.add(.(0.0, 0.55, 0.0)).add(vehicleForward(heading).scale(1.6))
+
+/** Places the frame's camera between its last two steps, by the same fraction the vehicle is drawn at. */
+@System(phase: .PostUpdate)
+func followVehicle(frame: Game!, cameras: @query [ChaseCamera&]) {
+    fin t = vehicleClamp(frame.interpolation, 0.0, 1.0)
+    cameras.unpack { player, chase ->
+        fin turn = chase.heading - chase.lastHeading
+        fin heading = chase.lastHeading + atan2(sin(turn), cos(turn)) * t
+        fin focus = chase.lastFocus.add(chase.focus.subtract(chase.lastFocus).scale(t))
+        frame.camera.yaw = heading / degreesToRadians
+        frame.camera.target = aimOf(focus, heading)
+        frame.camera.pitch = chase.pitch - (chase.lastLift + (chase.lift - chase.lastLift) * t)
     }
 }
 

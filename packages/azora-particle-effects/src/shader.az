@@ -118,8 +118,9 @@ kernel void particle_spawn_events(device float4* p [[buffer(0)]], constant Parti
     }
 }
 
+/** The distance a reversed depth (near 1, far 0) stands for, with near and far in u.depth.xy. */
 float sceneDepthDistance(float z, constant ParticleU& u) {
-    return u.depth.x * u.depth.y / max(u.depth.y - z * (u.depth.y - u.depth.x), 1e-4);
+    return u.depth.x * u.depth.y / max(u.depth.x + z * (u.depth.y - u.depth.x), 1e-4);
 }
 
 float3 depthWorld(float2 px, float z, constant ParticleU& u) {
@@ -183,7 +184,7 @@ kernel void particle_update(device float4* p [[buffer(0)]], constant ParticleU& 
             if (all(px >= 2.0) && all(px < u.screen.zw - 3.0)) {
                 float z = depth.read(uint2(px));
                 float surface = sceneDepthDistance(z, u);
-                if (z < 1.0 && clip.w > surface && clip.w < surface + u.depth.z) {
+                if (z > 0.0 && clip.w > surface && clip.w < surface + u.depth.z) {
                     float3 hit = depthWorld(px + 0.5, z, u);
                     float3 dx = depthWorld(px + float2(2.5, 0.5), depth.read(uint2(px + float2(2.0, 0.0))), u) - hit;
                     float3 dy = depthWorld(px + float2(0.5, 2.5), depth.read(uint2(px + float2(0.0, 2.0))), u) - hit;

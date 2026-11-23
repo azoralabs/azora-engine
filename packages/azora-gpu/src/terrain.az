@@ -46,7 +46,12 @@ pack TerrainMesh derives Clone {
     var chunksZ: Int = 0
     var gradedEntity: Int = -1
     var layout: Long = 0
+    /** The terrain frame it was last drawn in: a mesh nobody draws for a while is released (streamed tiles). */
+    var lastUsed: Int = 0
     var placement: Mat4 = mat4Identity()
+    /** The lowest and highest image height of any chunk: with the unit square, the whole terrain's box. */
+    var low: Double = 0.0
+    var high: Double = 0.0
 }
 
 /** The affine part of the transform used when cutting and filling a heightfield. */
@@ -59,6 +64,80 @@ func sameTerrainPlacement(a: Mat4&, b: Mat4&): Bool =
 pack TerrainIndices derives Clone {
     var buffers: Array<Long> = []
     var counts: Array<Int> = []
+    /** Buffers that leave squares of a chunk out (see [holedTerrainIndices]), made when first drawn. */
+    var holedKeys: Array<Int> = []
+    var holedBuffers: Array<Long> = []
+    var holedCounts: Array<Int> = []
+}
+
+/**
+ * Which of a chunk's squares [holes] leaves out, a bit each: the chunk whose
+ * first vertex is image sample ([column], [row]) has (32 / spacing)^2 squares,
+ * bit `j * side + i` for the square `i` across and `j` down. Zero when it
+ * draws whole.
+ */
+func chunkHoles(holes: TerrainHoles&, column: Int, row: Int): Int {
+    if holes.columns <= 0 || (holes.spacing != 8 && holes.spacing != 16 && holes.spacing != 32) then return 0
+    fin side = terrainChunkCells / holes.spacing
+    fin first = column / holes.spacing
+    fin top = row / holes.spacing
+    var bits = 0
+    for j: Int in 0..<side {
+        for i: Int in 0..<side {
+            fin x = first + i
+            fin index = (top + j) * holes.columns + x
+            if x < holes.columns && index < holes.hidden.size && holes.hidden[index] then bits += 1 << (j * side + i)
+        }
+    }
+    return bits
+}
+
+/** The finest level that can leave out squares [spacing] samples a side: its cells must not be larger. */
+func holedLevelLimit(spacing: Int): Int = when spacing {
+    8 -> 3
+    16 -> 4
+    else -> terrainLevels - 1
+}
+
+/**
+ * The slot in [indices]' holed buffers of [level] and coarser-neighbour
+ * [mask] with the squares in [bits] (see [chunkHoles], squares [spacing]
+ * samples a side) left out, made the first time it is asked for: only the
+ * few that chunks next to a hole use are ever made.
+ */
+func holedTerrainIndices(indices: TerrainIndices!, device: Long, level: Int, mask: Int, bits: Int, spacing: Int): Int {
+    fin key = ((level * 16 + mask) * 4 + spacing / 8) * 65536 + bits
+    for i: Int in 0..<indices.holedKeys.size then if indices.holedKeys[i] == key then return i
+    fin step = 1 << level
+    fin cells = terrainChunkCells / step
+    fin side = terrainChunkCells / spacing
+    fin data = azAlloc((terrainChunkCells * terrainChunkCells * 6 * 4) as Long)
+    var count = 0
+    if data != 0 {
+        for cj: Int in 0..<cells {
+            for ci: Int in 0..<cells {
+                fin square = ((cj * step) / spacing) * side + (ci * step) / spacing
+                if (bits >> square) % 2 == 1 then continue
+                fin p00 = foldedVertex(ci * step, cj * step, step, mask)
+                fin p10 = foldedVertex((ci + 1) * step, cj * step, step, mask)
+                fin p01 = foldedVertex(ci * step, (cj + 1) * step, step, mask)
+                fin p11 = foldedVertex((ci + 1) * step, (cj + 1) * step, step, mask)
+                if cellRunsDown(ci, cj) {
+                    count = addTerrainTriangle(data, count, p00, p01, p11)
+                    count = addTerrainTriangle(data, count, p00, p11, p10)
+                } else {
+                    count = addTerrainTriangle(data, count, p00, p01, p10)
+                    count = addTerrainTriangle(data, count, p10, p01, p11)
+                }
+            }
+        }
+    }
+    indices.holedKeys.add(key)
+    indices.holedBuffers.add(if data == 0 then 0 else send3(device, sel("newBufferWithBytes:length:options:"), data,
+        ((if count > 0 then count else 1) * 4) as Long, 0))
+    indices.holedCounts.add(count)
+    if data != 0 then azFree(data)
+    return indices.holedKeys.size - 1
 }
 
 func terrainVertex(data: Long, at: Int, image: TerrainImage&, x: Int, z: Int) {
@@ -116,7 +195,21 @@ func loadTerrainMesh(device: Long, root: String, path: String): TerrainMesh {
     return if image.samples == 0 then TerrainMesh(path) else buildTerrainMesh(device, path, image)
 }
 
-func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainMesh {
+/**
+ * How much more a level's rise over the road bed counts than its error
+ * elsewhere. The road sits 0.35 m over its bed; a coarse level whose
+ * triangles rise above the bed by a fraction of what is tolerated on bare
+ * hillside already swallows the road in the distance, which drew the far
+ * roads broken.
+ */
+inline fin terrainRoadStrictness: Double = 8.0
+
+/**
+ * The chunked, levelled mesh of [image]. [paved] (one byte per sample, see
+ * `gradeRoadTerrain`) marks samples under the pavement: a level's rise above
+ * them weighs [terrainRoadStrictness] times its error in choosing the level.
+ */
+func buildTerrainMesh(device: Long, path: String, image: TerrainImage, paved: Long = 0): TerrainMesh {
     var mesh: TerrainMesh = .(path, image)
     mesh.chunksX = (image.columns - 1 + terrainChunkCells - 1) / terrainChunkCells
     mesh.chunksZ = (image.rows - 1 + terrainChunkCells - 1) / terrainChunkCells
@@ -146,24 +239,31 @@ func buildTerrainMesh(device: Long, path: String, image: TerrainImage): TerrainM
             }
             // Each level's error is the largest gap between the grid and what the level draws,
             // never smaller than a finer level's, so a coarser level is never thought closer.
-            var level = 0
             var worst: Double = 0.0
-            while level < terrainLevels {
+            var rise: Double = 0.0
+            for level: Int in 0..<terrainLevels {
                 fin step = 1 << level
                 if level > 0 {
-                    j = 0
-                    while j < terrainChunkSide {
+                    for j: Int in 0..<terrainChunkSide {
                         for i: Int in 0..<terrainChunkSide {
-                            fin gap = absValue(chunkHeight(image, chunk, i, j) - levelHeight(image, chunk, step, i, j))
+                            fin drawn = levelHeight(image, chunk, step, i, j)
+                            fin grid = chunkHeight(image, chunk, i, j)
+                            fin gap = absValue(grid - drawn)
                             if gap > worst then worst = gap
+                            if paved != 0 && drawn > grid + rise {
+                                fin x = if chunk.column + i < image.columns then chunk.column + i else image.columns - 1
+                                fin z = if chunk.row + j < image.rows then chunk.row + j else image.rows - 1
+                                if azPeek8(paved, (z * image.columns + x) as Long) != 0 then rise = drawn - grid
+                            }
                         }
-                        j++
                     }
                 }
-                chunk.errors.add(worst)
-                level++
+                fin road = rise * terrainRoadStrictness
+                chunk.errors.add(if road > worst then road else worst)
             }
             chunk.buffer = send3(device, sel("newBufferWithBytes:length:options:"), data, bytes, 0)
+            if mesh.chunks.size == 0 || chunk.low < mesh.low then mesh.low = chunk.low
+            if mesh.chunks.size == 0 || chunk.high > mesh.high then mesh.high = chunk.high
             mesh.chunks.add(take chunk)
             cx++
         }
@@ -241,8 +341,14 @@ func releaseTerrainIndices(indices: TerrainIndices!) {
     for buffer in indices.buffers {
         if buffer != 0 then send0(buffer, sel("release"))
     }
+    for buffer in indices.holedBuffers {
+        if buffer != 0 then send0(buffer, sel("release"))
+    }
     indices.buffers.clear()
     indices.counts.clear()
+    indices.holedKeys.clear()
+    indices.holedBuffers.clear()
+    indices.holedCounts.clear()
 }
 
 
@@ -255,6 +361,9 @@ pack RoadSurfaceMesh {
 /** The road mesh buffers and shared CPU network for one rendered scene. */
 pack RoadRenderCache {
     var layout: Long = 0
+    /** The frame and scene revisions [layout] was last checked at, so a frame checks it once. */
+    var checkedFrame: Int = -1
+    var checkedStamp: Long = -1
     var revision: Long = 0
     var network: RoadNetwork = .()
     var buffers: Array<Long> = []

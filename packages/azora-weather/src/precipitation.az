@@ -9,10 +9,10 @@ import engine.objc
 import engine.particles
 import engine.atmosphere.components
 import engine.weather.components
-import engine.weather.presets
+import engine.weather.state
 
 /**
- * Rain and snow as the Engine's GPU particles: drops and flakes in two camera
+ * Rain, snow and dust as the Engine's GPU particles: drops, flakes and motes in two camera
  * boxes (a dense near one, a wide far one) that are drawn; a pool of drops
  * that is never drawn and only lands, over the box the weather's
  * `splashDistance` sets, so splashes reach as far as asked without drawing
@@ -34,6 +34,8 @@ pack AetherPrecipitation {
     var flakesNear: ParticleSystem = .()
     var flakesFar: ParticleSystem = .()
     var puffs: ParticleSystem = .()
+    var motesNear: ParticleSystem = .()
+    var motesFar: ParticleSystem = .()
     var ready: Bool = false
 }
 
@@ -42,6 +44,8 @@ inline fin nearDropCount: Int = 32768
 inline fin farDropCount: Int = 26624
 inline fin nearFlakeCount: Int = 14336
 inline fin farFlakeCount: Int = 22528
+inline fin nearMoteCount: Int = 12288
+inline fin farMoteCount: Int = 16384
 inline fin hitsPerStep: Int = 8192
 
 /** Landings per square metre and second in a downpour: out to the splash distance, and within [nearReach] of the eye. */
@@ -83,6 +87,8 @@ func aetherPrecipitation(device: Long, queue: Long): AetherPrecipitation {
     rain.flakesNear = particleSystem(device, queue, nearFlakeCount, true, hitsPerStep)
     rain.flakesFar = particleSystem(device, queue, farFlakeCount, true)
     rain.puffs = particleSystem(device, queue, 8192, true)
+    rain.motesNear = particleSystem(device, queue, nearMoteCount, true)
+    rain.motesFar = particleSystem(device, queue, farMoteCount, true)
     sizeImpacts(rain, device, queue, 35.0)
     rain.ready = true
     return take rain
@@ -124,3 +130,13 @@ func dropletEmitter(splashes: Double): ParticleEmitter = ParticleEmitter(simulat
 /** A burst of snow where a flake lands. */
 func puffEmitter(): ParticleEmitter = ParticleEmitter(simulation: 1, lifeMin: 0.4, lifeMax: 0.6, gravity: 0.0, drag: 2.0, wind: 0.3,
     sizeStart: 0.025, sizeEnd: 0.08, colorStart: .(1.0, 1.0, 1.0, 0.5), colorEnd: .(1.0, 1.0, 1.0, 0.0), lit: 1.0, softness: 0.1)
+
+/**
+ * Dust motes in a camera box [half] metres each way: drifting with the wind,
+ * swirling, hardly falling, [size] metres across and of the dust's [color].
+ * The far box's motes are larger, so the haze has a grain to it.
+ */
+func moteEmitter(half: Double, size: Double, color: Rgba&): ParticleEmitter = ParticleEmitter(simulation: 1, spawn: 3,
+    extent: .(half, half * 0.5, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, gravity: 0.15, drag: 2.5, terminalSpeed: 0.25
+    wind: 1.1, turbulence: 1.6, sizeStart: size, sizeEnd: size, colorStart: .(color.r, color.g, color.b, 0.55)
+    colorEnd: .(color.r, color.g, color.b, 0.55), shape: 0, lit: 1.0, softness: 0.3, nearFade: 0.4)

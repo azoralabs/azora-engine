@@ -96,7 +96,7 @@ impl Composition {
                     if childHeight > lineHeight then lineHeight = childHeight
                 }
             }
-            storageInsert<Scroll>(store(self), node, .(scroll.offset, cursorY + lineHeight + scroll.offset))
+            if storageHas<Scroll>(store(self), node) then storageInsert<Scroll>(store(self), node, .(scroll.offset, cursorY + lineHeight + scroll.offset))
             return
         }
 
@@ -233,8 +233,12 @@ impl Composition {
             index++
         }
 
-        // Record how much room the children wanted, so scrolling can be bounded.
-        if layout.direction == layoutColumn {
+        // Record how much room a scroll container's children wanted, so its
+        // scrolling can be bounded. Only a container that scrolls: a Scroll on
+        // every column made each card in a scrolled list a scroll target of its
+        // own, so the wheel moved the card under the pointer (which had nothing
+        // to scroll) instead of the list - the list scrolled only from its edge.
+        if layout.direction == layoutColumn && storageHas<Scroll>(store(self), node) {
             storageInsert<Scroll>(store(self), node, .(scroll.offset, content + scroll.offset))
         }
     }

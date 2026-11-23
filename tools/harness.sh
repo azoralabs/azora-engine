@@ -43,7 +43,7 @@ if [ -f "$PROJECT/harness.env" ]; then
         case "$line" in ''|'#'*) ;; *) export "$line" ;; esac
     done < "$PROJECT/harness.env"
 fi
-ACTUAL="$(cd "$PROJECT" && "./.azora-build/$APP" 2>&1 | grep -v '^azora-engine:\|^Material Fusion:')"
+ACTUAL="$(cd "$PROJECT" && "./.azora-build/$APP" 2>&1 | grep -v '^azora-engine:\|^Material Fusion:\|^World Partition:')"
 if [ "$ACTUAL" = "$(cat "$PROJECT/expected.txt")" ]; then
     echo "PASS $NAME"
 else

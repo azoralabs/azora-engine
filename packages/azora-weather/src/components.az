@@ -4,63 +4,133 @@ import std.traits
 import engine.core
 import engine.ecs
 import engine.scene
+import engine.scene.transforms
+
+// The weather is made of parts, each a component of its own that says
+// everything about one thing and works wherever it is in the scene: Rain,
+// Snow, Dust, Thunder, the scene's Wind and the Volumetric Clouds (with the
+// Atmosphere). Nothing drives another: rain does not change the clouds, the
+// clouds do not hold back the lightning. Off, or at zero, a part is gone.
 
 /**
- * The weather: a preset the sky moves to over [transitionSeconds], or a
- * random sequence of them, and overrides for each of its parts (negative:
- * the preset's own). Presets: Clear, Cloudy, Overcast, Fog, LightRain, Rain,
- * Thunderstorm, LightSnow, Snow, Blizzard.
+ * Rain: how hard it falls, how its drops splash and how loud it is, and how
+ * fast the ground soaks while it rains and dries once it stops.
  */
 @Component
-@Inspectable(title: "Weather", serializedName: "AetherWeather", icon: "cloud-rain", category: "Weather", order: 32)
-pack AetherWeather derives Clone {
+@Inspectable(title: "Rain", serializedName: "Rain", icon: "cloud-rain", category: "Weather", order: 34)
+pack Rain derives Clone {
     var enabled: Bool = true
-    var preset: String = "Clear"
-    @Range(min: 0.0, max: 600.0, step: 1.0)
-    var transitionSeconds: Double = 20.0
-    /** Moves through presets on its own, each held for about [randomMinutes]. */
-    var random: Bool = false
-    @Range(min: 0.5, max: 120.0, step: 0.5)
-    var randomMinutes: Double = 6.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var rain: Double = -1.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var snow: Double = -1.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var fog: Double = -1.0
-    /** Metres per second, and the compass bearing it blows from. */
-    @Range(min: -1.0, max: 40.0, step: 0.5)
-    var windSpeed: Double = -1.0
-    @Range(min: 0.0, max: 360.0, step: 1.0)
-    var windDirection: Double = 225.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var gusts: Double = -1.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var wetness: Double = -1.0
-    @Range(min: -1.0, max: 1.0, step: 0.01)
-    var snowCover: Double = -1.0
-    /** Strikes per minute. */
-    @Range(min: -1.0, max: 30.0, step: 0.5)
-    var lightning: Double = -1.0
+    /** 0 a dry sky, 0.3 a drizzle, 1 a downpour. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var intensity: Double = 0.5
     /** How far around the camera landing drops are seen to splash, in metres. */
     @Range(min: 5.0, max: 80.0, step: 1.0)
     var splashDistance: Double = 35.0
     /** How much a landing drop throws up: 0 only rings on wet ground, 1 a full crown of droplets. */
     @Range(min: 0.0, max: 1.0, step: 0.01)
     var splashes: Double = 0.35
+    /** How much the rain greys the air into the distance: 1 as rain does, 0 not at all. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var haze: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var volume: Double = 1.0
+    /** Seconds the ground takes to soak through while it rains. */
+    @Range(min: 1.0, max: 600.0, step: 1.0)
+    var soakSeconds: Double = 30.0
+    /** Seconds the ground takes to dry once the rain has stopped. */
+    @Range(min: 10.0, max: 3600.0, step: 10.0)
+    var drySeconds: Double = 300.0
 }
 
-/** How loud the weather is: rain, wind and thunder, under a master level. */
+/** Snow: how hard it falls, how it whitens the air, and how fast it settles and melts. */
 @Component
-@Inspectable(title: "Weather Audio", serializedName: "AetherAudio", icon: "volume-2", category: "Weather", order: 33)
-pack AetherAudio derives Clone {
+@Inspectable(title: "Snow", serializedName: "Snow", icon: "snowflake", category: "Weather", order: 35)
+pack Snow derives Clone {
     var enabled: Bool = true
+    /** 0 none, 0.3 a few flakes, 1 a blizzard. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var intensity: Double = 0.5
     @Range(min: 0.0, max: 2.0, step: 0.01)
-    var master: Double = 1.0
-    @Range(min: 0.0, max: 2.0, step: 0.01)
-    var rain: Double = 1.0
-    @Range(min: 0.0, max: 2.0, step: 0.01)
-    var wind: Double = 1.0
-    @Range(min: 0.0, max: 2.0, step: 0.01)
-    var thunder: Double = 1.0
+    var haze: Double = 1.0
+    /** Seconds the snow takes to cover the ground while it falls. */
+    @Range(min: 1.0, max: 1200.0, step: 1.0)
+    var settleSeconds: Double = 60.0
+    /** Seconds the cover takes to melt once it has stopped. */
+    @Range(min: 10.0, max: 7200.0, step: 10.0)
+    var meltSeconds: Double = 600.0
 }
+
+/** Dust blown through the air: motes carried by the wind and a haze of its colour into the distance. */
+@Component
+@Inspectable(title: "Dust", serializedName: "Dust", icon: "wind", category: "Weather", order: 36)
+pack Dust derives Clone {
+    var enabled: Bool = true
+    /** 0 clear air, 0.3 a dusty day, 1 a dust storm. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var intensity: Double = 0.4
+    var color: Rgba = .(0.74, 0.6, 0.42, 1.0)
+    /** How thick the haze gets at full intensity: 1 a few hundred metres of sight in a storm. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var haze: Double = 1.0
+    /** How big the motes near the eye are, in millimetres. */
+    @Range(min: 0.2, max: 10.0, step: 0.1)
+    var moteSize: Double = 1.5
+}
+
+/** Lightning and its thunder, and nothing else: strikes a minute, how bright and how loud. */
+@Component
+@Inspectable(title: "Thunder", serializedName: "Thunder", icon: "zap", category: "Weather", order: 37)
+pack Thunder derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 30.0, step: 0.5)
+    var strikesPerMinute: Double = 4.0
+    /** How brightly a flash lights the scene and the sky. */
+    @Range(min: 0.0, max: 3.0, step: 0.05)
+    var brightness: Double = 1.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var volume: Double = 1.0
+}
+
+/** The weather the scene's parts make together; a part that is missing or off is not there. */
+pack WeatherParts derives Clone {
+    var rain: Rain = .(enabled: false)
+    var snow: Snow = .(enabled: false)
+    var dust: Dust = .(enabled: false)
+    var thunder: Thunder = .(enabled: false)
+}
+
+/** The first enabled, shown part of each kind, wherever it is in [world]. */
+func weatherParts(world: World!): WeatherParts {
+    var parts: WeatherParts = .()
+    fin rains = ensureStorage<Rain>(world)
+    for i: Int in 0..<storageLength<Rain>(rains) {
+        if rains.values[i].enabled && shownPart(world, storageEntityAt<Rain>(rains, i)) {
+            parts.rain = rains.values[i].clone()
+            break
+        }
+    }
+    fin snows = ensureStorage<Snow>(world)
+    for i: Int in 0..<storageLength<Snow>(snows) {
+        if snows.values[i].enabled && shownPart(world, storageEntityAt<Snow>(snows, i)) {
+            parts.snow = snows.values[i].clone()
+            break
+        }
+    }
+    fin dusts = ensureStorage<Dust>(world)
+    for i: Int in 0..<storageLength<Dust>(dusts) {
+        if dusts.values[i].enabled && shownPart(world, storageEntityAt<Dust>(dusts, i)) {
+            parts.dust = dusts.values[i].clone()
+            break
+        }
+    }
+    fin storms = ensureStorage<Thunder>(world)
+    for i: Int in 0..<storageLength<Thunder>(storms) {
+        if storms.values[i].enabled && shownPart(world, storageEntityAt<Thunder>(storms, i)) {
+            parts.thunder = storms.values[i].clone()
+            break
+        }
+    }
+    return take parts
+}
+
+func shownPart(world: World!, entity: Entity): Bool = world.isAlive(entity) && visibleInWorld(world, entity)

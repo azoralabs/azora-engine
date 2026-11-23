@@ -1,0 +1,105 @@
+import std.io
+import std.os
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.procedural
+import engine.scene.terrain
+import engine.roads
+import engine.foliage
+import engine.world.partition
+
+// A world plan is deterministic and sensible (settlements, roads, junctions,
+// buildings), and the partition streams cells in and out around a point.
+
+func main() {
+    var world: World = .()
+    fin owner = world.spawn()
+    storageInsert<WorldRecipe>(ensureStorage(world), owner, .())
+    storageInsert<WorldPartition>(ensureStorage(world), owner, .(loadRadius: 2500.0, unloadRadius: 3500.0, folder: ".azora-build", overview: false))
+    fin recipe = storageGet<WorldRecipe>(ensureStorage(world), owner).clone()
+    fin plan = planWorld(recipe)
+    fin again = planWorld(recipe)
+    var length: Double = 0.0
+    for road in plan.roads {
+        for i: Int in 1..<road.points.size {
+            fin a = road.points[i - 1].&
+            fin b = road.points[i].&
+            length += sqrt((b.x - a.x) * (b.x - a.x) + (b.z - a.z) * (b.z - a.z))
+        }
+    }
+    if envVar("AZORA_WORLD_VERBOSE") != "" {
+        println("settlements ${plan.towns.size} roads ${plan.roads.size} (${(length / 1000.0) as Int} km) junctions ${plan.junctions.size} buildings ${plan.buildings.size}")
+    }
+    assert plan.towns.size == again.towns.size && plan.buildings.size == again.buildings.size panic "a recipe plans the same world every time"
+    assert plan.towns.size > 40 && plan.junctions.size > 200 && plan.buildings.size > 2000 && length > 300000.0 panic "a populated world"
+    if envVar("AZORA_WORLD_START") != "" {
+        for road in plan.roads {
+            if road.kind != 0 || road.points.size < 40 then continue
+            fin p = road.points[30].&
+            fin q = road.points[31].&
+            println("start ${formatDecimal(p.x, 2)} ${formatDecimal(p.y, 2)} ${formatDecimal(p.z, 2)} yaw ${formatDecimal(atan2(-(q.x - p.x), -(q.z - p.z)) / 0.017453292519943295, 2)}")
+            return
+        }
+    }
+    // Stream around the first city: cells come in, then go when the point moves away.
+    fin city = plan.towns[0].&
+    fin centre: Vec3 = .(city.x, city.height, city.z)
+    fin loaded = streamWorld(world, ".", centre)
+    if envVar("AZORA_WORLD_VERBOSE") != "" then println("loaded ${loaded} cells, ${world.aliveCount} entities")
+    assert loaded > 3 && storageLength<HeightfieldTerrain>(ensureStorage(world)) >= loaded panic "cells around the city load with their terrain"
+    assert storageLength<SplineRoad>(ensureStorage(world)) > 10 && storageLength<Mesh3d>(ensureStorage(world)) > 100 panic "the city's streets and buildings load"
+    // Each cell has an entity under the partition's, and what it brought in hangs under that.
+    let states = ensureStorage<PartitionState>(world)
+    fin cells = states.values[storageIndexOf<PartitionState>(states, owner)].cells.clone()
+    for cell in cells {
+        assert world.getParent(cell.group) == owner && storageHas<Streamed>(ensureStorage(world), cell.group) panic "a cell hangs under its partition"
+        assert storageGet<Name>(ensureStorage(world), cell.group).value == "Cell ${cell.column}, ${cell.row}" panic "a cell is named for its place"
+    }
+    fin terrains = ensureStorage<HeightfieldTerrain>(world)
+    for i: Int in 0..<storageLength<HeightfieldTerrain>(terrains) {
+        fin group = world.getParent(storageEntityAt<HeightfieldTerrain>(terrains, i))
+        assert world.getParent(group) == owner panic "a cell's terrain hangs under its cell"
+    }
+    // The overview leaves out exactly the squares of the loaded cells, grows no foliage and hangs under the partition.
+    let lit = ensureStorage<WorldPartition>(world)
+    lit.values[storageIndexOf<WorldPartition>(lit, owner)].overview = true
+    streamWorld(world, ".", centre)
+    let viewed = ensureStorage<PartitionState>(world)
+    fin overview = viewed.values[storageIndexOf<PartitionState>(viewed, owner)].overview[0]
+    fin holes = storageGet<TerrainHoles>(ensureStorage(world), overview).clone()
+    var hidden = 0
+    for square in holes.hidden then if square then hidden++
+    assert hidden == cells.size && holes.spacing == overviewCellSamples(recipe) && holes.columns == worldColumns(recipe) panic "one square left out per loaded cell"
+    for cell in cells then assert holes.hidden[cell.row * holes.columns + cell.column] panic "the loaded cells' squares are the ones left out"
+    assert world.getParent(overview) == owner && !storageGet<FoliagePaint>(ensureStorage(world), overview).enabled panic "the overview grows nothing"
+    fin far: Vec3 = .(city.x + 30000.0, city.height, city.z)
+    streamWorld(world, ".", far, 0)
+    let moved = ensureStorage<PartitionState>(world)
+    assert moved.values[storageIndexOf<PartitionState>(moved, owner)].cells.size == 0 &&
+        storageLength<HeightfieldTerrain>(ensureStorage(world)) == 1 panic "cells far behind unload; the overview stays"
+    var left = 0
+    for square in storageGet<TerrainHoles>(ensureStorage(world), overview).hidden then if square then left++
+    assert left == 0 panic "with no cell loaded, the overview is whole"
+    // A partition switched off takes what it streamed in with it.
+    streamWorld(world, ".", centre)
+    assert storageLength<Streamed>(ensureStorage(world)) > 100 panic "the city streams in again"
+    let partitions = ensureStorage<WorldPartition>(world)
+    partitions.values[storageIndexOf<WorldPartition>(partitions, owner)].enabled = false
+    streamWorld(world, ".", centre)
+    assert storageLength<Streamed>(ensureStorage(world)) == 0 panic "a partition switched off unloads its cells"
+    // A changed recipe is another world: planned again, under other cached files.
+    let switched = ensureStorage<WorldPartition>(world)
+    switched.values[storageIndexOf<WorldPartition>(switched, owner)].enabled = true
+    streamWorld(world, ".", centre, 1)
+    fin before = storageGet<PartitionState>(ensureStorage(world), owner).recipe
+    let recipes = ensureStorage<WorldRecipe>(world)
+    recipes.values[storageIndexOf<WorldRecipe>(recipes, owner)].seed = recipe.seed + 1
+    streamWorld(world, ".", centre, 1)
+    fin after = storageGet<PartitionState>(ensureStorage(world), owner).recipe.&
+    assert after != before && after == worldCacheName(storageGet<WorldRecipe>(ensureStorage(world), owner)) &&
+        storageGet<PartitionState>(ensureStorage(world), owner).cells.size == 1 panic "a new recipe plans a new world"
+    println("a world plans, streams in and streams out")
+}

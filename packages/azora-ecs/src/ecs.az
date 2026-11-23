@@ -573,9 +573,30 @@ impl QueryOf<...T> {
      */
     @ProvidesAccess
     func provide(world: World&): QueryOf<...T> {
-        var cursor = queryAll(world, false)
+        // The rows start from the smallest storage, not from every entity: a
+        // query over a component few entities carry costs what they cost,
+        // however many entities the world holds.
+        var fewest = -1
+        var least = 0
+        var slot = 0
+        // No locals in here: an inline loop repeats its body in one scope.
         inline for Ty in ...T {
-            queryWith<Ty>(cursor, storageOf(world))
+            if fewest < 0 || storageOf<Ty>(world).entities.size < least {
+                fewest = slot
+                least = storageOf<Ty>(world).entities.size
+            }
+            slot++
+        }
+        var cursor = if fewest < 0 then queryAll(world, false) else queryEmpty()
+        slot = 0
+        inline for Ty in ...T {
+            if slot == fewest then cursor = queryStorageRows<Ty>(world, storageOf(world))
+            slot++
+        }
+        slot = 0
+        inline for Ty in ...T {
+            if slot != fewest then queryWith<Ty>(cursor, storageOf(world))
+            slot++
         }
         return QueryOf(take cursor, world)
     }
@@ -869,7 +890,7 @@ impl QueryWith<Q, ...T> {
         inline for Ty in ...T {
             queryWith<Ty>(base.cursor, storageOf(world))
         }
-        return QueryWith(base.cursor)
+        return QueryWith(take base.cursor)
     }
 }
 
@@ -892,7 +913,7 @@ impl QueryWithout<Q, ...T> {
         inline for Ty in ...T {
             queryWithout<Ty>(base.cursor, storageOf(world))
         }
-        return QueryWithout(base.cursor)
+        return QueryWithout(take base.cursor)
     }
 }
 
@@ -1099,6 +1120,53 @@ func<T> queryFromStorage(world: World&, store: Storage<T>&, includeResources: Bo
         i++
     }
     return take query
+}
+
+/**
+ * The live scene rows of [store] in entity order - the rows and the order
+ * [queryAll] followed by [queryWith] gives, at the cost of the storage alone.
+ */
+func<T> queryStorageRows(world: World&, store: Storage<T>&): QueryCursor {
+    var ids: Array<Int> = []
+    var ordered = true
+    for i: Int in 0..<store.entities.size {
+        fin entity = store.entities[i]
+        if !entity.isValid || !world.isAlive(entity) || world.isResource(entity) then continue
+        if ids.size > 0 && ids[ids.size - 1] > entity.id then ordered = false
+        ids.add(entity.id)
+    }
+    if !ordered then sortIds(ids)
+    var query = queryEmpty()
+    for id in ids then query.add(world.entityAt(id))
+    return take query
+}
+
+/** Sorts [values] ascending in place (heapsort: no extra memory, n log n). */
+func sortIds(values: Array<Int>!) {
+    fin n = values.size
+    for start: Int in 0..<(n / 2) then siftIds(values, n / 2 - 1 - start, n)
+    for back: Int in 1..<n {
+        fin end = n - back
+        fin top = values[0]
+        values[0] = values[end]
+        values[end] = top
+        siftIds(values, 0, end)
+    }
+}
+
+/** Moves [values][first] down the heap of the first [size] values until both children are smaller. */
+func siftIds(values: Array<Int>!, first: Int, size: Int) {
+    var root = first
+    loop {
+        var child = root * 2 + 1
+        if child >= size then break
+        if child + 1 < size && values[child + 1] > values[child] then child++
+        if values[root] >= values[child] then break
+        fin swap = values[root]
+        values[root] = values[child]
+        values[child] = swap
+        root = child
+    }
 }
 
 func<T> queryWith(query: QueryCursor!, store: Storage<T>&) {
@@ -1429,12 +1497,10 @@ func systemPlanDeclare(
 
 impl SystemPlan {
     /** The index of the system called [name], or `-1`. */
-    func &.indexOf(name: String): Int {
-        for i: Int in 0..<self.count {
-            if self.systems[i].name == name then return i
-        }
-        return -1
-    }
+    func &.indexOf(name: String): Int
+    scope return for i: Int in 0..<self.count {
+        if self.systems[i].name == name then break i
+    } else -1
 
     /**
      * Enables or disables a system, returning false if no system has that name.

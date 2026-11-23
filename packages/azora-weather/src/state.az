@@ -1,0 +1,104 @@
+module engine.weather.state
+
+import std.math
+import engine.core
+import engine.math
+import engine.audio.dsp
+import engine.weather.components
+
+// What the weather's parts are doing now, between their settings and the
+// screen: rain, snow and dust ease to a changed intensity in a second or two
+// rather than jump, the ground soaks and dries, the wind carries the clouds.
+
+/** Seconds a changed rain, snow or dust intensity takes to get most of the way there. */
+inline fin weatherEase: Double = 1.5
+
+func weatherClamp(x: Double, low: Double, high: Double): Double
+scope return if x < low then low else if x > high then high else x
+
+/** The share of the way to its goal a value eased over [seconds] moves in [dt]: the same whatever the frame rate. */
+func easeShare(dt: Double, seconds: Double): Double = if seconds <= 0.0 then 1.0 else 1.0 - exp(-dt / seconds)
+
+/**
+ * The weather as it is now, on the Atmosphere's entity: how hard it rains,
+ * snows and blows dust (eased toward the parts' settings), the lightning
+ * asked for, the ground's wetness and snow, the wind and its gusts, how far
+ * the clouds have drifted. Not saved with the scene.
+ */
+@Component
+pack AetherState {
+    var rain: Double = 0.0
+    var snow: Double = 0.0
+    var dust: Double = 0.0
+    var lightning: Double = 0.0
+    /** Until the first step: the scene opens in its weather, wet and white as it would have made it. */
+    var opening: Bool = true
+    var wetness: Double = 0.0
+    var snowCover: Double = 0.0
+    /** How much stronger than its steady speed the wind blows now (0 calm between gusts). */
+    var gust: Double = 0.0
+    /** The wind as it blows now, m/s along world X and Z, gusts included. */
+    var windX: Double = 0.0
+    var windZ: Double = 0.0
+    /** Metres the clouds have drifted with the wind. */
+    var driftX: Double = 0.0
+    var driftZ: Double = 0.0
+}
+
+/**
+ * Moves [state] [dt] seconds on toward what [parts] ask for: rain, snow and
+ * dust ease to their intensities (a part that is off or missing to none), the
+ * lightning is what Thunder asks.
+ */
+func followParts(state: AetherState!, parts: WeatherParts&, dt: Double) {
+    fin rain = if parts.rain.enabled then weatherClamp(parts.rain.intensity, 0.0, 1.0) else 0.0
+    fin snow = if parts.snow.enabled then weatherClamp(parts.snow.intensity, 0.0, 1.0) else 0.0
+    fin dust = if parts.dust.enabled then weatherClamp(parts.dust.intensity, 0.0, 1.0) else 0.0
+    fin share = if state.opening then 1.0 else easeShare(dt, weatherEase)
+    state.rain += (rain - state.rain) * share
+    state.snow += (snow - state.snow) * share
+    state.dust += (dust - state.dust) * share
+    state.lightning = if parts.thunder.enabled then weatherClamp(parts.thunder.strikesPerMinute, 0.0, 30.0) else 0.0
+}
+
+/**
+ * The wind [dt] seconds on: the scene's Wind blowing [wind] m/s (gusts
+ * included) at [steady] m/s between gusts, and how far it has carried the
+ * clouds.
+ */
+func blowWind(state: AetherState!, wind: Vec3&, steady: Double, dt: Double) {
+    state.windX = wind.x
+    state.windZ = wind.z
+    fin speed = sqrt(wind.x * wind.x + wind.z * wind.z)
+    state.gust = if steady > 0.1 then weatherClamp(speed / steady - 1.0, 0.0, 2.0) else 0.0
+    state.driftX += state.windX * dt
+    state.driftZ += state.windZ * dt
+}
+
+/**
+ * The ground [dt] seconds on: wet where it rains, soaking in the Rain's soak
+ * time and drying in its dry time; white where it snows, settling and melting
+ * in the Snow's times. Without a part, its defaults say how fast it dries or melts.
+ */
+func soakGround(state: AetherState!, parts: WeatherParts&, dt: Double) {
+    if state.opening {
+        state.wetness = state.rain
+        state.snowCover = state.snow
+        state.opening = false
+        return
+    }
+    if state.rain > 0.001 {
+        fin soak = weatherClamp(parts.rain.soakSeconds, 1.0, 600.0)
+        state.wetness += (weatherClamp(state.rain * 1.2, 0.0, 1.0) - state.wetness) * easeShare(dt, soak)
+    } else {
+        fin dry = weatherClamp(if parts.rain.enabled then parts.rain.drySeconds else Rain().drySeconds, 10.0, 3600.0)
+        state.wetness -= state.wetness * easeShare(dt, dry)
+    }
+    if state.snow > 0.001 {
+        fin settle = weatherClamp(parts.snow.settleSeconds, 1.0, 1200.0)
+        state.snowCover += (weatherClamp(state.snow * 1.1, 0.0, 1.0) - state.snowCover) * easeShare(dt, settle)
+    } else {
+        fin melt = weatherClamp(if parts.snow.enabled then parts.snow.meltSeconds else Snow().meltSeconds, 10.0, 7200.0)
+        state.snowCover -= state.snowCover * easeShare(dt, melt)
+    }
+}

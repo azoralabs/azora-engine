@@ -97,6 +97,7 @@ struct AetherU {
     float4x4 previous; // last frame's clip transform
     float4 flash;      // flash position (world m) and strength
     float4 shadow;     // shadow map centre X, Z, side m, strength
+    float4 dust;       // dust colour, share of the haze that is dust
 };
 
 struct Medium { float3 rayleigh; float mie; float3 extinction; };
@@ -372,6 +373,8 @@ kernel void aether_aerial(texture3d<float, access::write> volume [[texture(0)]],
             float3 single = (m.rayleigh * pr0 + m.mie * pm0) * sunLight + (m.rayleigh * pr1 + m.mie * pm1) * moonLight;
             // Fog droplets scatter nearly all they meet: sun and moon through a broad forward lobe, and the sky's own light.
             float3 droplets = fog * 0.95 * ((sunLight * pf0 + moonLight * pf1) * u.cloud.y + around * u.fog.w);
+            // Dust takes its colour from what it scatters: the share of the haze it is tints the light it sends on.
+            droplets *= mix(float3(1.0), u.dust.rgb * 1.25, saturate(u.dust.w));
             float3 extinction = m.extinction + fog;
             float3 fade = exp(-extinction * dt);
             total += through * (single + scattering * sky + droplets) * (1.0 - fade) / max(extinction, 1e-6);
@@ -387,7 +390,7 @@ fragment float4 aether_apply(FullOut in [[stage_in]], float4 scene [[color(0)]],
         depth2d<float> depth [[texture(0)]], texture3d<float> volume [[texture(1)]]) {
     float z = depth.read(uint2(in.pos.xy));
     float2 uv = in.pos.xy / u.time.zw;
-    if (z >= 1.0) {
+    if (z <= 0.0) {
         // The sky itself drawn its own air; only thick fog and rain veil it, with the air of the farthest slice.
         float veil = saturate(u.fog.x / 3.0);
         if (veil <= 0.0) return scene;

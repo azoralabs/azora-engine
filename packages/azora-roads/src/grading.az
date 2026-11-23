@@ -11,6 +11,8 @@ pack RoadGrade {
     var target: Double = 0.0
     var weight: Double = 0.0
     var distance: Double = 1.0e9
+    /** The sample is close enough to the pavement that a triangle through it may lie under the road. */
+    var paved: Bool = false
 }
 
 func considerRoadGrade(result: RoadGrade!, x: Double, z: Double, span: RoadSpan&, clearance: Double) {
@@ -26,6 +28,7 @@ func considerRoadGrade(result: RoadGrade!, x: Double, z: Double, span: RoadSpan&
     fin dz = z - (a.z+t*vz)
     fin side = if dx*span.start.right.x+dz*span.start.right.z >= 0.0 then roadRight(span.style) else roadLeft(span.style)
     fin dist = sqrt(dx*dx+dz*dz)
+    if dist <= side+clearance then result.paved = true
     fin blend = roadLimit(span.style.gradingWidth,4.0,120.0)
     if dist >= side+clearance+blend then return
     fin q = roadLimit((dist-side-clearance)/blend,0.0,1.0)
@@ -38,9 +41,15 @@ func considerRoadGrade(result: RoadGrade!, x: Double, z: Double, span: RoadSpan&
     result.distance = dist
 }
 
-/** Cut and fill on the same heightfield samples used for rendering and contact. */
-func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&) {
-    if image.samples == 0 || network.grid.size == 0 || absValue(model.m11) < 0.001 then return
+/**
+ * Cut and fill on the same heightfield samples used for rendering and contact.
+ * When [paved] is a block of one byte per sample, the samples close enough to
+ * the pavement that a triangle through them may lie under the road are marked
+ * 1 there: a renderer keeps those triangles from rising over the road when it
+ * draws the terrain coarser in the distance.
+ */
+func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&, paved: Long = 0) {
+    if image.samples == 0 || !network.bucketed || absValue(model.m11) < 0.001 then return
     // Heightfields used as road ground must have vertical local Y.
     if absValue(model.m01) + absValue(model.m21) > 0.001 then return
     fin dx = (image.columns-1) as Double
@@ -59,14 +68,17 @@ func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&)
             fin original = terrainHeight(image,x,z)
             fin base = model.m13+model.m10*u+model.m12*v
             fin wy = base+model.m11*original
-            fin bucket = network.grid[roadBucketAt(roadBucketCoordinate(wx),roadBucketCoordinate(wz))].&
+            fin bucket = roadBucketAt(roadBucketCoordinate(wx),roadBucketCoordinate(wz))
             grade.weight = 0.0
             grade.distance = 1.0e9
-            for index in bucket.spans then considerRoadGrade(grade,wx,wz,network.spans[index],clearance)
+            grade.paved = false
+            for k: Int in network.spanStarts[bucket]..<network.spanStarts[bucket + 1] then
+                considerRoadGrade(grade,wx,wz,network.spans[network.bucketSpans[k]],clearance)
             for site in network.junctions {
                 fin x0 = wx-site.center.x
                 fin z0 = wz-site.center.z
                 fin dist = sqrt(x0*x0+z0*z0)
+                if dist <= roadLimit(site.config.radius,3.0,60.0)+clearance then grade.paved = true
                 fin q = roadLimit((dist-roadLimit(site.config.radius,3.0,60.0)-clearance)/35.0,0.0,1.0)
                 fin weight = 1.0-q*q*(3.0-2.0*q)
                 if weight > grade.weight || (dist <= site.config.radius && weight > 0.0) {
@@ -75,6 +87,7 @@ func gradeRoadTerrain(image: TerrainImage&, model: Mat4&, network: RoadNetwork&)
                     grade.distance = dist
                 }
             }
+            if paved != 0 && grade.paved then azPoke8(paved,(z*image.columns+x) as Long,1)
             if grade.weight > 0.0 {
                 fin height = wy + (grade.target-wy)*grade.weight
                 azPokeF64(image.samples,((z*image.columns+x) as Long)*8,terrainClamp((height-base)/model.m11,-0.5,0.5))

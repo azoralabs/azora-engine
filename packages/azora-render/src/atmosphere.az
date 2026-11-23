@@ -39,9 +39,9 @@ func skyLight(sky: AetherSky&, at: Celestial&, altitude: Double): SceneLight {
 /** Updates the sky and publishes its lighting and the weather inputs for opaque materials. */
 func prepareAtmosphere(world: World!, owner: Entity, renderer: AetherRenderer&, elapsed: Double, eye: Vec3&) {
     fin sky = storageGet<AetherSky>(ensureStorage(world), owner)
-    fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage(world), owner, .(enabled: false))
+    fin clouds = sceneClouds(world)
     fin air = storageGetOrDefault<AtmosphereConditions>(ensureStorage(world), owner, .())
-    fin cover = if !clouds.enabled then 0.0 else atmosphereClamp(if clouds.coverage >= 0.0 then clouds.coverage else air.coverage, 0.0, 1.0)
+    fin cover = if !clouds.enabled then 0.0 else atmosphereClamp(clouds.coverage, 0.0, 1.0)
     fin now = celestialAt(sky, elapsed)
     fin smooth = skyLight(sky, now, sky.altitude + eye.y)
     fin field = skyLight(sky, celestialAtHour(sky, steppedHour(sky, elapsed)), sky.altitude)
@@ -57,11 +57,11 @@ func prepareAtmosphere(world: World!, owner: Entity, renderer: AetherRenderer&, 
     fin shadowZ = (floor(eye.z / texel) as Double) * texel
     if renderer.ready {
         fin block = renderer.uniforms
-        fin kind = atmosphereClamp(if clouds.cloudType >= 0.0 then clouds.cloudType else air.cloudType, 0.0, 1.0)
+        fin kind = atmosphereClamp(clouds.cloudType, 0.0, 1.0)
         fin top = clouds.baseAltitude + clouds.thickness * (0.55 + 0.45 * kind)
         writeAetherSky(block, sky, now, smooth.daylight)
         pokeVector(block, 304, clouds.baseAltitude, top, cover, kind)
-        pokeVector(block, 320, clouds.density * air.density, clouds.detail, air.driftX, air.driftZ)
+        pokeVector(block, 320, clouds.density, clouds.detail, air.driftX, air.driftZ)
         fin steps: Double = when clouds.quality {
             0 -> 40.0
             2 -> 96.0
@@ -72,6 +72,7 @@ func prepareAtmosphere(world: World!, owner: Entity, renderer: AetherRenderer&, 
         pokeVector(block, 144, air.fogDensity, 0.02, air.fogFalloff, 1.0)
         pokeVector(block, 416, air.flashX, clouds.baseAltitude + 700.0, air.flashZ, air.flash * 3.0)
         pokeVector(block, 432, shadowX, shadowZ, side, clouds.shadowStrength)
+        pokeVector(block, 448, air.dustColor.r, air.dustColor.g, air.dustColor.b, air.dust)
     }
     publishSceneEnvironment(world, SceneEnvironment(wetness: air.wetness, snow: air.snow, flash: air.flash,
         flashColor: .(0.72, 0.78, 1.0, 1.0), time: elapsed, windX: air.windX, windZ: air.windZ

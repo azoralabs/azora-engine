@@ -1,0 +1,76 @@
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.io
+import engine.atmosphere
+import engine.weather
+
+// The weather is parts, each a component of its own that works wherever it
+// is in the scene and drives nothing else: Rain, Snow, Dust, Thunder, the
+// Wind and the Volumetric Clouds.
+
+func step(world: World!, owner: Entity, state: AetherState!, seconds: Double) {
+    for i: Int in 0..<((seconds * 10.0) as Int) then previewWeather(world, owner, state, (i as Double) * 0.1, 0.1, .(0.0, 2.0, 0.0), .(1.0, 0.0, 0.0))
+}
+
+func main() {
+    var world: World = .()
+    fin sky = world.spawn()
+    storageInsert<AetherSky>(ensureStorage(world), sky, .())
+    storageInsert<AetherClouds>(ensureStorage(world), sky, .(coverage: 0.3, cloudType: 0.2))
+    var state: AetherState = .()
+    step(world, sky, state, 1.0)
+    assert state.rain == 0.0 && state.snow == 0.0 && state.dust == 0.0 && state.wetness == 0.0 panic "no parts: dry, still air"
+
+    // Rain on another entity, set by hand: it falls as hard as it says, the ground opens wet, the clouds stay as set.
+    fin weather = world.spawn()
+    storageInsert<Rain>(ensureStorage(world), weather, .(intensity: 0.8))
+    var rainy: AetherState = .()
+    step(world, sky, rainy, 0.1)
+    assert rainy.rain == 0.8 && rainy.wetness > 0.7 panic "the scene opens in its rain: ${rainy.rain} ${rainy.wetness}"
+    fin clouds = sceneClouds(world)
+    assert clouds.coverage == 0.3 && clouds.cloudType == 0.2 panic "the rain leaves the clouds as set"
+    fin conditions = storageGet<AtmosphereConditions>(ensureStorage(world), sky).clone()
+    assert conditions.fogDensity > 0.5 && conditions.dust == 0.0 panic "rain greys the air"
+
+    // A changed intensity is reached in a few seconds, whatever the step.
+    storageInsert<Rain>(ensureStorage(world), weather, .(intensity: 0.2))
+    step(world, sky, rainy, 1.0)
+    assert rainy.rain > 0.2 && rainy.rain < 0.8 panic "it eases"
+    step(world, sky, rainy, 8.0)
+    assert absValue(rainy.rain - 0.2) < 0.01 panic "and gets there: ${rainy.rain}"
+
+    // At zero it stops and the ground dries in the Rain's own time.
+    storageInsert<Rain>(ensureStorage(world), weather, .(intensity: 0.0, drySeconds: 10.0))
+    step(world, sky, rainy, 15.0)
+    assert rainy.rain < 0.001 && rainy.wetness < 0.4 panic "at zero it stops; the ground dries: ${rainy.wetness}"
+    println("rain is its own part")
+
+    // Snow, dust and thunder each do their own work; a Rain switched off does not fall.
+    storageInsert<Rain>(ensureStorage(world), weather, .(enabled: false, intensity: 1.0))
+    storageInsert<Snow>(ensureStorage(world), weather, .(intensity: 0.6, settleSeconds: 5.0))
+    storageInsert<Dust>(ensureStorage(world), sky, .(intensity: 1.0, color: .(0.8, 0.5, 0.3, 1.0)))
+    storageInsert<Thunder>(ensureStorage(world), sky, .(strikesPerMinute: 7.0))
+    step(world, sky, rainy, 10.0)
+    fin dusty = storageGet<AtmosphereConditions>(ensureStorage(world), sky).clone()
+    assert rainy.rain < 0.001 && absValue(rainy.snow - 0.6) < 0.01 && rainy.snowCover > 0.4 panic "snow falls and settles; the rain is off"
+    assert absValue(rainy.dust - 1.0) < 0.01 && dusty.dust > 0.5 && dusty.dustColor.g == 0.5 panic "dust hazes the air in its colour"
+    assert rainy.lightning == 7.0 && sceneClouds(world).coverage == 0.3 panic "thunder strikes as asked; the clouds stay as set"
+    println("snow, dust and thunder are parts too")
+
+    // The wind blows as the scene's Wind says and carries the clouds.
+    storageInsert<Wind>(ensureStorage(world), weather, .(speed: 10.0, direction: 90.0, gusts: 0.0, turbulence: 0.0))
+    var windy: AetherState = .()
+    step(world, sky, windy, 2.0)
+    assert windy.windX < -9.0 && windy.driftX < -15.0 panic "the wind blows from the east and carries the clouds west: ${windy.windX} ${windy.driftX}"
+
+    // Saved and read back, the parts are what they were.
+    var again: World = .()
+    assert readScene(again, writeScene(world)) == 2 panic "the scene reads back"
+    assert storageLength<Rain>(ensureStorage(again)) == 1 && storageLength<Dust>(ensureStorage(again)) == 1 &&
+        storageLength<Thunder>(ensureStorage(again)) == 1 panic "every part is saved"
+    println("the wind carries the clouds; parts save")
+}

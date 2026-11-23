@@ -12,11 +12,13 @@ import engine.vehicles
 import engine.landscape
 import engine.atmosphere
 import engine.weather
+import engine.world.partition
 import dolomites::{components, driving, camera, pauseMenu, hud, weatherKeys}
 
-fin game: GameConfig = .(title: "Dolomites Drive", fixedHz: 120)
+fin game: GameConfig = .(title: "Dolomites Drive")
 
-@System(phase: .Startup)
+/** After the world partition brought in the ground around the start. */
+@System(phase: .Startup, runAfter: "startWorldPartition")
 func spawnDriver(frame: Game!, starts: @query [PlayerStart&]) {
     while starts.hasNext() {
         let row = starts.next()

@@ -108,3 +108,17 @@ func nextGear(train: DrivetrainSpec&, gear: Int, rpm: Double, throttle: Double, 
         else -> gear
     }
 }
+
+/**
+ * The gear an engine settles in at [wheelSpeed] (rad/s at the driven wheels)
+ * cruising on a light throttle: the highest whose engine speed stays above
+ * where it would shift down, or first when none does.
+ */
+func cruisingGear(train: DrivetrainSpec&, wheelSpeed: Double): Int {
+    fin floor = upShiftRpm(train, 0.35) * train.downShare
+    var chosen = 1
+    for gear: Int in 1..train.ratios.size {
+        if wheelSpeed * overallRatio(train, gear) * 9.549296585513721 >= floor then chosen = gear
+    }
+    return chosen
+}

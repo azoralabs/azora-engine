@@ -12,7 +12,7 @@ import engine.audio.dsp
 import engine.render.scene
 import engine.atmosphere.components
 import engine.weather.components
-import engine.weather.presets
+import engine.weather.state
 import engine.atmosphere.skyrender
 
 /** Strikes alive at once (their flash, then their thunder), segments a bolt may have, and the thunder's arrival bins. */
@@ -109,9 +109,10 @@ fragment float4 bolt_fragment(BoltOut in [[stage_in]], constant BoltU& u [[buffe
     if (in.glow <= 0.001) discard_fragment();
     float2 px = in.pos.xy * (u.screen.zw / u.screen.xy);
     float z = scene.read(uint2(clamp(px, float2(0.0), u.screen.zw - 1.0)));
-    float sceneDistance = u.params.z * u.params.w / max(u.params.w - z * (u.params.w - u.params.z), 1e-4);
+    // Reversed depth: near 1, far 0.
+    float sceneDistance = u.params.z * u.params.w / max(u.params.z + z * (u.params.w - u.params.z), 1e-4);
     // Behind a mountain, hidden.
-    if (z < 1.0 && sceneDistance < in.depth) discard_fragment();
+    if (z > 0.0 && sceneDistance < in.depth) discard_fragment();
     float x = in.across;
     float light = exp(-x * x * 40.0) * 2.4 + exp(-x * x * 4.0) * 0.45;
     return float4(float3(0.82, 0.86, 1.0) * light * in.glow, 0.0);
@@ -333,13 +334,13 @@ func strike(storm: AetherStorm!, now: Double, ex: Double, ez: Double, base: Doub
 }
 
 /**
- * Moves the storm on to [now]: new strikes at [perMinute] under [cover]; the
- * flash they cast over the scene and into the clouds; thunder that has
- * arrived starts playing.
+ * Moves the storm on to [now]: new strikes at [perMinute], from clouds whose
+ * base is [base] metres up; the flash they cast over the scene and into the
+ * clouds; thunder that has arrived starts playing.
  */
-func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, cover: Double, base: Double,
+func stepStorm(storm: AetherStorm!, now: Double, dt: Double, perMinute: Double, base: Double,
                ex: Double, ey: Double, ez: Double, rightX: Double, rightZ: Double): Vec3 {
-    if cover > 0.7 && perMinute > 0.0 && stormRandom(storm) < perMinute / 60.0 * dt then strike(storm, now, ex, ez, base, ey)
+    if perMinute > 0.0 && stormRandom(storm) < perMinute / 60.0 * dt then strike(storm, now, ex, ez, base, ey)
     var flash: Double = 0.0
     var brightest: Double = 0.0
     var bx: Double = 0.0
@@ -429,9 +430,7 @@ func lightningNow(world: World!, now: Double, eye: Vec3&, forward: Vec3&) {
     let storms = ensureStorage<AetherStorm>(world)
     var i = 0
     while i < storageLength<AetherStorm>(storms) {
-        fin owner = storageEntityAt<AetherStorm>(storms, i)
-        fin clouds = storageGetOrDefault<AetherClouds>(ensureStorage(world), owner, .())
-        strike(storms.values[i], now, eye.x, eye.z, clouds.baseAltitude, eye.y, true, forward.x, forward.z)
+        strike(storms.values[i], now, eye.x, eye.z, sceneClouds(world).baseAltitude, eye.y, true, forward.x, forward.z)
         i++
     }
 }

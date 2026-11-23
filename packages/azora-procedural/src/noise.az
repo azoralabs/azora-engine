@@ -1,0 +1,100 @@
+module engine.procedural.noise
+
+import std.math
+
+// Deterministic noise for procedural content: the same seed and coordinates
+// give the same value on every machine and every run, so a world is a recipe
+// (a seed and a few numbers) rather than gigabytes of stored terrain.
+
+/** A Lehmer generator: a reproducible stream of numbers in [0, 1). */
+pack Rng derives Clone {
+    var state: Long = 1
+}
+
+/** A generator started from [seed] and a [salt] that tells apart streams of the same seed. */
+func rng(seed: Int, salt: Int = 0): Rng {
+    var state = ((seed as Long) * 2654435761 + (salt as Long) * 40503 + 12345) % 2147483646
+    if state < 0 then state += 2147483646
+    return .(state + 1)
+}
+
+impl Rng {
+    /** The next number in [0, 1). */
+    func !.next(): Double {
+        self.state = (self.state * 48271) % 2147483647
+        return (self.state as Double) / 2147483647.0
+    }
+
+    /** The next number in [low, high). */
+    func !.between(low: Double, high: Double): Double = low + (high - low) * self.next()
+}
+
+/** A value in [0, 1) for the lattice point ([x], [z]) of [seed]. */
+func latticeValue(seed: Int, x: Int, z: Int): Double {
+    var h: Long = ((seed as Long) * 73856093 + (x as Long) * 19349663 + (z as Long) * 83492791) % 2147483647
+    if h < 0 then h += 2147483647
+    h = (h * 48271 + 1) % 2147483647
+    h = (h * 48271) % 2147483647
+    return (h as Double) / 2147483647.0
+}
+
+func smootherStep(t: Double): Double = t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+/** Smooth value noise in [-1, 1] at ([x], [z]) lattice units. */
+func valueNoise(seed: Int, x: Double, z: Double): Double {
+    fin x0 = floor(x)
+    fin z0 = floor(z)
+    fin ix = x0 as Int
+    fin iz = z0 as Int
+    fin u = smootherStep(x - x0)
+    fin v = smootherStep(z - z0)
+    fin a = latticeValue(seed, ix, iz)
+    fin b = latticeValue(seed, ix + 1, iz)
+    fin c = latticeValue(seed, ix, iz + 1)
+    fin d = latticeValue(seed, ix + 1, iz + 1)
+    fin top = a + (b - a) * u
+    fin bottom = c + (d - c) * u
+    return (top + (bottom - top) * v) * 2.0 - 1.0
+}
+
+/** Fractal noise: [octaves] layers, each twice as fine and half as strong; about [-1, 1]. */
+func fbm(seed: Int, x: Double, z: Double, octaves: Int): Double {
+    var sum: Double = 0.0
+    var amplitude: Double = 0.5
+    var frequency: Double = 1.0
+    var norm: Double = 0.0
+    for octave: Int in 0..<octaves {
+        sum += valueNoise(seed + octave * 131, x * frequency + (octave as Double) * 17.3, z * frequency - (octave as Double) * 9.1) * amplitude
+        norm += amplitude
+        amplitude *= 0.5
+        frequency *= 2.02
+    }
+    return sum / norm
+}
+
+/** Ridged noise in [0, 1]: sharp crests where the noise crosses zero, as mountain ridges. */
+func ridged(seed: Int, x: Double, z: Double, octaves: Int): Double {
+    var sum: Double = 0.0
+    var amplitude: Double = 0.5
+    var frequency: Double = 1.0
+    var weight: Double = 1.0
+    var norm: Double = 0.0
+    for octave: Int in 0..<octaves {
+        var ridge = 1.0 - absValue(valueNoise(seed + octave * 977, x * frequency, z * frequency))
+        ridge = ridge * ridge * weight
+        weight = clampUnit(ridge * 1.6)
+        sum += ridge * amplitude
+        norm += amplitude
+        amplitude *= 0.5
+        frequency *= 2.07
+    }
+    return sum / norm
+}
+
+func clampUnit(x: Double): Double = if x < 0.0 then 0.0 else if x > 1.0 then 1.0 else x
+
+/** 0 below [low], 1 above [high], smooth between. */
+func smoothRange(low: Double, high: Double, x: Double): Double {
+    fin t = clampUnit((x - low) / (high - low))
+    return t * t * (3.0 - 2.0 * t)
+}

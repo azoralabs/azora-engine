@@ -68,11 +68,16 @@ pack VehicleSpec {
     var antiRollFront: Double = 14000.0
     var antiRollRear: Double = 7000.0
     /**
-     * Anti-dive and anti-squat: the share of braking and driving pitch the
-     * suspension links carry instead of the springs, so the nose does not dive
-     * onto the road under hard braking.
+     * Anti-dive (front axle) and anti-squat (rear axle): the share of the
+     * pitch a longitudinal tyre force would cause that the suspension links
+     * carry instead of the springs. A car's links take part of it, so the nose
+     * dips under braking and the tail squats a little under power. A
+     * motorcycle's chain pull and swingarm carry all of the rear's drive (its
+     * tail does not squat; with the springs taking it, drive force and
+     * suspension fed each other until the bike hopped) while its fork dives.
      */
-    var antiPitch: Double = 0.5
+    var antiDive: Double = 0.45
+    var antiSquat: Double = 0.5
     var tireGrip: Double = 1.0
     var wheelInertia: Double = 1.1
     /** Engine power and the most torque the driven wheels share. */
@@ -112,8 +117,8 @@ func vehicleSpec(kind: VehicleKind): VehicleSpec {
     if kind == .Car then return VehicleSpec()
     return VehicleSpec(wheelCount: 2, halfTrack: 0.0, frontAxle: -0.71, rearAxle: 0.71, mountHeight: 0.06,
         wheelRadius: 0.31, tireWidth: 0.16, mass: 245.0, inertia: .(115.0, 98.0, 30.0)
-        restLength: 0.46, bumpLength: 0.16, spring: 11000.0, bump: 700.0, rebound: 1050.0
-        antiRollFront: 0.0, antiRollRear: 0.0, antiPitch: 0.35, tireGrip: 1.05, wheelInertia: 0.55
+        restLength: 0.46, bumpLength: 0.16, spring: 11000.0, bump: 1350.0, rebound: 2200.0
+        antiRollFront: 0.0, antiRollRear: 0.0, antiDive: 0.2, antiSquat: 1.0, tireGrip: 1.05, wheelInertia: 0.55
         power: 72000.0, maxTorque: 1150.0, frontDrive: 0.0, maxSpeed: 62.0, reverseSpeed: 4.0
         brakeFront: 900.0, brakeRear: 320.0, handbrake: 700.0, maxSteer: 0.52, steerFalloff: 8.0, steerRate: 3.2
         drag: 0.42, rolling: 0.015, lean: true, bodyHalfWidth: 0.22, bodyHalfLength: 1.02
@@ -197,8 +202,10 @@ pack Headlights {
 
 /**
  * What a vehicle sounds like: its engine and horn voices, the road and the
- * wind, and the block they were last mixed into. Made new with the vehicle
- * (see [setVehicleKind]); [carry] eases out the voice it replaced.
+ * wind, and the block they were last mixed into. When the vehicle changes
+ * kind ([setVehicleKind]) the engine it had becomes [outgoing] and fades out
+ * over [handoverSeconds] while the new one fades in: one engine handing over
+ * to another, with no step in the signal.
  */
 @Component
 pack VehicleSound {
@@ -207,8 +214,12 @@ pack VehicleSound {
     var hornHeld: Bool = false
     var buffer: Long = 0
     var fade: Double = 0.0
-    var carry: Double = 0.0
-    var last: Double = 0.0
+    /** The engine being replaced, its last speed, and how much of it is still heard (1 to 0). */
+    var outgoing: EngineVoice = .()
+    var outgoingRpm: Double = 0.0
+    var handover: Double = 0.0
+    /** Where [outgoing] renders before it is mixed in. */
+    var scratch: Long = 0
     var road: PinkNoise = .()
     var roadFilter: Biquad = .()
     var windFilter: Biquad = .()
@@ -216,27 +227,49 @@ pack VehicleSound {
     var whine: Double = 0.0
 }
 
+/** How long one engine takes to hand over to the next when the vehicle changes kind. */
+inline fin handoverSeconds: Double = 0.25
+
 impl VehicleSound {
     dtor .() {
         self.voice.release()
+        self.outgoing.release()
         if self.buffer != 0 then azFree(self.buffer)
+        if self.scratch != 0 then azFree(self.scratch)
+    }
+
+    /** Starts the [motorcycle]'s (or the car's) engine; the one running at [rpm] fades out under it. */
+    func !.handOver(motorcycle: Bool, rpm: Double) {
+        self.outgoing.release()
+        self.outgoing = take self.voice
+        self.outgoingRpm = rpm
+        self.handover = 1.0
+        self.voice = engineVoice(motorcycle, 48000.0)
+        self.horn = hornVoice(motorcycle, 48000.0)
+        if self.scratch == 0 then self.scratch = sampleBuffer(audioCapacity)
     }
 }
 
-/** A vehicle's sound at 48 kHz, starting where the voice it replaces ([carry]) left off. */
-func vehicleSound(motorcycle: Bool, carry: Double): VehicleSound {
+/** A vehicle's sound at 48 kHz. */
+func vehicleSound(motorcycle: Bool): VehicleSound {
     var sound = VehicleSound(voice: engineVoice(motorcycle, 48000.0), horn: hornVoice(motorcycle, 48000.0),
-        buffer: sampleBuffer(audioCapacity), carry: carry, road: pinkNoise(if motorcycle then 61 else 59))
+        buffer: sampleBuffer(audioCapacity), road: pinkNoise(if motorcycle then 61 else 59))
     sound.windFilter.bandpass(1300.0, 0.6, 48000.0)
     sound.air.tune(20000.0, 48000.0)
     return take sound
 }
 
-/** Throttle (forward positive, backward brakes then reverses), steering (right positive) and handbrake. */
+/**
+ * What the driver does. [throttle]: forward positive; backward brakes until
+ * the vehicle stands, then reverses (and forward does the same out of
+ * reverse). [steer]: right positive. [brake]: the handbrake (the rear wheels).
+ * [footBrake]: the brake pedal, 0 to 1, on every wheel and never a reverse.
+ */
 pack DriveInput {
     var throttle: Double = 0.0
     var steer: Double = 0.0
     var brake: Bool = false
+    var footBrake: Double = 0.0
 }
 
 func vehicleClamp(n: Double, lo: Double, hi: Double): Double = realMinOf(realMaxOf(n,lo),hi)
@@ -309,11 +342,23 @@ func pushBody(motion: BodyMotion!, q: Quat&, config: VehicleSpec&, r: Vec3&, imp
 
 // ── Tyres ───────────────────────────────────────────────────────────────
 
-/** Longitudinal friction against slip ratio: peaks near 10 % slip and falls off when spinning or locked. */
-func tireLongitudinal(slip: Double): Double = sin(1.65*atan(11.0*slip-0.6*(11.0*slip-atan(11.0*slip))))
+/**
+ * Longitudinal friction against slip ratio (Pacejka's magic formula, B 16,
+ * C 1.65, E 0.3): peaks near 10 % slip, where the ABS and the traction
+ * control aim, and falls to about 85 % when spinning or locked.
+ */
+func tireLongitudinal(slip: Double): Double = sin(1.65*atan(16.0*slip-0.3*(16.0*slip-atan(16.0*slip))))
 
-/** Lateral friction against slip angle: peaks near 9 degrees. */
-func tireLateral(angle: Double): Double = sin(1.4*atan(9.5*angle-0.5*(9.5*angle-atan(9.5*angle))))
+/**
+ * Lateral friction against slip angle (B 18, C 1.35, E 0.2): peaks near 8°,
+ * as a road tyre does, and falls gently past it, so a slide stays
+ * catchable. (It peaked near 17°: the tyres kept building grip so far into a
+ * slide that the car felt loose and then let go at once.)
+ */
+func tireLateral(angle: Double): Double = sin(1.35*atan(18.0*angle-0.2*(18.0*angle-atan(18.0*angle))))
+
+/** The slip angle (radians) at which [tireLateral] grips hardest. */
+inline fin tirePeakSlip: Double = 0.144
 
 
 /**
@@ -336,14 +381,14 @@ func settleTire(slip: Double, limit: Double, give: Double, reference: Double): D
 
 /**
  * Traction control: of the [available] drive torque, only what lands the
- * wheel on 12 % slip in its direction, where the tyre pushes hardest. Like
+ * wheel on 10 % slip in its direction, where the tyre pushes hardest. Like
  * [antiLockTorque] it is solved for the step, so it never toggles on and off.
  * [perSlip] is the torque one metre per second of slip takes in a step.
  */
 func tractionTorque(available: Double, rolled: Double, reference: Double, give: Double, limit: Double, perSlip: Double): Double {
     if available == 0.0 then return 0.0
     fin direction = if available > 0.0 then 1.0 else -1.0
-    fin target = 0.12*reference*direction
+    fin target = 0.10*reference*direction
     fin needed = (target+give*limit*tireLongitudinal(target/reference)-rolled)*perSlip
     return if direction > 0.0 then realMaxOf(realMinOf(needed,available),0.0) else realMinOf(realMaxOf(needed,available),0.0)
 }
@@ -356,20 +401,20 @@ func tractionTorque(available: Double, rolled: Double, reference: Double, give: 
 func liftedTorque(available: Double, omega: Double, speed: Double, radius: Double, inertia: Double, dt: Double): Double {
     if available == 0.0 then return 0.0
     fin direction = if available > 0.0 then 1.0 else -1.0
-    fin target = (speed*1.12+0.2*direction)/radius
+    fin target = (speed*1.10+0.2*direction)/radius
     fin needed = (target-omega)*inertia/dt
     return if direction > 0.0 then realMaxOf(realMinOf(needed,available),0.0) else realMinOf(realMaxOf(needed,available),0.0)
 }
 
 /**
- * ABS: of the [available] brake torque, only what lands the wheel on 12 % slip,
+ * ABS: of the [available] brake torque, only what lands the wheel on 10 % slip,
  * where the tyre grips best. [rolled] is the slip speed before braking and
  * [perSlip] the torque one metre per second of slip takes in a step.
  */
 func antiLockTorque(available: Double, active: Bool, rolled: Double, vLong: Double, reference: Double,
                     give: Double, limit: Double, perSlip: Double): Double {
     if !active || available <= 0.0 then return available
-    fin target = -0.12*reference*(if vLong > 0.0 then 1.0 else -1.0)
+    fin target = -0.10*reference*(if vLong > 0.0 then 1.0 else -1.0)
     fin needed = (rolled-(target+give*limit*tireLongitudinal(target/reference)))*perSlip
     return realMinOf(realMaxOf(needed,0.0),available)
 }
@@ -557,7 +602,8 @@ func configuredVehicle(world: World!, entity: Entity, kind: VehicleKind): Vehicl
             tuning.steerRate = 4.05
             tuning.steerFalloff = 7.6
             tuning.spring = 12300.0
-            tuning.rebound = 1170.0
+            tuning.bump = 1450.0
+            tuning.rebound = 2350.0
             tuning.brakeFront *= 1.18
         }
     }
@@ -571,6 +617,7 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     if !world.isAlive(entity) then return
     var vehicle = storageGet<Vehicle>(ensureStorage(world),entity).clone()
     fin previous = configuredVehicle(world,entity,if vehicle.motorcycle then .Motorcycle else .Car)
+    fin previousRpm = vehicle.rpm
     fin config = configuredVehicle(world,entity,kind)
     vehicle.motorcycle = kind == .Motorcycle
     var collider = boxCollider3d(.(config.bodyHalfWidth,(config.bodyHigh-config.bodyLow)*0.5,config.bodyHalfLength))
@@ -580,9 +627,17 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     storageInsert<Name>(ensureStorage(world),entity,.(if vehicle.motorcycle then "Motorcycle" else "Car"))
     vehicle.wheels = freshWheels(config)
     vehicle.steer = 0.0
-    // A new engine, idling in first.
-    vehicle.rpm = drivetrainSpec(vehicle.motorcycle,config.sport).idleRpm
-    vehicle.gear = 1
+    // The new vehicle carries on at the speed the old one had: its wheels roll
+    // with the road and its engine is in the gear it would cruise in there.
+    // Reset to first gear with still wheels, a switch at speed dragged the
+    // wheels against the road and screamed the engine on its limiter in
+    // first - the harsh, distorted sound heard after every switch.
+    fin train = drivetrainSpec(vehicle.motorcycle,config.sport)
+    fin moving = storageGetOrDefault<Velocity3D>(ensureStorage(world),entity,velocity3d(.(0.0,0.0,0.0))).linear.dot(vehicleForward(vehicle.yaw))
+    fin rolling = if moving > 0.5 then moving/config.wheelRadius else 0.0
+    for i: Int in 0..<vehicle.wheels.size then vehicle.wheels[i].omega = rolling
+    vehicle.gear = cruisingGear(train,rolling)
+    vehicle.rpm = realMaxOf(rolling*overallRatio(train,vehicle.gear)*9.549296585513721,train.idleRpm)
     vehicle.shifting = 0.0
     vehicle.gearAge = 0.0
     vehicle.load = 0.0
@@ -596,8 +651,10 @@ func setVehicleKind(world: World!, entity: Entity, kind: VehicleKind) {
     var lights: Headlights = .(on: headlightsOn(world,entity))
     addVehicleVisuals(world,entity,vehicle,config,lights)
     storageInsert<Headlights>(ensureStorage(world),entity,take lights)
-    fin carry = if storageHas<VehicleSound>(ensureStorage(world),entity) then storageGet<VehicleSound>(ensureStorage(world),entity).last else 0.0
-    storageInsert<VehicleSound>(ensureStorage(world),entity,vehicleSound(vehicle.motorcycle,carry))
+    let sounds = ensureStorage<VehicleSound>(world)
+    fin heard = storageIndexOf<VehicleSound>(sounds,entity)
+    if heard < 0 then storageInsert<VehicleSound>(sounds,entity,vehicleSound(vehicle.motorcycle))
+    else sounds.values[heard].handOver(vehicle.motorcycle,previousRpm)
     fin body = storageGet<Transform3D>(ensureStorage(world),entity)
     fin lift = rideHeight(config)-rideHeight(previous)+0.05
     fin position = body.position.add(.(0.0,lift,0.0))
@@ -747,15 +804,28 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     fin steerTarget = vehicleClamp(input.steer,-1.0,1.0)
     fin steerStep = config.steerRate*dt*(if steerTarget*vehicle.steer < 0.0 || absReal(steerTarget) < 0.01 then 1.6 else 1.0)
     vehicle.steer += vehicleClamp(steerTarget-vehicle.steer,-steerStep,steerStep)
-    fin steerAngle = vehicle.steer*config.maxSteer/(1.0+absReal(forwardSpeed)/config.steerFalloff)
+    // The lock shrinks with speed, and a steering assist (as driving games give
+    // a keyboard) turns the wheels no further than the angle that loads the
+    // front tyres to their peak at this speed: the turn's own angle for the
+    // grip there is, plus the tyre's peak slip. Full lock on a key no longer
+    // throws the car past its grip at motorway speed.
+    fin speedLock = config.maxSteer/(1.0+absReal(forwardSpeed)/config.steerFalloff)
+    fin squared = forwardSpeed*forwardSpeed
+    fin gripLock = if squared > 4.0 then atan((config.rearAxle-config.frontAxle)*config.tireGrip*9.81*0.9/squared)+tirePeakSlip else speedLock
+    fin steerAngle = vehicle.steer*realMinOf(speedLock,gripLock)
     var drive: Double = 0.0
     var brake: Double = 0.0
+    // The pedal against the gear's direction brakes all the way to a stop
+    // (the gearbox then turns round at a standstill): braking only down to
+    // walking pace left the car rolling for seconds before it would reverse.
+    fin reversing = vehicle.gear < 0
     if input.throttle > 0.0 {
-        if forwardSpeed < -1.0 then brake = input.throttle else drive = input.throttle
+        if reversing || forwardSpeed < -0.5 then brake = input.throttle else drive = input.throttle
     } else if input.throttle < 0.0 {
-        if forwardSpeed > 1.0 then brake = -input.throttle else drive = input.throttle
+        if !reversing || forwardSpeed > 0.5 then brake = -input.throttle else drive = input.throttle
     }
     if drive < 0.0 && forwardSpeed < -config.reverseSpeed then drive = 0.0
+    brake = realMaxOf(brake,vehicleClamp(input.footBrake,0.0,1.0))
     // Standing still with no throttle holds the car on its brakes.
     fin holding = input.throttle == 0.0 && absReal(forwardSpeed) < 0.35
     if holding then brake = 1.0
@@ -897,10 +967,18 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
     fin engineDrag = if engaged && pedal <= 0.0 then -engineTorque(train,vehicle.rpm,0.0)*absReal(overall) else 0.0
     // With the clutch closed the wheels turn the engine too.
     fin engineInertia = if engaged then train.inertia*overall*overall else 0.0
-    // Wheelie control: a two-wheeler whose front tyre goes light gets less torque.
-    if config.wheelCount == 2 && drive > 0.0 {
-        fin frontShare = vehicle.wheels[0].load/(config.mass*9.81*0.5)
-        if frontShare < 0.18 then totalTorque *= realMaxOf(frontShare/0.18,0.25)
+    // Anti-wheelie, as a superbike's electronics: the rear tyre may push only
+    // as hard as leaves a fifth of the bike's weight on the front, the force
+    // at which weight transfer (push x centre height) equals the front's
+    // static share (weight x rear reach). Decided from the geometry, not from
+    // the front's measured load: cutting the torque when the front went light
+    // and restoring it when it came down rocked the bike on its springs until
+    // it left the ground.
+    if config.wheelCount == 2 && totalTorque > 0.0 {
+        fin height = realMaxOf(rideHeight(config),0.2)
+        fin reach = config.rearAxle-(config.rearAxle+config.frontAxle)*0.5
+        fin push = config.mass*9.81*reach/height*0.8
+        totalTorque = realMinOf(totalTorque,push*config.wheelRadius)
     }
 
     // ── Tyres, one wheel at a time so each sees the others' pushes ──
@@ -975,7 +1053,7 @@ func simulateVehicle(world: World!, entity: Entity, ground: Array<CollisionSurfa
                 fy *= limit/total
             }
             // Links carry part of the pitch: the longitudinal push acts that share of the way up to the centre of mass.
-            fin lifted = arm.add(axisUp.scale(-arm.dot(axisUp)*config.antiPitch))
+            fin lifted = arm.add(axisUp.scale(-arm.dot(axisUp)*(if front then config.antiDive else config.antiSquat)))
             pushBody(motion,q,config,lifted,along.scale((fx+rollingForce)*dt))
             pushBody(motion,q,config,arm,side.scale(fy*dt))
             if held {
@@ -1173,6 +1251,21 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
     fin rate: Double = 48000.0
     for i: Int in 0..<count then setSample(sound.buffer, i, 0.0)
     sound.voice.render(sound.buffer, count, rpm * doppler, load, throttle, limiter)
+    // A replaced engine fades out under the new one, which fades in as it goes.
+    if sound.handover > 0.0 {
+        for i: Int in 0..<count then setSample(sound.scratch, i, 0.0)
+        sound.outgoing.render(sound.scratch, count, sound.outgoingRpm * doppler, 0.0, 0.0, false)
+        fin step = 1.0 / (handoverSeconds * 48000.0)
+        for i: Int in 0..<count {
+            fin old = realMaxOf(sound.handover - step * (i as Double), 0.0)
+            setSample(sound.buffer, i, sample(sound.buffer, i) * (1.0 - old) + sample(sound.scratch, i) * old)
+        }
+        sound.handover -= step * (count as Double)
+        if sound.handover <= 0.0 {
+            sound.handover = 0.0
+            sound.outgoing.release()
+        }
+    }
     sound.horn.render(sound.buffer, count, sound.hornHeld)
     fin config = vehicleSpec(if motorcycle then .Motorcycle else .Car)
     fin train = drivetrainSpec(motorcycle)
@@ -1191,12 +1284,9 @@ func renderVehicleSound(world: World!, vehicle: Entity, frames: Int, paused: Boo
         if sound.whine > 2.0 * PI then sound.whine -= 2.0 * PI
         x += sin(sound.whine) * 0.004 * load
         sound.fade = if paused then realMaxOf(sound.fade - fadeStep, 0.0) else realMinOf(sound.fade + fadeStep, 1.0)
-        x = sound.air.lowpass(x * sound.fade + sound.carry)
-        sound.carry *= 0.99
-        if absReal(sound.carry) < 0.00001 then sound.carry = 0.0
+        x = sound.air.lowpass(x * sound.fade)
         setSample(sound.buffer, i, x)
     }
-    sound.last = if count > 0 then sample(sound.buffer, count - 1) else sound.last
     return sound.buffer
 }
 

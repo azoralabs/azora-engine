@@ -376,6 +376,7 @@ impl App {
         fin upward = sqrt(view.m10*view.m10+view.m11*view.m11+view.m12*view.m12)*(self.height() as Double)*0.5
         fin spread = if across > upward then across else upward
         var drawn = 0
+        self.gpu.terrainFrame++
         var index = 0
         while index < storageLength<HeightfieldTerrain>(items) {
             fin entity = storageEntityAt<HeightfieldTerrain>(items, index)
@@ -383,22 +384,35 @@ impl App {
                 fin surface = items.values[index].clone()
                 fin model = heightfieldMatrix(world, entity, surface)
                 fin asset = self.sceneTerrainIndex(entity,surface,model)
+                self.gpu.terrains[asset].lastUsed = self.gpu.terrainFrame
+                fin clip = mat4Mul(copyMat4(view), copyMat4(model))
+                // Outside the view (behind the camera, beyond the sun's cascade): neither its chunks nor its foliage.
+                if !boxInClip(clip, -0.5, self.gpu.terrains[asset].low, -0.5, 0.5, self.gpu.terrains[asset].high, 0.5) {
+                    index++
+                    continue
+                }
                 fin color = sceneAlbedo(world, entity)
                 fin pipeline = self.scenePipeline(world, entity)
                 // World metres per unit of the image's own height.
                 fin rise = sqrt(model.m01*model.m01+model.m11*model.m11+model.m21*model.m21)
-                drawn += self.drawTerrainChunks(asset, mat4Mul(copyMat4(view), copyMat4(model)), model, rise*spread,
-                    terrainClamp(surface.detailError, 0.0, 64.0), color, pipeline)
+                drawn += self.drawTerrainChunks(asset, clip, model, rise*spread,
+                    terrainClamp(surface.detailError, 0.0, 64.0), color, pipeline,
+                    storageGetOrDefault<TerrainHoles>(ensureStorage(world), entity, .()))
                 if !self.gpu.casting then drawSceneFoliage(self.gpu,world,entity,asset,model,spread)
             }
             index++
         }
         self.gpu.terrainTriangles = drawn
+        // Tiles of cells that were unloaded, a few seconds on.
+        if !self.gpu.casting && self.gpu.terrainFrame % 60 == 0 then self.gpu.releaseUnusedTerrains(240)
     }
 
-    /** Picks, joins and draws the chunks of terrain [asset]. Answers the triangles drawn. */
+    /**
+     * Picks, joins and draws the chunks of terrain [asset], leaving out the
+     * squares [holes] hides. Answers the triangles drawn.
+     */
     func !.drawTerrainChunks(asset: Int, clip: Mat4&, model: Mat4&, rise: Double, tolerance: Double,
-                             color: Rgba&, pipeline: Long): Int {
+                             color: Rgba&, pipeline: Long, holes: TerrainHoles&): Int {
         if self.gpu.terrains[asset].image.samples == 0 then return 0
         fin columns = self.gpu.terrains[asset].image.columns
         fin rows = self.gpu.terrains[asset].image.rows
@@ -407,9 +421,13 @@ impl App {
         fin perspective = absValue(clip.m30)+absValue(clip.m31)+absValue(clip.m32) > 0.000001
         var levels: Array<Int> = .() * count
         var depths: Array<Double> = .() * count
+        var hidden: Array<Int> = .() * count
+        fin squares = if holes.spacing == 8 || holes.spacing == 16 || holes.spacing == 32 then terrainChunkCells / holes.spacing else 1
+        fin whole = (1 << (squares * squares)) - 1
         var c = 0
         while c < count {
             fin chunk = self.gpu.terrains[asset].chunks[c].&
+            hidden[c] = chunkHoles(holes, chunk.column, chunk.row)
             fin x0 = (chunk.column as Double)/((columns-1) as Double)-0.5
             fin x1 = (terrainMinInt(chunk.column+terrainChunkCells,columns-1) as Double)/((columns-1) as Double)-0.5
             fin z0 = (chunk.row as Double)/((rows-1) as Double)-0.5
@@ -436,7 +454,7 @@ impl App {
                 if cw < nearest then nearest = cw
             }
             depths[c] = nearest
-            if left == 8 || right == 8 || below == 8 || above == 8 || behind == 8 {
+            if left == 8 || right == 8 || below == 8 || above == 8 || behind == 8 || (hidden[c] != 0 && hidden[c] == whole) {
                 levels[c] = -1
             } else {
                 var level = 0
@@ -447,6 +465,8 @@ impl App {
                     // A chunk only coarsens once it is well inside the next level's reach, so it does not flicker.
                     if level > chunk.level && chunk.errors[level]*perUnit > tolerance*0.8 then level -= 1
                 }
+                // A level whose cells are larger than a hidden square cannot leave it out.
+                if hidden[c] != 0 && level > holedLevelLimit(holes.spacing) then level = holedLevelLimit(holes.spacing)
                 levels[c] = level
             }
             c++
@@ -504,7 +524,9 @@ impl App {
                 if cx > 0 && levels[c-1] > level then mask += 4
                 if cx+1 < chunksX && levels[c+1] > level then mask += 8
                 fin slot = level*16+mask
-                fin indexCount = self.gpu.terrainIndices.counts[slot]
+                fin holed = if hidden[c] == 0 then -1 else
+                    holedTerrainIndices(self.gpu.terrainIndices, self.gpu.device, level, mask, hidden[c], holes.spacing)
+                fin indexCount = if holed < 0 then self.gpu.terrainIndices.counts[slot] else self.gpu.terrainIndices.holedCounts[holed]
                 // The sun's view picks its own levels; only the camera's are remembered.
                 if !self.gpu.casting {
                     self.gpu.terrains[asset].chunks[c].level = level
@@ -512,7 +534,8 @@ impl App {
                 }
                 fin mesh: Mesh = .(self.gpu.terrains[asset].chunks[c].buffer, terrainChunkSide*terrainChunkSide)
                 self.drawMeshPipeline(mesh, model, color.r, color.g, color.b, pipeline,
-                    indices: self.gpu.terrainIndices.buffers[slot], indexCount: indexCount)
+                    indices: if holed < 0 then self.gpu.terrainIndices.buffers[slot] else self.gpu.terrainIndices.holedBuffers[holed]
+                    indexCount: indexCount)
                 drawn += indexCount/3
             }
         }
@@ -580,11 +603,15 @@ impl App {
         self.gpu.enc = encoder
         self.gpu.mode = -1
         self.gpu.casting = true
+        // The shadow map keeps ordinary depth; the camera's is reversed.
+        fin cameraDepth = self.gpu.depthOn
+        self.gpu.depthOn = self.gpu.depthLess
         pokeMat4(self.gpu.viewProj, 0, light)
         self.gpu.view = copyMat4(light)
         self.drawSceneMeshes(world, meshes)
         self.drawHeightfields(world)
         self.gpu.casting = false
+        self.gpu.depthOn = cameraDepth
         send0(encoder, sel("endEncoding"))
         send0(commands, sel("commit"))
         self.gpu.enc = frameEncoder
@@ -602,28 +629,237 @@ impl App {
         self.gpu.detailReady = true
     }
 
-    /** Every visible mesh of [world], without the terrain. */
-    func !.drawSceneMeshes(world: World!, meshes: PrimitiveMeshes&) {
-        var index = 0
-        while index < storageLength<Mesh3d>(ensureStorage(world)) {
-            fin entity = storageEntityAt<Mesh3d>(ensureStorage(world), index)
-            if world.isAlive(entity) && visibleInWorld(world, entity) {
-                fin mesh = storageValueAt<Mesh3d>(ensureStorage(world), index).clone()
-                fin color = sceneAlbedo(world, entity)
-                var model = sceneMeshMatrix(world, entity, mesh.size)
-                if mesh.shape == 2 then model = mat4Mul(model, mat4RotationZ(1.5707963267948966))
-                fin pipeline = self.scenePipeline(world, entity)
-                fin sources = ensureStorage<MeshGeometry>(world)
-                if storageHas<MeshGeometry>(sources,entity) {
-                    fin geometry = sceneGeometry(world,self.gpu.device,storageGet<MeshGeometry>(sources,entity).name)
-                    self.drawMeshPipeline(geometry,model,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
-                } else {
-                    self.drawMeshPipeline(primitiveFor(meshes,mesh.shape),model,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
-                }
+    /**
+     * Gathers [world]'s visible meshes with their world transforms and
+     * bounding radii into [AzGpu.sceneMeshes], once a frame: the Photon Field,
+     * the sun's cascade and the camera's view all read the same list.
+     */
+    func !.gatherSceneMeshes(world: World!) {
+        fin meshes = ensureStorage<Mesh3d>(world)
+        fin stamp = world.revision + meshes.revision * 7 + ensureStorage<Transform>(world).revision * 13 +
+            ensureStorage<Visibility>(world).revision * 17 + ensureStorage<MeshGeometry>(world).revision * 19
+        if self.gpu.sceneMeshes.frame == self.framesRun && self.gpu.sceneMeshes.stamp == stamp then return
+        self.gpu.sceneMeshes.frame = self.framesRun
+        self.gpu.sceneMeshes.stamp = stamp
+        self.gpu.sceneMeshes.pass++
+        fin pass = self.gpu.sceneMeshes.pass
+        self.gpu.sceneMeshes.rows.clear()
+        self.gpu.sceneMeshes.meshSlots.clear()
+        fin transforms = ensureStorage<Transform>(world)
+        fin visibility = ensureStorage<Visibility>(world)
+        fin sources = ensureStorage<MeshGeometry>(world)
+        for index: Int in 0..<storageLength<Mesh3d>(meshes) {
+            fin entity = storageEntityAt<Mesh3d>(meshes, index)
+            if !world.isAlive(entity) then continue
+            fin slot = sceneSlot(self.gpu.sceneMeshes, world, entity, pass, transforms, visibility)
+            if slot < 0 || self.gpu.sceneMeshes.hidden[slot] then continue
+            fin size = meshes.values[index].size
+            // Geometry is measured for its radius: a new geometry storage measures again.
+            fin shape: Long = if storageHas<MeshGeometry>(sources, entity) then sources.revision + 1 else 0
+            if self.gpu.sceneMeshes.moved[slot] || self.gpu.sceneMeshes.sizes[slot] != size || self.gpu.sceneMeshes.shapes[slot] != shape {
+                fin model = mat4Mul(self.gpu.sceneMeshes.worlds[slot], mat4Scale(size, size, size))
+                fin x: Vec3 = .(model.m00, model.m10, model.m20)
+                fin y: Vec3 = .(model.m01, model.m11, model.m21)
+                fin z: Vec3 = .(model.m02, model.m12, model.m22)
+                // A primitive spans half a unit each way: its farthest corner. Geometry: its farthest vertex.
+                self.gpu.sceneMeshes.radii[slot] = if shape != 0 then
+                    geometryReach(world, storageGet<MeshGeometry>(sources, entity).name) * meshLargestAxis(x, y, z) else
+                    0.5 * meshLargestCorner(x, y, z)
+                self.gpu.sceneMeshes.models[slot] = model
+                self.gpu.sceneMeshes.sizes[slot] = size
+                self.gpu.sceneMeshes.shapes[slot] = shape
             }
-            index++
+            self.gpu.sceneMeshes.rows.add(index)
+            self.gpu.sceneMeshes.meshSlots.add(slot)
         }
     }
+
+    /**
+     * Every visible mesh of [world] the view can show, without the terrain:
+     * meshes outside the view's frustum are skipped, and so are meshes the
+     * camera sees smaller than [sceneMeshSmallest] points across (the sun's
+     * cascade keeps those, its view is a few metres wide).
+     */
+    func !.drawSceneMeshes(world: World!, meshes: PrimitiveMeshes&) {
+        self.gatherSceneMeshes(world)
+        fin clip = copyMat4(self.gpu.view)
+        // Screen points one world unit spans at clip depth one, as the terrain measures it.
+        fin across = sqrt(clip.m00*clip.m00+clip.m01*clip.m01+clip.m02*clip.m02)*(self.width() as Double)*0.5
+        fin upward = sqrt(clip.m10*clip.m10+clip.m11*clip.m11+clip.m12*clip.m12)*(self.height() as Double)*0.5
+        fin spread = if across > upward then across else upward
+        fin store = ensureStorage<Mesh3d>(world)
+        fin sources = ensureStorage<MeshGeometry>(world)
+        for i: Int in 0..<self.gpu.sceneMeshes.rows.size {
+            fin slot = self.gpu.sceneMeshes.meshSlots[i]
+            fin model = self.gpu.sceneMeshes.models[slot].&
+            fin radius = self.gpu.sceneMeshes.radii[slot]
+            if !sphereInClip(clip, model.m03, model.m13, model.m23, radius) then continue
+            fin w = clip.m30*model.m03+clip.m31*model.m13+clip.m32*model.m23+clip.m33
+            if !self.gpu.casting && w > radius && radius * spread / w < sceneMeshSmallest then continue
+            fin row = self.gpu.sceneMeshes.rows[i]
+            fin entity = storageEntityAt<Mesh3d>(store, row)
+            fin color = sceneAlbedo(world, entity)
+            fin pipeline = self.scenePipeline(world, entity)
+            fin turned = if store.values[row].shape == 2 then mat4Mul(model, mat4RotationZ(1.5707963267948966)) else copyMat4(model)
+            if storageHas<MeshGeometry>(sources,entity) {
+                fin geometry = sceneGeometry(world,self.gpu.device,storageGet<MeshGeometry>(sources,entity).name)
+                self.drawMeshPipeline(geometry,turned,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
+            } else {
+                self.drawMeshPipeline(primitiveFor(meshes,store.values[row].shape),turned,color.r,color.g,color.b,pipeline,emission: sceneEmission(world,entity))
+            }
+        }
+    }
+}
+
+/** [entity]'s slot in [cache], made (or taken over from a despawned entity of the same id) when it has none. */
+func sceneSlotOf(cache: SceneMeshCache!, entity: Entity): Int {
+    while cache.slots.size <= entity.id then cache.slots.add(0)
+    var slot = cache.slots[entity.id] - 1
+    if slot < 0 {
+        slot = cache.ids.size
+        cache.slots[entity.id] = slot + 1
+        cache.ids.add(entity.id)
+        cache.generations.add(entity.generation)
+        cache.fresh.add(true)
+        for k: Int in 0..<9 then cache.values.add(0.0)
+        cache.placed.add(false)
+        cache.locals.add(mat4Identity())
+        cache.worlds.add(mat4Identity())
+        cache.updated.add(-1)
+        cache.moved.add(true)
+        cache.parents.add(-1)
+        cache.hidden.add(false)
+        cache.models.add(mat4Identity())
+        cache.radii.add(0.0)
+        cache.sizes.add(-1.0)
+        cache.shapes.add(-1)
+    } else if cache.generations[slot] != entity.generation {
+        cache.generations[slot] = entity.generation
+        cache.fresh[slot] = true
+        cache.updated[slot] = -1
+        cache.sizes[slot] = -1.0
+    }
+    return slot
+}
+
+/**
+ * Brings the slots of [entity] and its parents up to date for gathering
+ * [pass] and answers [entity]'s (-1 when it is not alive): a slot's own
+ * matrix is made again only when its Transform values changed, its world only
+ * when that or a parent's world changed, and a parent already brought up to
+ * date in this pass is not walked again.
+ */
+func sceneSlot(cache: SceneMeshCache!, world: World!, entity: Entity, pass: Int,
+               transforms: Storage<Transform>&, visibility: Storage<Visibility>&): Int {
+    cache.chain.clear()
+    var node = entity
+    var parent = -1
+    while world.isAlive(node) && cache.chain.size < 64 {
+        fin slot = sceneSlotOf(cache, node)
+        if cache.updated[slot] == pass {
+            parent = slot
+            break
+        }
+        cache.chain.add(slot)
+        node = world.getParent(node)
+    }
+    var k = cache.chain.size - 1
+    while k >= 0 {
+        fin slot = cache.chain[k]
+        fin current: Entity = .(cache.ids[slot], cache.generations[slot])
+        fin at = storageIndexOf<Transform>(transforms, current)
+        var local = cache.fresh[slot] || cache.placed[slot] != (at >= 0)
+        if at >= 0 {
+            fin t = transforms.values[at].&
+            fin base = slot * 9
+            if local || cache.values[base] != t.translation.x || cache.values[base + 1] != t.translation.y ||
+                cache.values[base + 2] != t.translation.z || cache.values[base + 3] != t.rotation.x ||
+                cache.values[base + 4] != t.rotation.y || cache.values[base + 5] != t.rotation.z ||
+                cache.values[base + 6] != t.scale.x || cache.values[base + 7] != t.scale.y || cache.values[base + 8] != t.scale.z {
+                local = true
+                cache.values[base] = t.translation.x
+                cache.values[base + 1] = t.translation.y
+                cache.values[base + 2] = t.translation.z
+                cache.values[base + 3] = t.rotation.x
+                cache.values[base + 4] = t.rotation.y
+                cache.values[base + 5] = t.rotation.z
+                cache.values[base + 6] = t.scale.x
+                cache.values[base + 7] = t.scale.y
+                cache.values[base + 8] = t.scale.z
+                cache.locals[slot] = trsMatrix(t.translation, t.rotation, t.scale)
+            }
+        } else if local {
+            cache.locals[slot] = mat4Identity()
+        }
+        cache.placed[slot] = at >= 0
+        fin moved = local || cache.parents[slot] != parent || (parent >= 0 && cache.moved[parent])
+        if moved then cache.worlds[slot] = if parent >= 0 then mat4Mul(cache.worlds[parent], cache.locals[slot]) else copyMat4(cache.locals[slot])
+        cache.moved[slot] = moved
+        cache.parents[slot] = parent
+        cache.fresh[slot] = false
+        fin shown = storageIndexOf<Visibility>(visibility, current)
+        cache.hidden[slot] = (parent >= 0 && cache.hidden[parent]) || (shown >= 0 && !visibility.values[shown].visible)
+        cache.updated[slot] = pass
+        parent = slot
+        k--
+    }
+    return parent
+}
+
+/** Meshes the camera would show smaller than this many points across are not drawn. */
+inline fin sceneMeshSmallest: Double = 0.75
+
+/** Whether a sphere at ([x], [y], [z]) of [radius] reaches into the view of [clip] (near, left, right, top, bottom). */
+func sphereInClip(clip: Mat4&, x: Double, y: Double, z: Double, radius: Double): Bool {
+    fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
+    fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+    fin w = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
+    fin rw = radius*sqrt(clip.m30*clip.m30+clip.m31*clip.m31+clip.m32*clip.m32)
+    fin rx = radius*sqrt(clip.m00*clip.m00+clip.m01*clip.m01+clip.m02*clip.m02)
+    fin ry = radius*sqrt(clip.m10*clip.m10+clip.m11*clip.m11+clip.m12*clip.m12)
+    return w+rw > 0.0 && absValue(cx) <= w+rw+rx && absValue(cy) <= w+rw+ry
+}
+
+/** Whether the box from ([x0], [y0], [z0]) to ([x1], [y1], [z1]) reaches into the view of [clip]: not all eight corners outside one side. */
+func boxInClip(clip: Mat4&, x0: Double, y0: Double, z0: Double, x1: Double, y1: Double, z1: Double): Bool {
+    var left = 0
+    var right = 0
+    var below = 0
+    var above = 0
+    var behind = 0
+    for corner: Int in 0..<8 {
+        fin x = if corner % 2 == 0 then x0 else x1
+        fin y = if (corner / 2) % 2 == 0 then y0 else y1
+        fin z = if corner / 4 == 0 then z0 else z1
+        fin cx = clip.m00*x+clip.m01*y+clip.m02*z+clip.m03
+        fin cy = clip.m10*x+clip.m11*y+clip.m12*z+clip.m13
+        fin cw = clip.m30*x+clip.m31*y+clip.m32*z+clip.m33
+        if cx < -cw then left += 1
+        if cx > cw then right += 1
+        if cy < -cw then below += 1
+        if cy > cw then above += 1
+        if cw <= 0.0 then behind += 1
+    }
+    return left < 8 && right < 8 && below < 8 && above < 8 && behind < 8
+}
+
+/** The longest of a transform's three axes. */
+func meshLargestAxis(x: Vec3&, y: Vec3&, z: Vec3&): Double {
+    fin a = x.length
+    fin b = y.length
+    fin c = z.length
+    return if a > b && a > c then a else if b > c then b else c
+}
+
+/** The longest diagonal of the parallelepiped a transform's axes span (twice the reach of a unit cube's corner). */
+func meshLargestCorner(x: Vec3&, y: Vec3&, z: Vec3&): Double {
+    fin a = x.add(y).add(z).length
+    fin b = x.add(y).subtract(z).length
+    fin c = x.subtract(y).add(z).length
+    fin d = x.subtract(y).subtract(z).length
+    fin ab = if a > b then a else b
+    fin cd = if c > d then c else d
+    return if ab > cd then ab else cd
 }
 
 func terrainMinInt(a: Int, b: Int): Int = if a < b then a else b
@@ -841,32 +1077,46 @@ impl App {
         if !needDynamic && !needStatic then return
         var key = photonFrameHash(settings, light, basis, focus)
         var casters: Array<PhotonCaster> = []
+        // Only meshes over the field's pages, as the light sees them, shade or light it
+        // (a static bake still takes the whole scene, it is centred on all of it).
+        self.gatherSceneMeshes(world)
+        fin reach = photonClamp(settings.pageRadius as Double, 1.0, 4.0) as Int
+        fin pageSize = photonPageSize(settings)
+        fin lowU = ((photonPageX(focus, basis, settings) - reach) as Double) * pageSize
+        fin lowV = ((photonPageY(focus, basis, settings) - reach) as Double) * pageSize
+        fin span = ((reach * 2 + 1) as Double) * pageSize
         fin meshes = ensureStorage<Mesh3d>(world)
-        var index = 0
-        while index < storageLength<Mesh3d>(meshes) {
-            fin meshEntity = storageEntityAt<Mesh3d>(meshes, index)
-            if world.isAlive(meshEntity) && visibleInWorld(world, meshEntity) {
-                fin mesh = meshes.values[index].clone()
-                fin model = sceneMeshMatrix(world, meshEntity, mesh.size)
-                fin caster = photonCaster(mesh.shape, model, self.photonAlbedo(world, meshEntity), basis)
-                if self.gpu.casterSettled(meshEntity.id, photonCasterHash(17, caster)) {
-                    key = photonCasterHash(key, caster)
-                    casters.add(take caster)
-                }
+        for i: Int in 0..<self.gpu.sceneMeshes.rows.size {
+            fin slot = self.gpu.sceneMeshes.meshSlots[i]
+            fin model = self.gpu.sceneMeshes.models[slot].&
+            fin radius = self.gpu.sceneMeshes.radii[slot]
+            fin u = model.m03 * basis.x.x + model.m13 * basis.x.y + model.m23 * basis.x.z
+            fin v = model.m03 * basis.y.x + model.m13 * basis.y.y + model.m23 * basis.y.z
+            if !needStatic && (u + radius < lowU || u - radius >= lowU + span || v + radius < lowV || v - radius >= lowV + span) then continue
+            fin row = self.gpu.sceneMeshes.rows[i]
+            fin meshEntity = storageEntityAt<Mesh3d>(meshes, row)
+            fin caster = photonCaster(meshes.values[row].shape, model, self.photonAlbedo(world, meshEntity), basis)
+            if self.gpu.casterSettled(meshEntity.id, photonCasterHash(17, caster)) {
+                key = photonCasterHash(key, caster)
+                casters.add(take caster)
             }
-            index++
         }
         fin surfaces = ensureStorage<HeightfieldTerrain>(world)
-        index = 0
+        var index = 0
         while index < storageLength<HeightfieldTerrain>(surfaces) {
             fin terrainEntity = storageEntityAt<HeightfieldTerrain>(surfaces, index)
             if world.isAlive(terrainEntity) && visibleInWorld(world, terrainEntity) {
                 fin surface = surfaces.values[index].clone()
-                fin asset = self.sceneTerrainIndex(terrainEntity,surface,heightfieldMatrix(world,terrainEntity,surface))
-                fin terrain = self.gpu.terrains[asset].&
-                if terrain.image.samples != 0 {
-                    var caster = photonCaster(4, heightfieldMatrix(world, terrainEntity, surface),
-                        self.photonAlbedo(world, terrainEntity), basis)
+                fin model = heightfieldMatrix(world, terrainEntity, surface)
+                fin radius = 0.5 * meshLargestCorner(Vec3(model.m00, model.m10, model.m20), Vec3(model.m01, model.m11, model.m21),
+                    Vec3(model.m02, model.m12, model.m22))
+                fin u = model.m03 * basis.x.x + model.m13 * basis.x.y + model.m23 * basis.x.z
+                fin v = model.m03 * basis.y.x + model.m13 * basis.y.y + model.m23 * basis.y.z
+                fin over = needStatic || u + radius >= lowU && u - radius < lowU + span && v + radius >= lowV && v - radius < lowV + span
+                fin asset = if over then self.sceneTerrainIndex(terrainEntity, surface, model) else -1
+                if asset >= 0 && self.gpu.terrains[asset].image.samples != 0 {
+                    fin terrain = self.gpu.terrains[asset].&
+                    var caster = photonCaster(4, model, self.photonAlbedo(world, terrainEntity), basis)
                     caster.terrain = terrain.image.clone()
                     key = photonCasterHash(photonHash(key, asset as Double), caster)
                     casters.add(take caster)
@@ -928,9 +1178,9 @@ func roadKeyReal(key: Long, value: Double, scratch: Long): Long {
 }
 
 func roadKeyMaterial(key: Long, path: String): Long {
-    fin length = stringLength(path)
-    var result = roadKeyPart(key, length as Long)
-    for i: Int in 0..<length then result = roadKeyPart(result, (charAt(path, i) as Int) as Long)
+    fin chars = toChars(path)
+    var result = roadKeyPart(key, chars.size as Long)
+    for c in chars then result = roadKeyPart(result, (c as Int) as Long)
     return result
 }
 
@@ -949,12 +1199,36 @@ func roadKeyPlacement(key: Long, pose: Mat4&, scratch: Long): Long {
     return roadKeyReal(result, pose.m23, scratch)
 }
 
-/** Fingerprints the authored inputs without formatting them into strings each frame. */
+/**
+ * Fingerprints the authored inputs without formatting them into strings each
+ * frame, in one pass over the roads and one over their knots (a pass over every
+ * knot per road was quadratic in a streamed world's thousands of knots).
+ */
 func roadLayout(world: World!, scratch: Long): Long {
     var layout: Long = 0
     fin roads = ensureStorage<SplineRoad>(world)
     fin points = ensureStorage<RoadPoint>(world)
     fin transforms = ensureStorage<Transform>(world)
+    // Knots are direct children. Their local translation and the road's world
+    // transform determine the same positions that roadKnots uses; each road's
+    // knots fold into a key of its own, in storage order.
+    var knots: Array<Long> = []
+    for i: Int in 0..<storageLength<SplineRoad>(roads) then knots.add(0)
+    for j: Int in 0..<storageLength<RoadPoint>(points) {
+        fin point = storageEntityAt<RoadPoint>(points, j)
+        if !world.isAlive(point) then continue
+        fin road = storageIndexOf<SplineRoad>(roads, world.getParent(point))
+        if road < 0 then continue
+        var key = roadKeyPart(roadKeyPart(knots[road], 2), points.values[j].order as Long)
+        fin at = storageIndexOf<Transform>(transforms, point)
+        if at >= 0 {
+            fin translation = transforms.values[at].translation.&
+            key = roadKeyReal(roadKeyReal(roadKeyReal(key, translation.x, scratch), translation.y, scratch), translation.z, scratch)
+        } else {
+            key = roadKeyPart(roadKeyPart(roadKeyPart(key, 0), 0), 0)
+        }
+        knots[road] = key
+    }
     var i = 0
     while i < storageLength<SplineRoad>(roads) {
         fin entity = storageEntityAt<SplineRoad>(roads,i)
@@ -976,26 +1250,7 @@ func roadLayout(world: World!, scratch: Long): Long {
             layout = roadKeyReal(layout, s.pierSpacing, scratch)
             layout = roadKeyMaterial(layout, roadMaterialAsset(world, entity))
             layout = roadKeyPlacement(layout, worldMatrix(world, entity), scratch)
-            // Knots are direct children. Their local translation and the road's
-            // world transform determine the same positions that roadKnots uses.
-            var j = 0
-            while j < storageLength<RoadPoint>(points) {
-                fin point = storageEntityAt<RoadPoint>(points, j)
-                if world.isAlive(point) && world.getParent(point) == entity {
-                    layout = roadKeyPart(layout, 2)
-                    layout = roadKeyPart(layout, points.values[j].order as Long)
-                    fin at = storageIndexOf<Transform>(transforms, point)
-                    if at >= 0 {
-                        fin translation = transforms.values[at].translation.&
-                        layout = roadKeyReal(layout, translation.x, scratch)
-                        layout = roadKeyReal(layout, translation.y, scratch)
-                        layout = roadKeyReal(layout, translation.z, scratch)
-                    } else {
-                        layout = roadKeyPart(roadKeyPart(roadKeyPart(layout, 0), 0), 0)
-                    }
-                }
-                j++
-            }
+            layout = roadKeyPart(layout, knots[i])
         }
         i++
     }
@@ -1032,9 +1287,9 @@ func uploadRoadMesh(device: Long, network: RoadNetwork&, asset: String, material
         fin tri = network.triangles[i].&
         if tri.material == material {
             fin n = roadNormal(tri)
-            cursor = writeMeshVertex(bytes,cursor,tri.a.x,tri.a.y,tri.a.z,n.x,n.y,n.z)
-            cursor = writeMeshVertex(bytes,cursor,tri.b.x,tri.b.y,tri.b.z,n.x,n.y,n.z)
-            cursor = writeMeshVertex(bytes,cursor,tri.c.x,tri.c.y,tri.c.z,n.x,n.y,n.z)
+            cursor = writeMeshVertex(bytes,cursor,tri.x0,tri.y0,tri.z0,n.x,n.y,n.z)
+            cursor = writeMeshVertex(bytes,cursor,tri.x1,tri.y1,tri.z1,n.x,n.y,n.z)
+            cursor = writeMeshVertex(bytes,cursor,tri.x2,tri.y2,tri.z2,n.x,n.y,n.z)
         }
     }
     fin buffer = send3(device,sel("newBufferWithBytes:length:options:"),bytes,cursor,0)
@@ -1043,6 +1298,12 @@ func uploadRoadMesh(device: Long, network: RoadNetwork&, asset: String, material
 
 impl App {
     func !.prepareRoads(world: World!) {
+        fin stamp = world.revision + ensureStorage<SplineRoad>(world).revision * 7 + ensureStorage<RoadPoint>(world).revision * 13 +
+            ensureStorage<RoadJunction>(world).revision * 17 + ensureStorage<Transform>(world).revision * 19 +
+            ensureStorage<FusionMaterial>(world).revision * 23 + ensureStorage<Visibility>(world).revision * 29
+        if self.gpu.roads.checkedFrame == self.framesRun && self.gpu.roads.checkedStamp == stamp then return
+        self.gpu.roads.checkedFrame = self.framesRun
+        self.gpu.roads.checkedStamp = stamp
         fin layout = roadLayout(world, self.gpu.scratch)
         if layout == self.gpu.roads.layout then return
         releaseRoadBuffers(self.gpu.roads)
@@ -1075,7 +1336,8 @@ impl App {
 
     /** Shares the exact cut and fill algorithm used by vehicle contact. */
     func !.sceneTerrainIndex(entity: Entity, surface: HeightfieldTerrain&, model: Mat4&): Int {
-        if self.gpu.roads.layout == 0 || self.gpu.roads.network.grid.size == 0 || !terrainFile(surface.image) then return self.gpu.terrainIndex(surface.image)
+        // A tile its generator already graded (a world partition cell) is not graded again.
+        if self.gpu.roads.layout == 0 || !self.gpu.roads.network.bucketed || !terrainFile(surface.image) || !surface.gradeRoads then return self.gpu.terrainIndex(surface.image)
         var found = 0
         while found < self.gpu.terrains.size && self.gpu.terrains[found].gradedEntity != entity.id then found += 1
         if found < self.gpu.terrains.size {
@@ -1085,18 +1347,21 @@ impl App {
         }
         if self.gpu.terrainIndices.buffers.size == 0 then self.gpu.terrainIndices = buildTerrainIndices(self.gpu.device)
         fin image = readTerrainImage("${self.gpu.fusion.root}/${surface.image}")
-        gradeRoadTerrain(image,model,self.gpu.roads.network)
-        var mesh = if image.samples == 0 then TerrainMesh(surface.image) else buildTerrainMesh(self.gpu.device,surface.image,image)
+        // Which samples lie under the pavement, so far chunks keep the road in view.
+        fin paved = if image.samples == 0 then 0 else azAlloc((image.columns as Long)*(image.rows as Long))
+        defer { if paved != 0 then azFree(paved) }
+        gradeRoadTerrain(image,model,self.gpu.roads.network,paved)
+        var mesh = if image.samples == 0 then TerrainMesh(surface.image) else buildTerrainMesh(self.gpu.device,surface.image,image,paved)
         mesh.gradedEntity = entity.id
         mesh.layout = self.gpu.roads.revision
         mesh.placement = copyMat4(model)
         if found < self.gpu.terrains.size {
             releaseTerrainMesh(self.gpu.terrains[found])
+            mesh.lastUsed = self.gpu.terrainFrame
             self.gpu.terrains[found] = take mesh
-        } else {
-            self.gpu.terrains.add(take mesh)
+            return found
         }
-        return found
+        return self.gpu.keepTerrain(take mesh)
     }
 }
 

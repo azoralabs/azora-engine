@@ -236,7 +236,55 @@ bash "$LIB_DIR/tools/fusion-cook.sh" "$PROJECT_DIR" "${AZORA_COMPILER_BIN:-}" "$
 echo "azora-engine: built $BUILD_DIR/$APP_NAME"
 
 if [ "$ACTION" = "run" ]; then
+    # A game runs as an app bundle launched through LaunchServices. Started
+    # directly by another process (Studio, a shell) the executable opened its
+    # window as the active app, yet the window server kept the keyboard from it
+    # until the player switched to another app and back: the car would not
+    # drive. LaunchServices starts the bundle in "/", so the project folder
+    # travels in AZORA_WORKING_DIRECTORY, with every other AZORA_* setting.
+    BUNDLE="$BUILD_DIR/$APP_NAME.app"
+    mkdir -p "$BUNDLE/Contents/MacOS"
+    cp "$BUILD_DIR/$APP_NAME" "$BUNDLE/Contents/MacOS/$APP_NAME"
+    cat > "$BUNDLE/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>dev.azora.game.$APP_NAME</string>
+<key>CFBundleExecutable</key><string>$APP_NAME</string>
+<key>CFBundleName</key><string>$APP_NAME</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+    LOG="$BUILD_DIR/run.log"
+    : > "$LOG"
+    ENVIRONMENT=(--env "AZORA_WORKING_DIRECTORY=$PROJECT_DIR")
+    for name in $(compgen -e); do
+        case "$name" in AZORA_WORKING_DIRECTORY) ;; AZORA_*) ENVIRONMENT+=(--env "$name=${!name}") ;; esac
+    done
     echo "azora-engine: launching"
-    cd "$PROJECT_DIR"
-    exec "$BUILD_DIR/$APP_NAME"
+    # Not `open -W`: started from Studio it failed ("Unable to block on
+    # applications (kqueue() failed: Result too large)") and the run ended at
+    # once. The bundle is opened, then its process is waited for here, so a
+    # run lasts as long as the game. Why LaunchServices refused, if it did,
+    # goes to the log with the game's own output.
+    EXECUTABLE="$(cd "$BUNDLE/Contents/MacOS" && pwd -P)/$APP_NAME"
+    if ! /usr/bin/open -n -F "${ENVIRONMENT[@]}" --stdout "$LOG" --stderr "$LOG" "$BUNDLE" 2>>"$LOG"; then
+        cat "$LOG"
+        exit 1
+    fi
+    GAME=""
+    for _ in $(seq 1 100); do
+        for pid in $(pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME"); do
+            [ "$(ps -o command= -p "$pid" 2>/dev/null | cut -d' ' -f1)" = "$EXECUTABLE" ] && GAME="$pid"
+        done
+        [ -n "$GAME" ] && break
+        sleep 0.1
+    done
+    if [ -n "$GAME" ]; then
+        while kill -0 "$GAME" 2>/dev/null; do sleep 0.25; done
+    fi
+    cat "$LOG"
+    exit 0
 fi

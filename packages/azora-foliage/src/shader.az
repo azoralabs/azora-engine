@@ -14,6 +14,7 @@ struct FoliageU {
     float4 wind;
     float4 cell;
     float4 options;
+    float4 shape;
 };
 
 struct FoliageVertex {
@@ -126,7 +127,8 @@ vertex FoliageVertex foliage_vertex(uint vid [[vertex_id]], uint iid [[instance_
         float angle = turn+float(blade)*2.3999632;
         float2 side = circle(angle), bend = float2(-side.y,side.x);
         float height = plant.z * (0.66+0.3*fract(seed*3.79+float(blade)*0.41));
-        height *= 1.0-smoothstep(55.0,84.0,distance);
+        // Grass shrinks away over the last share (u.shape.y) of its view distance (u.shape.x).
+        height *= 1.0-smoothstep(u.shape.x*(1.0-u.shape.y),u.shape.x,distance);
         float width = plant.z * (lod == 0 ? 0.12 : 0.16);
         float2 p = v == 2 ? bend*height*0.23+wind*height*0.31 : side*width*(v == 0 ? -1.0 : 1.0);
         p += bend*plant.z*float(blade)*0.13;
@@ -136,6 +138,8 @@ vertex FoliageVertex foliage_vertex(uint vid [[vertex_id]], uint iid [[instance_
         half3 tip = mix(half3(0.23,0.37,0.09),half3(0.36,0.45,0.14),half(seed));
         tint = v == 2 ? tip : deep;
     }
+    // A tree shrinks away over the last share of its view distance, the same way.
+    if (fir) offset *= 1.0-smoothstep(u.shape.x*(1.0-u.shape.y),u.shape.x+0.001,distance);
     FoliageVertex result;
     result.world = root + offset;
     result.position = u.viewProj * float4(result.world,1.0);
@@ -144,10 +148,13 @@ vertex FoliageVertex foliage_vertex(uint vid [[vertex_id]], uint iid [[instance_
     return result;
 }
 
-fragment half4 foliage_fragment(FoliageVertex in [[stage_in]], constant FoliageU& u [[buffer(1)]]) {
+fragment half4 foliage_fragment(FoliageVertex in [[stage_in]], constant FoliageU& u [[buffer(1)]], constant float4* env [[buffer(6)]]) {
     half ambient = half(clamp(u.light.w+0.2,0.0,1.0));
     half diffuse = half(0.32+0.68*max(dot(normalize(in.normal),half3(u.light.xyz)),half(0)));
-    half3 lit = in.color * (ambient + (half(1)-ambient)*diffuse*half3(u.direct.xyz)*half(u.direct.w));
+    // The scene's weather (buffer 6): wet leaves darken, a lightning flash lights them as it lights the ground.
+    half3 color = in.color * half(1.0-0.3*clamp(env[0].x,0.0,1.0));
+    half3 flash = half3(env[1].xyz*env[0].z*(0.55+0.45*saturate(float(in.normal.y))));
+    half3 lit = color * (ambient + (half(1)-ambient)*diffuse*half3(u.direct.xyz)*half(u.direct.w) + flash);
     if (u.eye.w > 0.5) lit = in.color;
     float dist = distance(in.world,u.eye.xyz);
     float haze = 1.0-exp(-max(0.0,dist-u.fogShape.z)*max(u.fog.w,0.0));
