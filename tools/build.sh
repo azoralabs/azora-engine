@@ -159,7 +159,65 @@ if [ "$ACTION" = "check" ]; then
 fi
 
 echo "azora-engine: $ACTION ($APP_NAME)"
+
+# ── Shaders, cooked while the program compiles ───────────────────────────
+# They need nothing the compile makes, so they no longer wait for it.
+SHADER_JOB=""
+if [ "$ACTION" != "check" ]; then
+    bash "$LIB_DIR/tools/shader-cook.sh" "$PROJECT_DIR" "$BUILD_DIR/shaders" "${AZORA_SHADER_TARGETS:-metallib}" \
+        > "$BUILD_DIR/shaders.log" 2>&1 &
+    SHADER_JOB=$!
+    trap '[ -z "$SHADER_JOB" ] || wait "$SHADER_JOB" 2>/dev/null || true' EXIT
+fi
+
+# ── Up to date? ──────────────────────────────────────────────────────────
+# The executable follows from the staged sources, the standard library the
+# compiler reads, the compiler itself and the link's settings. When none of
+# them changed since the last build that succeeded, that build's executable
+# is this one's too: a run after editing only a scene or an asset starts at
+# once instead of compiling the Engine again.
 if [ -n "${AZORA_COMPILER_BIN:-}" ]; then
+    COMPILER_IDENTITY="$AZORA_COMPILER_BIN $(stat -f '%m %z' "$AZORA_COMPILER_BIN" 2>/dev/null || true)"
+else
+    COMPILER_IDENTITY="bundled $(stat -f '%N %m %z' "$LIB_DIR/tools/azorac/lib/"*.jar 2>/dev/null | shasum | cut -d' ' -f1)"
+fi
+FINGERPRINT="$("$PYTHON_BIN" - "$SRC_DIR" "${AZORA_STDLIB:-}" "$COMPILER_IDENTITY" "$CLANG_BIN" \
+    "${AZORA_OPTIMIZE:--O2}" "$NATIVE_FLAGS" "$ACTION" <<'PYTHON'
+import hashlib
+import os
+import sys
+
+digest = hashlib.sha256()
+def tree(root):
+    for directory, folders, files in os.walk(root):
+        folders.sort()
+        for name in sorted(files):
+            if name.endswith(".az"):
+                path = os.path.join(directory, name)
+                digest.update(os.path.relpath(path, root).encode() + b"\0")
+                with open(path, "rb") as source:
+                    digest.update(source.read())
+                digest.update(b"\0")
+tree(sys.argv[1])
+if sys.argv[2] and os.path.isdir(sys.argv[2]):
+    tree(sys.argv[2])
+for setting in sys.argv[3:]:
+    digest.update(setting.encode() + b"\0")
+print(digest.hexdigest())
+PYTHON
+)"
+STAMP="$BUILD_DIR/$APP_NAME.stamp"
+UP_TO_DATE=0
+if [ "$ACTION" != "check" ] && [ -x "$BUILD_DIR/$APP_NAME" ] && [ -s "$STAMP" ] && [ "$(cat "$STAMP")" = "$FINGERPRINT" ]; then
+    UP_TO_DATE=1
+    echo "azora-engine: $APP_NAME is up to date (no source, library or compiler changed)"
+fi
+# A build that is not up to date replaces the executable: until it succeeds, no stamp vouches for it.
+[ "$UP_TO_DATE" = 1 ] || rm -f "$STAMP"
+
+if [ "$UP_TO_DATE" = 1 ]; then
+    :
+elif [ -n "${AZORA_COMPILER_BIN:-}" ]; then
     if [ ! -x "$AZORA_COMPILER_BIN" ]; then
         echo "error: AZORA_COMPILER_BIN is not executable: $AZORA_COMPILER_BIN" >&2
         exit 1
@@ -196,7 +254,7 @@ if [ "$ACTION" = "check" ]; then
     exit 0
 fi
 
-if [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
+if [ "$UP_TO_DATE" = 0 ] && [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
     echo "error: Azora compilation produced no output (see errors above)." >&2
     exit 1
 fi
@@ -225,18 +283,29 @@ if [ ! -d "$NATIVE_DIR" ]; then
     fi
 fi
 
-echo "azora-engine: linking"
-# A game is linked optimized: unoptimized IR made every frame's CPU work about
-# 40% slower. AZORA_OPTIMIZE=-O0 links a debuggable build instead.
-"$CLANG_BIN" ${AZORA_OPTIMIZE:--O2} "$BUILD_DIR/$APP_NAME.ll" \
-    -L "$NATIVE_DIR" -lazora_runtime \
-    -Wl,-rpath,"$NATIVE_DIR" \
-    $NATIVE_FLAGS \
-    -Wno-override-module \
-    -o "$BUILD_DIR/$APP_NAME"
+if [ "$UP_TO_DATE" = 0 ]; then
+    echo "azora-engine: linking"
+    # A game is linked optimized: unoptimized IR made every frame's CPU work about
+    # 40% slower. AZORA_OPTIMIZE=-O0 links a debuggable build instead.
+    "$CLANG_BIN" ${AZORA_OPTIMIZE:--O2} "$BUILD_DIR/$APP_NAME.ll" \
+        -L "$NATIVE_DIR" -lazora_runtime \
+        -Wl,-rpath,"$NATIVE_DIR" \
+        $NATIVE_FLAGS \
+        -Wno-override-module \
+        -o "$BUILD_DIR/$APP_NAME"
+    printf '%s\n' "$FINGERPRINT" > "$STAMP"
+fi
 
-# GPU modules are Azora (.az): compiled to Metal libraries beside the executable (and into the bundle).
-bash "$LIB_DIR/tools/shader-cook.sh" "$PROJECT_DIR" "$BUILD_DIR/shaders" "${AZORA_SHADER_TARGETS:-metallib}"
+# GPU modules are Azora (.az): compiled to Metal libraries beside the executable
+# (and into the bundle), by the cook started before the compile.
+SHADERS_COOKED=0
+wait "$SHADER_JOB" || SHADERS_COOKED=$?
+SHADER_JOB=""
+cat "$BUILD_DIR/shaders.log"
+if [ "$SHADERS_COOKED" != 0 ]; then
+    echo "error: shaders failed to cook (see above)." >&2
+    exit 1
+fi
 
 echo "azora-engine: built $BUILD_DIR/$APP_NAME"
 

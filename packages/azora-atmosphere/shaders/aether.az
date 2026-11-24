@@ -293,7 +293,28 @@ func aetherSkyView(
     fin ground: Float = sphereHit(o, dir, Rg)
     fin top: Float = sphereHit(o, dir, Rt)
     fin span: Float = if ground > 0.0 then ground else max(top, 0.0)
-    fin light: Float3 = scatterAlong(o, dir, span, 30, u, transmittance, multiple)
+    var light: Float3 = scatterAlong(o, dir, span, 30, u, transmittance, multiple)
+    if ground > 0.0 {
+        // Below the horizon the ray ends on the planet: its surface, lit by the sun and the sky (ground
+        // albedo, Lambert), seen through the air in between. Without it, wherever no terrain or sea is
+        // drawn the bottom of the view was the thin air above the ground alone - nearly black.
+        fin p: Float3 = o + dir * ground
+        fin n: Float3 = normalize(p)
+        fin sunCos: Float = dot(n, u.sun.xyz)
+        fin moonCos: Float = dot(n, u.moon.xyz)
+        fin sunlit: Float3 = lightAt(transmittance, Rg, sunCos) * saturate(sunCos) * u.sun.w +
+            lightAt(transmittance, Rg, moonCos) * saturate(moonCos) * u.moon.w
+        // The sky's light falling on it: the zenith's radiance over the hemisphere (times pi).
+        fin overhead: Float3 = scatterAlong(p, n, max(sphereHit(p + n * 0.001, n, Rt), 0.0), 12, u, transmittance, multiple)
+        fin lit: Float3 = (sunlit + overhead * PI) * u.air.w / PI
+        // What of it gets through the air back to the eye.
+        var depth: Float3 = Float3(0.0)
+        for i: Int in 0..<12 {
+            fin q: Float3 = o + dir * (ground * (Float(i) + 0.5) / 12.0)
+            depth += mediumAt(length(q) - Rg, u).extinction * (ground / 12.0)
+        }
+        light += lit * exp(-depth)
+    }
     return Float4(light, 1.0)
 }
 
@@ -779,8 +800,13 @@ func cloudMarch(
     fin seen: Float2 = Float2(before.x / before.w * 0.5 + 0.5, 0.5 - before.y / before.w * 0.5)
     if before.w > 0.0 && all(seen > 0.0) && all(seen < 1.0) && u.cloudMarch.y > 0.5 {
         fin kept: Float4 = history.sample(linearClamp, seen)
-        result = mix(result, kept, 0.85)
+        // A history pixel that ever went bad (not a number, infinite) would stay in the sky for good:
+        // such a one, and anything this frame made bad, starts again from this frame alone.
+        fin sum: Float = kept.r + kept.g + kept.b + kept.a
+        if !isNan(sum) && !isInf(sum) && sum >= 0.0 && sum < 1.0e4 then result = mix(result, kept, 0.85)
     }
+    fin made: Float = result.r + result.g + result.b + result.a
+    if isNan(made) || isInf(made) then result = Float4(0.0, 0.0, 0.0, 1.0)
     return result
 }
 

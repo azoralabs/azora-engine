@@ -45,7 +45,7 @@ inline fin colorSampler = Sampler(.Linear, .ClampToEdge)
 @Vertex
 func oceanVertex(id: @VertexIndex UInt, u: @Uniform(1) U3, o: @Uniform(7) OceanU, r: @Uniform(8) RingU,
                  d0: @Texture(0) Texture2D, d1: @Texture(1) Texture2D, d2: @Texture(2) Texture2D,
-                 shore: @Texture(9) Texture2D, farShore: @Texture(12) Texture2D): SeaPoint {
+                 shore: @Texture(9) Texture2D): SeaPoint {
     fin cells = Int(r.ring.w)
     fin quad = Int(id) / 6
     fin cell = Int2(quad % cells, quad / cells)
@@ -57,16 +57,19 @@ func oceanVertex(id: @VertexIndex UInt, u: @Uniform(1) U3, o: @Uniform(7) OceanU
     fin grid = cell + corners[Int(id % 6)]
     fin size = r.ring.z
     fin local = Float2(grid) - Float(cells) * 0.5
-    // Toward its outer edge a ring folds every odd vertex onto its even neighbour: the coarser
-    // ring's grid there, so the two meet without cracks and nothing pops (CDLOD morphing).
-    fin edge = max(abs(local.x), abs(local.y))
-    fin morph = saturate((edge - r.hole.z) / max(r.hole.w, 1.0))
+    fin eyeOffset = (u.eye.xz - r.ring.xy) / size
+    // Measure the morph from the unsnapped eye so moving the ring by two cells
+    // leaves the morph weight unchanged at vertices shared by both positions.
+    // The band completes a cell early to cover the full range of the snap.
+    fin delta = abs(local - eyeOffset)
+    fin edge = max(delta.x, delta.y)
+    fin morph = smoothstep(r.hole.z, r.hole.z + max(r.hole.w, 1.0), edge)
     fin g = Float2(grid)
     fin plane = r.ring.xy + (g - fract(g * 0.5) * 2.0 * morph - Float(cells) * 0.5) * size
     // The waves the grid can show are filtered by its cell, which doubles across the folded band:
     // at its edge a ring filters as the coarser ring outside, so both displace the shared
     // vertices alike (no step, no seam in the foam and light along the boundary).
-    fin shift = seaShift(plane, size * (1.0 + morph), o, d0, d1, d2, shore, farShore)
+    fin shift = seaShift(plane, size * (1.0 + morph), o, d0, d1, d2, shore)
     fin world = Float3(plane.x + shift.x, o.tiles.w + shift.y, plane.y + shift.z)
     return SeaPoint(u.viewProj * Float4(world, 1.0), world, plane, shift.y)
 }
@@ -174,13 +177,13 @@ func oceanFragment(input: SeaPoint, front: @FrontFacing Bool, u: @Uniform(1) U3,
                    f0: @Texture(6) Texture2D, f1: @Texture(7) Texture2D, f2: @Texture(8) Texture2D,
                    reflection: @Uniform(9) ReflectionU, shore: @Texture(9) Texture2D,
                    opaqueColor: @Texture(10) Texture2D, opaqueDepth: @Texture(11) DepthTexture2D,
-                   farShore: @Texture(12) Texture2D, cuts: @Constant(10) Float4,
+                   cuts: @Constant(10) Float4,
                    detail: @Texture(30) DepthTexture2D, clouds: @Texture(31) Texture2D): Float4 {
     if excluded(input.world, u.eye.xyz, cuts) then discardFragment()
     fin p = input.plane
-    fin here = shoreAt(p, o, shore, farShore)
+    fin here = shoreAt(p, o, shore)
     fin depth = if here.found then here.depth else 1.0e4
-    fin surf = surfAt(p, here, o, shore, farShore)
+    fin surf = surfAt(p, here, o, shore)
     fin calm = saturate(depth / max(o.extra.x * 0.25, 0.5))
     fin l0 = laidAt(0, p, o.tiles.x)
     fin l1 = laidAt(1, p, o.tiles.y)
@@ -193,8 +196,9 @@ func oceanFragment(input: SeaPoint, front: @FrontFacing Bool, u: @Uniform(1) U3,
     var n = normalize(Float3(-slope.x / max(stretch, 0.2), 1.0, -slope.y / max(stretch, 0.2)))
     fin v = normalize(u.eye.xyz - input.world)
     fin l = normalize(u.light.xyz)
-    // Seen from below (the grid's triangles face up: from beneath they face away), whatever the eye's height.
-    if !front {
+    // A distant or steep crest can turn away from an eye above the water.
+    // Only use the underside material when the eye is submerged.
+    if !front && o.weights.y <= 0.0 {
         // Water to air: the refracted sky is visible through Snell's window.
         // Outside the window the underside reflects the surrounding water.
         fin inside = -n
@@ -239,22 +243,22 @@ func oceanFragment(input: SeaPoint, front: @FrontFacing Bool, u: @Uniform(1) U3,
         // The real ground behind the water, taken before the water was drawn: bent a little by the
         // surface, dimmed colour by colour along the light's way down to it and back up to the eye.
         fin screen = input.position.xy / Float2(opaqueColor.size())
-        var ground = sceneBehind(screen, opaqueDepth.sample(depthSampler, screen), reflection)
+        fin ground = sceneBehind(screen, opaqueDepth.sample(depthSampler, screen), reflection)
         through = length(ground - input.world)
         above = input.world.y - ground.y
-        var bent = screen + n.xz * 0.035 * saturate(through / 4.0)
+        fin halfPixel = 0.5 / Float2(opaqueColor.size())
+        fin bent = clamp(screen + n.xz * 0.035 * smoothstep(0.0, 4.0, above),
+            reflection.bounds.xy + halfPixel, reflection.bounds.zw - halfPixel)
         fin bentGround = sceneBehind(bent, opaqueDepth.sample(depthSampler, bent), reflection)
-        if bentGround.y > input.world.y {
-            bent = screen
-        } else {
-            ground = bentGround
-        }
+        fin bentDepth = input.world.y - bentGround.y
+        fin refractWeight = smoothstep(0.0, 0.25, bentDepth) *
+            (1.0 - smoothstep(0.25, 1.0, abs(bentDepth - above) / max(above, 0.5)))
         seenBehind = opaqueColor.sample(colorSampler, screen).rgb
-        fin bed = opaqueColor.sample(colorSampler, bent).rgb
-        fin path = min(length(ground - input.world) + max(input.world.y - ground.y, 0.0), 200.0)
+        fin bed = mix(seenBehind, opaqueColor.sample(colorSampler, bent).rgb, refractWeight)
+        fin path = min(mix(through + max(above, 0.0), length(bentGround - input.world) + max(bentDepth, 0.0), refractWeight), 200.0)
         fin transmit = exp(-absorb * path)
         // Shallow water glows its own colour over the bed, turning into the deep colour with depth.
-        fin inscatter = mix(glow, scatter, smoothstep(0.0, o.shallow.w, max(input.world.y - ground.y, 0.0)))
+        fin inscatter = mix(glow, scatter, smoothstep(0.0, o.shallow.w, max(mix(above, bentDepth, refractWeight), 0.0)))
         body = bed * transmit + inscatter * (1.0 - transmit)
     } else {
         // Without the scene behind, a sandy bed as deep as the shore map says.
@@ -286,12 +290,17 @@ func oceanFragment(input: SeaPoint, front: @FrontFacing Bool, u: @Uniform(1) U3,
         }
     }
     foam = saturate(foam * o.extra.y)
-    // Foam is lit as a rough white surface (it is not brighter than the sand beside it) and lets some water through.
-    fin foamLit = o.foam.rgb * (ambient * 0.85 + sunColor * saturate(dot(n, l) * 0.5 + 0.35))
+    // A thick layer of bubbles scatters light diffusely, independent of the
+    // steep water normal used for refraction and specular highlights.
+    fin foamLit = o.foam.rgb * (ambient * 0.85 + sunColor * saturate(l.y * 0.5 + 0.35))
     color = mix(color, foamLit, foam * o.texels.z)
     color += localLights(spots, input.world, n, v, o.scatter.rgb, Float3(0.02))
     color = mix(color, u.fog.xyz, heightFog(u.eye.xyz, input.world, u.fog.w, u.fogShape))
     // At the water's edge the sheet thins to nothing: the ground behind shows through it, so no seam is drawn.
-    if o.weights.w > 0.5 then color = mix(seenBehind, color, max(smoothstep(0.0, 0.2, through), foam))
+    if o.weights.w > 0.5 {
+        fin water = smoothstep(0.0, 0.12, above)
+        fin wetFoam = foam * smoothstep(0.0, 0.012, above)
+        color = mix(seenBehind, color, max(water, wetFoam))
+    }
     return Float4(color, 1.0)
 }

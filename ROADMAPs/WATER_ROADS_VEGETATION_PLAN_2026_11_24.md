@@ -115,7 +115,7 @@ the same systems on the edited scene: those marked `@System(editor: true)`.
   from the level), calm small waves, shore foam.
 - [ ] W7 `Buoyancy` (pontoons, density, drag) + system on `FixedUpdate`;
   `WaterVolume` for underwater fog/tint and swimming queries. Boats done as
-  `Hull` + `HullControl` (engine.water.hull, see the log); generic `Buoyancy`
+  `Hull` + `HullControl` (engine.vehicles.boat since the afternoon, see the log); generic `Buoyancy`
   bodies still to do.
 - [x] W9 Shore: surf that shoals and breaks, swash and backwash, foam that
   flows, shallow water seen through to the real bed, no water inside a
@@ -328,3 +328,79 @@ another scene (coastShore, coastSurf, coastAerial, coastDip, coastBoatView), and
 - Open: seagull calls from the owner's two YouTube references (audio cannot be
   taken from YouTube; needs a recording the owner provides or a CC one);
   generic `Buoyancy` bodies; rivers/lakes (W5-W6) are another session's.
+
+
+### 2026-11-24, afternoon (session "Fizică și sunete vehicule")
+
+Owner's request: boat and aircraft engine sounds unnatural; collision boxes do
+not cover the boat, the aircraft (body + wings) and the car; footsteps broken;
+boat handling "like GTA" (it went haywire and turned oddly); the sky black at the
+bottom, broken after the camera goes below 0; flight much more natural; the car
+heavier and more stable; the aircraft followed steep ground down instead of
+flying off; the editor's build and the game's start had become slow (no
+incremental compile: the Engine compiled on every run).
+
+- Build: `tools/build.sh` skips compile + link when the staged sources, the std
+  the compiler reads, the compiler binary and the link settings match the last
+  successful build (`<app>.stamp`, sha256): an unchanged Run is 0.4 s (was ~60 s).
+  Shaders cook in the background during the compile; `shader-cook.sh` judges
+  each library by its own source and the shader modules it imports (one engine
+  shader edit used to remake all 22) and uses the native compiler when it can
+  make Metal (probed once per binary) instead of a JVM per shader (0.25 s vs 0.9 s).
+- Compiler (azora-lang): `IrSymbolCanonicalizer` sorted every type name for each
+  symbol it spelled (a third of the compile): sorted once, spellings memoised;
+  `CtfeEvaluator` walked all items to find a callee: indexed per program. Test
+  project compile 31.5 s -> 21.2 s with byte-identical IR. Full rebuild 59 s -> 31 s.
+  Not done: real separate compilation (the Engine as a precompiled library) needs
+  module interfaces and per-module codegen in the compiler - its own task.
+- Boats moved to `engine.vehicles.boat` (azora-vehicles/src/boat.az; the owner's
+  call); `WaterExclusion` stays in engine.water (`engine.water.exclusion`).
+  Root causes of the boat "going haywire": (1) the hull stepped on FixedUpdate but
+  sampled the sea at the FRAME's time, so with 2 steps in a frame (physics is
+  60 Hz by default now, and any hitch) the water froze then jumped: false water
+  velocity -> damping spikes and false slams. `Time.fixedElapsedSecs` (advanced by
+  `beginFixedStep` in the game and App loops) is the step's own time. (2) The hull
+  simulated heading-trim-heel (Y·X·Z) but was drawn through `trsMatrix` (Z·Y·X):
+  at any heading but north its heel showed as trim. engine.math `quatHeading`,
+  `transformDegrees`, `transformQuat`, `headingAngles` convert. (3) Planing trim
+  was 9.5° and roll stability at speed nearly nil (capsized in a full turn): the
+  planing pressure now acts slightly aft (trim ~3°) and holds the heel at a carve
+  angle (v·yaw rate / g, 0.3 rad max): full turn heels ~10° into it, steady.
+  Side grip 30x (was 20x), yaw builds over ~0.3 s. Outboard rpm/load simulated.
+- Aircraft: new `engine.vehicles.aircraft` (Aircraft, AircraftControl,
+  AircraftMotion, `simulateAircraft`/`presentAircraft`): lift from angle of
+  attack with stall, induced drag, propeller thrust fading with speed, tail
+  stability, controls scaled by airspeed and prop wash, wing leveller, three
+  sprung wheels on the landscape (nose-wheel steering, brakes), airframe corners
+  and spheres against ground and collision meshes, crash detection. The Test
+  project flies it on FixedUpdate with interpolation, A/D bank (coordinated) and
+  steer on the ground, Q/E rudder, eased chase cameras for car, boat and aircraft.
+- Collision: Collider3D child boxes measured from the meshes (car shell; fuselage,
+  tail cone, wing, tailplane, fin; hull); the walker slides out of them
+  (`clearOfRide`) instead of 1.1-1.3 m circles round the centre.
+- Car: mass 1480/1420 (sport), larger inertia, damping to ~half critical (was
+  ~0.33: it bobbed), slower keyboard steering.
+- Sound: `outboardVoice` (underwater exhaust: dull, bubbling), `aircraftEngineVoice`
+  (flat-4 short stacks), `PropellerVoice` (blade-pass pulses sharpening with tip
+  speed), `WakeVoice` (spray, wash, slaps); `mixBoatSound`, `mixAircraftSound`.
+  Footsteps rewritten: three overlapping voices (a quick step cut the last one off
+  with a click), ground-reaction-force envelope (heel, roll, toe), granular grain
+  resonators per ground, positioned at the feet.
+- Sky: below the horizon the sky view now ends on the lit planet surface (ground
+  albedo, sun + sky light, seen through the air): it was nearly black wherever no
+  terrain or sea covered it. The cloud history drops non-finite pixels. The "after
+  the camera went below 0" corruption did NOT reproduce in the game (scene camera
+  taken to -3 m and -60 m and back: identical sky, clouds, shadows); probably the
+  Studio viewport's camera - needs the owner's exact steps.
+- Checks (Test project, PASS, also at 60 Hz): vehicleChecks.az - aircraft rests,
+  lifts off (24-42 m/s), climbs > 60 m, flies on off an edge, rolls down the
+  coast's steepest slope on its wheels; boat runs, heels into a turn, drawn as it
+  floats; steps polyphony and levels. Test scenes coastSkyDip, coastHigh,
+  skyBelowHorizon; `AZORA_TEST_CAMERA_PATH=dip` / `dip:60`.
+- Found, not mine, still open: the Test game, world-driving, vehicle-stability and
+  sport-vehicles crash in `__azora_drop_pack_*` when a World is dropped (Collider3D /
+  Transform storages; crash reports since 05:28 today), so those harness tests print
+  nothing; world-driving and vehicle-switch-sound pass when their output is flushed.
+  render-stages fails to build ("LLVM cannot assign member '.log' of WindSway"),
+  scene-game expects a 120 Hz physics default that is now 60.
+

@@ -155,3 +155,44 @@ func quatSlerp(a: Quat, b: Quat, t: Double): Quat {
     fin to = sin(t * angle) / s
     return a.scale(fromWeight).plus(target.scale(to)).normalized
 }
+/**
+ * A vessel's attitude as a rotation: headed [yaw] about Y, then its bow
+ * pitched up [pitch] about its own X, then heeled [roll] about its own Z
+ * (radians). Boats and aircraft are steered in these terms.
+ */
+func quatHeading(yaw: Double, pitch: Double, roll: Double): Quat =
+    quatAxisAngle(.(0.0, 1.0, 0.0), yaw).times(quatAxisAngle(.(1.0, 0.0, 0.0), pitch)).times(quatAxisAngle(.(0.0, 0.0, 1.0), roll))
+
+/**
+ * The Euler triple, in degrees, a Transform's rotation takes to turn as [q]
+ * does. `trsMatrix` turns about X, then Y, then Z, so a heading, pitch and
+ * roll written there directly turn as intended only while the heading is 0.
+ */
+func transformDegrees(q: Quat&): Vec3 {
+    fin m00 = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    fin m10 = 2.0 * (q.x * q.y + q.w * q.z)
+    fin m20 = 2.0 * (q.x * q.z - q.w * q.y)
+    fin m21 = 2.0 * (q.y * q.z + q.w * q.x)
+    fin m22 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+    fin sine = if -m20 > 1.0 then 1.0 else if -m20 < -1.0 then -1.0 else -m20
+    fin toDegrees = 57.29577951308232
+    return .(atan2(m21, m22) * toDegrees, asin(sine) * toDegrees, atan2(m10, m00) * toDegrees)
+}
+
+/** The rotation a Transform's Euler [degrees] (about X, then Y, then Z) stands for. */
+func transformQuat(degrees: Vec3&): Quat {
+    fin toRadians = 0.017453292519943295
+    return quatAxisAngle(.(0.0, 0.0, 1.0), degrees.z * toRadians).times(quatAxisAngle(.(0.0, 1.0, 0.0), degrees.y * toRadians))
+        .times(quatAxisAngle(.(1.0, 0.0, 0.0), degrees.x * toRadians))
+}
+
+/** [q]'s heading, pitch and roll (radians, as [quatHeading] takes them) in x, y and z. */
+func headingAngles(q: Quat&): Vec3 {
+    fin m02 = 2.0 * (q.x * q.z + q.w * q.y)
+    fin m10 = 2.0 * (q.x * q.y + q.w * q.z)
+    fin m11 = 1.0 - 2.0 * (q.x * q.x + q.z * q.z)
+    fin m12 = 2.0 * (q.y * q.z - q.w * q.x)
+    fin m22 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+    fin sine = if -m12 > 1.0 then 1.0 else if -m12 < -1.0 then -1.0 else -m12
+    return .(atan2(m02, m22), asin(sine), atan2(m10, m11))
+}

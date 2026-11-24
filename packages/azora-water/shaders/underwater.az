@@ -49,7 +49,7 @@ func nearPlanePoint(uv: Float2, u: @Uniform WaterVolume): Float3 {
 @Fragment
 func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Uniform(1) OceanU, depth: @Texture(0) DepthTexture2D,
                         d0: @Texture(1) Texture2D, d1: @Texture(2) Texture2D, d2: @Texture(3) Texture2D,
-                        shore: @Texture(4) Texture2D, farShore: @Texture(5) Texture2D, sceneCopy: @Texture(6) Texture2D): Float4 {
+                        shore: @Texture(4) Texture2D, sceneCopy: @Texture(6) Texture2D): Float4 {
     fin local = pixel.position.xy - u.viewport.xy
     if any(local < 0.0) || any(local >= u.viewport.zw) then discardFragment()
     fin at = UInt2(pixel.position.xy)
@@ -58,7 +58,7 @@ func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Unifo
     fin uv = (local - u.screen.zw) / u.viewport.zw
     // Is this pixel's point on the near plane below the sea's surface there?
     fin lens = nearPlanePoint(uv, u)
-    fin sea = seaHeightAt(lens.xz, o, d0, d1, d2, shore, farShore)
+    fin sea = seaHeightAt(lens.xz, o, d0, d1, d2, shore)
     fin below = sea - lens.y
     fin perPixel = length(nearPlanePoint(Float2(0.5, 0.0), u) - nearPlanePoint(Float2(0.5, 1.0), u)) / max(u.viewport.w, 1.0)
     var pixels = below / max(perPixel, 1.0e-6)
@@ -80,7 +80,7 @@ func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Unifo
         for i: Int in 0..<8 {
             if wet || rayMarks[i] > limit then break
             fin q = lens + ray0 * rayMarks[i]
-            wet = q.y < seaHeightQuick(q.xz, o, d0, d1, d2, shore, farShore) - 0.02
+            wet = q.y < seaHeightQuick(q.xz, o, d0, d1, d2, shore) - 0.02
         }
         if wet {
             submerged = 1.0

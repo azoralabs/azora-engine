@@ -25,6 +25,7 @@ import engine.ui.systems
 // resolved where the program starts, so the entry that imports engine.game sees them all.
 exposed import engine.weather
 exposed import engine.water
+exposed import engine.vehicles
 exposed import engine.atmosphere
 exposed import engine.audio.output
 exposed import engine.particles
@@ -413,7 +414,10 @@ scope {
         frame.time.advance(if frame.paused || wasPaused then 0.0 else delta)
         if !frame.paused && !wasPaused {
             world.progress(frame.time.deltaSecs)
-            while world.consumeFixedStep() then dispatchGame(plan, .FixedUpdate, frame)
+            while world.consumeFixedStep() {
+                frame.time.beginFixedStep()
+                dispatchGame(plan, .FixedUpdate, frame)
+            }
             // What is drawn this frame lies between the last two steps by the time left over.
             frame.interpolation = world.fixedAccumulator / world.fixedTimestep
             dispatchGame(plan, .Update, frame)

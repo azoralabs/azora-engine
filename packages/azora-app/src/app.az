@@ -117,7 +117,10 @@ impl Engine {
             for system in self.update then system.run(app)
             runPhase(self.plan, .PostUpdate, self.world)
 
-            while self.world.consumeFixedStep() then runPhase(self.plan, .FixedUpdate, self.world)
+            while self.world.consumeFixedStep() {
+                self.time.beginFixedStep()
+                runPhase(self.plan, .FixedUpdate, self.world)
+            }
 
             runPhase(self.plan, .Render, self.world)
             app.present()

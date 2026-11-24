@@ -193,6 +193,12 @@ pack Time {
      * shows the setting at once, as the author changes it.
      */
     var editing: Bool = false
+    /**
+     * The time at the end of the fixed step being simulated: [elapsedSecs]
+     * belongs to the frame, which may run several steps (or none), so what a
+     * step samples over time (the sea under a hull) reads this instead.
+     */
+    var fixedElapsedSecs: Double = 0.0
 }
 
 /** Creates a clock with a 60 Hz fixed timestep. */
@@ -214,6 +220,10 @@ impl Time {
         self.elapsedSecs += clamped
         self.frame++
     }
+
+    /** Moves [fixedElapsedSecs] on by one fixed step, before that step's systems run. */
+    func !.beginFixedStep()
+    scope self.fixedElapsedSecs += self.fixedDeltaSecs
 
     /** Replaces the deterministic fixed timestep. */
     func !.setFixedDelta(seconds: Double)

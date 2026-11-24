@@ -129,7 +129,7 @@ func waterLevelAt(world: World!, x: Double, z: Double, time: Double): Double {
 func shoreSeaHeight(waves: CpuWaves!, shore: OceanShore&, surf: SurfState&, reach: Double, x: Double, z: Double, time: Double): Double {
     fin point = shorePointAt(shore, x, z)
     fin calm = waveClamp(point.depth / (if reach * 0.25 > 0.5 then reach * 0.25 else 0.5), 0.0, 1.0)
-    fin presence = if point.found then surfPresence(point.depth, surf.length) else 0.0
+    fin presence = if point.found && absValue(point.travel) < shoreOpenDistance && surf.height > 0.0 then surfPresence(point.depth, surf.length) else 0.0
     fin sea = if calm > 0.0 then waveHeightAt(waves, x, z, time, calm * (1.0 - 0.8 * presence), calm) else 0.0
     return sea + surfElevationAt(surf, point, x, z)
 }

@@ -1,0 +1,555 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.vehicles.aircraft
+ *
+ * A light aircraft as one rigid body that the air holds up. Its wing makes
+ * lift from the angle at which the air meets it (rising until the stall,
+ * then falling away), drag grows with that lift, the propeller pulls less as
+ * the aircraft goes faster, and gravity does the rest: it flies, climbs,
+ * turns by banking and stalls because of those forces, not because a speed
+ * was reached. The tail turns the nose into the air it moves through, so the
+ * aircraft follows its own path; elevator, ailerons and rudder turn it as
+ * hard as the air flowing past them (and the propeller's wash over the tail)
+ * lets them. On the ground it stands on three sprung wheels: it rolls down a
+ * slope, steers by its nose wheel, brakes on its mains - and leaves the
+ * ground when its wings carry it, or rolls off an edge and flies (or falls)
+ * from there instead of following the ground down.
+ *
+ * [stepAircraft] moves it one fixed physics step; [presentAircraft] draws it
+ * between the last two steps. Axes as everywhere: +X right, +Y up, -Z forward.
+ */
+module engine.vehicles.aircraft
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.physics.core
+import engine.landscape.collision
+import engine.io
+import engine.audio.dsp
+import engine.audio.output
+import engine.vehicles.enginesound
+
+/** How an aircraft is built and how it flies. Metres, kilograms, newtons, seconds, radians. */
+@Component
+@Inspectable(title: "Aircraft", serializedName: "Aircraft", icon: "plane", category: "Vehicles", order: 40)
+pack Aircraft derives Clone {
+    var enabled: Bool = true
+    @Range(min: 10.0, max: 500000.0, step: 10.0)
+    var mass: Double = 1000.0
+    /** Moments of inertia about its right (pitch), up (yaw) and tail (roll) axes, kg m². */
+    var inertia: Vec3 = .(1800.0, 2700.0, 1300.0)
+    /** The centre of mass in the airframe's own space: ahead of the main wheels, so it rests on its nose wheel. */
+    var centerOfMass: Vec3 = .(0.0, 0.0, -1.0)
+    @Range(min: 0.5, max: 2000.0, step: 0.1)
+    var wingArea: Double = 18.0
+    /** The wing's lift coefficient with the air along its chord, its rise per radian of attack, and the most it gives before it stalls. */
+    var liftAtZero: Double = 0.35
+    var liftSlope: Double = 5.0
+    var maxLift: Double = 1.6
+    /** Drag with no lift (CD0) and what lift adds (k CL²). */
+    var parasiteDrag: Double = 0.03
+    var inducedDrag: Double = 0.045
+    /** The propeller's pull at full throttle standing still, falling to nothing at [propellerSpeed] m/s. */
+    @Range(min: 0.0, max: 1000000.0, step: 10.0)
+    var thrust: Double = 4500.0
+    var propellerSpeed: Double = 90.0
+    /** The engine's speed at idle and at full throttle (rpm): what its sound and its propeller turn at. */
+    var idleRpm: Double = 700.0
+    var maxRpm: Double = 2700.0
+    /**
+     * Elevator, ailerons and rudder: the angular acceleration (rad/s²) each
+     * gives at full deflection with the air at [referenceSpeed]; it grows
+     * with the square of the airspeed.
+     */
+    var pitchPower: Double = 5.0
+    var rollPower: Double = 4.5
+    var yawPower: Double = 1.6
+    var referenceSpeed: Double = 45.0
+    /** How hard the tail turns the nose into the air, per radian of attack and of sideslip. */
+    var pitchStability: Double = 12.0
+    var yawStability: Double = 6.0
+    /** How the air damps each turning: pitch, roll and yaw, per second. */
+    var pitchDamping: Double = 5.0
+    var rollDamping: Double = 4.0
+    var yawDamping: Double = 3.0
+    /** The angle of attack it settles at on its own (its trim). */
+    var trim: Double = 0.03
+    /** How hard it levels its wings when no roll is asked for (an autopilot's wing leveller; 0 none). */
+    var wingLeveller: Double = 1.2
+    /** Where the nose wheel and the right main wheel touch the ground, in its own space (the left main mirrors it). */
+    var noseWheel: Vec3 = .(0.0, -1.05, -2.70)
+    var mainWheel: Vec3 = .(1.40, -1.05, -0.55)
+    /** Each wheel's spring (N/m) and damper (N s/m), the brakes' grip and the nose wheel's steering lock. */
+    var gearSpring: Double = 60000.0
+    var gearDamping: Double = 5600.0
+    var brakeGrip: Double = 0.7
+    var steerLock: Double = 0.5
+    /** The airframe as the ground meets it: half its span, nose and tail (Z), belly and fin top (Y), the wing's Z. */
+    var halfSpan: Double = 6.5
+    var nose: Double = -4.38
+    var tail: Double = 4.49
+    var belly: Double = -0.69
+    var finTop: Double = 1.73
+    var wingZ: Double = -0.57
+    /** The fuselage's half width, for meeting walls. */
+    var fuselageRadius: Double = 0.78
+}
+
+/**
+ * How the pilot flies this moment. Throttle 0..1; pitch -1..1 (nose up
+ * positive); roll -1..1 (right wing down positive); yaw -1..1 (nose right
+ * positive: the rudder in the air, the nose wheel on the ground); brake 0..1;
+ * the engine switched on or off.
+ */
+@Component
+pack AircraftControl derives Clone {
+    var throttle: Double = 0.0
+    var pitch: Double = 0.0
+    var roll: Double = 0.0
+    var yaw: Double = 0.0
+    var brake: Double = 0.0
+    var running: Bool = false
+}
+
+/** An aircraft's motion, kept by [stepAircraft]: never saved. */
+@Component
+pack AircraftMotion derives Clone {
+    /** The centre of mass, its velocity, the attitude and the turning rate about its own right, up and tail axes. */
+    var position: Vec3 = .(0.0, 0.0, 0.0)
+    var velocity: Vec3 = .(0.0, 0.0, 0.0)
+    var attitude: Quat = .(0.0, 0.0, 0.0, 1.0)
+    var spin: Vec3 = .(0.0, 0.0, 0.0)
+    var previousPosition: Vec3 = .(0.0, 0.0, 0.0)
+    var previousAttitude: Quat = .(0.0, 0.0, 0.0, 1.0)
+    /** The air it meets: speed along its nose, angle of attack, sideslip, and lift over weight (g). */
+    var airspeed: Double = 0.0
+    var attack: Double = 0.0
+    var sideslip: Double = 0.0
+    var load: Double = 1.0
+    var stalled: Bool = false
+    /** Wheels on the ground (0..3), the engine's spool (0..1), speed (rpm) and how far it has started (0 stopped, 1 running). */
+    var wheelsDown: Int = 0
+    var engine: Double = 0.0
+    var rpm: Double = 0.0
+    var running: Double = 0.0
+    /** The hardest the airframe struck something lately (m/s into it), fading; and whether it crashed. */
+    var impact: Double = 0.0
+    var crashed: Bool = false
+    var started: Bool = false
+}
+
+func planeClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+/** The air's density at sea level, kg/m³. */
+inline fin seaLevelAir: Double = 1.225
+
+/**
+ * The wing's lift coefficient at [attack]: a straight line up to the stall
+ * (either way), then falling toward a flat plate's as the flow leaves it.
+ */
+func wingLift(plane: Aircraft&, attack: Double): Double {
+    fin plate = 1.05 * sin(2.0 * attack)
+    fin straight = plane.liftAtZero + plane.liftSlope * attack
+    fin stall = (plane.maxLift - plane.liftAtZero) / plane.liftSlope
+    fin under = (-0.75 * plane.maxLift - plane.liftAtZero) / plane.liftSlope
+    if attack > stall {
+        fin past = planeClamp((attack - stall) / 0.14, 0.0, 1.0)
+        return plane.maxLift * (1.0 - past) + plate * past
+    }
+    if attack < under {
+        fin past = planeClamp((under - attack) / 0.14, 0.0, 1.0)
+        return -0.75 * plane.maxLift * (1.0 - past) + plate * past
+    }
+    return straight
+}
+
+/** The body's inverse inertia applied to a world torque, as an angular acceleration about its own axes. */
+func bodyAcceleration(plane: Aircraft&, attitude: Quat&, torque: Vec3&): Vec3 {
+    fin local = attitude.conjugate().rotate(torque.clone())
+    return .(local.x / plane.inertia.x, local.y / plane.inertia.y, local.z / plane.inertia.z)
+}
+
+/** How hard a push along unit [direction] at arm [arm] (world, from the centre of mass) is resisted: the mass it meets. */
+func pointMass(plane: Aircraft&, attitude: Quat&, arm: Vec3&, direction: Vec3&): Double {
+    fin turning = attitude.conjugate().rotate(arm.cross(direction))
+    fin angular = turning.x * turning.x / plane.inertia.x + turning.y * turning.y / plane.inertia.y + turning.z * turning.z / plane.inertia.z
+    return 1.0 / (1.0 / plane.mass + angular)
+}
+
+/** Where the airframe's own point [local] is in the world. */
+func airframePoint(plane: Aircraft&, motion: AircraftMotion&, local: Vec3&): Vec3 =
+    motion.position.add(motion.attitude.rotate(local.subtract(plane.centerOfMass)))
+
+/** The motion of an aircraft standing where [entity]'s Transform puts it. */
+func startAircraft(world: World!, entity: Entity, plane: Aircraft&): AircraftMotion {
+    fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+    fin attitude = transformQuat(place.rotation)
+    fin centre = worldPosition(world, entity).add(attitude.rotate(plane.centerOfMass.clone()))
+    return .(position: centre.clone(), attitude: attitude.clone(), previousPosition: centre.clone(), previousAttitude: attitude.clone(),
+        rpm: plane.idleRpm, started: true)
+}
+
+/** Puts [entity]'s aircraft at [position] (its airframe's origin) heading [yaw] degrees, at rest: its motion starts again there. */
+func placeAircraft(world: World!, entity: Entity, position: Vec3&, yaw: Double) {
+    fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+    storageInsert<Transform>(ensureStorage(world), entity, .(position.clone(), Vec3(0.0, yaw, 0.0), place.scale.clone()))
+    storageRemove<AircraftMotion>(ensureStorage(world), entity)
+}
+
+/** How deep [point] is below the ground or the [floor] (a still water level, -1e9 for none), and which way is out. */
+func groundContact(ground: Array<CollisionSurface>&, floor: Double, point: Vec3&): LandscapeContact {
+    var contact = landscapePenetration(ground, point)
+    if floor - point.y > contact.depth then contact = LandscapeContact(floor - point.y, 0.0, 1.0, 0.0, 0.25)
+    return take contact
+}
+
+/** One wheel's push on the airframe at [local]: spring and damper along the ground's normal, rolling, braking and side grip. */
+func wheelForce(plane: Aircraft&, motion: AircraftMotion!, ground: Array<CollisionSurface>&, floor: Double, local: Vec3&,
+                heading: Vec3&, brake: Double, dt: Double, force: Vec3!, torque: Vec3!): Bool {
+    fin point = airframePoint(plane, motion, local)
+    fin contact = groundContact(ground, floor, point)
+    if contact.depth <= 0.0 then return false
+    fin normal: Vec3 = .(contact.nx, contact.ny, contact.nz)
+    fin arm = point.subtract(motion.position)
+    fin spinWorld = motion.attitude.rotate(motion.spin.clone())
+    fin moving = motion.velocity.add(spinWorld.cross(arm))
+    fin closing = moving.dot(normal)
+    fin squeezed = planeClamp(contact.depth, 0.0, 0.6)
+    fin press = realMaxOf(plane.gearSpring * squeezed - plane.gearDamping * closing, 0.0)
+    // Rolling along the wheel's heading, held sideways: a wheel does not slide across the ground.
+    fin rolling = (heading.subtract(normal.scale(heading.dot(normal)))).normalized catch heading.clone()
+    fin across = rolling.cross(normal)
+    fin alongSpeed = moving.dot(rolling)
+    fin sideSpeed = moving.dot(across)
+    fin grip = realMaxOf(contact.grip, 0.25)
+    fin sideMass = pointMass(plane, motion.attitude, arm, across)
+    fin alongMass = pointMass(plane, motion.attitude, arm, rolling)
+    // Half the slip taken out each step, within what the tyre can hold.
+    fin side = planeClamp(-sideSpeed * sideMass * 0.5 / dt, -grip * 1.1 * press, grip * 1.1 * press)
+    fin resist = 0.02 + plane.brakeGrip * planeClamp(brake, 0.0, 1.0)
+    fin roll = planeClamp(-alongSpeed * alongMass * 0.5 / dt, -resist * press, resist * press)
+    fin push = normal.scale(press).add(across.scale(side)).add(rolling.scale(roll))
+    force.x += push.x
+    force.y += push.y
+    force.z += push.z
+    fin turn = arm.cross(push)
+    torque.x += turn.x
+    torque.y += turn.y
+    torque.z += turn.z
+    return true
+}
+
+/** Airframe points that meet the ground in a crash or a scrape: nose, tail, wing tips, belly, fin. */
+func airframeCorner(plane: Aircraft&, index: Int): Vec3 = when index {
+    0 -> Vec3(0.0, 0.0, plane.nose)
+    1 -> Vec3(0.0, 0.2, plane.tail)
+    2 -> Vec3(-plane.halfSpan, 0.05, plane.wingZ)
+    3 -> Vec3(plane.halfSpan, 0.05, plane.wingZ)
+    4 -> Vec3(0.0, plane.belly, plane.wingZ)
+    5 -> Vec3(0.0, plane.belly * 0.6, plane.tail * 0.6)
+    6 -> Vec3(-plane.halfSpan * 0.5, 0.0, plane.wingZ)
+    7 -> Vec3(plane.halfSpan * 0.5, 0.0, plane.wingZ)
+    else -> Vec3(0.0, plane.finTop, plane.tail * 0.92)
+}
+
+inline fin airframeCorners: Int = 9
+
+/** Spheres (own-space centre, radius) along the fuselage and the wings that meet walls and roofs. */
+func airframeSphere(plane: Aircraft&, index: Int): Vec3 {
+    if index < 6 {
+        fin t = (index as Double) / 5.0
+        return .(0.0, 0.0, plane.nose + plane.fuselageRadius + (plane.tail - plane.nose - 2.0 * plane.fuselageRadius) * t)
+    }
+    fin wing = index - 6
+    fin side = if wing % 2 == 0 then -1.0 else 1.0
+    fin reach = ((wing / 2 + 1) as Double) / 4.0
+    return .(side * plane.halfSpan * reach, 0.0, plane.wingZ)
+}
+
+inline fin airframeSpheres: Int = 14
+
+/**
+ * One physics step of [dt] seconds: the air, the propeller and gravity, the
+ * wheels and any part of the airframe that touches the [ground] or the
+ * [floor] (a still water level; -1e9 for none), then the motion integrated
+ * and swept against the scene's collision meshes.
+ */
+func stepAircraft(world: World!, plane: Aircraft&, control: AircraftControl&, motion: AircraftMotion!,
+                  ground: Array<CollisionSurface>&, floor: Double, gravity: Vec3&, dt: Double) {
+    if dt <= 0.0 then return
+    motion.previousPosition = motion.position.clone()
+    motion.previousAttitude = motion.attitude.clone()
+    fin attitude = motion.attitude.clone()
+    fin forward = attitude.rotate(.(0.0, 0.0, -1.0))
+    fin up = attitude.rotate(.(0.0, 1.0, 0.0))
+    fin right = attitude.rotate(.(1.0, 0.0, 0.0))
+    fin mass = realMaxOf(plane.mass, 1.0)
+
+    // ── Engine: it spools toward the throttle in about half a second; the propeller windmills with the air ──
+    fin switchedOn: Double = if motion.crashed || !control.running then 0.0 else 1.0
+    motion.running += (switchedOn - motion.running) * (1.0 - exp(-(if switchedOn > motion.running then 1.2 else 2.5) * dt))
+    fin running = motion.running
+    fin wanted = planeClamp(control.throttle, 0.0, 1.0) * switchedOn
+    motion.engine += (wanted - motion.engine) * (1.0 - exp(-2.2 * dt))
+    fin along = motion.velocity.dot(forward)
+    fin windmill = planeClamp(along, 0.0, plane.propellerSpeed) / plane.propellerSpeed * 0.18 * (plane.maxRpm - plane.idleRpm)
+    motion.rpm = (plane.idleRpm + (plane.maxRpm - plane.idleRpm) * motion.engine) * running + windmill
+
+    // ── The air ──
+    var force: Vec3 = gravity.scale(mass)
+    var torque: Vec3 = .(0.0, 0.0, 0.0)
+    fin speed = motion.velocity.length
+    fin upward = motion.velocity.dot(up)
+    fin sideways = motion.velocity.dot(right)
+    fin attack = if speed > 0.5 then atan2(-upward, along) else 0.0
+    fin sideslip = if speed > 0.5 then asin(planeClamp(sideways / speed, -1.0, 1.0)) else 0.0
+    fin pressure = 0.5 * seaLevelAir * speed * speed
+    fin lift = wingLift(plane, attack)
+    motion.airspeed = along
+    motion.attack = attack
+    motion.sideslip = sideslip
+    motion.stalled = speed > 3.0 && absValue(attack) > (plane.maxLift - plane.liftAtZero) / plane.liftSlope
+    if speed > 0.5 {
+        fin flow = motion.velocity.scale(1.0 / speed)
+        // Lift stands across the air's path and the wing's span; drag lies back along the path.
+        fin liftWay = (right.cross(flow)).normalized catch up.clone()
+        fin stalledDrag = 1.2 * sin(attack) * sin(attack)
+        fin drag = pressure * plane.wingArea * (plane.parasiteDrag + plane.inducedDrag * lift * lift + stalledDrag)
+        // The fuselage and fin push back against the air coming from the side.
+        fin side = -pressure * plane.wingArea * 0.35 * sin(sideslip)
+        fin aero = liftWay.scale(pressure * plane.wingArea * lift).add(flow.scale(-drag)).add(right.scale(side))
+        force = force.add(aero)
+        motion.load = aero.dot(up) / (mass * 9.81)
+    } else {
+        motion.load = 0.0
+    }
+    fin pull = plane.thrust * motion.engine * running * planeClamp(1.0 - realMaxOf(along, 0.0) / plane.propellerSpeed, 0.0, 1.0)
+    force = force.add(forward.scale(pull))
+
+    // ── The controls and the tail ──
+    // The wing's surfaces see the air the aircraft flies through; the tail also the propeller's wash.
+    fin reference = plane.referenceSpeed * plane.referenceSpeed
+    fin airShare = planeClamp(along * absValue(along) / reference, 0.0, 2.5)
+    fin wash = motion.engine * running * 20.0
+    fin tailShare = planeClamp((realMaxOf(along, 0.0) * realMaxOf(along, 0.0) + wash * wash) / reference, 0.0, 2.5)
+    fin settled = planeClamp(attack - plane.trim, -0.6, 0.6)
+    var turning: Vec3 = .(0.0, 0.0, 0.0)
+    turning.x = tailShare * plane.pitchPower * planeClamp(control.pitch, -1.0, 1.0) - airShare * plane.pitchStability * settled -
+        plane.pitchDamping * sqrt(realMaxOf(tailShare, airShare)) * motion.spin.x
+    // Positive roll input lowers the right wing: a turn the wrong way about the tail axis (+Z).
+    fin bank = atan2(right.y, up.y)
+    var leveller: Double = 0.0
+    if absValue(control.roll) < 0.05 && absValue(bank) < 1.2 then leveller = -plane.wingLeveller * bank
+    turning.z = airShare * (-plane.rollPower * planeClamp(control.roll, -1.0, 1.0) + 2.0 * sideslip + leveller) -
+        plane.rollDamping * sqrt(airShare) * motion.spin.z
+    // The fin turns the nose into the air (sideslip right turns it right: about -Y); the rudder yaws it.
+    turning.y = tailShare * -plane.yawPower * planeClamp(control.yaw, -1.0, 1.0) - airShare * plane.yawStability * sideslip -
+        plane.yawDamping * sqrt(realMaxOf(tailShare, airShare)) * motion.spin.y
+
+    // ── Wheels ──
+    var wheelPush: Vec3 = .(0.0, 0.0, 0.0)
+    var wheelTurn: Vec3 = .(0.0, 0.0, 0.0)
+    fin steer = -planeClamp(control.yaw, -1.0, 1.0) * plane.steerLock / (1.0 + absValue(along) / 12.0)
+    fin noseHeading = forward.scale(cos(steer)).add(right.scale(-sin(steer)))
+    fin brake = planeClamp(control.brake, 0.0, 1.0)
+    var down = 0
+    if wheelForce(plane, motion, ground, floor, plane.noseWheel, noseHeading, 0.0, dt, wheelPush, wheelTurn) then down++
+    if wheelForce(plane, motion, ground, floor, plane.mainWheel, forward, brake, dt, wheelPush, wheelTurn) then down++
+    fin leftWheel: Vec3 = .(-plane.mainWheel.x, plane.mainWheel.y, plane.mainWheel.z)
+    if wheelForce(plane, motion, ground, floor, leftWheel, forward, brake, dt, wheelPush, wheelTurn) then down++
+    motion.wheelsDown = down
+    force = force.add(wheelPush)
+    torque = torque.add(wheelTurn)
+
+    // ── Integrate ──
+    motion.velocity = motion.velocity.add(force.scale(dt / mass))
+    fin fromTorque = bodyAcceleration(plane, attitude, torque)
+    motion.spin = motion.spin.add(turning.add(fromTorque).scale(dt))
+    motion.position = motion.position.add(motion.velocity.scale(dt))
+    fin spinWorld = attitude.rotate(motion.spin.clone())
+    fin turned = Quat(spinWorld.x, spinWorld.y, spinWorld.z, 0.0).times(attitude)
+    motion.attitude = Quat(attitude.x + turned.x * 0.5 * dt, attitude.y + turned.y * 0.5 * dt,
+        attitude.z + turned.z * 0.5 * dt, attitude.w + turned.w * 0.5 * dt).normalized
+
+    // ── The airframe against the ground: struck, it stops going in and scrapes along ──
+    var outward: Vec3 = .(0.0, 0.0, 0.0)
+    var outwardDepth: Double = 0.0
+    var struck: Double = 0.0
+    for corner: Int in 0..<airframeCorners {
+        fin point = airframePoint(plane, motion, airframeCorner(plane, corner))
+        fin contact = groundContact(ground, floor, point)
+        if contact.depth <= 0.0 then continue
+        fin normal: Vec3 = .(contact.nx, contact.ny, contact.nz)
+        fin arm = point.subtract(motion.position)
+        fin moving = motion.velocity.add(motion.attitude.rotate(motion.spin.clone()).cross(arm))
+        fin approach = moving.dot(normal)
+        if approach < 0.0 {
+            if -approach > struck then struck = -approach
+            fin normalMass = pointMass(plane, motion.attitude, arm, normal)
+            fin impulse = -approach * normalMass * 1.1
+            var push = normal.scale(impulse)
+            fin slide = moving.subtract(normal.scale(approach))
+            fin slideSpeed = slide.length
+            if slideSpeed > 0.0001 {
+                fin way = slide.scale(1.0 / slideSpeed)
+                fin friction = realMinOf(slideSpeed * pointMass(plane, motion.attitude, arm, way), 0.6 * impulse)
+                push = push.add(way.scale(-friction))
+            }
+            motion.velocity = motion.velocity.add(push.scale(1.0 / mass))
+            motion.spin = motion.spin.add(bodyAcceleration(plane, motion.attitude, arm.cross(push)))
+        }
+        if contact.depth > outwardDepth {
+            outwardDepth = contact.depth
+            outward = normal.scale(contact.depth)
+        }
+    }
+    motion.position = motion.position.add(outward)
+
+    // ── Walls and roofs: the scene's collision meshes, met by spheres along the fuselage and the wings ──
+    fin travel = motion.position.subtract(motion.previousPosition)
+    if travel.length > 0.00001 && storageLength<CollisionMesh>(ensureStorage(world)) > 0 {
+        // One sphere round the whole airframe first: most steps meet nothing at all.
+        fin reach = realMaxOf(plane.halfSpan, realMaxOf(plane.tail, -plane.nose)) + 1.0
+        fin broad = sweepSceneCollision(world, motion.previousPosition, travel, reach, 0.0)
+        if broad.hit {
+            var nearest: IndexedCollisionHit = .()
+            for sphere: Int in 0..<airframeSpheres {
+                fin local = airframeSphere(plane, sphere)
+                fin radius = if sphere < 6 then plane.fuselageRadius else 0.4
+                fin from = motion.previousPosition.add(motion.previousAttitude.rotate(local.subtract(plane.centerOfMass)))
+                fin hit = sweepSceneCollision(world, from, travel, radius, 0.0)
+                if hit.hit && hit.t < nearest.t then nearest = take hit
+            }
+            if nearest.hit {
+                motion.position = motion.previousPosition.add(travel.scale(realMaxOf(nearest.t - 0.002, 0.0)))
+                fin normal: Vec3 = .(nearest.nx, nearest.ny, nearest.nz)
+                fin closing = motion.velocity.dot(normal)
+                if closing < 0.0 {
+                    if -closing > struck then struck = -closing
+                    motion.velocity = motion.velocity.subtract(normal.scale(closing)).scale(0.8)
+                    motion.spin = motion.spin.scale(0.5)
+                }
+            }
+        }
+    }
+    motion.impact = realMaxOf(struck, motion.impact * exp(-dt / 0.4))
+    if struck > 11.0 then motion.crashed = true
+    motion.started = true
+}
+
+/** Moves [entity]'s [Aircraft] one step as its [AircraftControl] asks, its motion starting where it stands. */
+func simulateAircraft(world: World!, entity: Entity, ground: Array<CollisionSurface>&, floor: Double, gravity: Vec3&, dt: Double) {
+    if !world.isAlive(entity) || !storageHas<Aircraft>(ensureStorage(world), entity) then return
+    fin plane = storageGet<Aircraft>(ensureStorage(world), entity).clone()
+    if !plane.enabled then return
+    let motions = ensureStorage<AircraftMotion>(world)
+    if !storageHas<AircraftMotion>(motions, entity) then storageInsert<AircraftMotion>(motions, entity, startAircraft(world, entity, plane))
+    fin control = storageGetOrDefault<AircraftControl>(ensureStorage(world), entity, .())
+    let motion: AircraftMotion! = motions.values[storageIndexOf<AircraftMotion>(motions, entity)]
+    stepAircraft(world, plane, control, motion, ground, floor, gravity, dt)
+}
+
+/**
+ * Draws [entity]'s aircraft [blend] of the way from its pose before the last
+ * physics step to its pose after it (the game's leftover share of a step).
+ */
+func presentAircraft(world: World!, entity: Entity, blend: Double) {
+    if !world.isAlive(entity) || !storageHas<AircraftMotion>(ensureStorage(world), entity) then return
+    fin plane = storageGetOrDefault<Aircraft>(ensureStorage(world), entity, .())
+    fin motion = storageGet<AircraftMotion>(ensureStorage(world), entity).clone()
+    fin t = planeClamp(blend, 0.0, 1.0)
+    fin centre = motion.previousPosition.add(motion.position.subtract(motion.previousPosition).scale(t))
+    fin attitude = quatNlerp(motion.previousAttitude.clone(), motion.attitude.clone(), t)
+    fin origin = centre.subtract(attitude.rotate(plane.centerOfMass.clone()))
+    fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+    storageInsert<Transform>(ensureStorage(world), entity, .(origin, transformDegrees(attitude), place.scale.clone()))
+}
+
+// ── Sound ───────────────────────────────────────────────────────────────
+
+/**
+ * What an aircraft sounds like: its flat-4 ([aircraftEngineVoice]), its
+ * two-bladed propeller ([PropellerVoice]) and the air rushing past, in its
+ * own block. Kept by [mixAircraftSound]; never saved.
+ */
+@Component
+pack AircraftSound {
+    var voice: EngineVoice = .()
+    var propeller: PropellerVoice = .()
+    var buffer: Long = 0
+    var rush: PinkNoise = .()
+    var rushBand: Biquad = .()
+    var air: OnePole = .()
+    var fade: Double = 0.0
+}
+
+impl AircraftSound {
+    dtor .() {
+        self.voice.release()
+        if self.buffer != 0 then azFree(self.buffer)
+    }
+}
+
+/**
+ * Mixes [aircraft]'s sound into [output]'s block as the listener hears it:
+ * engine and propeller from the nose, the air along the airframe, quieter
+ * with distance, panned, pitched by the Doppler shift and dulled by the air
+ * between. While [paused] it fades out in 50 ms.
+ */
+func mixAircraftSound(output: AudioOutput!, world: World!, aircraft: Entity, paused: Bool) {
+    if output.frames <= 0 || !world.isAlive(aircraft) || !storageHas<AircraftMotion>(ensureStorage(world), aircraft) then return
+    fin motion = storageGet<AircraftMotion>(ensureStorage(world), aircraft).clone()
+    fin plane = storageGetOrDefault<Aircraft>(ensureStorage(world), aircraft, .())
+    let sounds = ensureStorage<AircraftSound>(world)
+    if !storageHas<AircraftSound>(sounds, aircraft) {
+        var made: AircraftSound = .(voice: aircraftEngineVoice(48000.0), propeller: propellerVoice(2, 48000.0),
+            buffer: sampleBuffer(audioCapacity), rush: pinkNoise(907))
+        made.rushBand.bandpass(700.0, 0.5, 48000.0)
+        made.air.tune(20000.0, 48000.0)
+        storageInsert<AircraftSound>(sounds, aircraft, take made)
+    }
+    let sound: AircraftSound! = sounds.values[storageIndexOf<AircraftSound>(sounds, aircraft)]
+    fin nose = airframePoint(plane, motion, .(0.0, 0.0, plane.nose))
+    fin distance = output.distanceTo(nose.x, nose.y, nose.z)
+    fin doppler = output.dopplerRatio(nose.x, nose.y, nose.z, motion.velocity.x, motion.velocity.y, motion.velocity.z)
+    fin count = if output.frames < audioCapacity then output.frames else audioCapacity
+    for i: Int in 0..<count then setSample(sound.buffer, i, 0.0)
+    if motion.rpm > 1.0 {
+        if motion.running > 0.01 {
+            sound.voice.render(sound.buffer, count, motion.rpm * doppler, motion.engine, motion.engine, false)
+            for i: Int in 0..<count then setSample(sound.buffer, i, sample(sound.buffer, i) * motion.running)
+        }
+        sound.propeller.render(sound.buffer, count, motion.rpm * doppler, motion.engine * motion.running)
+    }
+    // The air along the airframe: a roar that grows with the square of the speed.
+    fin speed = motion.velocity.length
+    fin rushing = planeClamp(speed * speed / 4900.0, 0.0, 1.5) * 0.09
+    sound.air.tune(airCutoff(distance), 48000.0)
+    fin fadeStep = 1.0 / (0.05 * 48000.0)
+    for i: Int in 0..<count {
+        var x = sample(sound.buffer, i) + sound.rushBand.process(sound.rush.next()) * rushing
+        sound.fade = if paused then realMaxOf(sound.fade - fadeStep, 0.0) else realMinOf(sound.fade + fadeStep, 1.0)
+        x = sound.air.lowpass(x * sound.fade)
+        setSample(sound.buffer, i, x)
+    }
+    output.mixMono(sound.buffer, count, distanceGain(distance, 5.0), output.panOf(nose.x, nose.y, nose.z))
+}

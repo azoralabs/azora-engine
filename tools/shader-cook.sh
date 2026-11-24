@@ -19,6 +19,10 @@ fi
 compiler() {
     if [ -n "${AZORA_SHADER_COMPILER_BIN:-}" ]; then
         "$AZORA_SHADER_COMPILER_BIN" "$@"
+    elif [ "$NATIVE_SHADERS" = 1 ]; then
+        # The native compiler that builds the game: a quarter of a second a
+        # shader, where starting the bundled compiler's JVM took a second.
+        "$AZORA_COMPILER_BIN" "$@"
     elif [ -f "$ENGINE/tools/azorac/lib/app.jar" ]; then
         local java=java
         if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then java="$JAVA_HOME/bin/java"; fi
@@ -32,6 +36,23 @@ mkdir -p "$OUTPUT"
 OUTPUT="$(cd "$OUTPUT" && pwd)"
 STAGE="$(mktemp -d "$OUTPUT/.cook.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
+
+# Whether the game's native compiler (AZORA_COMPILER_BIN) makes Metal
+# libraries: an older one only made LLVM. Asked once per compiler binary, with
+# a one-entry shader; the answer is kept beside the libraries.
+NATIVE_SHADERS=0
+if [ -z "${AZORA_SHADER_COMPILER_BIN:-}" ] && [ -n "${AZORA_COMPILER_BIN:-}" ] && [ -x "$AZORA_COMPILER_BIN" ]; then
+    NATIVE_PROBE="$OUTPUT/.native-metallib"
+    if [ -f "$NATIVE_PROBE" ] && [ ! "$AZORA_COMPILER_BIN" -nt "$NATIVE_PROBE" ]; then
+        NATIVE_SHADERS=1
+    else
+        printf '@Execution("GPU")\nmodule probe.native\n\n@Compute(1, 1, 1)\nfunc probe(id: @GlobalInvocationId UInt3) {\n}\n' > "$STAGE/probe.az"
+        if "$AZORA_COMPILER_BIN" compile metallib "$STAGE/probe.az" -o "$STAGE/probe.metallib" >/dev/null 2>&1; then
+            NATIVE_SHADERS=1
+            : > "$NATIVE_PROBE"
+        fi
+    fi
+fi
 
 IMPORTS=()
 ENGINE_SOURCES=()
@@ -66,22 +87,64 @@ PYTHON
     )
 fi
 
-# Import dependencies are included in freshness checks. A project module can be in any subdirectory.
-stamp() {
-    local newest="$1" source
-    shift
-    for source in "$@"; do
-        if [ "$source" -nt "$newest" ]; then newest="$source"; fi
-    done
-    printf '%s\n' "$newest"
-}
-ENGINE_NEWEST="$(stamp "$0" "${ENGINE_SOURCES[@]}")"
+# What every library depends on: this script and the compiler that makes it.
+COMPILER_STAMP="$0"
 if [ -n "${AZORA_SHADER_COMPILER_BIN:-}" ]; then
-    ENGINE_NEWEST="$(stamp "$ENGINE_NEWEST" "$AZORA_SHADER_COMPILER_BIN")"
+    COMPILER_STAMP="$AZORA_SHADER_COMPILER_BIN"
+elif [ "$NATIVE_SHADERS" = 1 ]; then
+    COMPILER_STAMP="$AZORA_COMPILER_BIN"
 elif [ -f "$ENGINE/tools/azorac/lib/compiler-desktop.jar" ]; then
-    ENGINE_NEWEST="$(stamp "$ENGINE_NEWEST" "$ENGINE/tools/azorac/lib/compiler-desktop.jar")"
+    COMPILER_STAMP="$ENGINE/tools/azorac/lib/compiler-desktop.jar"
 fi
-PROJECT_NEWEST="$(stamp "$ENGINE_NEWEST" ${PROJECT_SOURCES[@]+"${PROJECT_SOURCES[@]}"})"
+
+# Each library is made again only when its own source, a shader module it
+# imports (or one those import), this script or the compiler is newer than
+# it. Judged by the newest of every engine shader at once, one edit to any
+# of them made all of them again on every build.
+# Prints, for each source: its path, the library's name under OUTPUT and the newest file it depends on.
+plan_cooking() {
+    python3 - "$0" "$COMPILER_STAMP" "$PROJECT" "$SCOPE" "${#ENGINE_SOURCES[@]}" \
+        ${ENGINE_SOURCES[@]+"${ENGINE_SOURCES[@]}"} ${PROJECT_SOURCES[@]+"${PROJECT_SOURCES[@]}"} <<'PYTHON'
+import os
+import re
+import sys
+
+script, compiler, project, scope, engine_count = sys.argv[1:6]
+files = sys.argv[6:]
+engine = files[:int(engine_count)]
+module_line = re.compile(r'^\s*module\s+([A-Za-z_][\w.]*)', re.M)
+import_line = re.compile(r'^\s*import\s+([A-Za-z_][\w.]*)', re.M)
+modules, imports = {}, {}
+for path in files:
+    text = open(path, encoding="utf-8").read()
+    found = module_line.search(text)
+    if found:
+        modules.setdefault(found.group(1), path)
+    imports[path] = import_line.findall(text)
+
+def newest(path):
+    best, seen, todo = max([script, compiler], key=os.path.getmtime), set(), [path]
+    while todo:
+        current = todo.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if os.path.getmtime(current) > os.path.getmtime(best):
+            best = current
+        todo.extend(modules[name] for name in imports.get(current, []) if name in modules)
+    return best
+
+for path in files:
+    is_engine = path in engine
+    if (is_engine and scope == "project") or (not is_engine and scope == "engine"):
+        continue
+    if is_engine:
+        relative = os.path.basename(path)[:-3]
+    else:
+        relative = "project/" + os.path.relpath(path, project)[:-3]
+    print(f"{path}\t{relative}\t{newest(path)}")
+PYTHON
+}
 
 has_entry() { grep -qE '^[[:space:]]*@(Vertex|Fragment|Compute)([[:space:](]|$)' "$1"; }
 
@@ -168,12 +231,8 @@ cook() {
     done
 }
 
-if [ "$SCOPE" != project ]; then
-    for source in "${ENGINE_SOURCES[@]}"; do
-        cook "$source" "$(basename "$source" .az)" "$ENGINE_NEWEST"
-    done
-fi
-for source in ${PROJECT_SOURCES[@]+"${PROJECT_SOURCES[@]}"}; do
-    relative="${source#"$PROJECT"/}"
-    cook "$source" "project/${relative%.az}" "$PROJECT_NEWEST"
-done
+PLAN="$STAGE/plan"
+plan_cooking > "$PLAN"
+while IFS=$'\t' read -r source relative newest <&3; do
+    cook "$source" "$relative" "$newest"
+done 3< "$PLAN"

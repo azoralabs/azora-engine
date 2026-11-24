@@ -17,15 +17,14 @@
 /**
  * @file engine.water.shore
  *
- * The ground under an ocean near the eye and the surf it raises. An
- * [OceanShore] keeps two maps of the ground around the eye - a fine one and
- * one eight times wider - each holding, per texel, the depth below the sea's
+ * The ground under an ocean and the surf it raises. The shore map covers the
+ * loaded terrain in world space. Each texel holds the depth below the sea's
  * level, the distance to the shoreline (negative on land) and the time a wave
  * takes from there to the shore. That time is the shortest path for a wave of
  * the sea's peak, slower where the water is shallow (√(g h)): its level lines
  * are the crests, so waves turn toward the beach as real ones refract.
  *
- * The surf is made from the sea's [SurfSource] and these maps: two trains of
+ * The surf is made from the sea's [SurfSource] and this map: two trains of
  * the sea's peak period (and a slightly longer one, so they come in sets)
  * grow as the water shoals, steepen into a sawtooth and break once they are
  * about as high as the water is deep, then run up the beach as swash and slide
@@ -41,10 +40,10 @@ import engine.io
 import engine.objc
 import engine.water.spectrum
 
-/** Texels across each shore map, the rows of ground sampled a frame, and how much wider the far map is. */
+/** Shore map resolution and the number of ground rows sampled per frame when rebaking. */
 inline fin shoreTexels: Int = 256
+inline fin shoreMaxTexels: Int = 1024
 inline fin shoreRowsPerFrame: Int = 16
-inline fin shoreFarScale: Double = 8.0
 
 /** What a map says where it has no ground: open water this deep, this far from any shore. */
 inline fin shoreOpenDepth: Double = 10000.0
@@ -76,6 +75,7 @@ pack ShoreLevel derives Clone {
     var centerX: Double = 0.0
     var centerZ: Double = 0.0
     var size: Double = 0.0
+    var texels: Int = 256
     var ready: Bool = false
     var depth: Array<Double> = []
     var distance: Array<Double> = []
@@ -87,20 +87,20 @@ pack ShoreLevel derives Clone {
     var nextX: Double = 0.0
     var nextZ: Double = 0.0
     var nextSize: Double = 0.0
+    var nextTexels: Int = 256
+    var waterLevel: Double = 0.0
     var nextLength: Double = 0.0
     var row: Int = 0
     var stage: Int = 0
     var nextDepth: Array<Double> = []
     var nextDistance: Array<Double> = []
     var nextTravel: Array<Double> = []
-    /** A finished bake waiting for its texture to be written. */
-    var fresh: Bool = false
     /** What the ground was when the bake started: the terrains' storage revision and how many terrain meshes were loaded. */
     var ground: Long = -1
     var meshes: Int = 0
 }
 
-/** The ground under an ocean near the eye, as two [ShoreLevel]s (never saved). */
+/** The world-space shore map of an ocean (never saved). */
 @Component
 pack OceanShore {
     var near: ShoreLevel = .()
@@ -117,12 +117,13 @@ impl OceanShore {
 // ── Baking ─────────────────────────────────────────────────────────────
 
 /** Starts baking [level] over the square of [size] metres about ([x], [z]) for waves [length] metres long. */
-func startShoreBake(level: ShoreLevel!, x: Double, z: Double, size: Double, length: Double) {
-    fin count = shoreTexels * shoreTexels
+func startShoreBake(level: ShoreLevel!, x: Double, z: Double, size: Double, length: Double, texels: Int = 256) {
+    fin count = texels * texels
     level.baking = true
     level.nextX = x
     level.nextZ = z
     level.nextSize = size
+    level.nextTexels = texels
     level.nextLength = length
     level.row = 0
     level.stage = 0
@@ -136,15 +137,16 @@ func startShoreBake(level: ShoreLevel!, x: Double, z: Double, size: Double, leng
 /** Makes [level]'s travel times again for waves [length] metres long, over the ground it already has. */
 func restartShoreTravel(level: ShoreLevel!, length: Double) {
     if !level.ready || level.baking then return
-    startShoreBake(level, level.centerX, level.centerZ, level.size, length)
+    startShoreBake(level, level.centerX, level.centerZ, level.size, length, level.texels)
     level.nextDepth = level.depth.clone()
     level.nextDistance = level.distance.clone()
-    level.row = shoreTexels
+    level.row = level.texels
     level.stage = 2
 }
 
 /** The world X (or Z) of texel [index]'s centre along a side of a map of [size] about [center]. */
-func shoreTexelCenter(center: Double, size: Double, index: Int): Double = center - size * 0.5 + ((index as Double) + 0.5) * size / (shoreTexels as Double)
+func shoreTexelCenter(center: Double, size: Double, index: Int, texels: Int = 256): Double =
+    center - size * 0.5 + ((index as Double) + 0.5) * size / (texels as Double)
 
 /** The phase speed of the sea's peak in water [depth] deep: √(g h), never faster than in deep water. */
 func shoreWaveSpeed(depth: Double, length: Double): Double {
@@ -160,7 +162,7 @@ func shoreWaveSpeed(depth: Double, length: Double): Double {
  * water, both as positive numbers in [distance] until they are signed.
  */
 func sweepShoreDistance(level: ShoreLevel!, forward: Bool) {
-    fin n = shoreTexels
+    fin n = level.nextTexels
     fin texel = level.nextSize / (n as Double)
     fin diagonal = texel * 1.4142135623730951
     for i: Int in 0..<n {
@@ -200,7 +202,7 @@ func sweepShoreDistance(level: ShoreLevel!, forward: Bool) {
  * shoreline: their time is their distance at the swash's own speed, negative.
  */
 func sweepShoreTravel(level: ShoreLevel!, forward: Bool) {
-    fin n = shoreTexels
+    fin n = level.nextTexels
     fin texel = level.nextSize / (n as Double)
     fin diagonal = texel * 1.4142135623730951
     for i: Int in 0..<n {
@@ -238,8 +240,8 @@ func sweepShoreTravel(level: ShoreLevel!, forward: Bool) {
  * distance sweeps, 2-5 the travel-time sweeps, 6 the finished map shown. Answers whether a new map was just finished (its texture is due).
  */
 func stepShoreBake(level: ShoreLevel!): Bool {
-    if !level.baking || level.row < shoreTexels then return false
-    fin n = shoreTexels * shoreTexels
+    if !level.baking || level.row < level.nextTexels then return false
+    fin n = level.nextTexels * level.nextTexels
     fin stage = level.stage
     level.stage++
     if stage == 0 {
@@ -266,8 +268,8 @@ func stepShoreBake(level: ShoreLevel!): Bool {
         for at: Int in 0..<n {
             if level.nextDepth[at] <= 0.0 {
                 level.nextTravel[at] = level.nextDistance[at] / swash
-            } else if level.nextTravel[at] > 100000.0 {
-                level.nextTravel[at] = 100000.0
+            } else if level.nextTravel[at] > shoreOpenDistance {
+                level.nextTravel[at] = shoreOpenDistance
             }
         }
         level.depth = level.nextDepth.clone()
@@ -276,10 +278,10 @@ func stepShoreBake(level: ShoreLevel!): Bool {
         level.centerX = level.nextX
         level.centerZ = level.nextZ
         level.size = level.nextSize
+        level.texels = level.nextTexels
         level.length = level.nextLength
         level.ready = true
         level.baking = false
-        level.fresh = true
         return true
     }
     return false
@@ -300,7 +302,7 @@ pack ShorePoint derives Clone {
 
 /** [values] of a map at world (x, z), bilinear, clamped to its edge. */
 func shoreField(level: ShoreLevel&, values: Array<Double>&, x: Double, z: Double): Double {
-    fin n = shoreTexels
+    fin n = level.texels
     fin u = waveClamp((x - level.centerX) / level.size * (n as Double) + (n as Double) * 0.5 - 0.5, 0.0, (n - 1) as Double)
     fin v = waveClamp((z - level.centerZ) / level.size * (n as Double) + (n as Double) * 0.5 - 0.5, 0.0, (n - 1) as Double)
     fin c0 = floor(u) as Int
@@ -318,7 +320,7 @@ func shoreField(level: ShoreLevel&, values: Array<Double>&, x: Double, z: Double
 func insideShore(level: ShoreLevel&, x: Double, z: Double): Bool =
     level.ready && absValue(x - level.centerX) < level.size * 0.5 && absValue(z - level.centerZ) < level.size * 0.5
 
-/** The ground at world (x, z): from the fine map where it reaches, else the far one, else open water. */
+/** The ground at world (x, z), or open water outside the map. */
 func shorePointAt(shore: OceanShore&, x: Double, z: Double): ShorePoint {
     if insideShore(shore.near, x, z) then return shorePointIn(shore.near, x, z)
     if insideShore(shore.far, x, z) then return shorePointIn(shore.far, x, z)
@@ -429,7 +431,7 @@ func surfStrength(x: Double, z: Double, train: Int): Double {
  * back. Zero offshore, where the surf has not begun.
  */
 func surfElevationAt(surf: SurfState&, point: ShorePoint&, x: Double, z: Double): Double {
-    if !point.found || surf.height <= 0.0 then return 0.0
+    if !point.found || absValue(point.travel) >= shoreOpenDistance || surf.height <= 0.0 then return 0.0
     fin presence = surfPresence(point.depth, surf.length)
     if presence <= 0.0 then return 0.0
     var elevation: Double = 0.0

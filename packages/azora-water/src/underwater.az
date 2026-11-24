@@ -110,10 +110,8 @@ func drawUnderwater(app: App!, world: World!, view: SceneView&) {
     }
     let shores = ensureStorage<OceanShore>(world)
     fin shoreAt = storageIndexOf<OceanShore>(shores, surface.body)
-    fin nearMap = if shoreAt >= 0 && shores.values[shoreAt].near.texture != 0 then shores.values[shoreAt].near.texture else programs.still
-    fin farMap = if shoreAt >= 0 && shores.values[shoreAt].far.texture != 0 then shores.values[shoreAt].far.texture else programs.still
-    send2(encoder, sel("setFragmentTexture:atIndex:"), nearMap, 4)
-    send2(encoder, sel("setFragmentTexture:atIndex:"), farMap, 5)
+    fin shoreMap = if shoreAt >= 0 && shores.values[shoreAt].near.texture != 0 then shores.values[shoreAt].near.texture else programs.still
+    send2(encoder, sel("setFragmentTexture:atIndex:"), shoreMap, 4)
     send2(encoder, sel("setFragmentTexture:atIndex:"), under.copy, 6)
     send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
     send0(encoder, sel("endEncoding"))

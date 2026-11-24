@@ -15,7 +15,7 @@
  */
 
 /**
- * @file engine.water.hull
+ * @file engine.vehicles.boat
  *
  * Boats as rigid bodies on the water. A [Hull] says how a boat is built - its
  * waterline length and beam, its keel, its mass, its propeller - and a
@@ -28,10 +28,10 @@
  * planing at speed. [presentHulls] places the boat between the last two
  * physics steps, so it moves smoothly at any frame rate.
  *
- * A [WaterExclusion] keeps the water surface out of a box: the inside of a
- * boat, a dry dock, a cave above the sea.
+ * The water a hull floats on is the scene's (engine.water's `waterLevelAt`);
+ * a [WaterExclusion] there keeps the sea out of its cockpit.
  */
-module engine.water.hull
+module engine.vehicles.boat
 
 import std.math
 import engine.core
@@ -39,9 +39,12 @@ import engine.ecs
 import engine.math
 import engine.scene
 import engine.scene.transforms
-import engine.water.components
-import engine.water.spectrum
 import engine.water.query
+import engine.audio.dsp
+import engine.audio.output
+import engine.vehicles.enginesound
+import engine.physics.core
+import engine.io
 
 /** How a boat's hull is built and how it is pushed: everything its physics reads. */
 @Component
@@ -87,17 +90,25 @@ pack Hull derives Clone {
     /** How hard a bow falling into a wave is struck back: 0 never. */
     @Range(min: 0.0, max: 4.0, step: 0.01)
     var slamming: Double = 1.0
+    /** The outboard's speed at idle and flat out, rpm. */
+    @Range(min: 100.0, max: 20000.0, step: 10.0)
+    var idleRpm: Double = 750.0
+    @Range(min: 500.0, max: 20000.0, step: 10.0)
+    var maxRpm: Double = 5800.0
     /** Water density, kg/m³ (fresh 1000, sea 1025). */
     @Range(min: 500.0, max: 1500.0, step: 1.0)
     var density: Double = 1025.0
 }
 
-/** How a boat is driven this moment: throttle -1 (astern) .. 1 and rudder -1 (port) .. 1 (starboard). */
+/** How a boat is driven this moment: throttle -1 (astern) .. 1, rudder -1 (port) .. 1 (starboard), its engine running or not. */
 @Component
 pack HullControl derives Clone {
     var throttle: Double = 0.0
     var rudder: Double = 0.0
+    var running: Bool = false
 }
+
+func boatClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
 
 /** Points along and across a hull's bottom that feel the water. */
 inline fin hullRows: Int = 5
@@ -132,18 +143,14 @@ pack HullMotion derives Clone {
     var waterBefore: Array<Double> = []
     var started: Bool = false
     var capsized: Bool = false
+    /** The outboard: its speed (rpm), how hard it pulls (0..1), and whether it runs at all (0 stopped, 1 running). */
+    var rpm: Double = 0.0
+    var load: Double = 0.0
+    var running: Double = 0.0
 }
 
-/** A box ([size] across, centred at [offset] in its entity's space) the water's surface is not drawn in. */
-@Component
-@Inspectable(title: "Water Exclusion", serializedName: "WaterExclusion", icon: "square-dashed", category: "Water", order: 19)
-pack WaterExclusion derives Clone {
-    var enabled: Bool = true
-    var offset: Vec3 = .(0.0, 0.0, 0.0)
-    var size: Vec3 = .(1.0, 1.0, 1.0)
-}
 
-/** [local] (the boat's own space) turned by roll (Z), pitch (X) and yaw (Y), as a Transform's rotation turns it. */
+/** [local] (the boat's own space) turned by roll (Z), then pitch (X), then yaw (Y): as [quatHeading] turns it. */
 func hullTurn(local: Vec3&, yaw: Double, pitch: Double, roll: Double): Vec3 {
     fin cr = cos(roll)
     fin sr = sin(roll)
@@ -175,11 +182,11 @@ func hullPoint(hull: Hull&, row: Int, column: Int): Vec3 {
 /** A hull's motion starting from where its entity stands. */
 func startHull(world: World!, entity: Entity): HullMotion {
     fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
-    fin turn = place.rotation.clone()
-    fin degrees = 0.017453292519943295
+    // The Transform turns about X, then Y, then Z; the hull keeps heading, trim and heel.
+    fin turn = headingAngles(transformQuat(place.rotation))
     fin position = worldPosition(world, entity)
-    return .(position: position.clone(), yaw: turn.y * degrees, pitch: turn.x * degrees, roll: turn.z * degrees,
-        previousPosition: position.clone(), previousYaw: turn.y * degrees, previousPitch: turn.x * degrees, previousRoll: turn.z * degrees,
+    return .(position: position.clone(), yaw: turn.x, pitch: turn.y, roll: turn.z,
+        previousPosition: position.clone(), previousYaw: turn.x, previousPitch: turn.y, previousRoll: turn.z,
         started: true)
 }
 
@@ -205,12 +212,13 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     }
     fin share = hull.length * hull.beam * hull.fullness / (count as Double)
     fin centre: Vec3 = .(0.0, hull.centerHeight, 0.0)
-    fin mass = waveClamp(hull.mass, 1.0, 1.0e9)
+    fin mass = boatClamp(hull.mass, 1.0, 1.0e9)
     fin forward = hullTurn(.(0.0, 0.0, -1.0), motion.yaw, motion.pitch, motion.roll)
-    fin right = hullTurn(.(1.0, 0.0, 0.0), motion.yaw, motion.pitch, motion.roll)
-    fin omega = hullTurn(.(motion.pitchRate, motion.yawRate, motion.rollRate), 0.0, 0.0, 0.0)
-    // The turn rates as a world vector: pitch about the boat's right, roll about its stern-ward axis, yaw about up.
-    fin spin: Vec3 = .(right.x * omega.x - forward.x * omega.z, omega.y, right.z * omega.x - forward.z * omega.z)
+    // Transform's rotation is Y * X * Z. Pitch uses the yawed right axis;
+    // roll uses the pitched stern axis, including its vertical component.
+    fin pitchAxis = hullTurn(.(1.0, 0.0, 0.0), motion.yaw, 0.0, 0.0)
+    fin rollAxis = forward.scale(-1.0)
+    fin spin = pitchAxis.scale(motion.pitchRate).add(rollAxis.scale(motion.rollRate)).add(.(0.0, motion.yawRate, 0.0))
     var force: Vec3 = .(0.0, -mass * gravity, 0.0)
     var torque: Vec3 = .(0.0, 0.0, 0.0)
     var wet: Double = 0.0
@@ -225,9 +233,9 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
             fin water = waterLevelAt(world, point.x, point.z, time)
             // The water's own rise and fall (none known at the first step, nor across a jump of the water under it).
             fin known = motion.waterBefore[at] > -1.0e8
-            fin rising = if known then waveClamp((water - motion.waterBefore[at]) / dt, -8.0, 8.0) else 0.0
+            fin rising = if known then boatClamp((water - motion.waterBefore[at]) / dt, -8.0, 8.0) else 0.0
             motion.waterBefore[at] = water
-            fin depth = waveClamp(water - point.y, 0.0, hull.sides)
+            fin depth = boatClamp(water - point.y, 0.0, hull.sides)
             if depth <= 0.0 then continue
             wet += 1.0
             // The point's speed against the water's own rise and fall.
@@ -238,10 +246,10 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
             push -= hull.density * share * 1.1 * against
             // Slamming: a bottom falling into the water fast is struck back, harder the faster (½ ρ C v²).
             if !motion.capsized && against < -1.2 && hull.slamming > 0.0 {
-                fin into = waveClamp(-against - 1.2, 0.0, 6.0)
-                fin wetted = waveClamp(depth / 0.24, 0.0, 1.0)
+                fin into = boatClamp(-against - 1.2, 0.0, 6.0)
+                fin wetted = boatClamp(depth / 0.24, 0.0, 1.0)
                 fin impulse = hull.density * share * 0.8 * into * into * hull.slamming * wetted
-                fin strike = waveClamp(impulse, 0.0, mass * gravity * 1.6 / (count as Double))
+                fin strike = boatClamp(impulse, 0.0, mass * gravity * 1.6 / (count as Double))
                 push += strike
                 fin felt = strike / (mass * gravity * 0.5)
                 if felt > slam then slam = felt
@@ -254,7 +262,7 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     motion.wet = wet / (count as Double)
     fin level: Vec3 = .(forward.x, 0.0, forward.z)
     fin levelLength = sqrt(level.x * level.x + level.z * level.z)
-    fin ahead: Vec3 = if levelLength > 0.0001 then level.scale(1.0 / levelLength) else Vec3(0.0, 0.0, -1.0)
+    fin ahead: Vec3 = if levelLength > 0.0001 then level.scale(1.0 / levelLength) else hullTurn(.(0.0, 0.0, -1.0), motion.yaw, 0.0, 0.0)
     fin side: Vec3 = .(-ahead.z, 0.0, ahead.x)
     fin speed = hullDot(motion.velocity, ahead)
     fin slip = hullDot(motion.velocity, side)
@@ -262,24 +270,40 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     // The propeller pushes only while it is in the water, from below the centre of mass: the bow lifts as it pulls.
     fin propeller = motion.position.add(hullTurn(hull.propeller, motion.yaw, motion.pitch, motion.roll))
     fin propellerWet = propeller.y < waterLevelAt(world, propeller.x, propeller.z, time) + 0.1
-    fin throttle = if motion.capsized then 0.0 else waveClamp(control.throttle, -1.0, 1.0)
+    fin throttle = if motion.capsized then 0.0 else boatClamp(control.throttle, -1.0, 1.0)
     fin pull = if propellerWet then throttle * hull.thrust * (if throttle < 0.0 then hull.reverse else 1.0) else 0.0
+    // The engine: it revs with the throttle, a little more as the hull runs free at speed, and races
+    // when the propeller leaves the water; it starts and stops with [HullControl.running].
+    fin lever = absValue(throttle)
+    fin running: Double = if motion.capsized || !control.running then 0.0 else 1.0
+    motion.running += (running - motion.running) * (1.0 - exp(-(if running > motion.running then 1.5 else 3.0) * dt))
+    fin freeRun = boatClamp(absValue(speed) / boatClamp(hull.topSpeed, 0.5, 100.0), 0.0, 1.0)
+    fin wanted = hull.idleRpm + (hull.maxRpm - hull.idleRpm) * lever * (0.7 + 0.3 * freeRun) * (if propellerWet then 1.0 else 1.25)
+    motion.rpm += (wanted * motion.running - motion.rpm) * (1.0 - exp(-3.5 * dt))
+    motion.load = if propellerWet then lever * (1.0 - 0.5 * freeRun) else 0.05
     if pull != 0.0 {
         fin thrust = ahead.scale(pull)
         force = force.add(thrust)
         torque = torque.add(hullCross(hullTurn(hull.propeller.subtract(centre), motion.yaw, motion.pitch, motion.roll), thrust))
     }
     if motion.wet > 0.0 {
-        // Drag: the full thrust balances it at top speed; sideways the keel resists twenty times as hard.
+        // Drag: the full thrust balances it at top speed; sideways the keel resists thirty times as hard,
+        // so a turn carries the boat round with a little slide instead of skating it sideways.
         fin drag = hull.thrust / (hull.topSpeed * hull.topSpeed)
         fin wetDrag = drag * (0.35 + 0.65 * motion.wet)
         force = force.add(ahead.scale(-wetDrag * speed * absValue(speed) - mass * 0.15 * speed))
-        force = force.add(side.scale(-wetDrag * 20.0 * slip * absValue(slip) - mass * 1.5 * slip))
-        // Planing: the bottom lifts at speed, a little ahead of the centre - the bow rides up, the hull runs higher.
+        force = force.add(side.scale((-wetDrag * 30.0 * slip * absValue(slip) - mass * 2.6 * slip) * motion.wet))
+        // Planing: the bottom lifts at speed - the hull runs higher. At speed the pressure under it acts a
+        // little aft of the centre, so the bow rides a few degrees up (ahead of it, the bow stood ten up).
         if !motion.capsized && hull.planing > 0.0 && speed > 0.5 {
-            fin lift: Vec3 = .(0.0, 0.5 * hull.density * hull.length * hull.beam * 0.02 * hull.planing * speed * speed * motion.wet, 0.0)
+            // A steep or heeled hull loses effective planing area. Bound the
+            // lift to its share of the boat's weight as the keel leaves the water.
+            fin trim = cos(motion.pitch) * cos(motion.roll)
+            fin area = boatClamp((trim - 0.45) / 0.55, 0.0, 1.0)
+            fin pressure = 0.5 * hull.density * hull.length * hull.beam * 0.02 * hull.planing * speed * speed
+            fin lift: Vec3 = .(0.0, boatClamp(pressure, 0.0, mass * gravity * 0.65) * area * motion.wet, 0.0)
             force = force.add(lift)
-            torque = torque.add(hullCross(forward.scale(hull.length * 0.08), lift))
+            torque = torque.add(hullCross(forward.scale(-hull.length * 0.04), lift))
         }
     }
     // Linear motion.
@@ -288,26 +312,46 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     // Pitch and roll from the torques about the boat's right and stern-ward axes; inertia of a box of the hull's size.
     fin pitchInertia = mass * (hull.length * hull.length + hull.sides * hull.sides) / 12.0
     fin rollInertia = mass * (hull.beam * hull.beam + hull.sides * hull.sides) / 12.0
-    motion.pitchRate += hullDot(torque, right) / pitchInertia * dt
-    motion.rollRate += -hullDot(torque, forward) / rollInertia * dt
+    motion.pitchRate += hullDot(torque, pitchAxis) / pitchInertia * dt
+    motion.rollRate += hullDot(torque, rollAxis) / rollInertia * dt
+    if !motion.capsized && motion.wet > 0.0 {
+        // The bottom samples model the keel. At large angles the partly
+        // submerged bow and gunwales contribute extra righting moment.
+        fin pitch = boatClamp((absValue(motion.pitch) - 0.24) / 0.5, 0.0, 1.0)
+        fin roll = boatClamp((absValue(motion.roll) - 0.42) / 0.5, 0.0, 1.0)
+        motion.pitchRate -= sin(motion.pitch) * pitch * motion.wet * gravity * 4.0 / hull.length * dt
+        motion.rollRate -= sin(motion.roll) * roll * motion.wet * gravity * 1.5 / hull.beam * dt
+    }
     // Out of the water nothing damps them but the air; in it, the water's drag on the hull's turning.
     fin damping = 1.0 - exp(-(0.3 + 2.2 * motion.wet) * dt)
     motion.pitchRate *= exp(-(0.5 + 3.4 * motion.wet) * dt)
     motion.rollRate -= motion.rollRate * damping
-    // The rudder: it turns the boat only as fast as the water flows past it; the boat leans into the turn.
-    fin rudder = if motion.capsized then 0.0 else waveClamp(control.rudder, -1.0, 1.0)
+    // The rudder: it turns the boat only as fast as the water flows past it, and the turn builds over
+    // a third of a second as the hull's weight swings round (it snapped to the rudder's rate before).
+    fin rudder = if motion.capsized then 0.0 else boatClamp(control.rudder, -1.0, 1.0)
     fin wash = if propellerWet then throttle * 1.8 else 0.0
-    fin contact = if propellerWet then 1.0 else waveClamp(motion.wet * 2.0, 0.0, 1.0)
-    fin bite = waveClamp((speed + wash) / 3.2, -1.0, 1.0) * contact
+    fin contact = if propellerWet then 1.0 else boatClamp(motion.wet * 2.0, 0.0, 1.0)
+    fin bite = boatClamp((speed + wash) / 3.2, -1.0, 1.0) * contact
     fin atSpeed = 1.0 / (1.0 + 0.035 * absValue(speed))
     fin turning = -rudder * hull.turnRate * 0.017453292519943295 * bite * atSpeed
-    motion.yawRate += (turning - motion.yawRate) * (1.0 - exp(-(1.4 + contact * 4.8) * dt))
-    motion.rollRate -= rudder * absValue(bite) * 0.72 * dt
+    motion.yawRate += (turning - motion.yawRate) * (1.0 - exp(-(0.6 + contact * 2.4) * dt))
+    // A planing hull rides on its V-bottom: in a turn it carves, heeling into the turn as hard as it
+    // turns (v times the yaw rate, up to 0.3 rad), and the pressure under it holds it at that heel -
+    // with the bow up and only the stern in the water, the water alone barely kept it upright.
+    if !motion.capsized && motion.wet > 0.0 && hull.planing > 0.0 {
+        fin planingShare = boatClamp((absValue(speed) - 2.0) / 6.0, 0.0, 1.0)
+        fin carve = boatClamp(speed * motion.yawRate / gravity, -1.0, 1.0) * 0.3
+        fin hold = mass * gravity * hull.beam * planingShare
+        motion.rollRate += hold * (carve - sin(motion.roll)) / rollInertia * dt
+        motion.rollRate *= exp(-2.5 * planingShare * dt)
+    }
     motion.yaw += motion.yawRate * dt
-    motion.pitch = waveClamp(motion.pitch + motion.pitchRate * dt, -1.55, 1.55)
+    fin nextPitch = motion.pitch + motion.pitchRate * dt
+    motion.pitch = boatClamp(nextPitch, -1.55, 1.55)
+    if nextPitch != motion.pitch then motion.pitchRate = 0.0
     motion.roll += motion.rollRate * dt
     if cos(motion.roll) * cos(motion.pitch) < -0.15 then motion.capsized = true
-    motion.slam = if slam > motion.slam then waveClamp(slam, 0.0, 3.0) else motion.slam * exp(-dt / 0.5)
+    motion.slam = if slam > motion.slam then boatClamp(slam, 0.0, 3.0) else motion.slam * exp(-dt / 0.5)
     motion.started = true
 }
 
@@ -324,7 +368,8 @@ func floatHulls(world: World!, time: Time&, hulls: @query [Hull&]) {
         if !storageHas<HullMotion>(motions, entity) then storageInsert<HullMotion>(motions, entity, startHull(world, entity))
         fin control = storageGetOrDefault<HullControl>(ensureStorage(world), entity, .())
         let motion: HullMotion! = motions.values[storageIndexOf<HullMotion>(motions, entity)]
-        stepHull(world, hull, control, motion, time.elapsedSecs, dt)
+        // The sea as it is at this step's end: several steps of one frame each see it move on.
+        stepHull(world, hull, control, motion, time.fixedElapsedSecs, dt)
     }
 }
 
@@ -333,8 +378,7 @@ func floatHulls(world: World!, time: Time&, hulls: @query [Hull&]) {
 func presentHulls(world: World!, hulls: @query [Hull&, HullMotion&]) {
     var bodies: Array<Entity> = []
     while hulls.hasNext() then bodies.add(hulls.nextEntity())
-    fin share = if world.fixedTimestep > 0.0 then waveClamp(world.fixedAccumulator / world.fixedTimestep, 0.0, 1.0) else 1.0
-    fin degrees = 57.29577951308232
+    fin share = if world.fixedTimestep > 0.0 then boatClamp(world.fixedAccumulator / world.fixedTimestep, 0.0, 1.0) else 1.0
     for entity in bodies {
         fin motion = storageGet<HullMotion>(ensureStorage(world), entity).clone()
         fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
@@ -343,12 +387,12 @@ func presentHulls(world: World!, hulls: @query [Hull&, HullMotion&]) {
             motion.previousPosition.y + (motion.position.y - motion.previousPosition.y) * share
             motion.previousPosition.z + (motion.position.z - motion.previousPosition.z) * share
         )
-        fin turn: Vec3 = .(
-            (motion.previousPitch + (motion.pitch - motion.previousPitch) * share) * degrees
-            (motion.previousYaw + (motion.yaw - motion.previousYaw) * share) * degrees
-            (motion.previousRoll + (motion.roll - motion.previousRoll) * share) * degrees
-        )
-        storageInsert<Transform>(ensureStorage(world), entity, .(position, turn, place.scale.clone()))
+        // The hull turns by heading, then trim, then heel; the Transform about X, then Y, then Z:
+        // written straight across, a heading other than north showed the heel as trim and the trim as heel.
+        fin attitude = quatHeading(motion.previousYaw + (motion.yaw - motion.previousYaw) * share,
+            motion.previousPitch + (motion.pitch - motion.previousPitch) * share,
+            motion.previousRoll + (motion.roll - motion.previousRoll) * share)
+        storageInsert<Transform>(ensureStorage(world), entity, .(position, transformDegrees(attitude), place.scale.clone()))
     }
 }
 
@@ -357,4 +401,71 @@ func placeHull(world: World!, entity: Entity, position: Vec3&, yaw: Double) {
     fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
     storageInsert<Transform>(ensureStorage(world), entity, .(position.clone(), Vec3(0.0, yaw, 0.0), place.scale.clone()))
     storageRemove<HullMotion>(ensureStorage(world), entity)
+}
+
+// ── Sound ───────────────────────────────────────────────────────────────
+
+/**
+ * What a boat sounds like: its outboard ([outboardVoice]), the water along
+ * its hull ([WakeVoice]) and its lower unit's gears whining, rendered into its
+ * own block. Kept by [mixBoatSound]; never saved.
+ */
+@Component
+pack BoatSound {
+    var voice: EngineVoice = .()
+    var wake: WakeVoice = .()
+    var buffer: Long = 0
+    var air: OnePole = .()
+    var whine: Double = 0.0
+    var fade: Double = 0.0
+}
+
+impl BoatSound {
+    dtor .() {
+        self.voice.release()
+        if self.buffer != 0 then azFree(self.buffer)
+    }
+}
+
+/**
+ * Mixes [boat]'s sound into [output]'s block as the listener hears it: the
+ * outboard from the stern and the water from the hull, quieter with
+ * distance, panned, pitched by the Doppler shift and dulled by the air.
+ * While [paused] it fades out in 50 ms.
+ */
+func mixBoatSound(output: AudioOutput!, world: World!, boat: Entity, paused: Bool) {
+    if output.frames <= 0 || !world.isAlive(boat) || !storageHas<HullMotion>(ensureStorage(world), boat) then return
+    fin motion = storageGet<HullMotion>(ensureStorage(world), boat).clone()
+    fin hull = storageGetOrDefault<Hull>(ensureStorage(world), boat, .())
+    let sounds = ensureStorage<BoatSound>(world)
+    if !storageHas<BoatSound>(sounds, boat) {
+        var made: BoatSound = .(voice: outboardVoice(48000.0), wake: wakeVoice(48000.0), buffer: sampleBuffer(audioCapacity))
+        made.air.tune(20000.0, 48000.0)
+        storageInsert<BoatSound>(sounds, boat, take made)
+    }
+    let sound: BoatSound! = sounds.values[storageIndexOf<BoatSound>(sounds, boat)]
+    fin stern = motion.position.add(hullTurn(hull.propeller, motion.yaw, motion.pitch, motion.roll))
+    fin distance = output.distanceTo(stern.x, stern.y, stern.z)
+    fin doppler = output.dopplerRatio(stern.x, stern.y, stern.z, motion.velocity.x, motion.velocity.y, motion.velocity.z)
+    fin count = if output.frames < audioCapacity then output.frames else audioCapacity
+    for i: Int in 0..<count then setSample(sound.buffer, i, 0.0)
+    if motion.running > 0.01 {
+        sound.voice.render(sound.buffer, count, realMaxOf(motion.rpm, 1.0) * doppler, motion.load, motion.load, false)
+        // The engine's own loudness fades with it as it starts and stops.
+        for i: Int in 0..<count then setSample(sound.buffer, i, sample(sound.buffer, i) * motion.running)
+    }
+    sound.wake.render(sound.buffer, count, motion.forwardSpeed, boatClamp(motion.wet * 1.4, 0.0, 1.0))
+    // The lower unit's bevel gears (about 2:1, a dozen teeth) whine under load.
+    fin whinePitch = realMaxOf(motion.rpm, 0.0) / 60.0 / 2.1 * 13.0 * doppler
+    sound.air.tune(airCutoff(distance), 48000.0)
+    fin fadeStep = 1.0 / (0.05 * 48000.0)
+    for i: Int in 0..<count {
+        sound.whine += 2.0 * PI * whinePitch / 48000.0
+        if sound.whine > 2.0 * PI then sound.whine -= 2.0 * PI
+        var x = sample(sound.buffer, i) + sin(sound.whine) * 0.006 * motion.load * motion.running
+        sound.fade = if paused then realMaxOf(sound.fade - fadeStep, 0.0) else realMinOf(sound.fade + fadeStep, 1.0)
+        x = sound.air.lowpass(x * sound.fade)
+        setSample(sound.buffer, i, x)
+    }
+    output.mixMono(sound.buffer, count, distanceGain(distance, 4.0), output.panOf(stern.x, stern.y, stern.z))
 }
