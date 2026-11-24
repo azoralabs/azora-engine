@@ -28,6 +28,7 @@ import engine.math.mat
 import engine.shaders
 import engine.material.fusion.metal
 import engine.gpu.terrain
+import engine.scene.terrain::{readTerrainImage}
 import engine.lighting.photon
 import engine.io
 
@@ -136,6 +137,14 @@ pack AzGpu {
      * resolution from it and the last one. Interface drawing stays native.
      */
     var upscale: Bool = false
+    /** Scene size used when temporal upscaling is on. */
+    var upscaleFactor: Double = 0.5
+    /** Temporal antialiasing with native-size scene targets. */
+    var nativeTemporal: Bool = false
+    /** Optional contrast-limited sharpening and film grade in the final scene resolve. */
+    var resolveSharpness: Double = 0.0
+    var filmGrade: Double = 0.0
+    var cloudDivisor: Int = 8
     /**
      * Set by a game whose systems read the scene's colour and depth (render
      * stages): without upscaling the scene is then drawn into a full-resolution
@@ -795,13 +804,12 @@ func releaseScenePass(pass: ScenePass!) {
 }
 
 /**
- * Sizes the scene targets for a [width] x [height] drawable: the scene at half
- * of each when [half] (temporal upscaling), else at all of it; the history at
- * all of it.
+ * Sizes the scene targets for a [width] x [height] drawable. Temporal
+ * upscaling uses [scale]; the history stays at drawable size.
  */
-func ensureScenePass(gpu: AzGpu!, width: Long, height: Long, half: Bool = true) {
-    fin low = if half then (width + 1) / 2 else width
-    fin lowHeight = if half then (height + 1) / 2 else height
+func ensureScenePass(gpu: AzGpu!, width: Long, height: Long, half: Bool = true, scale: Double = 0.5) {
+    fin low = if half then ceil((width as Double)*scale) as Long else width
+    fin lowHeight = if half then ceil((height as Double)*scale) as Long else height
     if gpu.scenePass.fullWidth == width && gpu.scenePass.fullHeight == height && gpu.scenePass.width == low &&
         gpu.scenePass.color != 0 then return
     releaseScenePass(gpu.scenePass)
@@ -848,8 +856,9 @@ func halton(index: Int, base: Int): Double {
  * at a quarter of the pixels. Nothing happens when it is off or already begun.
  */
 func beginScenePass(gpu: AzGpu!) {
-    if !(gpu.upscale || gpu.offscreenScene) || !gpu.hasEncoder || gpu.scenePass.active || gpu.resolvePipeline == 0 then return
-    ensureScenePass(gpu, gpu.depthW, gpu.depthH, gpu.upscale)
+    fin temporal = gpu.upscale || gpu.nativeTemporal
+    if !(temporal || gpu.offscreenScene) || !gpu.hasEncoder || gpu.scenePass.active || gpu.resolvePipeline == 0 then return
+    ensureScenePass(gpu, gpu.depthW, gpu.depthH, gpu.upscale, gpu.upscaleFactor)
     if gpu.scenePass.color == 0 then return
     send0(gpu.enc, sel("endEncoding"))
     fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
@@ -871,11 +880,10 @@ func beginScenePass(gpu: AzGpu!) {
     gpu.scenePass.active = true
     gpu.scenePass.viewed = false
     gpu.sceneSuspended = false
-    // This frame's sub-pixel offset, in half-resolution pixels; it cycles through eight.
-    // A full-resolution pass (no upscaling) is drawn where the pixels are.
+    // This frame's sub-pixel offset, in scene pixels; it cycles through eight.
     fin phase = gpu.scenePass.frame % 8 + 1
-    gpu.scenePass.jitterX = if gpu.upscale then halton(phase, 2) - 0.5 else 0.0
-    gpu.scenePass.jitterY = if gpu.upscale then halton(phase, 3) - 0.5 else 0.0
+    gpu.scenePass.jitterX = if temporal then halton(phase, 2) - 0.5 else 0.0
+    gpu.scenePass.jitterY = if temporal then halton(phase, 3) - 0.5 else 0.0
 }
 
 /**
@@ -961,7 +969,8 @@ func resolveScenePass(gpu: AzGpu!) {
     gpu.sceneSuspended = false
     gpu.scenePass.active = false
     gpu.passScale = 1.0
-    fin moved = drawMotion(gpu)
+    fin temporal = gpu.upscale || gpu.nativeTemporal
+    fin moved = temporal && drawMotion(gpu)
     // This frame's records are the next one's past.
     fin spare = gpu.motionPrevious
     gpu.motionPrevious = gpu.motionCurrent
@@ -1008,10 +1017,9 @@ func resolveScenePass(gpu: AzGpu!) {
     azPokeF32(uniforms, 168, gpu.scenePass.fullHeight as Double)
     azPokeF32(uniforms, 172, 0.1)
     azPokeF32(uniforms, 176, if moved then 1.0 else 0.0)
-    // A full-resolution pass without upscaling is copied as it is.
-    azPokeF32(uniforms, 180, if gpu.scenePass.width == gpu.scenePass.fullWidth then 1.0 else 0.0)
-    azPokeF32(uniforms, 184, 0.0)
-    azPokeF32(uniforms, 188, 0.0)
+    azPokeF32(uniforms, 180, if temporal then 0.0 else 1.0)
+    azPokeF32(uniforms, 184, gpu.resolveSharpness)
+    azPokeF32(uniforms, 188, gpu.filmGrade)
     send1(resolve, sel("setRenderPipelineState:"), gpu.resolvePipeline)
     send3(resolve, sel("setVertexBytes:length:atIndex:"), uniforms, 192, 0)
     send3(resolve, sel("setFragmentBytes:length:atIndex:"), uniforms, 192, 0)
@@ -1039,6 +1047,6 @@ func resolveScenePass(gpu: AzGpu!) {
 
     gpu.scenePass.readA = !gpu.scenePass.readA
     if viewed then gpu.scenePass.previous = copyMat4(gpu.scenePass.viewProj)
-    gpu.scenePass.historyValid = viewed && gpu.upscale
+    gpu.scenePass.historyValid = viewed && temporal
     gpu.scenePass.frame++
 }

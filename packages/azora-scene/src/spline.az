@@ -1,0 +1,77 @@
+module engine.scene.spline
+
+import std.traits
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+
+/** An ordered curve through the transforms of its child Spline Points. */
+@Component
+@Inspectable(title: "Flight Spline", serializedName: "FlightSpline", icon: "route", category: "Paths", order: 38)
+pack FlightSpline derives Clone {
+    var closed: Bool = true
+}
+
+@Component
+@Inspectable(title: "Spline Point", serializedName: "SplinePoint", icon: "circle-dot", category: "Paths", order: 39)
+pack SplinePoint derives Clone {
+    @Range(min: 0.0, max: 10000.0, step: 1.0)
+    var order: Int = 0
+}
+
+pack FlightKnot derives Clone {
+    var order: Int
+    var at: Vec3
+}
+
+func flightKnots(world: World!, path: Entity): Array<FlightKnot> {
+    var result: Array<FlightKnot> = []
+    fin points = ensureStorage<SplinePoint>(world)
+    for row: Int in 0..<storageLength<SplinePoint>(points) {
+        fin entity = storageEntityAt<SplinePoint>(points, row)
+        if !world.isAlive(entity) || world.getParent(entity) != path then continue
+        fin order = points.values[row].order
+        var index = result.size
+        result.add(FlightKnot(order, worldPosition(world, entity)))
+        while index > 0 && result[index-1].order > order {
+            fin prior = result[index-1].clone()
+            result[index-1] = result[index].clone()
+            result[index] = prior.clone()
+            index--
+        }
+    }
+    return take result
+}
+
+func flightKnotIndex(index: Int, count: Int, closed: Bool): Int {
+    if closed then return (index + count) % count
+    return if index < 0 then 0 else (if index >= count then count-1 else index)
+}
+
+func flightSplineAt(knots: Array<FlightKnot>&, closed: Bool, segment: Int, t: Double): Vec3 {
+    fin count = knots.size
+    fin a = knots[flightKnotIndex(segment-1, count, closed)].at
+    fin b = knots[flightKnotIndex(segment, count, closed)].at
+    fin c = knots[flightKnotIndex(segment+1, count, closed)].at
+    fin d = knots[flightKnotIndex(segment+2, count, closed)].at
+    fin t2 = t*t
+    fin t3 = t2*t
+    return a.scale((-t+2.0*t2-t3)*0.5)
+        .add(b.scale(1.0-2.5*t2+1.5*t3))
+        .add(c.scale((t+4.0*t2-3.0*t3)*0.5))
+        .add(d.scale((t3-t2)*0.5))
+}
+
+/** Both the editor and game sample the same curve. */
+func flightPolyline(knots: Array<FlightKnot>&, closed: Bool): Array<Vec3> {
+    var result: Array<Vec3> = []
+    if knots.size < 2 then return take result
+    fin segments = if closed then knots.size else knots.size-1
+    for segment: Int in 0..<segments {
+        for step: Int in 0..<12 then result.add(flightSplineAt(knots, closed, segment, (step as Double)/12.0))
+    }
+    result.add(flightSplineAt(knots, closed, segments-1, 1.0))
+    return take result
+}

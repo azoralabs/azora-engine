@@ -29,6 +29,8 @@ pack SkinnedMesh derives Clone {
     var previousClip: SkinClip = .()
     var previousPlayhead: Double = 0.0
     var transition: Double = 1.0
+    /** Optional UV atlas packing tangent-space normal X/Y and perceptual roughness in RGB. */
+    var surface: String = ""
 }
 
 @Component
@@ -52,12 +54,14 @@ pack SkinAsset {
     var joints: Int = 0
     var frames: Int = 0
     var albedo: Long = 0
+    var surface: Long = 0
 }
 
 impl SkinAsset {
     dtor .() {
         send0(self.mesh, sel("release"))
         send0(self.albedo, sel("release"))
+        send0(self.surface, sel("release"))
     }
 }
 
@@ -84,6 +88,7 @@ func readSkin(app: App&, root: String, actor: SkinnedMesh&, key: String): SkinAs
     }
     asset.mesh = send3(asset.device, sel("newBufferWithBytes:length:options:"), file.data + 20, size, 0)
     asset.albedo = app.loadImage("${root}/${actor.texture}").texture
+    if projectAssetPath(actor.surface) then asset.surface = app.loadImage("${root}/${actor.surface}").texture
     asset.indexCount = indices
     asset.indexOffset = indexOffset
     asset.paletteOffset = paletteOffset
@@ -94,7 +99,7 @@ func readSkin(app: App&, root: String, actor: SkinnedMesh&, key: String): SkinAs
 
 func skinAssetIndex(app: App&, world: World!, root: String, actor: SkinnedMesh&): Int {
     let cache = ensureStorage<SkinAsset>(world)
-    fin key = "${root}\n${actor.mesh}\n${actor.texture}"
+    fin key = "${root}\n${actor.mesh}\n${actor.texture}\n${actor.surface}"
     for row: Int in 0..<storageLength<SkinAsset>(cache) {
         if cache.values[row].device == app.gpu.device && cache.values[row].key == key then return row
     }
@@ -156,14 +161,18 @@ impl App {
             azPokeF32(gpu.scratch, 144, previous.fraction)
             azPokeF32(gpu.scratch, 148, actor.transition)
             azPokeF32(gpu.scratch, 152, asset.joints as Double)
-            azPokeF32(gpu.scratch, 156, 0.0)
+            azPokeF32(gpu.scratch, 156, if asset.surface != 0 then 1.0 else 0.0)
+            azCopy(gpu.scratch + 160, gpu.viewProj + 64, 12)
+            azPokeF32(gpu.scratch, 172, gpu.ambient)
             send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, 0, 0)
             send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, pose.first, 1)
             send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, pose.next, 2)
             send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, previous.first, 3)
             send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), asset.mesh, previous.next, 4)
-            send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 160, 5)
+            send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, 176, 5)
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch + 128, 48, 0)
             send2(gpu.enc, sel("setFragmentTexture:atIndex:"), asset.albedo, 0)
+            send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if asset.surface != 0 then asset.surface else asset.albedo, 1)
             send5(gpu.enc, sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:"),
                 3, asset.indexCount as Long, 1, asset.mesh, asset.indexOffset)
             gpu.mode = -1
@@ -174,8 +183,9 @@ impl App {
 
 func skinMetalSource(): String = "#include <metal_stdlib>
 using namespace metal;
-struct SkinUniforms { float4x4 clip, model; float4 lightFrame, blend; };
-struct SkinVertex { float4 position [[position]]; float2 uv; float light; };
+struct SkinLighting { float4 lightFrame, blend, eye; };
+struct SkinUniforms { float4x4 clip, model; SkinLighting lighting; };
+struct SkinVertex { float4 position [[position]]; float2 uv; float light; float3 world; float3 normal; };
 float4x4 palette(const device float4x4* bones, uint4 joints, float4 weights) {
     return bones[joints.x]*weights.x + bones[joints.y]*weights.y + bones[joints.z]*weights.z + bones[joints.w]*weights.w;
 }
@@ -184,25 +194,55 @@ vertex SkinVertex skin_vertex(uint id [[vertex_id]], const device float* vertice
                               const device float4x4* previous [[buffer(3)]], const device float4x4* older [[buffer(4)]],
                               constant SkinUniforms& u [[buffer(5)]]) {
     const device float* v = vertices + id * 16;
-    uint4 joints = min(uint4(v[8],v[9],v[10],v[11]), uint4(uint(u.blend.z)-1));
+    uint4 joints = min(uint4(v[8],v[9],v[10],v[11]), uint4(uint(u.lighting.blend.z)-1));
     float4 weights = float4(v[12],v[13],v[14],v[15]);
     float4 p = float4(v[0],v[1],v[2],1);
     float4 n = float4(v[3],v[4],v[5],0);
     float4x4 a = palette(pose,joints,weights), b = palette(next,joints,weights);
-    float4 moved = mix(a*p,b*p,u.lightFrame.w), normal = mix(a*n,b*n,u.lightFrame.w);
-    if (u.blend.y < 1) {
+    float4 moved = mix(a*p,b*p,u.lighting.lightFrame.w), normal = mix(a*n,b*n,u.lighting.lightFrame.w);
+    if (u.lighting.blend.y < 1) {
         a = palette(previous,joints,weights); b = palette(older,joints,weights);
-        moved = mix(mix(a*p,b*p,u.blend.x),moved,u.blend.y);
-        normal = mix(mix(a*n,b*n,u.blend.x),normal,u.blend.y);
+        moved = mix(mix(a*p,b*p,u.lighting.blend.x),moved,u.lighting.blend.y);
+        normal = mix(mix(a*n,b*n,u.lighting.blend.x),normal,u.lighting.blend.y);
     }
-    float diffuse = saturate(dot(normalize((u.model * normal).xyz), normalize(u.lightFrame.xyz)));
-    return { u.clip * u.model * moved, float2(v[6],v[7]), 0.60 + 0.40*diffuse };
+    float4 world = u.model * moved;
+    float3 worldNormal = normalize((u.model * normal).xyz);
+    float diffuse = saturate(dot(worldNormal, normalize(u.lighting.lightFrame.xyz)));
+    return { u.clip * world, float2(v[6],v[7]), 0.60 + 0.40*diffuse, world.xyz, worldNormal };
 }
-fragment float4 skin_fragment(SkinVertex in [[stage_in]], texture2d<float> albedo [[texture(0)]]) {
+fragment float4 skin_fragment(SkinVertex in [[stage_in]], constant SkinLighting& u [[buffer(0)]],
+                              texture2d<float> albedo [[texture(0)]], texture2d<float> surface [[texture(1)]]) {
     constexpr sampler tex(coord::normalized, address::clamp_to_edge, filter::linear);
     float4 color = albedo.sample(tex, in.uv);
+    float3 base = color.rgb / max(color.a, 0.48);
+    if (u.blend.w < 0.5) {
+        if (color.a < 0.48) discard_fragment();
+        return float4(base * in.light, 1);
+    }
+    float3 pX = dfdx(in.world), pY = dfdy(in.world);
+    float2 uvX = dfdx(in.uv), uvY = dfdy(in.uv);
+    float3 properties = surface.sample(tex, in.uv).rgb;
     if (color.a < 0.48) discard_fragment();
-    return float4(color.rgb / max(color.a, 0.48) * in.light, 1);
+    float3 n = normalize(in.normal);
+    float det = uvX.x*uvY.y - uvX.y*uvY.x;
+    if (abs(det) > 1e-10) {
+        float3 t = (pX*uvY.y-pY*uvX.y)*sign(det);
+        float3 b = (pY*uvX.x-pX*uvY.x)*sign(det);
+        t -= n*dot(n,t);
+        b -= n*dot(n,b);
+        float2 xy = properties.xy*2.0-1.0;
+        n = normalize(n*sqrt(max(0.02,1.0-dot(xy,xy))) + xy.x*normalize(t) + xy.y*normalize(b));
+    }
+    float3 l = normalize(u.lightFrame.xyz), v = normalize(u.eye.xyz-in.world), h = normalize(l+v+float3(1e-5));
+    float rough = clamp(properties.z,0.24,1.0);
+    float nl = saturate(dot(n,l)), nv = saturate(dot(n,v)), nh = saturate(dot(n,h));
+    float a2 = pow(rough,4.0), d = nh*nh*(a2-1.0)+1.0;
+    float k = (rough+1.0)*(rough+1.0)/8.0;
+    float f = 0.028+0.972*pow(1.0-saturate(dot(v,h)),5.0);
+    float spec = f*a2/(12.56637*d*d*max(0.01,(nl*(1.0-k)+k)*(nv*(1.0-k)+k)));
+    float ambient = max(0.34,u.eye.w);
+    float3 linear = pow(base,float3(2.2))*(ambient+nl*(1.0-ambient)*0.86) + spec*nl*0.82;
+    return float4(pow(saturate(linear),float3(1.0/2.2)),1);
 }
 "
 

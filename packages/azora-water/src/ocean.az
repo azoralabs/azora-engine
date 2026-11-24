@@ -44,6 +44,7 @@ import engine.gpu.terrain
 import engine.atmosphere.view
 import engine.render.scene
 import engine.water.components
+import engine.water.query
 import engine.water.spectrum
 import engine.water.seas
 import engine.water.waves
@@ -249,7 +250,8 @@ func drawOcean(app: App!, world: World!, view: SceneView&, entity: Entity, ocean
     send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, sceneUniformBytes, 1)
     app.bindSceneLighting()
     fin block = gpu.scratch + 256
-    pokeOcean(block, ocean, level, sea, optics, foam, shore, eye.y - level, view.time)
+    fin surface = waterSurfaceAt(world, eye.x, eye.z, view.time)
+    pokeOcean(block, ocean, level, sea, optics, foam, shore, eye.y - surface.height, view.time)
     send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), block, oceanUniformBytes, 7)
     send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), block, oceanUniformBytes, 7)
     let sims = ensureStorage<SeaGpu>(world)

@@ -256,10 +256,10 @@ func makeCloudNoise(commands: Long, renderer: AetherRenderer!) {
     renderer.noiseReady = true
 }
 
-/** The two cloud targets, an eighth of the drawable each way; a new size starts without history. */
-func ensureCloudTargets(device: Long, renderer: AetherRenderer!, fullWidth: Int, fullHeight: Int) {
-    fin width = ((fullWidth + 7) / 8) as Long
-    fin height = ((fullHeight + 7) / 8) as Long
+/** The two reduced-resolution cloud targets; a new size starts without history. */
+func ensureCloudTargets(device: Long, renderer: AetherRenderer!, fullWidth: Int, fullHeight: Int, divisor: Int = 8) {
+    fin width = ((fullWidth + divisor-1) / divisor) as Long
+    fin height = ((fullHeight + divisor-1) / divisor) as Long
     if width == renderer.cloudWidth && height == renderer.cloudHeight && renderer.cloudA != 0 then return
     if renderer.cloudA != 0 then send0(renderer.cloudA, sel("release"))
     if renderer.cloudB != 0 then send0(renderer.cloudB, sel("release"))

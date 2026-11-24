@@ -1,0 +1,130 @@
+module engine.water.underwater
+
+import engine.atmosphere.view
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.io
+import engine.objc
+import engine.platform
+import engine.water.components
+import engine.water.ocean::{pokeFour}
+import engine.water.query
+import engine.water.waves
+
+@Component
+pack UnderwaterGpu {
+    var pipeline: Long = 0
+}
+
+impl UnderwaterGpu {
+    dtor .() {
+        if self.pipeline != 0 then send0(self.pipeline, sel("release"))
+    }
+}
+
+/** Light travelling through water from the scene depth to the submerged eye. */
+func drawUnderwater(app: App!, world: World!, view: SceneView&) {
+    if view.color == 0 || view.depth == 0 || view.matrices == 0 then return
+    fin surface = waterSurfaceAt(world, view.eyeX, view.eyeZ, view.time)
+    if !surface.found || view.eyeY >= surface.height then return
+    let cache = ensureStorage<UnderwaterGpu>(world)
+    if storageLength<UnderwaterGpu>(cache) == 0 {
+        var programs: UnderwaterGpu = .()
+        fin library = waterLibrary(view.device, underwaterSource(), "underwater optics")
+        if library != 0 {
+            programs.pipeline = waterSurfacePipeline(view.device, library, "underwaterVertex", "underwaterFragment", false)
+            send0(library, sel("release"))
+        }
+        storageInsert<UnderwaterGpu>(cache, world.spawnResource("Underwater GPU"), take programs)
+    }
+    fin pipeline = cache.values[0].pipeline
+    if pipeline == 0 then return
+    fin optics = storageGetOrDefault<WaterOptics>(ensureStorage(world), surface.body, .())
+    let gpu: AzGpu! = app.gpu
+    fin block = gpu.scratch
+    azCopy(block, view.matrices + 64, 64)
+    pokeFour(block, 64, view.eyeX, view.eyeY, view.eyeZ, surface.height)
+    pokeFour(block, 80, view.width as Double, view.height as Double, view.jitterX, view.jitterY)
+    pokeFour(block, 96, optics.absorption.r, optics.absorption.g, optics.absorption.b, optics.clarity)
+    pokeFour(block, 112, optics.scatter.r, optics.scatter.g, optics.scatter.b, view.time)
+    pokeFour(block, 128, gpu.lightX, gpu.lightY, gpu.lightZ, gpu.ambient)
+    fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
+    fin color = send1(send0(pass, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
+    send1(color, sel("setTexture:"), view.color)
+    send1(color, sel("setLoadAction:"), 1)
+    send1(color, sel("setStoreAction:"), 1)
+    fin encoder = send1(view.commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+    send1(encoder, sel("setRenderPipelineState:"), pipeline)
+    send3(encoder, sel("setFragmentBytes:length:atIndex:"), block, 144, 0)
+    send2(encoder, sel("setFragmentTexture:atIndex:"), view.depth, 0)
+    send3(encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3)
+    send0(encoder, sel("endEncoding"))
+}
+
+func underwaterSource(): String = "
+#include <metal_stdlib>
+using namespace metal;
+
+struct WaterVolume {
+    float4x4 inverseView;
+    float4 eye, screen, absorption, scatter, sun;
+};
+struct WaterPixel { float4 position [[position]]; };
+
+vertex WaterPixel underwaterVertex(uint vertexId [[vertex_id]]) {
+    return { float4(vertexId == 1 ? 3.0 : -1.0, vertexId == 2 ? 3.0 : -1.0, 0.0, 1.0) };
+}
+
+float waterCaustics(float2 p, float t) {
+    float2 q = p * 1.7;
+    q += float2(sin(p.y * 0.65 + t * 0.71), cos(p.x * 0.81 - t * 0.53)) * 0.85;
+    float a = sin(dot(q, float2(0.82, 0.57)) + t * 0.79);
+    float b = sin(dot(q, float2(-0.42, 1.03)) - t * 0.94);
+    float c = sin(dot(q, float2(1.21, -0.59)) + t * 0.42);
+    return exp2(-12.0 * abs(a * 0.46 + b * 0.34 + c * 0.20));
+}
+
+fragment float4 underwaterFragment(WaterPixel pixel [[stage_in]], float4 scene [[color(0)]],
+                                     constant WaterVolume& u [[buffer(0)]],
+                                     depth2d<float> depth [[texture(0)]]) {
+    if (scene.a <= 0.0) return scene;
+    float z = depth.read(uint2(pixel.position.xy));
+    float2 uv = (pixel.position.xy - u.screen.zw) / u.screen.xy;
+    float4 unprojected = u.inverseView * float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, max(z, 0.000001), 1.0);
+    float3 hit = unprojected.xyz / unprojected.w;
+    float3 travel = hit - u.eye.xyz;
+    float3 ray = normalize(travel);
+    float immersion = max(u.eye.w - u.eye.y, 0.0);
+    float reach = z > 0.0 ? min(length(travel), 240.0f) : 240.0;
+    // Higher rays leave the medium at the surface. The ocean mesh fills most of these rays
+    // with its refracted sky, while the same bound also keeps boats and the shore above it clear.
+    if (ray.y > 0.0001) reach = min(reach, (immersion + 0.35) / ray.y);
+    float day = saturate(u.sun.y * 2.1 + 0.14);
+    float turbidity = mix(0.075, 0.026, saturate(u.absorption.w));
+    float3 extinction = max(u.absorption.rgb * float3(0.66, 0.77, 0.80), float3(0.038, 0.021, 0.014)) + turbidity;
+    float3 transmit = exp(-extinction * reach);
+    float floorDepth = max(u.eye.w - hit.y, 0.0);
+    float3 sunRay = refract(-normalize(u.sun.xyz), float3(0, 1, 0), 0.7502);
+    float2 sunSlope = sunRay.xz / max(-sunRay.y, 0.42);
+    float3 light = pow(max(scene.rgb, 0.0), 2.2);
+    if (z > 0.0 && floorDepth > 0.22 && reach < 48.0) {
+        float2 surfacePoint = hit.xz - sunSlope * floorDepth;
+        float pattern = waterCaustics(surfacePoint, u.scatter.w);
+        float caustic = pattern * day * exp(-floorDepth * 0.16) * (1.0 - smoothstep(20.0, 46.0, reach));
+        light *= 1.0 + caustic * float3(0.64, 0.90, 0.94);
+        // Incident daylight loses its warmer wavelengths before it reaches the bed.
+        light *= exp(-extinction * min(floorDepth, 35.0) * 0.25);
+    }
+    float3 mid = u.eye.xyz + ray * reach * 0.43;
+    float midDepth = max(u.eye.w - mid.y, 0.0);
+    float2 beam = mid.xz - sunSlope * midDepth;
+    float shaft = pow(saturate(0.5 + 0.5 * sin(beam.x * 0.33 + sin(beam.y * 0.28 + u.scatter.w * 0.23))), 4.0);
+    float forward = pow(saturate(dot(ray, -sunRay) * 0.5 + 0.5), 5.0);
+    float3 waterLight = (u.scatter.rgb * float3(0.31, 0.70, 0.90) + float3(0.002, 0.022, 0.033));
+    waterLight *= (0.18 + day * (0.70 + forward * (0.50 + shaft * 0.32))) * exp(-midDepth * 0.036);
+    waterLight += float3(0.001, 0.012, 0.023) * max(u.sun.w, 0.16);
+    float3 seen = light * transmit + waterLight * (1.0 - transmit);
+    return float4(pow(saturate(seen), 1.0 / 2.2), scene.a);
+}
+"

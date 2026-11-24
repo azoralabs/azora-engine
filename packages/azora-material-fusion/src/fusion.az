@@ -36,6 +36,12 @@ pack FusionNode derives Clone {
     var low: Double = 0.0
     var high: Double = 1.0
     var variation: Double = 0.0
+    /** World-space range of the height map for near-view parallax, in metres. */
+    var displacement: Double = 0.0
+    /** Fraction of scatter cells that carry a visible stamp. */
+    var density: Double = 0.25
+    /** Typical width of one scatter stamp, in metres. */
+    var featureSize: Double = 0.08
 }
 
 pack FusionGraph derives Clone {
@@ -47,6 +53,7 @@ pack FusionGraph derives Clone {
 func fusionNodeLabel(kind: String): String = when kind {
     "slab" -> "Surface Slab"
     "texture" -> "Texture Bombing"
+    "scatter" -> "Scatter Overlay"
     "altitude" -> "Altitude Mask"
     "slope" -> "Slope Mask"
     "scalar" -> "Scalar"
@@ -62,19 +69,20 @@ func fusionNodeLabel(kind: String): String = when kind {
 func fusionNodeTitle(node: FusionNode&): String = if node.label == "" then fusionNodeLabel(node.kind) else node.label
 
 func fusionType(kind: String): Int = when kind {
-    "slab", "texture", "mix", "layer" -> 1
+    "slab", "texture", "scatter", "mix", "layer" -> 1
     "scalar", "checker", "noise", "altitude", "slope" -> 2
     else -> 0
 }
 
 func fusionPinCount(kind: String): Int = when kind {
     "mix", "layer" -> 3
-    "output" -> 1
+    "output", "scatter" -> 1
     else -> 0
 }
 
 func fusionPinLabel(kind: String, pin: Int): String = when {
     kind == "output" -> "Surface"
+    kind == "scatter" -> "Base Surface"
     kind == "layer" && pin == 0 -> "Bottom"
     kind == "layer" && pin == 1 -> "Top"
     kind == "layer" -> "Coverage"
@@ -225,6 +233,9 @@ func readFusionNode(fields: List<SerialField>&): FusionNode {
     n.low = fusionClamp(fusionReal(fields, "low", n.low), -100000.0, 100000.0)
     n.high = fusionClamp(fusionReal(fields, "high", n.high), -100000.0, 100000.0)
     n.variation = fusionClamp(fusionReal(fields, "variation", n.variation), 0.0, 10000.0)
+    n.displacement = fusionClamp(fusionReal(fields, "displacement", n.displacement), 0.0, 0.25)
+    n.density = fusionClamp(fusionReal(fields, "density", n.density), 0.0, 1.0)
+    n.featureSize = fusionClamp(fusionReal(fields, "featureSize", n.featureSize), 0.005, 5.0)
     return take n
 }
 
@@ -295,7 +306,10 @@ func writeFusionGraph(document: FusionGraph&): String {
         fin texture = if fusionTexturePath(n.textureSet) then n.textureSet else ""
         fin label = encodeSerialValue(.Text(n.label), serializerOptions()) catch "\"\""
         text.append(", \"label\": ${label}, \"offset\": ${formatDecimal(n.offset,6)}, \"contrast\": ${formatDecimal(n.contrast,6)}, \"macroScale\": ${formatDecimal(n.macroScale,6)}, \"rotation\": ${formatDecimal(n.rotation,6)}")
-        text.append(", \"texture\": \"${texture}\", \"low\": ${formatDecimal(n.low,6)}, \"high\": ${formatDecimal(n.high,6)}, \"variation\": ${formatDecimal(n.variation,6)}}")
+        text.append(", \"texture\": \"${texture}\", \"low\": ${formatDecimal(n.low,6)}, \"high\": ${formatDecimal(n.high,6)}, \"variation\": ${formatDecimal(n.variation,6)}")
+        if n.kind == "texture" || n.kind == "scatter" then text.append(", \"displacement\": ${formatDecimal(n.displacement,6)}")
+        if n.kind == "scatter" then text.append(", \"density\": ${formatDecimal(n.density,6)}, \"featureSize\": ${formatDecimal(n.featureSize,6)}")
+        text.append("}")
         index++
     }
     text.append("\n]}\n")

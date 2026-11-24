@@ -1,0 +1,59 @@
+module engine.weather.sway
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.weather.wind
+
+/** Attach to a canopy or other joint whose origin is the pivot. */
+@Component
+@Inspectable(title: "Wind Sway", serializedName: "WindSway", icon: "wind", category: "Weather", order: 35)
+pack WindSway derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 15.0, step: 0.1)
+    var maxTilt: Double = 3.0
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var sensitivity: Double = 0.23
+}
+
+@Component
+pack SwayPose {
+    var rest: Vec3
+    var pitch: Double = 0.0
+    var roll: Double = 0.0
+}
+
+@System(phase: .Update)
+func swayInWind(world: World!, time: Time&, joints: @query [WindSway&, Transform!]) {
+    if !joints.hasNext() then return
+    fin field = gatherWindField(world, time.elapsedSecs)
+    let poses = ensureStorage<SwayPose>(world)
+    fin blend = 1.0 - exp(-5.0 * time.deltaSecs)
+    joints.unpack { entity, sway, transform ->
+        var slot = storageIndexOf<SwayPose>(poses, entity)
+        if slot < 0 {
+            storageInsert<SwayPose>(poses, entity, .(transform.rotation.clone()))
+            slot = storageIndexOf<SwayPose>(poses, entity)
+        }
+        let pose: SwayPose! = poses.values[slot]
+        fin wind = field.at(worldPosition(world, entity))
+        fin parent = world.getParent(entity)
+        fin m = worldMatrix(world, parent)
+        fin x = wind.x*m.m00 + wind.y*m.m10 + wind.z*m.m20
+        fin z = wind.x*m.m02 + wind.y*m.m12 + wind.z*m.m22
+        fin bend = if sway.enabled then sway.sensitivity else 0.0
+        fin ripple = 1.0 + 0.16*sin(time.elapsedSecs*2.8 + (entity.id as Double)*1.07)
+        fin limit = if sway.maxTilt > 0.0 then sway.maxTilt else 0.0
+        fin pitch = swayLimit(z*bend*ripple, limit)
+        fin roll = swayLimit(-x*bend*ripple, limit)
+        pose.pitch += (pitch-pose.pitch)*blend
+        pose.roll += (roll-pose.roll)*blend
+        transform.rotation = .(pose.rest.x+pose.pitch, pose.rest.y, pose.rest.z+pose.roll)
+    }
+}
+
+func swayLimit(angle: Double, limit: Double): Double =
+    if angle < -limit then -limit else (if angle > limit then limit else angle)

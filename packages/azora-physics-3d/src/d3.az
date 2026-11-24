@@ -172,7 +172,7 @@ impl Aabb3D {
             realMinOf(self.min.x, self.min.x + motion.x)
             realMinOf(self.min.y, self.min.y + motion.y)
             realMinOf(self.min.z, self.min.z + motion.z)
-        )
+        ),
         .(
             realMaxOf(self.max.x, self.max.x + motion.x)
             realMaxOf(self.max.y, self.max.y + motion.y)
@@ -185,7 +185,7 @@ impl Aabb3D {
             realMinOf(self.min.x, other.min.x)
             realMinOf(self.min.y, other.min.y)
             realMinOf(self.min.z, other.min.z)
-        )
+        ),
         .(
             realMaxOf(self.max.x, other.max.x)
             realMaxOf(self.max.y, other.max.y)
@@ -479,19 +479,22 @@ func sweepBox3d(moving: Aabb3D, motion: Vec3, target: Aabb3D): Sweep3D {
 }
 
 /** True when [sweep] was interrupted. */
-func sweepBlocked3d(sweep: Sweep3D): Bool = when sweep {
+func sweepBlocked3d(sweep: Sweep3D): Bool
+scope return when sweep {
     .Blocked(t, normal, point) -> true
     else -> false
 }
 
 /** The safe fraction of the motion [sweep] permits. */
-func sweepFraction3d(sweep: Sweep3D): Double = when sweep {
+func sweepFraction3d(sweep: Sweep3D): Double
+scope return when sweep {
     .Blocked(t, normal, point) -> t
     else -> 1.0
 }
 
 /** The surface normal [sweep] struck, or zero. */
-func sweepNormal3d(sweep: Sweep3D): Vec3 = when sweep {
+func sweepNormal3d(sweep: Sweep3D): Vec3
+scope return when sweep {
     .Blocked(t, normal, point) -> normal
     else -> vec3Zero()
 }
@@ -536,7 +539,8 @@ func rayHit3d(hit: RayHit3D&): Bool {
 }
 
 /** The fraction of the ray travelled before the hit, or `-1`. */
-func rayFraction3d(hit: RayHit3D&): Double = when hit {
+func rayFraction3d(hit: RayHit3D&): Double
+scope return when hit {
     .Hit(t, normal, point) -> t
     else -> -1.0
 }

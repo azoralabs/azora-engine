@@ -90,7 +90,7 @@ func waterKernel(device: Long, library: Long, name: String): Long {
 }
 
 /** A render pipeline of [vertexName]/[fragmentName] from [library], drawing into the scene's colour and depth. */
-func waterSurfacePipeline(device: Long, library: Long, vertexName: String, fragmentName: String): Long {
+func waterSurfacePipeline(device: Long, library: Long, vertexName: String, fragmentName: String, depth: Bool = true): Long {
     fin vertex = send1(library, sel("newFunctionWithName:"), nsString(vertexName))
     fin fragment = send1(library, sel("newFunctionWithName:"), nsString(fragmentName))
     fin descriptor = newObject("MTLRenderPipelineDescriptor")
@@ -103,7 +103,7 @@ func waterSurfacePipeline(device: Long, library: Long, vertexName: String, fragm
     send1(descriptor, sel("setVertexFunction:"), vertex)
     send1(descriptor, sel("setFragmentFunction:"), fragment)
     send1(send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0), sel("setPixelFormat:"), 80)
-    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    if depth then send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
     fin failure = azAlloc(8)
     defer { azFree(failure) }
     azPoke64(failure, 0, 0)

@@ -235,8 +235,23 @@ fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer
     float2 stretch = 1.0 + (a.zw + b.zw + c.zw) * calm;
     float3 n = normalize(float3(-slope.x / max(stretch.x, 0.2), 1.0, -slope.y / max(stretch.y, 0.2)));
     float3 v = normalize(u.eye.xyz - in.world);
-    if (dot(n, v) < 0.0) n = normalize(n + v * (0.01 - dot(n, v)));
     float3 l = normalize(u.light.xyz);
+    if (o.weights.y < 0.0) {
+        // Water to air: the refracted sky is visible through Snell's window.
+        // Outside the window the underside reflects the surrounding water.
+        float3 inside = -n;
+        float3 air = refract(-v, inside, 1.333);
+        float cosine = saturate(dot(v, inside));
+        float reflection = 0.0204 + 0.9796 * pow(1.0 - cosine, 5.0);
+        float day = 0.18 + 0.82 * saturate(l.y * 3.2 + 0.18);
+        float3 horizon = max(u.fog.xyz, float3(0.10, 0.22, 0.35));
+        float3 sky = mix(horizon, horizon * float3(0.56, 0.82, 1.24), pow(saturate(air.y), 0.55)) * day;
+        sky += u.direct.rgb * pow(saturate(dot(air, l)), 420.0) * step(0.0, l.y);
+        float3 reflected = (o.scatter.rgb * float3(2.4, 1.5, 1.14) + 0.027) * day;
+        float window = smoothstep(0.0, 0.11, air.y);
+        return float4(mix(reflected, sky, window * (1.0 - reflection)), 1.0);
+    }
+    if (dot(n, v) < 0.0) n = normalize(n + v * (0.01 - dot(n, v)));
     float ambient = clamp(u.light.w, 0.0, 1.0);
     PhotonLighting light = scenePhotonLight(photons, baked, detail, detailLight, in.world, n, u.eye.w, u.direct.xyz);
     float sun = light.visibility * cloudShade(env, clouds, in.world);
@@ -264,16 +279,16 @@ fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer
     // Foam: breaking crests and the wash along the shore.
     float foam = max(max(f0.sample(waveSampler, p / o.tiles.x).r, f1.sample(waveSampler, p / o.tiles.y).r), f2.sample(waveSampler, p / o.tiles.z).r);
     foam *= o.extra.y;
-    // Along the shore: lines of foam that the waves push in over the shallows, broken up by the
-    // finest cascade's foam and slopes, thinning out with depth; a thin wet line at the water's edge.
+    // Breaking wavelets leave moving patches over the wet sand.
     float band = o.foam.w;
     if (band > 0.0 && depth < band) {
         float shallow = 1.0 - saturate(depth / band);
-        float surge = 0.5 + 0.5 * sin(depth * 9.0 - o.extra.z * 1.7);
+        float variation = sin(p.x * 0.103 + p.y * 0.077) * sin(p.y * 0.136 - p.x * 0.043);
+        float surge = 0.5 + 0.5 * sin(depth * 9.0 - o.extra.z * 1.7 + variation * 2.2);
         float lines = smoothstep(0.55, 0.95, surge) * shallow * shallow;
-        float breakup = saturate(f2.sample(waveSampler, p / o.tiles.z * 0.37).r * 2.0 + abs(c.x + c.y) * 0.6 + 0.15);
-        float edge = smoothstep(0.12 * band, 0.0, depth);
-        foam = max(foam, max(lines * breakup, edge * 0.85));
+        float breakup = smoothstep(0.12, 0.68, variation + f2.sample(waveSampler, p / o.tiles.z * 0.37).r
+            + abs(c.x + c.y) * 0.4);
+        foam = max(foam, lines * breakup * smoothstep(0.005, 0.09, depth) * 0.43);
     }
     foam = saturate(foam);
     float3 foamLit = o.foam.rgb * (ambient + sunColor * saturate(dot(n, l) * 0.6 + 0.4));
