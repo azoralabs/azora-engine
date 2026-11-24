@@ -74,6 +74,14 @@ pack SurfVoice derives Clone {
     var body: Biquad = .()
     var hiss: Biquad = .()
     var tone: Double = 0.5
+    var grains: Double = 0.0
+}
+
+pack SurfImpact {
+    var strength: Double = 0.0
+    var hardness: Double = 0.0
+    var pan: Double = 0.5
+    var arrival: Double = 0.0
 }
 
 /** An ocean's surf as heard, kept by [hearSurf] (never saved). */
@@ -82,6 +90,9 @@ pack SurfHearing {
     var voices: Array<SurfVoice> = []
     /** Each watched point's phase of each train at the last block (-1 unknown). */
     var phases: Array<Double> = []
+    var anchorX: Double = 1.0e9
+    var anchorZ: Double = 1.0e9
+    var lastImpact: Array<Double> = [-100.0, -100.0]
     var wash: PinkNoise = pinkNoise(71)
     var washFilter: Biquad = .()
     var drain: Noise = noise(83)
@@ -93,35 +104,44 @@ pack SurfHearing {
 }
 
 /** A crash's sound settings for a wave of [strength] (metres of broken height, distance-weighted) and [hardness] 0..1. */
-func startSurfVoice(voice: SurfVoice!, strength: Double, hardness: Double, pan: Double, seed: Long, rate: Double) {
+func startSurfVoice(voice: SurfVoice!, impact: SurfImpact&, seed: Long, rate: Double) {
+    fin hardness = impact.hardness
     voice.active = true
-    voice.age = 0.0
-    voice.level = sqrt(strength) * 0.22
+    voice.age = -impact.arrival
+    voice.level = sqrt(impact.strength) * 0.18
+    voice.grains = 0.0
     // Hard plunging breakers strike fast and bright; soft spilling ones swell in, darker, and last.
-    voice.attack = 0.06 + 0.3 * (1.0 - hardness)
-    voice.decay = 1.2 + 1.4 * waveClamp(strength, 0.0, 2.0)
-    voice.pan = pan
+    voice.attack = 0.030 + 0.12 * (1.0 - hardness)
+    voice.decay = 0.65 + 0.68 * waveClamp(impact.strength, 0.0, 1.0)
+    voice.pan = impact.pan
     voice.tone = hardness
     voice.noise = noise(seed)
     voice.rumble = pinkNoise(seed + 7)
-    voice.body.lowpass(260.0 + 260.0 * hardness, 0.7, rate)
-    voice.hiss.bandpass(1400.0 + 1600.0 * hardness, 0.6, rate)
+    voice.body.bandpass(230.0 + 130.0 * hardness, 0.7, rate)
+    voice.hiss.bandpass(940.0 + 1050.0 * hardness, 0.68, rate)
 }
 
 /** One sample of [voice] (left, right) [dt] seconds on. */
 func surfVoiceSample(voice: SurfVoice!, dt: Double): Vec3 {
     if !voice.active then return .(0.0, 0.0, 0.0)
     voice.age += dt
+    if voice.age <= 0.0 then return .(0.0, 0.0, 0.0)
     fin rise = waveClamp(voice.age / voice.attack, 0.0, 1.0)
     fin envelope = rise * rise * exp(-waveClamp(voice.age - voice.attack, 0.0, 100.0) / voice.decay * 2.3)
     if voice.age > voice.attack + voice.decay * 3.0 {
         voice.active = false
         return .(0.0, 0.0, 0.0)
     }
-    // The roar: low body of pink noise, a hiss of broken water over it, brighter while it is young.
-    fin body = voice.body.process(voice.rumble.next()) * 1.6
-    fin hiss = voice.hiss.process(voice.noise.white()) * (0.25 + 0.55 * voice.tone) * exp(-voice.age * 1.2)
-    fin s = (body + hiss) * envelope * voice.level
+    fin white = voice.noise.white()
+    // Bubbles in the collapsing crest form small bursts over the rush of water.
+    if white > 0.987 {
+        fin burst = 0.3 + 0.7 * absValue(voice.noise.white())
+        if burst > voice.grains then voice.grains = burst
+    }
+    voice.grains *= exp(-dt / 0.026)
+    fin body = voice.body.process(voice.rumble.next()) * 0.85
+    fin splash = voice.hiss.process(white) * (0.23 + 0.20 * voice.tone + 0.48 * voice.grains)
+    fin s = (body + splash * exp(-voice.age * 1.65)) * envelope * voice.level
     return .(s * sqrt(1.0 - voice.pan), 0.0, s * sqrt(voice.pan))
 }
 
@@ -131,20 +151,24 @@ func surfVoiceSample(voice: SurfVoice!, dt: Double): Vec3 {
  * the last block, then the block of [frames] mixed into [mix].
  */
 func hearSurf(hearing: SurfHearing!, sound: SurfSound&, surf: SurfState&, shore: OceanShore&, eye: Vec3&, right: Vec3&,
-              mix: Long, frames: Int, rate: Double) {
+              mix: Long, frames: Int, rate: Double, time: Double) {
     fin points = surfBearings * surfRanges
     if hearing.voices.size != surfVoiceCount {
         hearing.voices.clear()
         for i: Int in 0..<surfVoiceCount then hearing.voices.add(SurfVoice())
     }
-    if hearing.phases.size != points * 2 {
+    // Track each crest at stationary points. Moving the listener only changes its
+    // distance and pan, so walking on the beach cannot manufacture a new crest.
+    fin anchorX: Double = (floor(eye.x / 12.0) as Double) * 12.0
+    fin anchorZ: Double = (floor(eye.z / 12.0) as Double) * 12.0
+    if hearing.phases.size != points * 2 || hearing.anchorX != anchorX || hearing.anchorZ != anchorZ {
         hearing.phases.clear()
         for i: Int in 0..<(points * 2) then hearing.phases.add(-1.0)
+        hearing.anchorX = anchorX
+        hearing.anchorZ = anchorZ
     }
-    // Every crest that passed a watched point: summed by side, as one crash this block.
-    var left: Double = 0.0
-    var rightSide: Double = 0.0
-    var hardest: Double = 0.0
+    var impacts: Array<SurfImpact> = []
+    for train: Int in 0..<2 then impacts.add(SurfImpact())
     var washing: Double = 0.0
     var draining: Double = 0.0
     var washLeft: Double = 0.0
@@ -153,11 +177,14 @@ func hearSurf(hearing: SurfHearing!, sound: SurfSound&, surf: SurfState&, shore:
         fin angle = (bearing as Double) / (surfBearings as Double) * waterTau
         fin dx = cos(angle)
         fin dz = sin(angle)
-        fin side = dx * right.x + dz * right.z
         for range: Int in 0..<surfRanges {
-            fin distance = reach * (0.06 + 0.94 * powr(((range as Double) + 0.5) / (surfRanges as Double), 1.6))
-            fin x = eye.x + dx * distance
-            fin z = eye.z + dz * distance
+            fin ring = reach * (0.03 + 0.85 * powr(((range as Double) + 0.5) / (surfRanges as Double), 1.85))
+            fin x = anchorX + dx * ring
+            fin z = anchorZ + dz * ring
+            fin across = x - eye.x
+            fin along = z - eye.z
+            fin distance = sqrt(across * across + along * along + eye.y * eye.y)
+            fin side = waveClamp((across * right.x + along * right.z) / (if distance > 1.0 then distance else 1.0), -1.0, 1.0)
             fin at = (bearing * surfRanges + range) * 2
             fin point = shorePointAt(shore, x, z)
             if !point.found || point.depth <= -1.0 || surf.height <= 0.0 {
@@ -166,15 +193,21 @@ func hearSurf(hearing: SurfHearing!, sound: SurfSound&, surf: SurfState&, shore:
                 continue
             }
             fin presence = surfPresence(point.depth, surf.length)
-            fin near = 1.0 / (1.0 + distance / 18.0)
-            // The swash and backwash: on and just off the sand.
+            fin near = (1.0 - smoothShore(distance / reach)) / (1.0 + distance / 16.0)
+            // Swash follows the advancing front and then drains back over the sand.
             if point.depth < surf.runup * 3.0 + 0.3 {
                 fin up = surfShape(surf.firstPhase + surf.firstOmega * point.travel + surfWander(x, z, 0), 1.0)
-                fin weight = near * surf.runup
+                fin weight = near * surf.runup * (0.12 + waveClamp(absValue(up.y), 0.0, 1.0))
                 if up.y > 0.0 then washing += weight else draining += weight
                 washLeft += weight * (1.0 - side) * 0.5
             }
-            if presence <= 0.0 || point.depth <= 0.0 then continue
+            fin beachBand = (1.0 - smoothShore((point.depth - 0.25) / 1.1)) *
+                smoothShore((point.depth + 0.18) / 0.30)
+            if presence <= 0.0 || beachBand <= 0.0 {
+                hearing.phases[at] = -1.0
+                hearing.phases[at + 1] = -1.0
+                continue
+            }
             for train: Int in 0..<2 {
                 fin share = if train == 0 then surfFirstShare else surfSecondShare
                 fin omega = if train == 0 then surf.firstOmega else surf.secondOmega
@@ -184,40 +217,45 @@ func hearSurf(hearing: SurfHearing!, sound: SurfSound&, surf: SurfState&, shore:
                 hearing.phases[at + train] = u
                 // The crest arrives as the phase wraps; only a broken one crashes.
                 if before < 0.0 || !(before > 0.7 && u < 0.3) then continue
-                fin wave = surfTrain(surf.height * share * surfStrength(x, z, train), surf.length, point.depth)
-                if wave.breaking < 0.25 then continue
-                fin strength = wave.height * wave.breaking * presence * near
-                left += strength * (1.0 - side) * 0.5
-                rightSide += strength * (1.0 + side) * 0.5
-                fin hardness = waveClamp(wave.breaking * wave.height / (breakerIndex * point.depth + 0.2), 0.0, 1.0)
-                if hardness > hardest then hardest = hardness
+                fin depth = if point.depth > 0.12 then point.depth else 0.12
+                fin wave = surfTrain(surf.height * share * surfStrength(x, z, train), surf.length, depth)
+                if wave.breaking < 0.35 then continue
+                fin strength = 1.8 * (wave.height + 0.33 * surf.runup) * wave.breaking * presence * near * beachBand
+                // Adjacent points see the same breaker. Keep the strongest arrival
+                // for each train rather than adding copies of the same impact.
+                if strength > impacts[train].strength {
+                    fin hardness = waveClamp(wave.breaking * wave.height / (breakerIndex * depth + 0.2), 0.0, 1.0)
+                    fin arrival = distance / 343.0 - u * waterTau / omega
+                    impacts[train] = .(strength, hardness, 0.5 + side * 0.32, arrival)
+                }
             }
         }
     }
-    fin heard = left + rightSide
-    if heard > 0.004 {
-        // The quietest (or a finished) voice takes the new crash.
+    for train: Int in 0..<2 {
+        fin omega = if train == 0 then surf.firstOmega else surf.secondOmega
+        fin impact = impacts[train].&
+        if omega <= 0.0 || impact.strength < 0.012 || time - hearing.lastImpact[train] < 0.22 * waterTau / omega then continue
+        hearing.lastImpact[train] = time
         var slot = 0
         var quietest: Double = 1.0e9
         for i: Int in 0..<surfVoiceCount {
-            let candidate: SurfVoice& = hearing.voices[i]
-            fin loudness = if candidate.active then candidate.level * exp(-candidate.age / candidate.decay) else -1.0
-            if loudness < quietest {
-                quietest = loudness
+            fin voice = hearing.voices[i].&
+            fin level = if voice.active then voice.level * exp(-(if voice.age > 0.0 then voice.age else 0.0) / voice.decay) else -1.0
+            if level < quietest {
+                quietest = level
                 slot = i
             }
         }
         hearing.seed = (hearing.seed * 48271) % 2147483647
-        let voice: SurfVoice! = hearing.voices[slot]
-        startSurfVoice(voice, heard * 6.0, hardest, waveClamp(rightSide / heard, 0.0, 1.0), hearing.seed, rate)
+        startSurfVoice(hearing.voices[slot], impact, hearing.seed, rate)
     }
     // The wash eases toward what the surf near the listener carries.
     fin total = washing + draining
-    fin targetWash = waveClamp(washing * 0.5, 0.0, 0.5)
-    fin targetDrain = waveClamp(draining * 0.35, 0.0, 0.4)
+    fin targetWash = waveClamp(washing * 0.14, 0.0, 0.13)
+    fin targetDrain = waveClamp(draining * 0.06, 0.0, 0.075)
     hearing.washPan = if total > 0.0 then 1.0 - waveClamp(washLeft / total, 0.0, 1.0) else 0.5
     hearing.washFilter.lowpass(700.0, 0.7, rate)
-    hearing.drainFilter.highpass(2600.0, 0.6, rate)
+    hearing.drainFilter.bandpass(1650.0, 0.64, rate)
     fin dt = 1.0 / rate
     fin glide = 1.0 - exp(-dt / 0.4)
     fin volume = waveClamp(sound.volume, 0.0, 4.0)
@@ -261,6 +299,6 @@ func soundSurf(audio: AudioOutput!, view: SceneView&, world: World!, oceans: @qu
         if !storageHas<SurfHearing>(hearings, entity) then storageInsert<SurfHearing>(hearings, entity, .())
         let hearing: SurfHearing! = hearings.values[storageIndexOf<SurfHearing>(hearings, entity)]
         hearSurf(hearing, sound, surf, shores.values[shoreAt], .(view.eyeX, view.eyeY, view.eyeZ), .(view.rightX, view.rightY, view.rightZ),
-            audio.mix, audio.frames, audio.rate as Double)
+            audio.mix, audio.frames, audio.rate as Double, view.time)
     }
 }

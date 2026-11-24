@@ -52,7 +52,7 @@ from pathlib import Path
 import re
 import sys
 
-trivia = r'(?:[\s\ufeff]|//[^\r\n]*|/\*[\s\S]*?\*/)*'
+trivia = r'(?:[\s\ufeff]|//[^\r\n]*(?=[\r\n]|\Z)|/\*(?:[^*]|\*(?!/))*\*/)*'
 header = re.compile(rf'\A{trivia}@Execution\s*\(\s*"GPU"\s*\){trivia}module\s+')
 for directory, folders, files in os.walk(sys.argv[1]):
     folders[:] = sorted(name for name in folders if not name.startswith(".") and name != "build")

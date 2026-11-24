@@ -71,15 +71,17 @@ func mediumAt(h: Float, u: @Uniform AetherU): Medium {
     return m
 }
 
-func sphereHit(o: Float3, d: Float3, R: Float): Float {
-    fin b: Float = dot(o, d)
-    fin c: Float = dot(o, o) - R * R
-    fin disc: Float = b * b - c
-    if disc < 0.0 then return -1.0
-    fin s: Float = sqrt(disc)
-    fin t0: Float = -b - s
-    fin t1: Float = -b + s
-    return if t0 >= 0.0 then t0 else ((if t1 >= 0.0 then t1 else -1.0))
+func sphereHit(o: Float3, d: Float3, radius: Float): Float {
+    // Subtract the radii before squaring to keep precision at sea level.
+    fin b = dot(o, d)
+    fin range = length(o)
+    fin c = (range - radius) * (range + radius)
+    fin discriminant = b * b - c
+    if discriminant < 0.0 then return -1.0
+    fin root = sqrt(discriminant)
+    fin far = -b + root
+    fin near = if b < 0.0 && far > 0.0 then c / far else -b - root
+    return if near >= 0.0 then near else if far >= 0.0 then far else -1.0
 }
 
 func rayleighPhase(c: Float): Float {
@@ -93,7 +95,7 @@ func miePhase(c: Float, g: Float): Float {
 
 func transmittanceUV(r: Float, mu: Float): Float2 {
     fin H: Float = sqrt(Rt * Rt - Rg * Rg)
-    fin rho: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin rho: Float = sqrt(max((r - Rg) * (r + Rg), 0.0))
     fin d: Float = max(0.0, -r * mu + sqrt(max(r * r * (mu * mu - 1.0) + Rt * Rt, 0.0)))
     fin dmin: Float = Rt - r
     fin dmax: Float = rho + H
@@ -210,7 +212,7 @@ func aetherMultiple(input: FullOut, u: @Uniform(0) AetherU, transmittance: @Text
 }
 
 func skyViewDirection(uv: Float2, r: Float): Float3 {
-    fin horizon: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin horizon: Float = sqrt(max((r - Rg) * (r + Rg), 0.0))
     fin beta: Float = acos(clamp(horizon / r, -1.0, 1.0))
     fin zenithHorizon: Float = PI - beta
     var zenith: Float = Float(0)
@@ -227,7 +229,7 @@ func skyViewDirection(uv: Float2, r: Float): Float3 {
 }
 
 func skyViewUV(d: Float3, r: Float): Float2 {
-    fin horizon: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin horizon: Float = sqrt(max((r - Rg) * (r + Rg), 0.0))
     fin beta: Float = acos(clamp(horizon / r, -1.0, 1.0))
     fin zenithHorizon: Float = PI - beta
     fin zenith: Float = acos(clamp(d.y, -1.0, 1.0))
@@ -349,8 +351,11 @@ func aetherSky(
     fin cloud: Float4 = cloudSample(clouds, input.uv, u.cloudMarch.zw)
     fin ray: Float3 = normalize(u.forward.xyz + input.ndc.x * u.screen.x * u.right.xyz + input.ndc.y * u.screen.y * u.up.xyz)
     fin r: Float = u.camera.w
-    var light: Float3 = skyView.sample(linearRepeat, skyViewUV(ray, r)).rgb
-    fin horizon: Float = -sqrt(max(1.0 - (Rg / r) * (Rg / r), 0.0))
+    fin uv = skyViewUV(ray, r)
+    fin edgeRow = 0.5 / Float(skyView.size().y)
+    // The azimuth wraps around the viewer, while elevation ends at the poles.
+    var light = skyView.sample(linearRepeat, Float2(uv.x, clamp(uv.y, edgeRow, 1.0 - edgeRow))).rgb
+    fin horizon = -sqrt(max((r - Rg) * (r + Rg), 0.0)) / r
     fin through: Float3 = if ray.y < horizon then Float3(0.0) else transmittanceTo(transmittance, r, ray.y)
     // The sun's disc, 0.53 degrees across, darker toward its limb.
     fin cs: Float = dot(ray, u.sun.xyz)
@@ -382,7 +387,7 @@ func aetherSky(
     // The clouds in front of all of it: the sky, the sun and moon, the stars.
     light = light * cloud.a + cloud.rgb
     fin color: Float3 = 1.0 - exp(-light * u.screen.z)
-    return Float4(pow(color, Float3(1.0 / 2.2)), 1.0)
+    return Float4(pow(max(color, 0.0), Float3(1.0 / 2.2)), 1.0)
 }
 
 /** One column of the aerial-perspective volume per thread: the air between the eye and each slice. */

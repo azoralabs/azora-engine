@@ -125,7 +125,7 @@ func tendSea(world: World!, entity: Entity, waves: WaterWaves&, wind: Wind&, tim
 }
 
 /** A water body raised by the Wind on its own entity. */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func raiseWindSeas(world: World!, time: Time&, seas: @query [WaterWaves&, Wind&]) {
     var bodies: Array<Entity> = []
     while seas.hasNext() then bodies.add(seas.nextEntity())
@@ -137,7 +137,7 @@ func raiseWindSeas(world: World!, time: Time&, seas: @query [WaterWaves&, Wind&]
 }
 
 /** A water body without a Wind of its own, raised by the scene's (still water without one). */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func raiseSceneSeas(world: World!, time: Time&, seas: @query [WaterWaves&] without Wind) {
     fin windy = sceneWindEntity(world)
     fin wind: Wind = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).clone() else .(enabled: false)
@@ -147,7 +147,7 @@ func raiseSceneSeas(world: World!, time: Time&, seas: @query [WaterWaves&] witho
 }
 
 /** A water body whose Water Waves were taken off goes still: nothing is left of its sea. */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func stillSeas(world: World!, seas: @query [Sea&] without WaterWaves) {
     var bodies: Array<Entity> = []
     while seas.hasNext() then bodies.add(seas.nextEntity())

@@ -27,7 +27,7 @@ import engine.weather.wind
 // ── Runtime, made when first needed ─────────────────────────────────────
 
 /** Gives every Atmosphere its weather state, from its first frame on. */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func startWeather(world: World!, skies: @query [AetherSky&] without AetherState) {
     var owners: Array<Entity> = []
     while skies.hasNext() then owners.add(skies.nextEntity())
@@ -46,7 +46,7 @@ func startPrecipitation(app: App!, world: World!, skies: @query [AetherSky&, Aet
 }
 
 /** The storm (lightning and thunder), once Thunder is in the scene. It lights the editor's preview too. */
-@System(phase: .PreUpdate, runAfter: "startWeather", editor: true)
+@System(phase: .PreUpdate, runAfter: "startWeather", editor: true, editorWhilePaused: true)
 func startStorm(app: App!, audio: AudioOutput!, world: World!, skies: @query [AetherSky&, AetherState&] without AetherStorm) {
     // Its bolts are drawn from GPU buffers: a run without a GPU (a headless check) has no storm.
     if app.gpu.device == 0 || !weatherParts(world).thunder.enabled then return
@@ -67,7 +67,7 @@ func startWeatherSound(world: World!, skies: @query [AetherSky&, AetherState&] w
 // ── The parts, each moving the state on ─────────────────────────────────
 
 /** Rain eases toward its first enabled, shown Rain's intensity (none without one); an editor shows it at once. */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func easeRain(world: World!, time: Time&, rains: @query [Rain&], skies: @query [AetherState!]) {
     var target: Double = 0.0
     while rains.hasNext() {
@@ -85,7 +85,7 @@ func easeRain(world: World!, time: Time&, rains: @query [Rain&], skies: @query [
 }
 
 /** Snow eases toward its first enabled, shown Snow's intensity. */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func easeSnow(world: World!, time: Time&, snows: @query [Snow&], skies: @query [AetherState!]) {
     var target: Double = 0.0
     while snows.hasNext() {
@@ -103,7 +103,7 @@ func easeSnow(world: World!, time: Time&, snows: @query [Snow&], skies: @query [
 }
 
 /** Dust eases toward its first enabled, shown Dust's intensity. */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func easeDust(world: World!, time: Time&, dusts: @query [Dust&], skies: @query [AetherState!]) {
     var target: Double = 0.0
     while dusts.hasNext() {
@@ -121,7 +121,7 @@ func easeDust(world: World!, time: Time&, dusts: @query [Dust&], skies: @query [
 }
 
 /** Lightning as often as the first enabled, shown Thunder asks (none without one). */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func chargeThunder(world: World!, thunders: @query [Thunder&], skies: @query [AetherState!]) {
     var rate: Double = 0.0
     while thunders.hasNext() {
@@ -139,7 +139,7 @@ func chargeThunder(world: World!, thunders: @query [Thunder&], skies: @query [Ae
 }
 
 /** The scene's Wind blows (gusts included) and carries the clouds. */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func carryWind(world: World!, time: Time&, skies: @query [AetherState!]) {
     fin windy = sceneWindEntity(world)
     fin steady = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).speed else 0.0
@@ -151,7 +151,7 @@ func carryWind(world: World!, time: Time&, skies: @query [AetherState!]) {
 }
 
 /** The ground soaks and whitens with what falls, and dries and melts after (the Rain's and Snow's times). */
-@System(phase: .PostUpdate, runAfter: "easeRain,easeSnow", editor: true)
+@System(phase: .PostUpdate, runAfter: "easeRain,easeSnow", editor: true, editorWhilePaused: true)
 func soakWeatherGround(world: World!, time: Time&, skies: @query [AetherState!]) {
     fin parts = weatherParts(world)
     // A part switched off still says how fast the ground dries or melts: its defaults when there is none.
@@ -172,7 +172,7 @@ func soakWeatherGround(world: World!, time: Time&, skies: @query [AetherState!])
  * it in its colour and hugs the ground; with the ground's wetness and snow and
  * the wind, the conditions the renderer and every surface see.
  */
-@System(phase: .PostUpdate, runAfter: "soakWeatherGround,carryWind,easeDust", editor: true)
+@System(phase: .PostUpdate, runAfter: "soakWeatherGround,carryWind,easeDust", editor: true, editorWhilePaused: true)
 func hazeWeatherAir(world: World!, skies: @query [AetherState&]) {
     fin parts = weatherParts(world)
     var owners: Array<Entity> = []
@@ -202,7 +202,7 @@ func hazeWeatherAir(world: World!, skies: @query [AetherState&]) {
 }
 
 /** Lightning strikes as Thunder asks, near the camera, and lights the air ([AtmosphereConditions.flash]). */
-@System(phase: .PostUpdate, runAfter: "hazeWeatherAir,chargeThunder", editor: true)
+@System(phase: .PostUpdate, runAfter: "hazeWeatherAir,chargeThunder", editor: true, editorWhilePaused: true)
 func strikeLightning(world: World!, time: Time&, camera: EditorCamera&, skies: @query [AetherState&, AetherStorm!]) {
     fin thunder = weatherParts(world).thunder
     fin bright = if thunder.enabled then weatherClamp(thunder.brightness, 0.0, 3.0) else 1.0

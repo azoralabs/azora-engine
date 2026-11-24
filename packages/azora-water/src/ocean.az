@@ -426,7 +426,7 @@ func drawOceans(app: App!, view: SceneView&, world: World!, oceans: @query [Ocea
  * in the game and in the editor. The eye is the view's (last frame's in the
  * game: the shore moves slower than that).
  */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func mapOceanShores(app: App!, view: SceneView&, world: World!, oceans: @query [Ocean&]) {
     if app.gpu.device == 0 || view.frame == 0 then return
     var bodies: Array<Entity> = []
@@ -445,7 +445,7 @@ func mapOceanShores(app: App!, view: SceneView&, world: World!, oceans: @query [
 }
 
 /** The shore map of a body that is no longer an Ocean is let go. */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func dropOceanShores(world: World!, shores: @query [OceanShore&] without Ocean) {
     var bodies: Array<Entity> = []
     while shores.hasNext() then bodies.add(shores.nextEntity())

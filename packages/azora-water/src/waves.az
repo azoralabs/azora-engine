@@ -333,7 +333,7 @@ func simulateSeaGpu(app: App!, programs: WaterGpu&, sea: Sea&, sim: SeaGpu!, foa
  * Every sea moved on the GPU to this frame's time, once a frame - in the game
  * and in the editor - before anything draws it.
  */
-@System(phase: .PostUpdate, editor: true)
+@System(phase: .PostUpdate, editor: true, editorWhilePaused: true)
 func simulateSeas(app: App!, time: Time&, world: World!, seas: @query [Sea&]) {
     if app.gpu.device == 0 then return
     var bodies: Array<Entity> = []
@@ -353,7 +353,7 @@ func simulateSeas(app: App!, time: Time&, world: World!, seas: @query [Sea&]) {
 }
 
 /** The GPU maps of a sea that is gone (its Water Waves taken off or switched off) are let go. */
-@System(phase: .PreUpdate, editor: true)
+@System(phase: .PreUpdate, editor: true, editorWhilePaused: true)
 func dropSeaMaps(world: World!, maps: @query [SeaGpu&] without Sea) {
     var bodies: Array<Entity> = []
     while maps.hasNext() then bodies.add(maps.nextEntity())

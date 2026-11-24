@@ -131,6 +131,7 @@ pack HullMotion derives Clone {
     /** The water's height over each point at the step before (its vertical speed). */
     var waterBefore: Array<Double> = []
     var started: Bool = false
+    var capsized: Bool = false
 }
 
 /** A box ([size] across, centred at [offset] in its entity's space) the water's surface is not drawn in. */
@@ -194,6 +195,7 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     motion.previousPitch = motion.pitch
     motion.previousRoll = motion.roll
     fin gravity = 9.81
+    if cos(motion.roll) * cos(motion.pitch) < -0.15 then motion.capsized = true
     fin count = hullRows * hullColumns
     if motion.waterBefore.size != count {
         motion.waterBefore = .() * count
@@ -216,7 +218,9 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     for row: Int in 0..<hullRows {
         for column: Int in 0..<hullColumns {
             fin at = row * hullColumns + column
-            fin arm = hullTurn(hullPoint(hull, row, column).subtract(centre), motion.yaw, motion.pitch, motion.roll)
+            var bottom = hullPoint(hull, row, column)
+            if motion.capsized then bottom.y += hull.sides
+            fin arm = hullTurn(bottom.subtract(centre), motion.yaw, motion.pitch, motion.roll)
             fin point = motion.position.add(hullTurn(centre, motion.yaw, motion.pitch, motion.roll)).add(arm)
             fin water = waterLevelAt(world, point.x, point.z, time)
             // The water's own rise and fall (none known at the first step, nor across a jump of the water under it).
@@ -233,14 +237,16 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
             // Damping: the water resists the hull moving through it (about half of critical for heave).
             push -= hull.density * share * 1.1 * against
             // Slamming: a bottom falling into the water fast is struck back, harder the faster (½ ρ C v²).
-            if against < -1.2 && hull.slamming > 0.0 {
-                fin into = waveClamp(-against - 1.2, 0.0, 8.0)
-                fin strike = 0.5 * hull.density * share * 2.2 * into * into * hull.slamming
+            if !motion.capsized && against < -1.2 && hull.slamming > 0.0 {
+                fin into = waveClamp(-against - 1.2, 0.0, 6.0)
+                fin wetted = waveClamp(depth / 0.24, 0.0, 1.0)
+                fin impulse = hull.density * share * 0.8 * into * into * hull.slamming * wetted
+                fin strike = waveClamp(impulse, 0.0, mass * gravity * 1.6 / (count as Double))
                 push += strike
                 fin felt = strike / (mass * gravity * 0.5)
                 if felt > slam then slam = felt
             }
-            fin up: Vec3 = .(0.0, push, 0.0)
+            fin up: Vec3 = .(0.0, (if push > 0.0 then push else 0.0), 0.0)
             force = force.add(up)
             torque = torque.add(hullCross(arm, up))
         }
@@ -256,10 +262,10 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     // The propeller pushes only while it is in the water, from below the centre of mass: the bow lifts as it pulls.
     fin propeller = motion.position.add(hullTurn(hull.propeller, motion.yaw, motion.pitch, motion.roll))
     fin propellerWet = propeller.y < waterLevelAt(world, propeller.x, propeller.z, time) + 0.1
-    fin throttle = waveClamp(control.throttle, -1.0, 1.0)
+    fin throttle = if motion.capsized then 0.0 else waveClamp(control.throttle, -1.0, 1.0)
     fin pull = if propellerWet then throttle * hull.thrust * (if throttle < 0.0 then hull.reverse else 1.0) else 0.0
     if pull != 0.0 {
-        fin thrust = forward.scale(pull)
+        fin thrust = ahead.scale(pull)
         force = force.add(thrust)
         torque = torque.add(hullCross(hullTurn(hull.propeller.subtract(centre), motion.yaw, motion.pitch, motion.roll), thrust))
     }
@@ -270,10 +276,10 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
         force = force.add(ahead.scale(-wetDrag * speed * absValue(speed) - mass * 0.15 * speed))
         force = force.add(side.scale(-wetDrag * 20.0 * slip * absValue(slip) - mass * 1.5 * slip))
         // Planing: the bottom lifts at speed, a little ahead of the centre - the bow rides up, the hull runs higher.
-        if hull.planing > 0.0 && speed > 0.5 {
+        if !motion.capsized && hull.planing > 0.0 && speed > 0.5 {
             fin lift: Vec3 = .(0.0, 0.5 * hull.density * hull.length * hull.beam * 0.02 * hull.planing * speed * speed * motion.wet, 0.0)
             force = force.add(lift)
-            torque = torque.add(hullCross(forward.scale(hull.length * 0.12), lift))
+            torque = torque.add(hullCross(forward.scale(hull.length * 0.08), lift))
         }
     }
     // Linear motion.
@@ -286,17 +292,21 @@ func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMot
     motion.rollRate += -hullDot(torque, forward) / rollInertia * dt
     // Out of the water nothing damps them but the air; in it, the water's drag on the hull's turning.
     fin damping = 1.0 - exp(-(0.3 + 2.2 * motion.wet) * dt)
-    motion.pitchRate -= motion.pitchRate * damping
+    motion.pitchRate *= exp(-(0.5 + 3.4 * motion.wet) * dt)
     motion.rollRate -= motion.rollRate * damping
     // The rudder: it turns the boat only as fast as the water flows past it; the boat leans into the turn.
-    fin rudder = waveClamp(control.rudder, -1.0, 1.0)
-    fin bite = waveClamp(speed / 4.0, -1.0, 1.0) * (if motion.wet > 0.0 then 1.0 else 0.0)
-    fin turning = -rudder * hull.turnRate * 0.017453292519943295 * bite
-    motion.yawRate += (turning - motion.yawRate) * (1.0 - exp(-3.0 * dt))
-    motion.rollRate += -rudder * absValue(bite) * 0.9 * dt
+    fin rudder = if motion.capsized then 0.0 else waveClamp(control.rudder, -1.0, 1.0)
+    fin wash = if propellerWet then throttle * 1.8 else 0.0
+    fin contact = if propellerWet then 1.0 else waveClamp(motion.wet * 2.0, 0.0, 1.0)
+    fin bite = waveClamp((speed + wash) / 3.2, -1.0, 1.0) * contact
+    fin atSpeed = 1.0 / (1.0 + 0.035 * absValue(speed))
+    fin turning = -rudder * hull.turnRate * 0.017453292519943295 * bite * atSpeed
+    motion.yawRate += (turning - motion.yawRate) * (1.0 - exp(-(1.4 + contact * 4.8) * dt))
+    motion.rollRate -= rudder * absValue(bite) * 0.72 * dt
     motion.yaw += motion.yawRate * dt
-    motion.pitch = waveClamp(motion.pitch + motion.pitchRate * dt, -1.2, 1.2)
-    motion.roll = waveClamp(motion.roll + motion.rollRate * dt, -1.2, 1.2)
+    motion.pitch = waveClamp(motion.pitch + motion.pitchRate * dt, -1.55, 1.55)
+    motion.roll += motion.rollRate * dt
+    if cos(motion.roll) * cos(motion.pitch) < -0.15 then motion.capsized = true
     motion.slam = if slam > motion.slam then waveClamp(slam, 0.0, 3.0) else motion.slam * exp(-dt / 0.5)
     motion.started = true
 }

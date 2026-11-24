@@ -60,6 +60,21 @@ bind the same way for Windows/Linux.
 | `tools/package.sh`         | Assembles the installable library bundle (`dist/*.azlib`)   |
 | `library.json`             | Library manifest read by Azora Studio (templates + variants)|
 
+## Shader builds
+
+Azora shader modules are `.az` files with `@Execution("GPU")` before the module
+declaration. To cook Engine shaders and the materials in a project, run the
+following with the Azora compiler and target toolchains available.
+
+```sh
+bash tools/shader-cook.sh /path/to/project /path/to/output metallib spv dxil
+```
+
+The cooker uses Apple's Metal tools, glslang for SPIR-V and DXC for DXIL. Native
+macOS builds load the cooked `.metallib` files. `AZORA_SHADER_SCOPE=project` limits
+cooking to project materials, and `AZORA_SHADER_SCOPE=engine` cooks the Engine
+shader libraries.
+
 ## Application shape (Bevy-style)
 
 `import engine` pulls in the whole engine. A game builds an `Engine`, adds the

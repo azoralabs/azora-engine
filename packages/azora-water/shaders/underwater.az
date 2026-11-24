@@ -10,7 +10,7 @@ module engine.shaders.water.underwater
  */
 import engine.water.oceanCommon
 
-/** inverseView; eye (xyz, sea height); screen (size, jitter); absorption (rgb, clarity); scatter (rgb, time); sun (dir, ambient); plane (0, 1, 0, height). */
+/** inverseView; eye (xyz, sea height); screen (size, jitter); absorption (rgb, clarity); scatter (rgb, time); sun (dir, ambient); viewport (origin and size in scene pixels). */
 pack WaterVolume {
     fin inverseView: Float4x4
     fin eye: Float4
@@ -18,7 +18,7 @@ pack WaterVolume {
     fin absorption: Float4
     fin scatter: Float4
     fin sun: Float4
-    fin plane: Float4
+    fin viewport: Float4
 }
 
 pack WaterPixel {
@@ -50,15 +50,17 @@ func nearPlanePoint(uv: Float2, u: @Uniform WaterVolume): Float3 {
 func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Uniform(1) OceanU, depth: @Texture(0) DepthTexture2D,
                         d0: @Texture(1) Texture2D, d1: @Texture(2) Texture2D, d2: @Texture(3) Texture2D,
                         shore: @Texture(4) Texture2D, farShore: @Texture(5) Texture2D, sceneCopy: @Texture(6) Texture2D): Float4 {
+    fin local = pixel.position.xy - u.viewport.xy
+    if any(local < 0.0) || any(local >= u.viewport.zw) then discardFragment()
     fin at = UInt2(pixel.position.xy)
     fin scene = sceneCopy.read(at)
     fin size = Float2(sceneCopy.size())
-    fin uv = (pixel.position.xy - u.screen.zw) / u.screen.xy
+    fin uv = (local - u.screen.zw) / u.viewport.zw
     // Is this pixel's point on the near plane below the sea's surface there?
     fin lens = nearPlanePoint(uv, u)
     fin sea = seaHeightAt(lens.xz, o, d0, d1, d2, shore, farShore)
     fin below = sea - lens.y
-    fin perPixel = length(nearPlanePoint(Float2(0.5, 0.0), u) - nearPlanePoint(Float2(0.5, 1.0), u)) / max(u.plane.w, 1.0)
+    fin perPixel = length(nearPlanePoint(Float2(0.5, 0.0), u) - nearPlanePoint(Float2(0.5, 1.0), u)) / max(u.viewport.w, 1.0)
     var pixels = below / max(perPixel, 1.0e-6)
     var submerged = smoothstep(-1.5, 1.5, pixels)
     if pixels < 1.5 {
@@ -91,7 +93,9 @@ func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Unifo
     // Under water the view wavers in slow horizontal ripples and blurs with the distance it looks through.
     fin waver = Float2(sin(uv.y * 38.0 + time * 1.7) * 0.0028 + sin(uv.y * 71.0 - time * 2.3) * 0.0012,
         sin(uv.x * 23.0 + time * 1.1) * 0.0009) * submerged
-    fin seenUv = clamp(pixel.position.xy / size + waver, Float2(0.0), Float2(1.0))
+    fin firstPixel = (u.viewport.xy + 0.5) / size
+    fin lastPixel = (u.viewport.xy + u.viewport.zw - 0.5) / size
+    fin seenUv = clamp((pixel.position.xy + waver * u.viewport.zw) / size, firstPixel, lastPixel)
     fin z = depth.sample(sceneSampler, seenUv)
     fin unprojected = u.inverseView * Float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, max(z, 0.000001), 1.0)
     fin hit = unprojected.xyz / unprojected.w
@@ -104,10 +108,10 @@ func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Unifo
     if ray.y > 0.0001 then reach = min(reach, (immersion + 0.35) / ray.y)
     fin spread = mix(0.6, 3.2, saturate(reach / 30.0)) / size.y * submerged
     var blurred = sceneCopy.sample(sceneSampler, seenUv).rgb * 0.4
-    blurred += sceneCopy.sample(sceneSampler, seenUv + Float2(spread, 0.0)).rgb * 0.15
-    blurred += sceneCopy.sample(sceneSampler, seenUv - Float2(spread, 0.0)).rgb * 0.15
-    blurred += sceneCopy.sample(sceneSampler, seenUv + Float2(0.0, spread)).rgb * 0.15
-    blurred += sceneCopy.sample(sceneSampler, seenUv - Float2(0.0, spread)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, min(seenUv + Float2(spread, 0.0), lastPixel)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, max(seenUv - Float2(spread, 0.0), firstPixel)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, min(seenUv + Float2(0.0, spread), lastPixel)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, max(seenUv - Float2(0.0, spread), firstPixel)).rgb * 0.15
     fin day = saturate(u.sun.y * 2.1 + 0.14)
     fin turbidity = mix(0.075, 0.026, saturate(u.absorption.w))
     fin extinction = max(u.absorption.rgb * Float3(0.66, 0.77, 0.80), Float3(0.038, 0.021, 0.014)) + turbidity

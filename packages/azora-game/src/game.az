@@ -129,14 +129,15 @@ react func dispatchGame(plan: SystemPlan&, phase: SystemPhase, frame: Game!) {
  * what an editor's viewport runs on the scene it edits. Not `react`, so the
  * editor can call it from its drawing; gameplay systems are not run.
  */
-func dispatchEditor(plan: SystemPlan&, phase: SystemPhase, frame: Game!) {
+func dispatchEditor(plan: SystemPlan&, phase: SystemPhase, frame: Game!, paused: Bool = false) {
     for step: Int in 0..<plan.resolvedCount {
         fin due = plan.resolved[step]
         if plan.systems[due].phase == phase && plan.systems[due].enabled {
             var index = 0
             inline for S in reflect<*>.withAnnot<System> {
                 inline if reflect<S>.annotMeta<System>.editor {
-                    if index == due then S(inline for P in reflect<S>.params { P::fromGame(frame) })
+                    if index == due && (!paused || reflect<S>.annotMeta<System>.editorWhilePaused) then
+                        S(inline for P in reflect<S>.params { P::fromGame(frame) })
                 }
                 index++
             }

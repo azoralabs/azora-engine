@@ -84,7 +84,9 @@ func drawUnderwater(app: App!, world: World!, view: SceneView&) {
     pokeFour(block, 96, optics.absorption.r, optics.absorption.g, optics.absorption.b, optics.clarity)
     pokeFour(block, 112, optics.scatter.r, optics.scatter.g, optics.scatter.b, view.time - floor(view.time / 3600.0) * 3600.0)
     pokeFour(block, 128, gpu.lightX, gpu.lightY, gpu.lightZ, gpu.ambient)
-    pokeFour(block, 144, 0.0, 1.0, 0.0, view.height as Double)
+    fin scale = gpu.scale * gpu.passScale
+    pokeFour(block, 144, gpu.scenePass.rectX * scale, gpu.scenePass.rectY * scale,
+        gpu.scenePass.rectWidth * scale, gpu.scenePass.rectHeight * scale)
     fin ocean = gpu.scratch + 256
     fin hasSea = pokeOceanBody(ocean, world, surface.body, view.time, view.eyeY - surface.height)
     // The scene so far, to read from while the pass writes over it.

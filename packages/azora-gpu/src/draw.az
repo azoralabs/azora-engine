@@ -352,12 +352,12 @@ impl App {
         let gpu: AzGpu& = self.gpu
         azPokeF32(gpu.scratch, sceneUniformBytes, 0.0)
         fin empty = gpu.scratch + sceneUniformBytes
-        if lighting && !gpu.flatMaterials && gpu.photonBuffer != 0 && (gpu.shadowsActive || gpu.indirectLighting) {
+        if lighting && !gpu.flatMaterials && !gpu.detailShadowsOnly && gpu.photonBuffer != 0 && (gpu.shadowsActive || gpu.indirectLighting) {
             send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.photonBuffer, 0, 2)
         } else {
             send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), empty, 4, 2)
         }
-        if lighting && !gpu.flatMaterials && gpu.shadowsActive && gpu.staticShadowBuffer != 0 {
+        if lighting && !gpu.flatMaterials && !gpu.detailShadowsOnly && gpu.shadowsActive && gpu.staticShadowBuffer != 0 {
             send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.staticShadowBuffer, 0, 3)
         } else {
             send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), empty, 4, 3)
