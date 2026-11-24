@@ -1,0 +1,222 @@
+module thirdPerson.utils
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.game
+import engine.landscape.staticcollision
+import engine.math.vec
+import engine.physics.core
+import engine.physics.d3
+import engine.render.skinning
+import engine.scene
+import engine.scene.transforms
+import thirdPerson.components
+
+func samIdle(): SkinClip = .(0, 180, 30.0)
+func samWalk(): SkinClip = .(180, 60, 30.0)
+func samRun(): SkinClip = .(240, 40, 30.0)
+func samJump(): SkinClip = .(280, 28, 30.0)
+
+func samSkin(): SkinnedMesh = .("Characters/Sam/body.azskin", "Characters/Sam/atlas.png", samIdle(),
+    surface: "Characters/Sam/surface.png")
+
+func attachSam(world: World!, start: Entity): Entity {
+    fin sam = world.spawnResource("Sam")
+    world.setParent(sam, start)
+    storageInsert<Transform>(ensureStorage(world), sam, .(rotation: .(0.0, 180.0, 0.0)))
+    storageInsert<SkinnedMesh>(ensureStorage(world), sam, samSkin())
+    return sam
+}
+
+func axis(positive: Bool, negative: Bool): Double =
+    (if positive then 1.0 else 0.0) - (if negative then 1.0 else 0.0)
+
+func followSam(frame: Game!, player: ThirdPersonPlayer&, arena: ArenaSimulation&, feet: Vec3&) {
+    frame.camera.yaw = player.yaw
+    frame.camera.pitch = player.pitch
+    frame.camera.fov = 60.0
+    frame.camera.near = 0.08
+    frame.camera.far = 3000.0
+    fin focus = feet.add(.(0.0, 1.32, 0.0))
+    fin shoulder = frame.camera.right().scale(0.38)
+    frame.camera.target = focus.add(shoulder.scale(cameraRoom(arena, focus, shoulder)))
+    fin boom = frame.camera.forward().scale(-4.4)
+    frame.camera.distance = realMaxOf(0.30, 4.4 * cameraRoom(arena, frame.camera.target, boom))
+}
+
+func animateSam(skin: SkinnedMesh!, clip: SkinClip, dt: Double) {
+    if skin.clip.first != clip.first {
+        skin.previousClip = skin.clip
+        skin.previousPlayhead = skin.playhead
+        skin.clip = clip
+        skin.playhead = 0.0
+        skin.transition = 0.0
+    }
+    skin.playhead += dt
+    if clip.first == samJump().first then skin.playhead = realMinOf(skin.playhead, (clip.count - 1) as Double / clip.rate)
+    skin.previousPlayhead += dt
+    skin.transition = realClamp01(skin.transition + dt * 8.0)
+}
+
+func arenaCollider(entity: Entity, center: Vec3&, half: Vec3, inverseMass: Double = 0.0, ramp: Bool = false): ArenaCollider =
+    .(entity, center.clone(), half, center.clone(), center.clone(), inverseMass, ramp)
+
+func assembleArena(world: World!, start: Entity): ArenaSimulation {
+    fin playerHalf: Vec3 = .(0.29, 0.87, 0.29)
+    fin playerCenter = worldPosition(world, start).add(.(0.0, playerHalf.y, 0.0))
+    var moving: Array<ArenaCollider> = [arenaCollider(start, playerCenter, playerHalf.clone(), 1.0 / 65.0)]
+    var solids: Array<ArenaCollider> = []
+    fin colliders = ensureStorage<Collision>(world)
+    fin bodies = ensureStorage<RigidBody>(world)
+    fin meshes = ensureStorage<Mesh3d>(world)
+    for row: Int in 0..<storageLength<Collision>(colliders) {
+        fin entity = storageEntityAt<Collision>(colliders, row)
+        fin config = colliders.values[row].&
+        if !config.enabled || (config.shape != 1 && config.shape != 2) || !storageHas<Mesh3d>(meshes, entity) then continue
+        fin model = worldMatrix(world, entity)
+        fin halfSize = storageGet<Mesh3d>(meshes, entity).size * 0.5
+        fin half = Vec3(absReal(model.m00) + absReal(model.m01) + absReal(model.m02),
+            absReal(model.m10) + absReal(model.m11) + absReal(model.m12),
+            absReal(model.m20) + absReal(model.m21) + absReal(model.m22)).scale(halfSize)
+        fin center: Vec3 = .(model.m03, model.m13, model.m23)
+        fin rigid = storageIndexOf<RigidBody>(bodies, entity)
+        if config.shape == 1 && rigid >= 0 {
+            fin mass = realMaxOf(bodies.values[rigid].mass, 0.01)
+            moving.add(arenaCollider(entity, center, take half, inverseMassFor(.Dynamic, mass)))
+        } else {
+            solids.add(arenaCollider(entity, center, take half, ramp: config.shape == 2))
+        }
+    }
+    return .(take moving, take solids, sceneGravity(world))
+}
+
+func resetArena(arena: ArenaSimulation!) {
+    for i: Int in 0..<arena.moving.size {
+        let body: ArenaCollider! = arena.moving[i]
+        body.center = body.initial.clone()
+        body.previous = body.initial.clone()
+        body.velocity = .(0.0, 0.0, 0.0)
+        body.supported = false
+    }
+    arena.grounded = false
+}
+
+/** The ramp's occupied column at the body's uphill edge. */
+func solidHalfHeight(body: ArenaCollider&, solid: ArenaCollider&): Double {
+    if !solid.ramp then return solid.half.y
+    fin along = (solid.center.z + solid.half.z - (body.center.z - body.half.z)) / (2.0 * solid.half.z)
+    return solid.half.y * realClamp01(along)
+}
+
+func collideWithSolid(body: ArenaCollider!, solid: ArenaCollider&, player: Bool, canStep: Bool) {
+    fin halfY = solidHalfHeight(body, solid)
+    if halfY <= 0.0 then return
+    fin half: Vec3 = .(solid.half.x, halfY, solid.half.z)
+    fin center = solid.center.add(.(0.0, halfY - solid.half.y, 0.0))
+    when boxContact3d(body.center, body.half, center, half) {
+        .Touching(contact) -> {
+            fin rise = center.y + half.y - (body.center.y - body.half.y)
+            // While grounded, cross a low stair riser without stopping at its face.
+            if player && canStep && contact.normal.y == 0.0 && rise > 0.0 && rise <= 0.25 && body.velocity.y <= 0.0 {
+                body.center.y += rise + 0.0001
+                body.velocity.y = 0.0
+                body.supported = true
+            } else {
+                fin restitution: Double = if !player && body.velocity.dot(contact.normal) < -1.2 then 0.18 else 0.0
+                body.center = body.center.add(contact.normal.scale(contact.penetration + 0.0001))
+                body.velocity = bounce3d(body.velocity, contact.normal, restitution)
+                if contact.normal.y > 0.5 then body.supported = true
+            }
+        }
+        .Separate() -> {}
+    }
+}
+
+func collideMoving(a: ArenaCollider!, b: ArenaCollider!) {
+    when boxContact3d(a.center, a.half, b.center, b.half) {
+        .Touching(contact) -> {
+            fin sum = a.inverseMass + b.inverseMass
+            fin normal = contact.normal
+            fin separation = normal.scale((contact.penetration + 0.0001) / sum)
+            a.center = a.center.add(separation.scale(a.inverseMass))
+            b.center = b.center.subtract(separation.scale(b.inverseMass))
+            fin closing = a.velocity.subtract(b.velocity).dot(normal)
+            if closing < 0.0 {
+                fin restitution = if closing < -1.2 && normal.y != 0.0 then 0.14 else 0.0
+                fin impulse = normal.scale(-(1.0 + restitution) * closing / sum)
+                a.velocity = a.velocity.add(impulse.scale(a.inverseMass))
+                b.velocity = b.velocity.subtract(impulse.scale(b.inverseMass))
+            }
+            if normal.y > 0.5 then a.supported = true
+            if normal.y < -0.5 then b.supported = true
+        }
+        .Separate() -> {}
+    }
+}
+
+func stepArena(arena: ArenaSimulation!, motion: Vec3&, jump: Bool, dt: Double) {
+    let player: ArenaCollider! = arena.moving[0]
+    player.velocity.x = motion.x
+    player.velocity.z = motion.z
+    fin canStep = arena.grounded && !jump
+    if jump && arena.grounded then player.velocity.y = 5.15
+    for i: Int in 0..<arena.moving.size {
+        let body: ArenaCollider! = arena.moving[i]
+        body.previous = body.center.clone()
+        if i > 0 {
+            fin drag = if body.supported then 4.2 else 0.25
+            fin damping = realClamp01(1.0 - drag * dt)
+            body.velocity.x *= damping
+            body.velocity.z *= damping
+        }
+        body.supported = false
+        body.velocity = body.velocity.add(arena.gravity.scale(dt))
+        body.center = body.center.add(body.velocity.scale(dt))
+    }
+
+    // Alternating support and pair contacts also lets the loose cubes form stacks.
+    for pass: Int in 0..<5 {
+        for i: Int in 0..<arena.moving.size {
+            let body: ArenaCollider! = arena.moving[i]
+            for j: Int in i+1..<arena.moving.size then collideMoving(body, arena.moving[j])
+            for j: Int in 0..<arena.solids.size then collideWithSolid(body, arena.solids[j], i == 0, canStep)
+        }
+    }
+    arena.grounded = player.supported
+    if player.center.y < -12.0 then resetArena(arena)
+}
+
+func displayedCenter(body: ArenaCollider&, alpha: Double): Vec3 =
+    body.previous.add(body.center.subtract(body.previous).scale(alpha))
+
+func clipCameraAxis(span: CameraInterval!, start: Double, travel: Double, low: Double, high: Double) {
+    if absReal(travel) < 0.000001 {
+        if start < low || start > high then span.exit = -1.0
+        return
+    }
+    fin a = (low - start) / travel
+    fin b = (high - start) / travel
+    span.enter = realMaxOf(span.enter, realMinOf(a, b))
+    span.exit = realMinOf(span.exit, realMaxOf(a, b))
+}
+
+/** Clips the camera's boom to the first surface, padded for the near plane. */
+func cameraRoom(arena: ArenaSimulation&, target: Vec3&, boom: Vec3&): Double {
+    var fraction: Double = 1.0
+    fin margin: Double = 0.16
+    for i: Int in 0..<arena.solids.size {
+        fin solid = arena.solids[i].&
+        fin offset = target.subtract(solid.center)
+        var span: CameraInterval = .()
+        clipCameraAxis(span, offset.x, boom.x, -solid.half.x - margin, solid.half.x + margin)
+        clipCameraAxis(span, offset.y, boom.y, -solid.half.y - margin, solid.half.y + margin)
+        clipCameraAxis(span, offset.z, boom.z, -solid.half.z - margin, solid.half.z + margin)
+        if solid.ramp && span.enter <= span.exit {
+            fin slope = solid.half.y / solid.half.z
+            clipCameraAxis(span, offset.y + slope * offset.z, boom.y + slope * boom.z, -1000.0, margin)
+        }
+        if span.enter <= span.exit then fraction = realMinOf(fraction, span.enter)
+    }
+    return realClampTo(fraction - 0.015, 0.0, 1.0)
+}

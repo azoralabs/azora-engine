@@ -349,15 +349,18 @@ func simulationSmooth(low: Double, high: Double, x: Double): Double {
 /** Writes the sky's part of the block: sun, moon, air, the turn of the stars. */
 func writeAetherSky(block: Long, sky: AetherSky&, at: Celestial&, day: Double) {
     pokeVector(block, 0, at.sun.x, at.sun.y, at.sun.z, sky.sunIntensity)
-    pokeVector(block, 16, at.moon.x, at.moon.y, at.moon.z, sky.moonIntensity * at.moonLit * 0.5)
+    fin moon: Double = if sky.moonVisible then sky.moonIntensity else 0.0
+    pokeVector(block, 16, at.moon.x, at.moon.y, at.moon.z, moon * at.moonLit * 0.5)
     pokeVector(block, 48, sky.rayleigh, sky.mie, sky.ozone, sky.groundAlbedo)
-    pokeVector(block, 128, at.moonLit, at.moonPhase, 0.7 * sky.moonIntensity, day)
+    fin discLight = 0.7 * moon * (if sky.dayMoon then 1.0 else 1.0 - day)
+    pokeVector(block, 128, at.moonLit, at.moonPhase, discLight, day)
     pokeVector(block, 144, 0.0, 0.0, 0.0, 1.0)
     // The celestial sphere's axes in the world: right ascension 0 and 6 h on the equator, and the pole.
     fin first = horizonVector(0.0, 0.0, at.sidereal, at.latitude)
     fin second = horizonVector(1.5707963267948966, 0.0, at.sidereal, at.latitude)
     fin pole = horizonVector(0.0, 1.5707963267948966, at.sidereal, at.latitude)
-    pokeVector(block, 240, first.x, first.y, first.z, 0.0)
+    fin sunDiameter = atmosphereClamp(sky.sunDiameter, 0.05, 20.0) * degreesToRadians
+    pokeVector(block, 240, first.x, first.y, first.z, 2.0 * sin(sunDiameter * 0.25))
     pokeVector(block, 256, second.x, second.y, second.z, 0.0)
     pokeVector(block, 272, pole.x, pole.y, pole.z, 0.0)
     pokeVector(block, 288, 0.0, 1.0, 0.0, 0.0)

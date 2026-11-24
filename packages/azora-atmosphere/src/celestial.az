@@ -31,8 +31,6 @@ func celestialClamp(x: Double, low: Double, high: Double): Double = if x < low t
 /** [angle] in degrees, brought into 0..<360. */
 func wrapDegrees(angle: Double): Double = angle - (floor(angle / 360.0) as Double) * 360.0
 
-func sinDegrees(angle: Double): Double = sin(wrapDegrees(angle) * perDegree)
-
 /** Julian day at 0h UT of a Gregorian calendar date (Meeus, Astronomical Algorithms 7.1). */
 func julianDay(year: Int, month: Int, day: Int): Double {
     var y: Int = year
@@ -50,7 +48,7 @@ func julianDay(year: Int, month: Int, day: Int): Double {
 
 /** Local clock hours since the scene's date began: the set hour plus the running day. */
 func runningHour(sky: AetherSky&, elapsed: Double): Double {
-    return sky.hour + (if sky.dayMinutes > 0.0 then elapsed * 24.0 / (sky.dayMinutes * 60.0) else 0.0)
+    return sky.hour + (if sky.advanceTime then elapsed * sky.timeMultiplier / 3600.0 else 0.0)
 }
 
 /** [runningHour] rounded down to a whole minute: what the Photon Field traces with, so it moves in steps. */
@@ -70,12 +68,7 @@ func horizonVector(ascension: Double, declination: Double, sidereal: Double, lat
 
 func celestialAt(sky: AetherSky&, elapsed: Double): Celestial = celestialAtHour(sky, runningHour(sky, elapsed))
 
-/**
- * The sun by the NOAA solar position equations (after Meeus ch. 25); the moon
- * by the low-precision series of the Astronomical Almanac (about 0.3 degrees),
- * its phase from its elongation. [hour] is the local clock time on the sky's
- * date and may run past 24 into the following days.
- */
+/** The sun uses the scene's local clock; the moon uses its authored world direction. */
 func celestialAtHour(sky: AetherSky&, hour: Double): Celestial {
     fin jd: Double = julianDay(sky.year, sky.month, sky.day) + (hour - sky.timeZone) / 24.0
     fin t = (jd - 2451545.0) / 36525.0
@@ -92,20 +85,17 @@ func celestialAtHour(sky: AetherSky&, hour: Double): Celestial {
     fin sidereal: Double = wrapDegrees(280.46061837 + 360.98564736629 * days + 0.000387933 * t * t - t * t * t / 38710000.0 + sky.longitude) * perDegree
     fin latitude: Double = celestialClamp(sky.latitude, -90.0, 90.0) * perDegree
 
-    fin moonLongitude = (218.32 + 481267.881 * t + 6.29 * sinDegrees(135.0 + 477198.87 * t) - 1.27 * sinDegrees(259.3 - 413335.36 * t) +
-        0.66 * sinDegrees(235.7 + 890534.22 * t) + 0.21 * sinDegrees(269.9 + 954397.74 * t) - 0.19 * sinDegrees(357.5 + 35999.05 * t) -
-        0.11 * sinDegrees(186.5 + 966404.03 * t)) * perDegree
-    fin moonLatitude = (5.13 * sinDegrees(93.3 + 483202.02 * t) + 0.28 * sinDegrees(228.2 + 960400.89 * t) -
-        0.28 * sinDegrees(318.3 + 6003.15 * t) - 0.17 * sinDegrees(217.6 - 407332.21 * t)) * perDegree
-    fin moonAscension: Double = atan2(sin(moonLongitude) * cos(obliquity) - tan(moonLatitude) * sin(obliquity), cos(moonLongitude))
-    fin moonDeclination: Double = asin(celestialClamp(sin(moonLatitude) * cos(obliquity) + cos(moonLatitude) * sin(obliquity) * sin(moonLongitude), -1.0, 1.0))
-    fin elongation: Double = acos(celestialClamp(cos(moonLatitude) * cos(moonLongitude - sunLongitude), -1.0, 1.0))
-
+    fin sun = horizonVector(sunAscension, sunDeclination, sidereal, latitude)
+    fin azimuth = wrapDegrees(sky.moonAzimuth) * perDegree
+    fin elevation = celestialClamp(sky.moonElevation, -90.0, 90.0) * perDegree
+    fin moon: Vec3 = .(sin(azimuth) * cos(elevation), sin(elevation), -cos(azimuth) * cos(elevation))
+    fin alignment = celestialClamp(sun.dot(moon), -1.0, 1.0)
+    fin phase = acos(alignment) / (360.0 * perDegree)
     return .(
-        horizonVector(sunAscension, sunDeclination, sidereal, latitude)
-        horizonVector(moonAscension, moonDeclination, sidereal, latitude)
-        wrapDegrees((moonLongitude - sunLongitude) / perDegree) / 360.0
-        (1.0 - cos(elongation)) * 0.5
+        sun.clone()
+        moon.clone()
+        if sun.x * moon.z - sun.z * moon.x < 0.0 then 1.0 - phase else phase
+        (1.0 - alignment) * 0.5
         wrapDegrees(hour * 15.0) / 15.0
         sidereal
         latitude

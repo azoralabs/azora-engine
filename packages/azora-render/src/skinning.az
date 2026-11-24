@@ -153,8 +153,10 @@ impl App {
             fin previous = if actor.transition < 1.0 then skinPose(asset, actor.previousClip, actor.previousPlayhead) else pose
             send1(gpu.enc, sel("setRenderPipelineState:"), pipeline)
             send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
+            fin model = worldMatrix(world, entity)
+            beginMeshCulling(gpu.enc, model)
             azCopy(gpu.scratch, gpu.viewProj, 64)
-            pokeMat4(gpu.scratch, 64, worldMatrix(world, entity))
+            pokeMat4(gpu.scratch, 64, model)
             azPokeF32(gpu.scratch, 128, gpu.lightX)
             azPokeF32(gpu.scratch, 132, gpu.lightY)
             azPokeF32(gpu.scratch, 136, gpu.lightZ)
@@ -176,6 +178,7 @@ impl App {
             send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if asset.surface != 0 then asset.surface else asset.albedo, 1)
             send5(gpu.enc, sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:"),
                 3, asset.indexCount as Long, 1, asset.mesh, asset.indexOffset)
+            endMeshCulling(gpu.enc)
             gpu.mode = -1
             gpu.meshPipeline = 0
         }

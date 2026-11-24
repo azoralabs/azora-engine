@@ -34,6 +34,7 @@ pack AetherU {
     var inverse: Float4x4
     var sky0: Float4
     // rows of the turn from the celestial sphere to the world
+    // sky0.w is the sun disc's chord radius on the unit sphere
     var sky1: Float4
     var sky2: Float4
     var cloud: Float4
@@ -106,10 +107,13 @@ func transmittanceTo(table: Texture2D, r: Float, mu: Float): Float3 {
     return table.sampleLevel(linearClamp, transmittanceUV(r, mu), 0.0).rgb
 }
 
+func planetHorizon(r: Float): Float {
+    return -sqrt(max((r - Rg) * (r + Rg), 0.0)) / r
+}
+
 /** Sunlight reaching a point at radius r toward cosine mu, nothing where the planet is in the way. */
 func lightAt(table: Texture2D, r: Float, mu: Float): Float3 {
-    fin horizon: Float = -sqrt(max(1.0 - (Rg / r) * (Rg / r), 0.0))
-    return if mu < horizon then Float3(0.0) else transmittanceTo(table, r, mu)
+    return if mu < planetHorizon(r) then Float3(0.0) else transmittanceTo(table, r, mu)
 }
 
 func multipleAt(table: Texture2D, r: Float, mu: Float): Float3 {
@@ -369,22 +373,29 @@ func aetherSky(
     transmittance: @Texture(1) Texture2D
     clouds: @Texture(2) Texture2D
 ): Float4 {
-    fin cloud: Float4 = cloudSample(clouds, input.uv, u.cloudMarch.zw)
     fin ray: Float3 = normalize(u.forward.xyz + input.ndc.x * u.screen.x * u.right.xyz + input.ndc.y * u.screen.y * u.up.xyz)
     fin r: Float = u.camera.w
     fin uv = skyViewUV(ray, r)
     fin edgeRow = 0.5 / Float(skyView.size().y)
-    // The azimuth wraps around the viewer, while elevation ends at the poles.
-    var light = skyView.sample(linearRepeat, Float2(uv.x, clamp(uv.y, edgeRow, 1.0 - edgeRow))).rgb
-    fin horizon = -sqrt(max((r - Rg) * (r + Rg), 0.0)) / r
-    fin through: Float3 = if ray.y < horizon then Float3(0.0) else transmittanceTo(transmittance, r, ray.y)
-    // The sun's disc, 0.53 degrees across, darker toward its limb.
-    fin cs: Float = dot(ray, u.sun.xyz)
-    fin edge: Float = cos(0.00465)
-    if cs > edge - 2e-5 {
-        fin across: Float = saturate(acos(clamp(cs, -1.0, 1.0)) / 0.00465)
+    fin horizon = planetHorizon(r)
+    fin below = horizon - ray.y
+    // The two halves of the table meet at the horizon. Keep their samples apart
+    // there and fade the distant planet surface into the horizon's haze.
+    var light = skyView.sample(linearRepeat, Float2(uv.x, clamp(uv.y, edgeRow, 0.5 - edgeRow))).rgb
+    if below > 0.0 {
+        fin ground = skyView.sample(linearRepeat, Float2(uv.x, clamp(uv.y, 0.5 + edgeRow, 1.0 - edgeRow))).rgb
+        light = mix(light, ground, smoothstep(0.0, 0.05, below))
+    }
+    fin through: Float3 = if below > 0.0 then Float3(0.0) else transmittanceTo(transmittance, r, ray.y)
+    // Chord distance keeps the small default disc precise; filter its edge over a pixel.
+    fin sunRadius: Float = if u.sky0.w > 0.0 then u.sky0.w else 0.004625
+    fin sunDistance: Float = length(ray - u.sun.xyz)
+    fin sunPixel: Float = max(0.5 * (abs(dpdx(sunDistance)) + abs(dpdy(sunDistance))), 1e-5)
+    if sunDistance < sunRadius + sunPixel {
+        fin across: Float = saturate(sunDistance / sunRadius)
         fin limb: Float = 1.0 - 0.6 * (1.0 - sqrt(max(1.0 - across * across, 0.0)))
-        light += through * u.sun.w * 18.0 * limb * smoothstep(edge - 2e-5, edge + 2e-5, cs)
+        fin disc: Float = 1.0 - smoothstep(sunRadius - sunPixel, sunRadius + sunPixel, sunDistance)
+        light += through * u.sun.w * 18.0 * limb * disc
     }
     // The moon: its sunlit part, a sphere lit from the sun's side, with darker seas.
     fin cm: Float = dot(ray, u.moon.xyz)
@@ -396,8 +407,8 @@ func aetherSky(
         fin north: Float3 = cross(m, east)
         fin q: Float2 = Float2(dot(ray - m * cm, east), dot(ray - m * cm, north)) / sin(0.00452)
         fin n: Float3 = Float3(q, sqrt(max(1.0 - dot(q, q), 0.0)))
-        fin toSun: Float3 = normalize(Float3(dot(u.sun.xyz, east), dot(u.sun.xyz, north), dot(u.sun.xyz, m)))
-        fin lit: Float = saturate(dot(n, toSun) * 4.0 + 0.1)
+        fin toSun: Float3 = normalize(Float3(dot(u.sun.xyz, east), dot(u.sun.xyz, north), -dot(u.sun.xyz, m)))
+        fin lit: Float = smoothstep(-0.025, 0.035, dot(n, toSun))
         fin seas: Float = 0.78 + 0.22 * smoothstep(0.35, 0.65, starHash(floor(Float3(q * 5.0, 1.0))) * 0.5 + starHash(floor(Float3(q * 11.0, 2.0))) * 0.5)
         fin disc: Float = smoothstep(moonEdge - 2e-5, moonEdge + 2e-5, cm)
         light += through * u.moonInfo.z * lit * seas * disc * (0.35 + 0.65 * night)
@@ -405,8 +416,10 @@ func aetherSky(
     // Stars, fixed to the celestial sphere, fading in daylight and near the haze of the horizon.
     fin celestial: Float3 = Float3(dot(u.sky0.xyz, ray), dot(u.sky1.xyz, ray), dot(u.sky2.xyz, ray))
     light += starField(celestial, u.time.x) * u.screen.w * through * night * night * 0.06
-    // The clouds in front of all of it: the sky, the sun and moon, the stars.
-    light = light * cloud.a + cloud.rgb
+    // Low-resolution cloud filtering can spill across the planet's silhouette.
+    fin cloud: Float4 = cloudSample(clouds, input.uv, u.cloudMarch.zw)
+    fin horizonPixel: Float = max(abs(dpdx(ray.y)) + abs(dpdy(ray.y)), 1e-5)
+    light = mix(light, light * cloud.a + cloud.rgb, smoothstep(0.0, horizonPixel, -below))
     fin color: Float3 = 1.0 - exp(-light * u.screen.z)
     return Float4(pow(max(color, 0.0), Float3(1.0 / 2.2)), 1.0)
 }
@@ -706,7 +719,9 @@ func cloudMarch(
     fin dir: Float3 = normalize(u.forward.xyz + input.ndc.x * u.screen.x * u.right.xyz + input.ndc.y * u.screen.y * u.up.xyz)
     fin eye: Float3 = u.camera.xyz
     var result: Float4 = Float4(0.0, 0.0, 0.0, 1.0)
-    if dir.y > - 0.06 && u.cloudShape.z > 0.001 {
+    // Rays that hit the planet never reach the far side of the cloud shell.
+    // Discard their history too when the view moves across the horizon.
+    if dir.y > planetHorizon(u.camera.w) && u.cloudShape.z > 0.001 {
         fin o: Float3 = Float3(0.0, planetMetres + eye.y, 0.0)
         fin enter: Float = shellExit(o, dir, planetMetres + u.cloudShape.x)
         fin leave: Float = shellExit(o, dir, planetMetres + u.cloudShape.y)
@@ -794,6 +809,8 @@ func cloudMarch(
             fin farther: Float3 = mix(sky, own * 0.9 + sky * 0.1, saturate(u.cloudShape.z * 1.4 - 0.4))
             result = Float4(total * haze + farther * (1.0 - through) * (1.0 - haze), through)
         }
+    } else {
+        return result
     }
     // Clouds are far: last frame's pixel in the same direction is where the history is.
     fin before: Float4 = u.previous * Float4(eye + dir * 20000.0, 1.0)

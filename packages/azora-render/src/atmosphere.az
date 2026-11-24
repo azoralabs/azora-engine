@@ -18,7 +18,7 @@ import engine.render.scene
 func skyLight(sky: AetherSky&, at: Celestial&, altitude: Double): SceneLight {
     fin zenith = sunTransmittance(sky, altitude, .(0.0, 1.0, 0.0))
     fin day = simulationSmooth(-0.18, 0.11, at.sun.y)
-    fin moonUp = simulationSmooth(-0.01, 0.06, at.moon.y)
+    fin moonUp = if !sky.moonVisible then 0.0 else simulationSmooth(-0.01, 0.06, at.moon.y)
     fin ambient = 0.052 + 0.27 * day + 0.05 * moonUp * at.moonLit * (1.0 - day)
     fin haze: Rgba = .(0.05 + 0.57 * day, 0.07 + 0.65 * day, 0.12 + 0.72 * day, 1.0)
     if at.sun.y > -0.04 || moonUp <= 0.0 {

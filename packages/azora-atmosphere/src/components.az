@@ -18,28 +18,43 @@ pack AetherSky derives Clone {
     /** Local clock time, in hours. */
     @Range(min: 0.0, max: 24.0, step: 0.05)
     var hour: Double = 14.0
-    @Range(min: 1.0, max: 31.0, step: 1.0)
+    @Hidden
     var day: Int = 21
-    @Range(min: 1.0, max: 12.0, step: 1.0)
+    @Hidden
     var month: Int = 7
-    @Range(min: 1900.0, max: 2200.0, step: 1.0)
+    @Hidden
     var year: Int = 2026
-    @Range(min: -90.0, max: 90.0, step: 0.01)
+    @Hidden
     var latitude: Double = 46.54
     /** Degrees east of Greenwich. */
-    @Range(min: -180.0, max: 180.0, step: 0.01)
+    @Hidden
     var longitude: Double = 11.85
     /** Hours the local clock runs ahead of UTC. */
-    @Range(min: -12.0, max: 14.0, step: 0.25)
+    @Hidden
     var timeZone: Double = 2.0
-    /** Real minutes one day of 24 hours takes; 0 holds the clock still. */
-    @Range(min: 0.0, max: 1440.0, step: 1.0)
+    /** Used only to migrate scenes saved with the previous clock setting. */
+    @Hidden
     var dayMinutes: Double = 0.0
+    var advanceTime: Bool = false
+    /** Simulated seconds per real second. */
+    @Range(min: 0.01, max: 86400.0, step: 1.0)
+    var timeMultiplier: Double = 60.0
     /** The ground under the world origin, in metres above the sea: where the camera breathes the air from. */
     @Range(min: 0.0, max: 8000.0, step: 10.0)
     var altitude: Double = 1500.0
     @Range(min: 0.0, max: 8.0, step: 0.05)
-    var sunIntensity: Double = 1.45
+    var sunIntensity: Double = 2.4
+    /** Diameter of the visible solar disc, in degrees. */
+    @Range(min: 0.05, max: 20.0, step: 0.05)
+    var sunDiameter: Double = 1.6
+    var moonVisible: Bool = true
+    var dayMoon: Bool = true
+    /** Compass bearing in degrees, with north along world -Z. */
+    @Range(min: 0.0, max: 360.0, step: 1.0)
+    var moonAzimuth: Double = 70.0
+    /** Degrees above the horizon. Negative values place the moon below it. */
+    @Range(min: -90.0, max: 90.0, step: 1.0)
+    var moonElevation: Double = 25.0
     @Range(min: 0.0, max: 2.0, step: 0.01)
     var moonIntensity: Double = 0.24
     /** Multipliers of the air's molecules, its haze and its ozone (1 = Earth's). */
@@ -55,6 +70,20 @@ pack AetherSky derives Clone {
     var stars: Double = 1.0
     @Range(min: 0.1, max: 8.0, step: 0.05)
     var exposure: Double = 1.0
+}
+
+/** Converts the old day length to simulated seconds per second when a scene opens. */
+func migrateAtmosphereClocks(world: World!) {
+    let skies = ensureStorage<AetherSky>(world)
+    for i: Int in 0..<storageLength<AetherSky>(skies) {
+        let sky: AetherSky! = skies.values[i]
+        if sky.dayMinutes <= 0.0 then continue
+        if !sky.advanceTime {
+            sky.advanceTime = true
+            sky.timeMultiplier = 1440.0 / sky.dayMinutes
+        }
+        sky.dayMinutes = 0.0
+    }
 }
 
 /**

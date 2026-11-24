@@ -52,6 +52,20 @@ pack ImageTexture derives (Copy, Clone) {
     var height: Int = 0
 }
 
+/** Standard meshes face outwards with CCW winding. Mirrored instances reverse it. */
+func beginMeshCulling(encoder: Long, model: Mat4&) {
+    fin determinant = model.m00 * (model.m11 * model.m22 - model.m12 * model.m21) -
+        model.m01 * (model.m10 * model.m22 - model.m12 * model.m20) +
+        model.m02 * (model.m10 * model.m21 - model.m11 * model.m20)
+    send1(encoder, sel("setFrontFacingWinding:"), if determinant < 0.0 then 0 else 1)
+    send1(encoder, sel("setCullMode:"), 2)
+}
+
+func endMeshCulling(encoder: Long) {
+    send1(encoder, sel("setCullMode:"), 0)
+    send1(encoder, sel("setFrontFacingWinding:"), 0)
+}
+
 impl App {
 
     /** Releases a caller-owned vertex buffer and clears its handle. Repeated release is harmless. */
@@ -144,11 +158,11 @@ impl App {
 
             // Side quad, split into two triangles with radial normals.
             off = writeMeshVertex(bytes, off, -half, y0, z0, 0.0, ny0, nz0)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
             off = writeMeshVertex(bytes, off, half, y0, z0, 0.0, ny0, nz0)
-            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
             off = writeMeshVertex(bytes, off, -half, y0, z0, 0.0, ny0, nz0)
-            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
             off = writeMeshVertex(bytes, off, -half, y1, z1, 0.0, ny1, nz1)
+            off = writeMeshVertex(bytes, off, half, y1, z1, 0.0, ny1, nz1)
 
             // End caps use one triangle per segment and flat axle normals.
             off = writeMeshVertex(bytes, off, -half, 0.0, 0.0, -1.0, 0.0, 0.0)
@@ -186,8 +200,8 @@ impl App {
                 fin phi0 = 2.0 * pi * (segment as Double) / (around as Double)
                 fin phi1 = 2.0 * pi * ((segment + 1) as Double) / (around as Double)
                 // Corners: (theta, phi) pairs of one quad, as two triangles.
-                fin ts = [theta0, theta1, theta1, theta0, theta1, theta0]
-                fin ps = [phi0, phi0, phi1, phi0, phi1, phi1]
+                fin ts = [theta0, theta1, theta1, theta0, theta0, theta1]
+                fin ps = [phi0, phi1, phi0, phi0, phi1, phi1]
                 for corner: Int in 0..<6 {
                     fin nx = sin(ts[corner]) * cos(ps[corner])
                     fin ny = cos(ts[corner])
@@ -213,8 +227,8 @@ impl App {
         fin origin = -extent
 
         // Quad corners in cell space.
-        fin qu = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
-        fin qv = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+        fin qu = [0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+        fin qv = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
 
         var off: Long = 0
         for i: Int in 0..<divs {
@@ -245,7 +259,7 @@ impl App {
 
     /// Uses the same mesh buffers and transforms for standard and Fusion materials.
     func !.drawMeshPipeline(mesh: Mesh&, model: Mat4&, r: Double, g: Double, b: Double, pipeline: Long, lighting: Bool = true,
-                            indices: Long = 0, indexCount: Int = 0, emission: Double = 0.0) {
+                            indices: Long = 0, indexCount: Int = 0, emission: Double = 0.0, cullBack: Bool = true) {
         let gpu: AzGpu! = self.gpu
         if !gpu.hasEncoder || mesh.buffer == 0 then return
         if gpu.casting {
@@ -274,6 +288,8 @@ impl App {
             gpu.meshPipeline = active
         }
 
+        if cullBack then beginMeshCulling(gpu.enc, model)
+        defer { if cullBack then endMeshCulling(gpu.enc) }
         if pipeline != 0 then gpu.fusion.bindTextures(gpu.enc, pipeline)
         self.writeSceneUniforms(gpu.scratch, model, r, g, b, lighting, emission)
         send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0, 0)

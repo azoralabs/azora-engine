@@ -5,8 +5,9 @@ import engine.core
 import engine.ecs
 import engine.math
 import engine.scene
-import engine.atmosphere.legacy
+import engine.atmosphere
 import engine.render.scene
+import engine.scene.io
 import engine.weather.wind
 
 func report(name: String, passed: Bool) { println(if passed then "${name} ok" else "${name} FAIL") }
@@ -72,4 +73,42 @@ func main() {
     storageInsert<Wind>(ensureStorage(world), windy, .(speed: 4.0, direction: 180.0, gusts: 0.0, turbulence: 0.0))
     fin scene = sceneWind(world, 1.0)
     report("sceneWindFound", near(scene.z, -4.0) && near(scene.x, 0.0))
+
+    var oldScene: World = .()
+    fin oldSky = "{\"format\":\"azora-scene\",\"version\":2,\"entities\":[{\"parent\":-1,\"components\":{\"AetherSky\":{}}}]}"
+    fin loaded = readScene(oldScene, oldSky)
+    let skies = ensureStorage<AetherSky>(oldScene)
+    report("legacySunDiameter", loaded == 1 && near(skies.values[0].sunDiameter, 1.6))
+    report("atmosphereDefaults", near(skies.values[0].sunIntensity, 2.4) && near(Wind().speed, 20.0))
+    skies.values[0].sunDiameter = 8.0
+    var reopened: World = .()
+    fin saved = readScene(reopened, writeScene(oldScene))
+    fin skySettings = ensureStorage<AetherSky>(reopened)
+    report("sunDiameterRoundTrip", saved == 1 && near(skySettings.values[0].sunDiameter, 8.0))
+
+    fin uniforms = azAlloc(aetherUniformBytes)
+    defer { azFree(uniforms) }
+    fin physical = skySettings.values[0].&
+    writeAetherSky(uniforms, physical, celestialAt(physical, 0.0), 1.0)
+    report("sunDiameterUniform", near(peekFloat32(uniforms, 252), 2.0 * sin(2.0 * degreesToRadians)) &&
+        near(peekFloat32(uniforms, 12), physical.sunIntensity))
+
+    var clock: AetherSky = .(hour: 12.0)
+    report("clockPausedByDefault", near(runningHour(clock, 120.0), 12.0))
+    clock.advanceTime = true
+    report("clockRunsAtTimes60", near(runningHour(clock, 1.0), 12.0 + 1.0 / 60.0))
+    let legacy: AetherSky! = skies.values[0]
+    legacy.dayMinutes = 48.0
+    migrateAtmosphereClocks(oldScene)
+    report("legacyClockMigrated", legacy.advanceTime && near(legacy.timeMultiplier, 30.0) && near(legacy.dayMinutes, 0.0))
+
+    var moon: AetherSky = .(hour: 0.0)
+    fin sun = celestialAt(moon, 0.0).sun.clone()
+    moon.moonAzimuth = wrapDegrees(atan2(-sun.x, sun.z) / perDegree)
+    moon.moonElevation = -asin(sun.y) / perDegree
+    fin full = celestialAt(moon, 0.0)
+    moon.moonAzimuth = wrapDegrees(moon.moonAzimuth + 180.0)
+    moon.moonElevation = -moon.moonElevation
+    fin dark = celestialAt(moon, 0.0)
+    report("moonPhaseFollowsSun", near(full.moonLit, 1.0) && near(dark.moonLit, 0.0))
 }

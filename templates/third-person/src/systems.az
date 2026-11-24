@@ -1,0 +1,135 @@
+module thirdPerson.systems
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.game
+import engine.input
+import engine.math.vec
+import engine.physics.core
+import engine.physics.d3
+import engine.platform
+import engine.render.skinning
+import engine.scene
+import engine.scene.transforms
+import thirdPerson::{components, utils}
+
+@System(phase: .Startup, editor: true)
+func previewSam(world: World!, time: Time&, starts: @query [PlayerStart&]) {
+    if !time.editing then return
+    starts.unpack { start, marker ->
+        if marker.enabled && marker.slot == 0 then attachSam(world, start)
+    }
+}
+
+@System(phase: .Update, editor: true)
+func animatePreviewSam(time: Time&, actors: @query [SkinnedMesh!]) {
+    if !time.editing then return
+    actors.unpack { _, actor -> actor.playhead = time.elapsedSecs }
+}
+
+@System(phase: .Startup)
+func startThirdPerson(frame: Game!, starts: @query [PlayerStart&]) {
+    while starts.hasNext() {
+        let row = starts.next()
+        if !row.1.enabled || row.1.slot != 0 then continue
+        let world: World! = frame.world
+        fin start = row.0
+        fin model = worldMatrix(world, start)
+        fin yaw = atan2(model.m02, model.m22) / degreesToRadians
+        fin sam = attachSam(world, start)
+        storageInsert<ThirdPersonPlayer>(ensureStorage(world), start, .(sam, yaw, yaw, yaw))
+        storageInsert<ArenaSimulation>(ensureStorage(world), start, assembleArena(world, start))
+        let arena = storageGet<ArenaSimulation>(ensureStorage(world), start)
+        let player = storageGet<ThirdPersonPlayer>(ensureStorage(world), start)
+        followSam(frame, player, arena, worldPosition(world, start))
+        return
+    }
+    println("Place an enabled Player Start for slot 0 in the scene.")
+    frame.window.quit()
+}
+
+@System(phase: .PreUpdate)
+func readThirdPersonInput(frame: Game!, players: @query [ThirdPersonPlayer!, ArenaSimulation!]) {
+    players.unpack { _, player, arena ->
+        let window: App! = frame.window
+        fin mx = window.mouseX()
+        fin my = window.mouseY()
+        fin orbiting = window.mouseDown(.Right)
+        if player.orbiting && orbiting {
+            player.yaw -= (mx - player.mouseX) * 0.21
+            player.pitch = realClampTo(player.pitch - (my - player.mouseY) * 0.17, -55.0, 8.0)
+        }
+        player.orbiting = orbiting
+        player.mouseX = mx
+        player.mouseY = my
+        player.yaw += axis(window.keyDown(.Q), window.keyDown(.E)) * 95.0 * frame.time.deltaSecs
+
+        if window.keyJustPressed(.R) {
+            resetArena(arena)
+            player.facing = player.startYaw
+            player.yaw = player.startYaw
+            player.pitch = -15.0
+            player.jump = false
+            storageInsert<SkinnedMesh>(ensureStorage(frame.world), player.sam, samSkin())
+        }
+        if window.keyJustPressed(.Space) then player.jump = true
+
+        fin forward = axis(window.keyDown(.W) || window.keyDown(.Up), window.keyDown(.S) || window.keyDown(.Down))
+        fin right = axis(window.keyDown(.D) || window.keyDown(.Right), window.keyDown(.A) || window.keyDown(.Left))
+        fin angle = player.yaw * degreesToRadians
+        fin co = cos(angle)
+        fin si = sin(angle)
+        player.running = window.keyDown(.Shift)
+        fin speed = (if player.running then 4.6 else 2.0) / realMaxOf(1.0, sqrt(forward * forward + right * right))
+        player.motion = Vec3(right * co - forward * si, 0.0, -right * si - forward * co).scale(speed)
+    }
+}
+
+@System(phase: .FixedUpdate)
+func simulateThirdPerson(frame: Game!, players: @query [ThirdPersonPlayer!, ArenaSimulation!]) {
+    players.unpack { _, player, arena ->
+        stepArena(arena, player.motion, player.jump, frame.time.fixedDeltaSecs)
+        player.jump = false
+    }
+}
+
+@System(phase: .Update)
+func presentThirdPerson(frame: Game!, players: @query [ThirdPersonPlayer!, ArenaSimulation!]) {
+    players.unpack { start, player, arena ->
+        let world: World! = frame.world
+        let transforms = ensureStorage<Transform>(world)
+        fin alpha = frame.interpolation
+        for i: Int in 1..<arena.moving.size {
+            fin body = arena.moving[i].&
+            fin slot = storageIndexOf<Transform>(transforms, body.entity)
+            if slot >= 0 then transforms.values[slot].translation = displayedCenter(body, alpha)
+        }
+
+        fin body = arena.moving[0].&
+        fin feet = displayedCenter(body, alpha).subtract(.(0.0, body.half.y, 0.0))
+        fin slot = storageIndexOf<Transform>(transforms, start)
+        fin dt = frame.time.deltaSecs
+        fin walking = body.velocity.x * body.velocity.x + body.velocity.z * body.velocity.z > 0.04
+        if walking {
+            fin desired = atan2(-body.velocity.x, -body.velocity.z) / degreesToRadians
+            fin angle = (desired - player.facing) * degreesToRadians
+            player.facing += atan2(sin(angle), cos(angle)) / degreesToRadians * (1.0 - exp(-15.0 * dt))
+        }
+        transforms.values[slot].translation = feet.clone()
+        transforms.values[slot].rotation.y = player.facing
+        let skins = ensureStorage<SkinnedMesh>(world)
+        fin skin = storageIndexOf<SkinnedMesh>(skins, player.sam)
+        if skin >= 0 {
+            fin clip = when {
+                !arena.grounded -> samJump()
+                walking && player.running -> samRun()
+                walking -> samWalk()
+                else -> samIdle()
+            }
+            animateSam(skins.values[skin], clip, dt)
+        }
+        followSam(frame, player, arena, feet)
+    }
+}

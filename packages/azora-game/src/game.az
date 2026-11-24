@@ -374,13 +374,16 @@ scope {
     assert !plan.cyclic panic plan.cycleReport
     enterWorkingDirectory()
     var world: World = .()
-    var file = readFile(config.scene)
+    fin embeddedScene = envVar("AZORA_EMBED_SCENE")
+    fin scene = if envVar("AZORA_EMBED") != "" && embeddedScene != "" then embeddedScene else config.scene
+    var file = readFile(scene)
     fin loaded = file.ok() && readScene(world, file.text(0, file.size)) >= 0
     file.release()
     if !loaded {
-        println("Could not load ${config.scene}")
+        println("Could not load ${scene}")
         return
     }
+    migrateAtmosphereClocks(world)
     var window = appInit(config.title, config.width, config.height)
     if !window.ok then return
     defer { window.shutdown() }

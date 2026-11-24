@@ -18,6 +18,8 @@ pack Collision derives Clone {
     /** Horizontal reach from the mesh's origin, used to prefetch its collision. */
     var reach: Double = 0.0
     var pavement: Bool = false
+    @Choice(options: "Triangle Mesh|Box|Ramp")
+    var shape: Int = 0
 }
 
 /**
@@ -88,7 +90,7 @@ func prepareSolidCollision(world: World!, root: String, focus: Vec3&, limit: Int
     var loaded = 0
     for i: Int in 0..<storageLength<Collision>(components) {
         fin config = components.values[i].&
-        if !config.enabled || config.pavement || config.asset == "" then continue
+        if !config.enabled || config.shape != 0 || config.pavement || config.asset == "" then continue
         fin entity = storageEntityAt<Collision>(components, i)
         if storageHas<CollisionMesh>(meshes, entity) then continue
         if !storageHas<CollisionPlacement>(placements, entity) {

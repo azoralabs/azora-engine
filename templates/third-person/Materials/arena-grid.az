@@ -1,0 +1,43 @@
+@Execution("GPU")
+module project.materials.arenaGrid
+
+import engine.shaders.sceneUniforms
+import engine.material.surface
+
+// @Material {"albedo":[0.60,0.59,0.56],"textures":[]}
+
+@Vertex
+func materialVertex(id: @VertexIndex UInt, vertices: @ReadOnlyStorage(0) Float, u: @Uniform(1) U3): MaterialVertex =
+    materialMesh(id, vertices, u)
+
+func gridLine(uv: Float2, width: Float): Float {
+    fin pixel = max(abs(dpdx(uv)) + abs(dpdy(uv)), Float2(0.0001))
+    fin distance = abs(fract(uv + 0.5) - 0.5)
+    fin line = 1.0 - smoothstep(max(Float2(width) - pixel * 0.5, Float2(0)), Float2(width) + pixel * 0.5, distance)
+    return max(line.x, line.y) * (1.0 - smoothstep(0.22, 0.6, max(pixel.x, pixel.y)))
+}
+
+@Fragment
+func materialFragment(
+    input: MaterialVertex
+    u: @Uniform(1) U3
+    photons: @ReadOnlyStorage(2) Float
+    baked: @ReadOnlyStorage(3) Float
+    detailLight: @Constant(4) Float4
+    spots: @Constant(5) Float4
+    env: @Constant(6) Float4
+    detail: @Texture(30) DepthTexture2D
+    clouds: @Texture(31) Texture2D
+): Float4 {
+    fin context = materialContext(input, u, photons, baked, detailLight, env, detail, clouds)
+    fin n = abs(normalize(input.normal))
+    fin uv = if n.y >= max(n.x, n.z) then input.world.xz else
+        (if n.z >= n.x then input.world.xy else input.world.zy)
+    fin fine = gridLine(uv * 4.0, 0.019)
+    fin coarse = gridLine(uv, 0.014)
+    fin layout = gridLine(uv * 0.25, 0.006)
+    fin tile = fract((floor(uv.x) + floor(uv.y)) * 0.5) * 2.0
+    fin base = pow(u.color.rgb, Float3(2.2)) * (0.95 + tile * 0.08)
+    fin shade = (1.0 - 0.14 * fine) * (1.0 - 0.34 * coarse) * (1.0 - 0.31 * layout)
+    return materialColor(slab(context, base * shade, 0.78, 0.0, 0.0), input, context, u, spots)
+}
