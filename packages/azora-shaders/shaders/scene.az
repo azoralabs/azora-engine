@@ -1,0 +1,390 @@
+@Execution("GPU")
+module engine.shaders.scene
+
+/**
+ * The engine's own pipelines: lit meshes (standard material), the 2D layer (UI, text, shapes,
+ * images), the simple sky, per-object motion, the temporal upscale resolve and the Photon Field's
+ * irradiance gather. Bindings match engine.gpu's host code.
+ */
+import engine.lighting.photon
+import engine.atmosphere.fog
+import engine.atmosphere.simpleSky
+import engine.shaders.sceneUniforms
+
+pack SceneVertex {
+    @Position
+    fin position: Float4
+    @Location(0)
+    fin normal: Float3
+    @Location(1)
+    fin world: Float3
+}
+
+/** A mesh vertex (position, normal: six floats) placed by the model matrix; normals by its cofactor. */
+@Vertex
+func sceneVertex(id: @VertexIndex UInt, verts: @ReadOnlyStorage(0) Float, u: @Uniform(1) U3): SceneVertex {
+    fin base = Int(id) * 6
+    fin p = Float3(verts[base], verts[base + 1], verts[base + 2])
+    fin n = Float3(verts[base + 3], verts[base + 4], verts[base + 5])
+    fin world = u.model * Float4(p, 1.0)
+    fin x = u.model[0].xyz
+    fin y = u.model[1].xyz
+    fin z = u.model[2].xyz
+    fin cof = Float3x3(cross(y, z), cross(z, x), cross(x, y))
+    fin normal = cof * n * (if dot(x, cof[0]) < 0.0 then -1.0 else 1.0)
+    return SceneVertex(u.viewProj * world, normal, world.xyz)
+}
+
+/** The standard material: sun, bounce light, local lights, wet and snowy surfaces, height fog. */
+@Fragment
+func sceneFragment(input: SceneVertex, u: @Uniform(1) U3, photons: @ReadOnlyStorage(2) Float, baked: @ReadOnlyStorage(3) Float,
+                   detailLight: @Constant(4) Float4, spots: @Constant(5) Float4, env: @Constant(6) Float4,
+                   detail: @Texture(30) DepthTexture2D, clouds: @Texture(31) Texture2D): Float4 {
+    fin n = normalize(input.normal)
+    fin l = normalize(u.light.xyz)
+    fin v = normalize(u.eye.xyz - input.world)
+    fin d = max(dot(n, l), 0.0)
+    fin ambient = clamp(u.light.w, 0.0, 1.0)
+    fin p = scenePhotonLight(photons, baked, detail, detailLight, input.world, n, u.eye.w, u.sun.xyz)
+    fin sun = p.visibility * cloudShade(env, clouds, input.world)
+    fin wet = sceneWetness(env, n)
+    fin snow = sceneSnow(env, n, input.world)
+    fin albedo = mix(u.color.rgb * (1.0 - 0.45 * wet), Float3(0.9, 0.92, 0.95), snow)
+    fin i = Float3(ambient) + (1.0 - ambient) * d * sun * p.sunColor + p.indirect + sceneFlash(env, n)
+    fin haze = heightFog(u.eye.xyz, input.world, u.fog.w, u.fogShape)
+    var lit = albedo * (i + u.extra.x) + localLights(spots, input.world, n, v, albedo, Float3(0.04 + 0.04 * wet))
+    // A wet surface: a sharp sun highlight and the sky's colour at grazing angles.
+    fin fres = 0.04 + 0.96 * pow(1.0 - saturate(dot(n, v)), 5.0)
+    lit += wet * (1.0 - snow) * (p.sunColor * sun * d * pow(saturate(dot(n, normalize(l + v))), 90.0) * 1.6 + u.fog.xyz * fres * 0.3)
+    return Float4(mix(lit, u.fog.xyz, haze), u.color.a)
+}
+
+/** 2D uniforms: viewport in points, mode (0 colour, 1 glyph, 2 image, 3 shape, 4 round image) and the shape. */
+pack U2 {
+    fin viewport: Float2
+    fin mode: Float
+    fin pad: Float
+    fin shape: Float4
+}
+
+pack FlatVertex {
+    @Position
+    fin position: Float4
+    @Location(0)
+    fin uv: Float2
+    @Location(1)
+    fin color: Float4
+}
+
+/** A 2D vertex (x, y, u, v, r, g, b, a) in points, top-left origin. */
+@Vertex
+func flatVertex(id: @VertexIndex UInt, verts: @ReadOnlyStorage(0) Float, u: @Uniform(1) U2): FlatVertex {
+    fin base = Int(id) * 8
+    fin p = Float2(verts[base], verts[base + 1])
+    return FlatVertex(Float4(p.x / u.viewport.x * 2.0 - 1.0, 1.0 - p.y / u.viewport.y * 2.0, 0.0, 1.0),
+        Float2(verts[base + 2], verts[base + 3]), Float4(verts[base + 4], verts[base + 5], verts[base + 6], verts[base + 7]))
+}
+
+@Fragment
+func flatFragment(input: FlatVertex, u: @Uniform(1) U2, tex: @Texture(0) Texture2D, smp: @Sampler(0) Sampler): Float4 {
+    if u.mode > 3.5 {
+        fin coverage = clamp(0.5 + u.shape.z - distance(input.position.xy, u.shape.xy), 0.0, 1.0)
+        fin pixel = tex.sample(smp, input.uv)
+        return Float4(pixel.rgb * input.color.rgb, pixel.a * input.color.a * coverage)
+    }
+    if u.mode > 2.5 {
+        // Shape mode: uv is the pixel offset inside a rounded rectangle of shape.xy pixels with corner
+        // radius shape.z; shape.w > 0 strokes only an inner border that many pixels wide. Coverage is
+        // the signed distance to the edge, which antialiases every corner.
+        fin halfSize = u.shape.xy * 0.5
+        fin radius = min(u.shape.z, min(halfSize.x, halfSize.y))
+        fin q = abs(input.uv - halfSize) - halfSize + radius
+        fin d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius
+        var coverage = clamp(0.5 - d, 0.0, 1.0)
+        if u.shape.w > 0.0 then coverage *= clamp(0.5 + d + u.shape.w, 0.0, 1.0)
+        return Float4(input.color.rgb, input.color.a * coverage)
+    }
+    if u.mode > 1.5 {
+        // Image mode: the texture supplies colour, the vertex tints it.
+        fin t = tex.sample(smp, input.uv)
+        return Float4(t.rgb * input.color.rgb, t.a * input.color.a)
+    }
+    // Glyph mode: the texture is a coverage mask, the vertex is the colour.
+    if u.mode > 0.5 then return Float4(input.color.rgb, input.color.a * tex.sample(smp, input.uv).a)
+    return input.color
+}
+
+pack SkyPoint {
+    @Position
+    fin position: Float4
+    @Location(0)
+    fin ndc: Float2
+}
+
+/** One triangle covering the view, at the far plane. */
+@Vertex
+func skyVertex(index: @VertexIndex UInt, u: @Uniform(0) SkyUniform): SkyPoint {
+    fin p = Float2(if index == 1 then 3.0 else -1.0, if index == 2 then 3.0 else -1.0)
+    return SkyPoint(Float4(p * u.rect.xy + u.rect.zw, 0.9999, 1.0), p)
+}
+
+@Fragment
+func skyFragment(input: SkyPoint, u: @Uniform(0) SkyUniform): Float4 = Float4(simpleSkyColor(u, input.ndc), 1.0)
+
+// ── Per-object motion for the temporal resolve ──
+
+pack VelocityU {
+    fin jittered: Float4x4
+    fin current: Float4x4
+    fin previous: Float4x4
+    fin model: Float4x4
+    fin previousModel: Float4x4
+}
+
+pack VelocityPoint {
+    @Position
+    fin position: Float4
+    @Location(0)
+    fin now: Float4
+    @Location(1)
+    fin before: Float4
+}
+
+@Vertex
+func velocityVertex(id: @VertexIndex UInt, verts: @ReadOnlyStorage(0) Float, u: @Uniform(1) VelocityU): VelocityPoint {
+    fin base = Int(id) * 6
+    fin p = Float4(verts[base], verts[base + 1], verts[base + 2], 1.0)
+    fin world = u.model * p
+    var position = u.jittered * world
+    // A hair in front of the scene's own depth for the same surface, so the test lets it through (depth is reversed: nearer is larger).
+    position.z += 0.0002 * position.w
+    return VelocityPoint(position, u.current * world, u.previous * (u.previousModel * p))
+}
+
+@Fragment
+func velocityFragment(input: VelocityPoint): Float4 = Float4(input.now.xy / input.now.w - input.before.xy / input.before.w, 0.0, 1.0)
+
+// ── Temporal upscaling ──
+//
+// One full-resolution pixel from the half-resolution scene and the history. The scene was drawn
+// with its geometry shifted by `jitter` low-resolution pixels, so sample i holds the point that
+// sits at i + 0.5 - jitter. The 3x3 samples nearest the pixel are blended by distance, and their
+// spread bounds how far the reprojected history may differ from them - what a surface that moved,
+// appeared or vanished would otherwise leave behind as a ghost.
+
+pack ResolveU {
+    fin invViewProj: Float4x4
+    fin prevViewProj: Float4x4
+    fin rect: Float4
+    fin jitter: Float4
+    fin params: Float4
+    fin motion: Float4
+}
+
+pack ResolvePoint {
+    @Position
+    fin position: Float4
+}
+
+pack ResolveTargets {
+    @Location(0)
+    fin screen: Float4
+    @Location(1)
+    fin history: Float4
+}
+
+inline fin resolveLinear = Sampler(.Linear, .ClampToEdge)
+
+@Vertex
+func resolveVertex(id: @VertexIndex UInt, u: @Uniform(0) ResolveU): ResolvePoint {
+    fin corner = Float2(Float(id & 1), Float(id >> 1)) * 2.0 - 1.0
+    return ResolvePoint(Float4(corner * u.rect.xy + u.rect.zw, 0.0, 1.0))
+}
+
+func toYCoCg(c: Float3): Float3 = Float3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b)
+
+func fromYCoCg(c: Float3): Float3 = Float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z)
+
+/** The history at [pixel] by a 5-tap Catmull-Rom filter. */
+func historyAt(h: Texture2D, s: Sampler, pixel: Float2, size: Float2): Float4 {
+    fin one = floor(pixel - 0.5) + 0.5
+    fin f = pixel - one
+    fin w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    fin w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    fin w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    fin w3 = f * f * (-0.5 + 0.5 * f)
+    fin w12 = w1 + w2
+    fin at12 = (one + w2 / w12) / size
+    fin at0 = (one - 1.0) / size
+    fin at3 = (one + 2.0) / size
+    fin sum = h.sample(s, Float2(at12.x, at0.y)) * (w12.x * w0.y) + h.sample(s, Float2(at0.x, at12.y)) * (w0.x * w12.y) +
+        h.sample(s, at12) * (w12.x * w12.y) + h.sample(s, Float2(at3.x, at12.y)) * (w3.x * w12.y) +
+        h.sample(s, Float2(at12.x, at3.y)) * (w12.x * w3.y)
+    return sum / (w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y)
+}
+
+@Fragment
+func resolveFragment(input: ResolvePoint, u: @Uniform(0) ResolveU, current: @Texture(0) Texture2D, depth: @Texture(1) DepthTexture2D,
+                     history: @Texture(2) Texture2D, motion: @Texture(3) Texture2D): ResolveTargets {
+    fin full = u.params.yz
+    fin low = u.jitter.zw
+    fin jitter = u.jitter.xy
+    fin pixel = input.position.xy
+    fin q = pixel * (low / full)
+    fin base = Int2(floor(q + jitter))
+    fin limit = Int2(low) - 1
+    if u.motion.y > 0.5 {
+        fin plain = current.read(UInt2(clamp(base, Int2(0), limit)))
+        return ResolveTargets(plain, plain)
+    }
+    var sum = Float4(0.0)
+    var crisp = Float4(0.0)
+    var m1 = Float4(0.0)
+    var m2 = Float4(0.0)
+    var weights = 0.0
+    var crispWeights = 0.0
+    var closest = 0.0
+    var nearest = 0.0
+    var front = base
+    fin outward = full / low
+    for j: Int in -1..1 {
+        for i: Int in -1..1 {
+            fin at = clamp(base + Int2(i, j), Int2(0), limit)
+            fin c = current.read(UInt2(at))
+            fin v = Float4(toYCoCg(c.rgb), c.a)
+            fin d = Float2(at) + 0.5 - jitter - q
+            fin w = exp(-2.0 * dot(d, d))
+            // The same distance in output pixels: a sample this close is this pixel's own.
+            fin e = d * outward
+            fin k = exp(-2.47 * dot(e, e))
+            sum += v * w
+            weights += w
+            crisp += v * k
+            crispWeights += k
+            closest = max(closest, k)
+            m1 += v
+            m2 += v * v
+            fin z = depth.read(UInt2(at))
+            if z > nearest {
+                nearest = z
+                front = at
+            }
+        }
+    }
+    fin now = sum / weights
+    fin mean = m1 / 9.0
+    fin spread = sqrt(max(m2 / 9.0 - mean * mean, 0.0))
+    fin own = if crispWeights > 1.0e-3 then crisp / crispWeights else now
+    var result = now
+    if u.params.x > 0.5 {
+        fin ndc = Float2(pixel.x / full.x * 2.0 - 1.0, 1.0 - pixel.y / full.y * 2.0)
+        var was = Float2(0.0)
+        var ahead = true
+        // The nearest surface in reach decides: a moving object's own motion where one
+        // was drawn, the camera's for everything that stood still.
+        fin moved = if u.motion.x > 0.5 then motion.read(UInt2(front)) else Float4(0.0)
+        if moved.a > 0.5 {
+            was = ndc - moved.xy
+        } else {
+            fin world = u.invViewProj * Float4(ndc, nearest, 1.0)
+            fin before = u.prevViewProj * Float4(world.xyz / world.w, 1.0)
+            was = before.xy / before.w
+            ahead = before.w > 0.0
+        }
+        fin seen = Float2((was.x + 1.0) * 0.5 * full.x, (1.0 - was.y) * 0.5 * full.y)
+        if ahead && all(seen >= 0.5) && all(seen <= full - 0.5) {
+            fin h = historyAt(history, resolveLinear, seen, full)
+            fin past = Float4(toYCoCg(h.rgb), h.a)
+            fin kept = clamp(past, mean - 1.25 * spread, mean + 1.25 * spread)
+            // History the neighbourhood rejected belongs to something that moved: there the
+            // smooth reconstruction stands in, rather than the nearest sample's stair-step.
+            fin rejected = saturate(length(past.rgb - kept.rgb) / (length(spread.rgb) + 1.0e-3) - 0.5)
+            // A sample landing on the pixel refreshes it; one beside it barely does,
+            // so over the eight jitter phases each pixel gathers its own samples.
+            fin refresh = mix(u.params.w * (0.25 + 1.75 * closest), 0.5, rejected)
+            result = mix(kept, mix(own, now, rejected), refresh)
+        }
+    }
+    fin color = Float4(max(fromYCoCg(result.rgb), 0.0), saturate(result.a))
+    // Keep the history ungraded. The final image can recover small details without ringing across edges.
+    fin luma = result.x + u.motion.z * clamp(own.x - mean.x, -0.072, 0.072)
+    var screen = max(fromYCoCg(Float3(luma, result.yz)), 0.0)
+    fin shadows = 1.0 - smoothstep(0.06, 0.58, luma)
+    fin highlights = smoothstep(0.45, 0.98, luma)
+    fin contrast = 0.07 * luma * (1.0 - luma) * (2.0 * luma - 0.82)
+    screen += u.motion.w * (Float3(contrast) + Float3(-0.012, 0.005, 0.017) * shadows * luma + Float3(0.013, 0.003, -0.013) * highlights)
+    return ResolveTargets(Float4(saturate(screen), color.a), color)
+}
+
+// ── Photon Field ──
+
+/**
+ * The bounce light each field sample receives, as an ambient cube: what reaches a surface facing
+ * +x, -x, +y, -y, +z and -z there. Same gather as the per-pixel one, with twice the rings, run
+ * once per sample when the field is rebuilt.
+ */
+@Compute(64, 1, 1)
+func photonIrradiance(id: @GlobalInvocationId UInt3, map: @Storage(0) Float, count: @Uniform(1) Float) {
+    if Float(id.x) >= count then return
+    fin index = Int(id.x)
+    fin side = Int(map[3])
+    fin res = Int(map[4])
+    fin first = 24 + side * side
+    fin perPage = res * res
+    fin a = first + index * 8
+    fin o = Int(map[23]) + index * 18
+    for k: Int in 0..<18 then map[o + k] = 0.0
+    if map[a + 7] < 0.5 then return
+    fin slot = index / perPage
+    var cell = -1
+    for c: Int in 0..<side * side {
+        if Int(map[24 + c]) == slot {
+            cell = c
+            break
+        }
+    }
+    if cell < 0 then return
+    fin inner = index - slot * perPage
+    fin pixel = map[5] / map[4]
+    fin uv = Float2(map[1] + Float(cell % side), map[2] + Float(cell / side)) * map[5] + (Float2(inner % res, inner / res) + 0.5) * pixel
+    fin x = photonVector(map, 10)
+    fin y = photonVector(map, 13)
+    fin z = photonVector(map, 16)
+    fin depth = map[a]
+    fin radius = map[9]
+    var cube: Array<Float3, 6> = []
+    for i: Int in 0..<16 {
+        fin angle = Float(i) * 2.39996323
+        fin requested = uv + Float2(cos(angle), sin(angle)) * radius * sqrt((Float(i) + 0.5) / 16.0)
+        fin grid = requested / pixel - 0.5
+        fin base = floor(grid)
+        fin sub = fract(grid)
+        for j: Int in 0..<4 {
+            fin k = Float2(j % 2, j / 2)
+            fin blend = mix(1.0 - sub, sub, k)
+            fin w = blend.x * blend.y
+            fin spot = (base + k + 0.5) * pixel
+            fin b = photonSample(map, spot)
+            if b < 0 || map[b + 7] < 0.5 then continue
+            fin offset = spot - uv
+            fin delta = x * offset.x + y * offset.y + z * (map[b] - depth)
+            fin d2 = dot(delta, delta)
+            if d2 < 2.25 * pixel * pixel || d2 > radius * radius then continue
+            fin ray = delta * rsqrt(d2)
+            fin emit = w * photonVector(map, b + 1) * saturate(dot(photonVector(map, b + 4), -ray)) * (1.0 - d2 / (radius * radius)) / (1.0 + d2)
+            cube[0] += emit * saturate(ray.x)
+            cube[1] += emit * saturate(-ray.x)
+            cube[2] += emit * saturate(ray.y)
+            cube[3] += emit * saturate(-ray.y)
+            cube[4] += emit * saturate(ray.z)
+            cube[5] += emit * saturate(-ray.z)
+        }
+    }
+    // Half the rings of 16 per pixel before: the same light, sampled twice as finely.
+    for f: Int in 0..<6 {
+        fin e = cube[f] * 0.5
+        map[o + f * 3] = e.x
+        map[o + f * 3 + 1] = e.y
+        map[o + f * 3 + 2] = e.z
+    }
+}

@@ -79,7 +79,7 @@ cp "$ROOT_DIR/library.json" "$DIST/"
 cp "$ROOT_DIR/workspace.azon" "$DIST/"
 cp -R "$ROOT_DIR/packages/." "$DIST/packages/"
 cp "$ROOT_DIR/runtime/include/azora_runtime.h" "$DIST/runtime/include/"
-cp "$ROOT_DIR/tools/build.sh" "$ROOT_DIR/tools/fusion-cook.sh" "$ROOT_DIR/tools/azon.py" "$ROOT_DIR/tools/azpm.py" "$DIST/tools/"
+cp "$ROOT_DIR/tools/build.sh" "$ROOT_DIR/tools/shader-cook.sh" "$ROOT_DIR/tools/azon.py" "$ROOT_DIR/tools/azpm.py" "$DIST/tools/"
 # The compiler's LLVM backend is pure text generation (clang assembles the IR),
 # so the huge llvm/javacpp binding jars are not needed at runtime.
 for jar in "$AZORAC_LIB/"*.jar; do

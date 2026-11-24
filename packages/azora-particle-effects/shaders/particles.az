@@ -1,0 +1,398 @@
+@Execution("GPU")
+module engine.shaders.particleEffects.particles
+
+pack ParticleU {
+    var viewProj: Float4x4
+    // this frame's clip transform (drawing)
+    var previousViewProj: Float4x4
+    // the frame whose depth collisions read
+    var previousInverse: Float4x4
+    var eye: Float4
+    // eye, seconds
+    var step: Float4
+    // dt, gravity, drag, terminal speed (0: none)
+    var wind: Float4
+    // wind m/s, how much it carries
+    var spawn: Float4
+    // shape (0 point, 1 sphere, 2 box, 3 camera box), extent
+    var origin: Float4
+    // where it spawns, spread m/s
+    var velocity: Float4
+    // initial velocity, turbulence
+    var life: Float4
+    // life min, max, active count, capacity
+    var sizes: Float4
+    // size start, end, streak exposure s, soft depth m
+    var colorStart: Float4
+    var colorEnd: Float4
+    var render: Float4
+    // shape (0 billboard, 1 streak), lit 0..1, focal px, collision (0 none, 1 kill, 2 bounce)
+    var screen: Float4
+    // drawable px, depth px
+    var depth: Float4
+    // near, far, collision thickness m, bounce
+    var light: Float4
+    // toward the sun or moon, its strength
+    var lightColor: Float4
+    // its colour, ambient
+    var air: Float4
+    // the air's colour (display), near fade m
+    var counters: Float4
+    // seed, spawn count, per event, rings (1) or puffs (2)
+    var motion: Float4
+    // the eye's velocity, events capacity
+}
+
+func particleHash(xValue: UInt): UInt {
+    var x = xValue
+    x ^= x >> 16
+    x *= 2146121005
+    x ^= x >> 15
+    x *= 2221713035
+    x ^= x >> 16
+    return x
+}
+
+func particleRandom(x: UInt): Float {
+    return Float(particleHash(x)) / 4294967295.0
+}
+
+func particleRandom3(x: UInt): Float3 {
+    return Float3(particleRandom(x * 3 + 1), particleRandom(x * 3 + 2), particleRandom(x * 3 + 3))
+}
+
+func randomDirection(key: UInt): Float3 {
+    fin z: Float = particleRandom(key) * 2.0 - 1.0
+    fin a: Float = particleRandom(key + 7) * 6.2831853
+    fin r: Float = sqrt(max(1.0 - z * z, 0.0))
+    return Float3(r * cos(a), z, r * sin(a))
+}
+
+/** A new particle at slot [slot] of a rate or camera-box system. */
+func spawnParticle(p: @Storage Float4, slot: UInt, key: UInt, u: @Uniform ParticleU, top: Bool) {
+    fin r: Float3 = particleRandom3(key)
+    var at: Float3 = Float3(0)
+    fin shape: Int = Int(u.spawn.x)
+    if shape == 1 then at = u.origin.xyz + randomDirection(key + 11) * u.spawn.y * pow(r.x, 0.3333)
+    else if shape == 2 then at = u.origin.xyz + (r * 2.0 - 1.0) * u.spawn.yzw
+    else if shape == 3 {
+        // The camera's box: anywhere in it, or (respawning) across its top.
+        at = u.eye.xyz + (r * 2.0 - 1.0) * u.spawn.yzw
+        if top then at.y = u.eye.y + u.spawn.z * (1.0 - 0.1 * r.y)
+    } else at = u.origin.xyz
+    fin v: Float3 = u.velocity.xyz + randomDirection(key + 23) * u.origin.w * r.z
+    fin life: Float = mix(u.life.x, u.life.y, particleRandom(key + 31))
+    p[slot * 2] = Float4(at, 0.0)
+    p[slot * 2 + 1] = Float4(v, life)
+}
+
+@Compute(256, 1, 1)
+func particleSpawn(
+    p: @Storage(0) Float4
+    u: @Uniform(1) ParticleU
+    head: @Storage(2) AtomicUInt
+    idGrid: @GlobalInvocationId UInt3
+) {
+    fin id = idGrid.x
+    if id >= UInt(u.counters.y) then return
+    fin slot: UInt = atomicAdd(head[0], 1) % UInt(u.life.w)
+    spawnParticle(p, slot, UInt(u.counters.x) * 7919 + id * 104729, u, false)
+}
+
+/** Fills a camera box: every slot alive, anywhere in the box. */
+@Compute(256, 1, 1)
+func particleFill(p: @Storage(0) Float4, u: @Uniform(1) ParticleU, idGrid: @GlobalInvocationId UInt3) {
+    fin id = idGrid.x
+    if id >= UInt(u.life.w) then return
+    spawnParticle(p, id, UInt(u.counters.x) * 7919 + id * 104729, u, false)
+    fin slot = id * 2
+    p[slot] = Float4(p[slot].xyz, particleRandom(id * 13 + 5) * u.life.y)
+}
+
+/**
+ * Particles from another system's collisions: each event (where, how hard;
+ * the surface's normal) becomes [per event] particles of one kind - rings
+ * lying on up-facing surfaces (1), puffs (2), or droplets thrown up and out (3).
+ */
+@Compute(256, 1, 1)
+func particleSpawnEvents(
+    p: @Storage(0) Float4
+    u: @Uniform(1) ParticleU
+    head: @Storage(2) AtomicUInt
+    events: @Storage(3) AtomicUInt
+    hits: @ReadOnlyStorage(4) Float4
+    idGrid: @GlobalInvocationId UInt3
+) {
+    fin id = idGrid.x
+    fin per: UInt = UInt(u.counters.z)
+    fin count: UInt = min(atomicLoad(events[0]), UInt(u.motion.w))
+    if id >= count * per then return
+    fin e: UInt = id / per
+    fin k: UInt = id % per
+    fin at: Float4 = hits[e * 2]
+    fin normal: Float4 = hits[e * 2 + 1]
+    fin key: UInt = UInt(u.counters.x) * 7919 + id * 104729
+    fin slot: UInt = atomicAdd(head[0], 1) % UInt(u.life.w)
+    fin life: Float = mix(u.life.x, u.life.y, particleRandom(key + 31))
+    fin n: Float3 = normal.xyz
+    fin kind: Int = Int(u.counters.w + 0.5)
+    if kind == 2 {
+        // A puff: rising a little, spreading.
+        p[slot * 2] = Float4(at.xyz + n * 0.02, 0.0)
+        p[slot * 2 + 1] = Float4(n * 0.15 + randomDirection(key) * 0.2, life)
+    } else if kind == 1 {
+        // A ring, only where the surface faces up enough to hold water; elsewhere the slot stays dead.
+        var flat: Bool = n.y > 0.55
+        p[slot * 2] = Float4(at.xyz + n * 0.008, (if flat then 0.0 else 1.0))
+        p[slot * 2 + 1] = Float4(n, (if flat then -life else 0.5))
+    } else {
+        // A droplet thrown up and out of the crown.
+        var side: Float3 = normalize(randomDirection(key + 3) - n * dot(randomDirection(key + 3), n) + Float3(1e-4, 0.0, 0.0))
+        // How hard the drop hit, times the emitter's spread: how high its crown is thrown.
+        fin speed: Float = (0.6 + 0.9 * particleRandom(key + 5)) * min(at.w / 9.0, 1.2) * u.origin.w
+        p[slot * 2] = Float4(at.xyz + n * 0.01, 0.0)
+        p[slot * 2 + 1] = Float4((n * 1.3 + side) * speed, life * 0.8)
+    }
+}
+
+/** The distance a reversed depth (near 1, far 0) stands for, with near and far in u.depth.xy. */
+func sceneDepthDistance(z: Float, u: @Uniform ParticleU): Float {
+    return u.depth.x * u.depth.y / max(u.depth.x + z * (u.depth.y - u.depth.x), 1e-4)
+}
+
+func depthWorld(px: Float2, z: Float, u: @Uniform ParticleU): Float3 {
+    fin ndc: Float2 = Float2(px.x / u.screen.z * 2.0 - 1.0, 1.0 - px.y / u.screen.w * 2.0)
+    fin w: Float4 = u.previousInverse * Float4(ndc, z, 1.0)
+    return w.xyz / w.w
+}
+
+/**
+ * One step of every particle: forces, wind, turbulence, motion; a camera box
+ * wraps what leaves it; collisions against the depth the last frame left
+ * (where a particle went behind the surface by less than its thickness) record
+ * an event, then kill (respawn at the top) or bounce.
+ */
+@Compute(256, 1, 1)
+func particleUpdate(
+    p: @Storage(0) Float4
+    u: @Uniform(1) ParticleU
+    depth: @Texture(0) DepthTexture2D
+    events: @Storage(2) AtomicUInt
+    hits: @Storage(3) Float4
+    idGrid: @GlobalInvocationId UInt3
+) {
+    fin id = idGrid.x
+    if id >= UInt(u.life.w) then return
+    fin box: Bool = Int(u.spawn.x) == 3
+    if box && id >= UInt(u.life.z) then return
+    var a: Float4 = p[id * 2]
+    fin b: Float4 = p[id * 2 + 1]
+    fin life: Float = abs(b.w)
+    fin dt: Float = u.step.x
+    if !box && a.w >= life then return
+    a.w += dt
+    var v: Float3 = b.xyz
+    if b.w < 0.0 {
+        // A ring stays where it is.
+        p[id * 2] = a
+        return
+    }
+    fin carried: Float3 = u.wind.xyz * u.wind.w
+    if u.step.w > 0.0 {
+        // Drag-limited: it settles toward its terminal fall with the wind.
+        fin fall: Float = u.step.w * (0.82 + 0.36 * particleRandom(id * 17 + 3))
+        v = mix(v, carried + Float3(0.0, -fall, 0.0), saturate(dt * u.step.z))
+    } else {
+        v.y -= u.step.y * dt
+        v += (carried - v) * saturate(u.step.z * dt)
+    }
+    if u.velocity.w > 0.0 {
+        fin phase: Float = particleRandom(id * 29 + 1) * 6.2831853
+        fin t: Float = u.eye.w
+        v += Float3(cos(t * 1.1 + phase), 0.0, sin(t * 0.9 + phase * 1.7)) * u.velocity.w * dt * 3.0
+    }
+    var at: Float3 = a.xyz + v * dt
+    fin key: UInt = UInt(u.counters.x) * 7919 + id * 104729
+    if box {
+        var rel: Float3 = at - u.eye.xyz
+        if rel.y < - u.spawn.z {
+            spawnParticle(p, id, key, u, true)
+            return
+        }
+        fin extent: Float3 = u.spawn.yzw * 2.0
+        rel.xz -= extent.xz * floor(rel.xz / extent.xz + 0.5)
+        if rel.y > u.spawn.z then rel.y -= extent.y
+        at = u.eye.xyz + rel
+    }
+    if u.render.w > 0.5 {
+        fin clip: Float4 = u.previousViewProj * Float4(at, 1.0)
+        if clip.w > u.depth.x {
+            fin px: Float2 = Float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5) * u.screen.zw
+            if all(px >= 2.0) && all(px < u.screen.zw - 3.0) {
+                fin z: Float = depth.read(UInt2(px))
+                fin surface: Float = sceneDepthDistance(z, u)
+                if z > 0.0 && clip.w > surface && clip.w < surface + u.depth.z {
+                    fin hit: Float3 = depthWorld(px + 0.5, z, u)
+                    fin dx: Float3 = depthWorld(px + Float2(2.5, 0.5), depth.read(UInt2(px + Float2(2.0, 0.0))), u) - hit
+                    fin dy: Float3 = depthWorld(px + Float2(0.5, 2.5), depth.read(UInt2(px + Float2(0.0, 2.0))), u) - hit
+                    var n: Float3 = normalize(cross(dy, dx) + Float3(0.0, 1e-6, 0.0))
+                    if n.y < 0.0 then n = -n
+                    fin e: UInt = atomicAdd(events[0], 1)
+                    if e < UInt(u.motion.w) {
+                        hits[e * 2] = Float4(hit, length(v))
+                        hits[e * 2 + 1] = Float4(n, 0.0)
+                    }
+                    if u.render.w < 1.5 {
+                        if box then spawnParticle(p, id, key, u, true)
+                        else p[id * 2] = Float4(hit, life)
+                        return
+                    }
+                    v = reflect(v, n) * u.depth.w
+                    at = hit + n * 0.01
+                }
+            }
+        }
+    }
+    p[id * 2] = Float4(at, (if box then fmod(a.w, max(life, 1e-3)) else a.w))
+    p[id * 2 + 1] = Float4(v, b.w)
+}
+
+/** Point and spot lights (the Engine's buffer 5) at a point in the air, scattered forward the way a drop does. */
+func particleLights(lights: @Constant Float4, at: Float3): Float3 {
+    fin count: Int = Int(lights[32].x)
+    var sum: Float3 = Float3(0.0)
+    for i: Int in 0..<count {
+        fin a: Float4 = lights[i * 4]
+        fin b: Float4 = lights[i * 4 + 1]
+        fin c: Float4 = lights[i * 4 + 2]
+        fin toLight: Float3 = a.xyz - at
+        fin d: Float = length(toLight)
+        if d >= a.w || d < 1e-3 then continue
+        fin l: Float3 = toLight / d
+        fin r: Float = d / a.w
+        var fall: Float = saturate(1.0 - r * r * r * r)
+        fall = fall * fall / (1.0 + d * d)
+        fin cone: Float = if b.w < - 1.5 then 1.0 else smoothstep(b.w, c.w, dot(-l, b.xyz))
+        sum += c.xyz * fall * cone
+    }
+    return sum
+}
+
+pack ParticleOut {
+    @Position
+    var pos: Float4
+    @Location(0)
+    var color: Float4
+    @Location(1)
+    var local: Float2
+    @Location(2)
+    var depth: Float
+    @Location(3)
+    var kind: Float
+    // 0 billboard, 1 streak, 2 ring
+    @Location(4)
+    var age: Float
+}
+
+func hiddenParticle(): ParticleOut {
+    var o: ParticleOut = .(Float4(0), Float4(0), Float2(0), 0, 0, 0)
+    o.pos = Float4(0.0, 0.0, -1.0, 1.0)
+    o.color = Float4(0.0)
+    o.local = Float2(0.0)
+    o.depth = 0.0
+    o.kind = 0.0
+    o.age = 1.0
+    return o
+}
+
+/** One particle as a quad (a four-vertex strip per instance): a billboard, a streak back along its motion, or a ring on its surface. */
+@Vertex
+func particleVertex(
+    vid: @VertexIndex UInt
+    iid: @InstanceIndex UInt
+    p: @ReadOnlyStorage(0) Float4
+    u: @Uniform(1) ParticleU
+    lights: @Constant(2) Float4
+): ParticleOut {
+    fin a: Float4 = p[iid * 2]
+    fin b: Float4 = p[iid * 2 + 1]
+    fin box: Bool = Int(u.spawn.x) == 3
+    fin life: Float = abs(b.w)
+    if iid >= UInt(u.life.z) || (!box && a.w >= life) then return hiddenParticle()
+    fin t: Float = if box then 0.0 else saturate(a.w / max(life, 1e-4))
+    fin size: Float = mix(u.sizes.x, u.sizes.y, t)
+    fin at: Float3 = a.xyz
+    fin rel: Float3 = at - u.eye.xyz
+    fin dist: Float = length(rel)
+    var fade: Float = smoothstep(u.air.w * 0.4, u.air.w, dist)
+    if box then fade *= 1.0 - smoothstep(0.78, 1.0, max(max(abs(rel.x) / u.spawn.y, abs(rel.y) / u.spawn.z), abs(rel.z) / u.spawn.w))
+    fin tint: Float4 = mix(u.colorStart, u.colorEnd, t)
+    // Lit like something translucent in the air: the air's own light, the sun or moon, the lamps it passes.
+    fin lit: Float3 = u.air.rgb * 1.2 + u.lightColor.rgb * u.light.w * 0.25 + particleLights(lights, at) * 1.5
+    fin color: Float3 = tint.rgb * mix(Float3(1.0), lit, u.render.y)
+    fin corner: Float2 = Float2((if(vid & 1) == 0 then -1.0 else 1.0), (if vid < 2 then -1.0 else 1.0))
+    var o: ParticleOut = .(Float4(0), Float4(0), Float2(0), 0, 0, 0)
+    o.local = corner
+    o.age = t
+    fin halfScreen: Float2 = u.screen.xy * 0.5
+    if b.w < 0.0 {
+        // A ring lying on its surface, widening as it ages.
+        fin n: Float3 = b.xyz
+        fin tx: Float3 = normalize(cross(n, Float3(0.0, 0.0, 1.0)) + Float3(1e-4, 0.0, 0.0))
+        fin ty: Float3 = cross(n, tx)
+        fin clip: Float4 = u.viewProj * Float4(at + (tx * corner.x + ty * corner.y) * size, 1.0)
+        if clip.w < 0.05 then return hiddenParticle()
+        o.pos = clip
+        o.depth = clip.w
+        o.kind = 2.0
+        o.color = Float4(color, tint.a * fade * (1.0 - t) * (1.0 - t))
+        return o
+    }
+    fin head: Float4 = u.viewProj * Float4(at, 1.0)
+    fin moving: Float3 = b.xyz - u.motion.xyz
+    fin streak: Bool = u.render.x > 0.5
+    fin back: Float3 = if streak then moving * u.sizes.z else Float3(0.0)
+    fin tail: Float4 = u.viewProj * Float4(at - back, 1.0)
+    if head.w < 0.05 || tail.w < 0.05 then return hiddenParticle()
+    fin sa: Float2 = head.xy / head.w * halfScreen
+    fin sb: Float2 = tail.xy / tail.w * halfScreen
+    fin d: Float2 = sb - sa
+    fin span: Float = length(d)
+    fin axis: Float2 = if span > 1e-3 then d / span else Float2(0.0, -1.0)
+    fin normal: Float2 = Float2(-axis.y, axis.x)
+    fin width: Float = size * u.render.z / head.w
+    fin drawn: Float = max(width, 1.0)
+    fin tailEnd: Bool = vid >= 2
+    fin place: Float2 = ((if tailEnd then sb else sa)) + axis * ((if tailEnd then drawn * 0.5 else -drawn * 0.5)) + normal * corner.x * drawn * 0.5
+    fin clip: Float4 = if tailEnd then tail else head
+    o.pos = Float4(place / halfScreen * clip.w, clip.z, clip.w)
+    o.depth = clip.w
+    o.kind = if streak then 1.0 else 0.0
+    // Thinner than a pixel: one pixel wide, as transparent as it is thin (no shimmer).
+    o.color = Float4(color, tint.a * fade * min(width / drawn, 1.0))
+    return o
+}
+
+@Fragment
+func particleFragment(input: ParticleOut, u: @Uniform(1) ParticleU, scene: @Texture(0) DepthTexture2D): Float4 {
+    if input.color.a <= 0.002 then discardFragment()
+    fin px: Float2 = input.pos.xy * (u.screen.zw / u.screen.xy)
+    fin at: UInt2 = UInt2(clamp(px, Float2(0.0), u.screen.zw - 1.0))
+    fin behind: Float = sceneDepthDistance(scene.read(at), u) - input.depth
+    // A ring lies on the surface it was spawned from: it is seen unless something stands in front of it.
+    // Everything else fades softly into what is behind it, with a little slack for a half-resolution depth.
+    fin visible: Float = if input.kind > 1.5 then step(-0.12, behind) else saturate((behind + 0.03) / max(u.sizes.w, 1e-3))
+    if visible <= 0.0 then discardFragment()
+    var shape: Float = Float(0)
+    if input.kind > 1.5 {
+        fin r: Float = length(input.local)
+        shape = exp(-pow((r - 0.82) / 0.1, 2.0)) + 0.35 * exp(-pow((r - 0.5) / 0.09, 2.0)) * step(0.3, input.age)
+    } else if input.kind > 0.5 {
+        var along: Float = input.local.y * 0.5 + 0.5
+        shape = smoothstep(0.0, 0.25, along) * (1.0 - smoothstep(0.75, 1.0, along)) * (1.0 - smoothstep(0.5, 1.0, abs(input.local.x)))
+    } else {
+        shape = 1.0 - smoothstep(0.3, 1.0, length(input.local))
+    }
+    fin a: Float = input.color.a * shape * visible
+    return Float4(input.color.rgb * a, a)
+}

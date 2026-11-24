@@ -344,14 +344,11 @@ impl App {
         self.gpu.fusion.root = root
     }
 
-    /** Performs graph and Metal compilation before the scene begins rendering. */
+    /** Loads the scene's cooked material shaders before rendering. */
     func !.prepareFusionMaterials(world: World!) {
         fin components = ensureStorage<FusionMaterial>(world)
-        var index = 0
-        while index < storageLength<FusionMaterial>(components) {
+        for index: Int in 0..<storageLength<FusionMaterial>(components) then
             self.gpu.fusion.resolve(self.gpu.device, components.values[index].asset)
-            index++
-        }
     }
 
     func !.scenePipeline(world: World!, entity: Entity): Long {

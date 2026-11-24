@@ -36,8 +36,8 @@ import engine.math
 import engine.ecs
 import engine.scene
 import engine.objc
+import engine.objc.shader
 import engine.io
-import engine.particles.shader
 
 /** What an emitter makes: where particles appear, how they move and fall, what they look like, what they hit. */
 @Component
@@ -153,8 +153,8 @@ func particleKernel(device: Long, library: Long, name: String): Long {
 
 /** The draw: colour premultiplied over what is there ([additive]: added to it), the drawable's depth attached, untested. */
 func particleDrawPipeline(device: Long, library: Long, additive: Bool): Long {
-    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("particle_vertex"))
-    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("particle_fragment"))
+    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("particleVertex"))
+    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("particleFragment"))
     defer {
         if vertexStage != 0 then send0(vertexStage, sel("release"))
         if fragmentStage != 0 then send0(fragmentStage, sel("release"))
@@ -188,20 +188,12 @@ func makeParticlePipelines(device: Long): ParticlePipelines {
         i += 4
     }
     if device == 0 then return pipes
-    fin diagnostic = azAlloc(8)
-    azPoke64(diagnostic, 0, 0)
-    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(particleMetalSource()), 0, diagnostic)
-    if library == 0 {
-        println("azora-engine: particle shaders did not compile:")
-        println(particleMetalReason(diagnostic))
-        azFree(diagnostic)
-        return pipes
-    }
-    azFree(diagnostic)
-    pipes.spawn = particleKernel(device, library, "particle_spawn")
-    pipes.fill = particleKernel(device, library, "particle_fill")
-    pipes.spawnEvents = particleKernel(device, library, "particle_spawn_events")
-    pipes.update = particleKernel(device, library, "particle_update")
+    fin library = shaderLibrary(device, "particles")
+    if library == 0 then return pipes
+    pipes.spawn = particleKernel(device, library, "particleSpawn")
+    pipes.fill = particleKernel(device, library, "particleFill")
+    pipes.spawnEvents = particleKernel(device, library, "particleSpawnEvents")
+    pipes.update = particleKernel(device, library, "particleUpdate")
     pipes.draw = particleDrawPipeline(device, library, false)
     pipes.additive = particleDrawPipeline(device, library, true)
     send0(library, sel("release"))

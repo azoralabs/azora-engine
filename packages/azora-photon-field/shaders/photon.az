@@ -1,0 +1,231 @@
+/**
+ * Light on a surface from the scene: the Photon Field (sun visibility and bounce light), the
+ * sun's sharp shadow cascade, point and spot lights, and the weather as surfaces see it.
+ * Shared by the standard pipeline, the water, foliage and every material.
+ */
+@Execution("GPU")
+module engine.lighting.photon
+
+/** What a surface receives: how much of the sun reaches it, the bounce light, and the sun's colour. */
+pack PhotonLighting {
+    var visibility: Float
+    var indirect: Float3
+    var sunColor: Float3
+}
+
+inline fin cascadeCompare = CompareSampler(.Linear, .ClampToEdge, .LessEqual)
+inline fin cloudSampler = Sampler(.Linear, .ClampToEdge)
+
+/** Three floats of [map] from [i]. */
+func photonVector(map: @ReadOnlyStorage Float, i: Int): Float3 = Float3(map[i], map[i + 1], map[i + 2])
+
+/** Where the field sample under [uv] starts in [map], or -1 outside its loaded pages. */
+func photonSample(map: @ReadOnlyStorage Float, uv: Float2): Int {
+    fin cell = uv / map[5]
+    fin page = Int2(floor(cell)) - Int2(map[1], map[2])
+    fin side = Int(map[3])
+    fin res = Int(map[4])
+    if any(page < 0) || any(page >= side) then return -1
+    fin slot = Int(map[24 + page.y * side + page.x])
+    if slot < 0 then return -1
+    fin at = clamp(Int2(fract(cell) * Float(res)), 0, res - 1)
+    return 24 + side * side + ((slot * res + at.y) * res + at.x) * 8
+}
+
+/** The field's light at [p] facing [n]: its shadow (a 4x4 tent) and its bounce light, each when asked for. */
+func photonLighting(map: @ReadOnlyStorage Float, p: Float3, n: Float3, useShadows: Bool, useGI: Bool): PhotonLighting {
+    if map[0] < 0.5 then return PhotonLighting(1.0, Float3(0.0), Float3(1.0))
+    fin x = photonVector(map, 10)
+    fin y = photonVector(map, 13)
+    fin z = photonVector(map, 16)
+    fin uv = Float2(dot(p, x), dot(p, y))
+    fin depth = dot(p, z)
+    fin pixel = map[5] / map[4]
+    var shadow = 0.0
+    var weights = 0.0
+    fin facing = dot(n, z)
+    if useShadows && map[7] > 0.0 && facing > 0.0 {
+        fin plane = Float2(dot(n, x), dot(n, y)) / max(facing, 0.16)
+        fin bias = map[6] + pixel * (0.32 + 0.18 * length(plane))
+        fin grid = uv / pixel - 0.5
+        fin base = floor(grid)
+        fin sub = fract(grid)
+        // Tap g is sample g of the field's grid. The sixteen fall in one page, or near a
+        // corner in up to four: each page's slot is read once, not once per tap.
+        fin side = Int(map[3])
+        fin res = Int(map[4])
+        fin first = 24 + side * side
+        var known = -1
+        var slot = -1
+        fin origin = Int2(map[1], map[2])
+        for j: Int in -1..2 {
+            for i: Int in -1..2 {
+                fin offset = Float2(i, j)
+                fin tent = max(Float2(0.0), 1.65 - abs(offset - sub))
+                fin w = tent.x * tent.y
+                fin tap = (base + offset + 0.5) * pixel
+                fin g = base + offset
+                fin receiver = depth - dot(plane, tap - uv)
+                fin page = Int2(floor(g / Float(res)))
+                fin inner = Int2(g) - page * res
+                fin at = page - origin
+                fin cell = if any(at < 0) || any(at >= side) then -1 else at.y * side + at.x
+                if cell != known {
+                    known = cell
+                    slot = if cell < 0 then -1 else Int(map[24 + cell])
+                }
+                if slot >= 0 then shadow += w * smoothstep(bias, bias + 0.35 * pixel, map[first + ((slot * res + inner.y) * res + inner.x) * 8] - receiver)
+                weights += w
+            }
+        }
+    }
+    var indirect = Float3(0.0)
+    fin radius = map[9]
+    if useGI && map[8] > 0.0 && map[23] > 0.5 {
+        // Gathered once per sample (photonIrradiance): four reads, not thirty-two.
+        fin first = 24 + Int(map[3]) * Int(map[3])
+        fin n2 = n * n
+        var gathered = 0.0
+        fin px = if n.x < 0.0 then 3 else 0
+        fin py = if n.y < 0.0 then 9 else 6
+        fin pz = if n.z < 0.0 then 15 else 12
+        fin grid = uv / pixel - 0.5
+        fin base = floor(grid)
+        fin sub = fract(grid)
+        for j: Int in 0..<4 {
+            fin k = Float2(j % 2, j / 2)
+            fin blend = mix(1.0 - sub, sub, k)
+            fin a = photonSample(map, (base + k + 0.5) * pixel)
+            if a < 0 || map[a + 7] < 0.5 then continue
+            fin w = blend.x * blend.y * saturate(1.0 - abs(map[a] - depth) / radius)
+            if w <= 0.0 then continue
+            fin o = Int(map[23]) + ((a - first) / 8) * 18
+            indirect += w * (n2.x * photonVector(map, o + px) + n2.y * photonVector(map, o + py) + n2.z * photonVector(map, o + pz))
+            gathered += w
+        }
+        indirect = if gathered > 1.0e-4 then indirect / gathered else Float3(0.0)
+    } else if useGI && map[8] > 0.0 {
+        for i: Int in 0..<8 {
+            fin angle = Float(i) * 2.39996323
+            fin requested = uv + Float2(cos(angle), sin(angle)) * radius * sqrt((Float(i) + 0.5) / 8.0)
+            fin grid = requested / pixel - 0.5
+            fin base = floor(grid)
+            fin sub = fract(grid)
+            for j: Int in 0..<4 {
+                fin k = Float2(j % 2, j / 2)
+                fin blend = mix(1.0 - sub, sub, k)
+                fin w = blend.x * blend.y
+                fin spot = (base + k + 0.5) * pixel
+                fin a = photonSample(map, spot)
+                if a < 0 || map[a + 7] < 0.5 then continue
+                fin offset = spot - uv
+                fin delta = x * offset.x + y * offset.y + z * (map[a] - depth)
+                fin d2 = dot(delta, delta)
+                if d2 < 2.25 * pixel * pixel || d2 > radius * radius then continue
+                fin ray = delta * rsqrt(d2)
+                fin form = saturate(dot(n, ray)) * saturate(dot(photonVector(map, a + 4), -ray))
+                indirect += w * photonVector(map, a + 1) * form * (1.0 - d2 / (radius * radius)) / (1.0 + d2)
+            }
+        }
+    }
+    return PhotonLighting(1.0 - map[7] * shadow / max(weights, 1.0e-5), indirect * map[8] * 0.23, photonVector(map, 20) * map[19])
+}
+
+/**
+ * The sun's sharp cascade ([d]: clip transform, then world texel, uv texel, strength, bias):
+ * the light reaching [p] and how much of the cascade covers it, fading at its edge.
+ */
+func detailVisibility(map: DepthTexture2D, d: @Constant Float4, p: Float3, n: Float3): Float2 {
+    fin m = Float4x4(d[0], d[1], d[2], d[3])
+    // A face the sun grazes is pushed further out and compared more loosely: no acne.
+    fin facing = saturate(dot(n, normalize(-Float3(m[0][2], m[1][2], m[2][2]))))
+    fin slope = sqrt(1.0 - facing * facing) / max(facing, 0.25)
+    fin c = m * Float4(p + n * d[4].x * (1.0 + 2.5 * (1.0 - facing)), 1.0)
+    fin uv = Float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5)
+    fin edge = min(uv, 1.0 - uv)
+    fin cover = saturate(min(edge.x, edge.y) * 12.0)
+    if cover <= 0.0 || c.z <= 0.0 || c.z >= 1.0 then return Float2(1.0, 0.0)
+    var lit = 0.0
+    fin reference = c.z - d[4].w * (1.0 + slope)
+    for j: Int in 0..<2 {
+        for i: Int in 0..<2 {
+            lit += map.sampleCompare(cascadeCompare, uv + Float2(i * 2 - 1, j * 2 - 1) * d[4].y * 0.75, reference)
+        }
+    }
+    return Float2(1.0 - d[4].z * (1.0 - lit * 0.25), cover)
+}
+
+/**
+ * The scene's light at [p] facing [n]: [flags] bit 2 asks for bounce light, bit 4 for the baked
+ * (static) shadow map, bit 8 for the sharp cascade; [sunColor] is the sun's colour.
+ */
+func scenePhotonLight(dynamicMap: @ReadOnlyStorage Float, staticMap: @ReadOnlyStorage Float, detail: DepthTexture2D,
+                      detailLight: @Constant Float4, p: Float3, n: Float3, flags: Float, sunColor: Float3): PhotonLighting {
+    fin bits = Int(flags)
+    fin gi = (bits & 2) != 0
+    fin cached = (bits & 4) != 0
+    fin sharp = (bits & 8) != 0
+    var light = photonLighting(dynamicMap, p, n, !cached && !sharp, gi)
+    if cached then light.visibility = photonLighting(staticMap, p, n, true, false).visibility
+    if sharp {
+        // Inside the cascade it alone decides; beyond it, the field's pages do.
+        fin seen = detailVisibility(detail, detailLight, p, n)
+        fin coarse = if seen.y < 1.0 then photonLighting(dynamicMap, p, n, true, false).visibility else 1.0
+        light.visibility = mix(coarse, seen.x, seen.y)
+    }
+    light.sunColor = sunColor
+    return light
+}
+
+/**
+ * Point and spot lights ([lights], see `gatherLocalLights`): range falloff, a soft cone, a diffuse
+ * and a highlight term on the surface's [albedo] and reflectance [f0].
+ */
+func localLights(lights: @Constant Float4, p: Float3, n: Float3, v: Float3, albedo: Float3, f0: Float3): Float3 {
+    fin count = Int(lights[32].x)
+    var sum = Float3(0.0)
+    for i: Int in 0..<count {
+        fin a = lights[i * 4]
+        fin b = lights[i * 4 + 1]
+        fin c = lights[i * 4 + 2]
+        fin toLight = a.xyz - p
+        fin d = length(toLight)
+        if d >= a.w || d < 1.0e-4 then continue
+        fin l = toLight / d
+        fin r = d / a.w
+        var fall = saturate(1.0 - r * r * r * r)
+        fall = fall * fall / (1.0 + d * d)
+        fin cone = if b.w < -1.5 then 1.0 else smoothstep(b.w, c.w, dot(-l, b.xyz))
+        fin nl = saturate(dot(n, l))
+        fin h = normalize(l + v)
+        sum += c.xyz * fall * cone * nl * (albedo + f0 * pow(saturate(dot(n, h)), 48.0) * 2.0)
+    }
+    return sum
+}
+
+/*
+ * The scene's weather as surfaces read it ([env], texture `clouds`): float4 0 = wetness, snow,
+ * flash, time; 1 = flash colour, cloud shadow strength; 2 = shadow map centre X, Z, 1/side,
+ * bound; 3 = wind X, Z.
+ */
+
+/** How much of the sun the clouds above [p] let through. */
+func cloudShade(env: @Constant Float4, map: Texture2D, p: Float3): Float {
+    if env[2].w < 0.5 then return 1.0
+    fin uv = (p.xz - env[2].xy) * env[2].z + 0.5
+    fin edge = saturate(min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y)) * 12.0)
+    return mix(1.0, mix(1.0, map.sample(cloudSampler, uv).r, edge), env[1].w)
+}
+
+/** How wet a surface facing [n] is: upward faces the most. */
+func sceneWetness(env: @Constant Float4, n: Float3): Float = env[0].x * mix(0.6, 1.0, saturate(n.y))
+
+/** How much snow lies on a surface facing [n] at [p]: on upward faces, its edge broken up. */
+func sceneSnow(env: @Constant Float4, n: Float3, p: Float3): Float {
+    if env[0].y <= 0.0 then return 0.0
+    fin drift = fract(sin(dot(floor(p * 1.7), Float3(127.1, 311.7, 74.7))) * 43758.5453) * 0.12
+    return saturate(env[0].y * 1.25) * smoothstep(0.5, 0.8, n.y + drift - 0.06)
+}
+
+/** A lightning flash lighting a surface facing [n]. */
+func sceneFlash(env: @Constant Float4, n: Float3): Float3 = env[1].xyz * env[0].z * (0.55 + 0.45 * saturate(n.y))

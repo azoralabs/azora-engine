@@ -1,0 +1,33 @@
+@Execution("GPU")
+module project.materials.standard.sandDunes
+
+import engine.shaders.sceneUniforms
+import engine.material.surface
+
+// @Material {"albedo":[0.38,0.55,0.72],"textures":["Textures/Standard/sand-dunes/surface.aztexture"]}
+
+@Vertex
+func materialVertex(id: @VertexIndex UInt, vertices: @ReadOnlyStorage(0) Float, u: @Uniform(1) U3): MaterialVertex =
+    materialMesh(id, vertices, u)
+
+@Fragment
+func materialFragment(
+    input: MaterialVertex
+    u: @Uniform(1) U3
+    photons: @ReadOnlyStorage(2) Float
+    baked: @ReadOnlyStorage(3) Float
+    detailLight: @Constant(4) Float4
+    spots: @Constant(5) Float4
+    env: @Constant(6) Float4
+    detail: @Texture(30) DepthTexture2D
+    clouds: @Texture(31) Texture2D
+    base0: @Texture(0) Texture2D
+    normal0: @Texture(1) Texture2D
+    surfaceMap0: @Texture(2) Texture2D
+): Float4 {
+    fin context = materialContext(input, u, photons, baked, detailLight, env, detail, clouds)
+    fin n = normalize(input.normal)
+    // Dune Sand
+    fin surface1 = textureSlab(context, input.world, n, base0, normal0, surfaceMap0, 3.0, 0.38, 0.0, 0.0, 0.6, 45.0, 0.0, 0.0)
+    return materialColor(surface1, input, context, u, spots)
+}

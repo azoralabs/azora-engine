@@ -235,7 +235,8 @@ echo "azora-engine: linking"
     -Wno-override-module \
     -o "$BUILD_DIR/$APP_NAME"
 
-bash "$LIB_DIR/tools/fusion-cook.sh" "$PROJECT_DIR" "${AZORA_COMPILER_BIN:-}" "$CLANG_BIN" "$NATIVE_DIR"
+# GPU modules are Azora (.az): compiled to Metal libraries beside the executable (and into the bundle).
+bash "$LIB_DIR/tools/shader-cook.sh" "$PROJECT_DIR" "$BUILD_DIR/shaders" "${AZORA_SHADER_TARGETS:-metallib}"
 
 echo "azora-engine: built $BUILD_DIR/$APP_NAME"
 
@@ -247,8 +248,10 @@ if [ "$ACTION" = "run" ]; then
     # drive. LaunchServices starts the bundle in "/", so the project folder
     # travels in AZORA_WORKING_DIRECTORY, with every other AZORA_* setting.
     BUNDLE="$BUILD_DIR/$APP_NAME.app"
-    mkdir -p "$BUNDLE/Contents/MacOS"
+    mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
     cp "$BUILD_DIR/$APP_NAME" "$BUNDLE/Contents/MacOS/$APP_NAME"
+    rm -rf "$BUNDLE/Contents/Resources/shaders"
+    cp -R "$BUILD_DIR/shaders" "$BUNDLE/Contents/Resources/shaders"
     cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

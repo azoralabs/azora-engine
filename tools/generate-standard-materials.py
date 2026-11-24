@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build the engine's seamless terrain texture sets and Material Fusion graphs."""
+"""Build the engine's seamless terrain texture sets and Azora GPU materials."""
 
-import json
 import math
 from pathlib import Path
 import random
 import struct
+
+from material_source import texture_material
 
 SIZE = 512
 ENGINE = Path(__file__).resolve().parents[1]
@@ -106,20 +107,11 @@ def write_material(slug, label, texture, tile, strength, directional=False):
     target = LIBRARY / texture_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(texture)
-    graph = {
-        "format": "azora-material-fusion",
-        "version": 1,
-        "nodes": [
-            {"id": 1, "kind": "texture", "label": label, "x": 35, "y": 55,
-             "texture": texture_path.as_posix(), "scale": tile, "value": strength,
-             "offset": 0.0 if directional else 1.5, "contrast": 0.6,
-             "macroScale": 45, "rotation": 0 if directional else 1},
-            {"id": 2, "kind": "output", "x": 280, "y": 55, "a": 1},
-        ],
-    }
-    path = LIBRARY / "Materials" / "Standard" / f"{slug}.azmaterial"
+    name = "".join(part.title() if index else part for index, part in enumerate(slug.split("-")))
+    module = f"project.materials.standard.{name}"
+    path = LIBRARY / "Materials" / "Standard" / f"{slug}.az"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+    path.write_text(texture_material(module, label, texture_path.as_posix(), tile, strength, directional), encoding="utf-8")
 
 
 def main():

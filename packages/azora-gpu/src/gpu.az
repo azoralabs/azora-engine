@@ -24,6 +24,7 @@ module engine.gpu
 
 import std.io
 import engine.objc
+import engine.objc.shader
 import engine.math.mat
 import engine.shaders
 import engine.material.fusion.metal
@@ -335,10 +336,9 @@ func gpuInit(scale: Double): AzGpu {
     send1(layer, sel("setPixelFormat:"), 80)
     azSendF1(layer, sel("setContentsScale:"), scale)
 
-    // Shader library from MSL source.
-    fin lib = send3(device, sel("newLibraryWithSource:options:error:"), nsString(shaderSource()), Long(0), Long(0))
+    // The engine's pipelines, compiled ahead of time from shaders/scene.az (azora-shaders).
+    fin lib = shaderLibrary(device, "scene")
     if lib == 0 {
-        println("azora-engine: shader compilation failed")
         send0(queue, sel("release"))
         send0(device, sel("release"))
         return gpuFailed()
@@ -349,8 +349,8 @@ func gpuInit(scale: Double): AzGpu {
     // 3D pipeline: BGRA8 color + Depth32 depth.
     fin d3 = newObject("MTLRenderPipelineDescriptor")
     defer { send0(d3, sel("release")) }
-    fin v3 = send1(lib, sel("newFunctionWithName:"), nsString("v3_main"))
-    fin f3 = send1(lib, sel("newFunctionWithName:"), nsString("f3_main"))
+    fin v3 = send1(lib, sel("newFunctionWithName:"), nsString("sceneVertex"))
+    fin f3 = send1(lib, sel("newFunctionWithName:"), nsString("sceneFragment"))
     defer { send0(v3, sel("release")) }
     defer { send0(f3, sel("release")) }
     send1(d3, sel("setVertexFunction:"), v3)
@@ -369,8 +369,8 @@ func gpuInit(scale: Double): AzGpu {
     // 2D pipeline: alpha blending for UI rects and text quads.
     fin d2 = newObject("MTLRenderPipelineDescriptor")
     defer { send0(d2, sel("release")) }
-    fin v2 = send1(lib, sel("newFunctionWithName:"), nsString("v2_main"))
-    fin f2 = send1(lib, sel("newFunctionWithName:"), nsString("f2_main"))
+    fin v2 = send1(lib, sel("newFunctionWithName:"), nsString("flatVertex"))
+    fin f2 = send1(lib, sel("newFunctionWithName:"), nsString("flatFragment"))
     defer { send0(v2, sel("release")) }
     defer { send0(f2, sel("release")) }
     send1(d2, sel("setVertexFunction:"), v2)
@@ -447,7 +447,7 @@ func gpuInit(scale: Double): AzGpu {
     send0(ordinary, sel("release"))
     gpu.motionCurrent = azAlloc((motionCapacity as Long) * motionRecord)
     gpu.motionPrevious = azAlloc((motionCapacity as Long) * motionRecord)
-    fin gather = send1(lib, sel("newFunctionWithName:"), nsString("photon_irradiance"))
+    fin gather = send1(lib, sel("newFunctionWithName:"), nsString("photonIrradiance"))
     if gather != 0 {
         gpu.irradiancePipeline = send2(device, sel("newComputePipelineStateWithFunction:error:"), gather, 0)
         send0(gather, sel("release"))
@@ -648,8 +648,8 @@ impl AzGpu {
 }
 
 func makeSkyPipeline(device: Long, library: Long): Long {
-    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("sky_vertex"))
-    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("sky_fragment"))
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("skyVertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("skyFragment"))
     defer {
         send0(vertex, sel("release"))
         send0(fragment, sel("release"))
@@ -671,8 +671,8 @@ func makeSkyPipeline(device: Long, library: Long): Long {
  * unblended, into the history the next frame starts from.
  */
 func makeResolvePipeline(device: Long, library: Long): Long {
-    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("resolve_vertex"))
-    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("resolve_fragment"))
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("resolveVertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("resolveFragment"))
     defer {
         if vertex != 0 then send0(vertex, sel("release"))
         if fragment != 0 then send0(fragment, sel("release"))
@@ -733,8 +733,8 @@ inline fin motionRecord: Long = 96
 
 /** Each moving object's screen motion, tested against the scene's depth so only what is visible writes. */
 func makeVelocityPipeline(device: Long, library: Long): Long {
-    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("velocity_vertex"))
-    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("velocity_fragment"))
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("velocityVertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("velocityFragment"))
     defer {
         if vertex != 0 then send0(vertex, sel("release"))
         if fragment != 0 then send0(fragment, sel("release"))
@@ -755,7 +755,7 @@ inline fin detailResolution: Long = 2048
 
 /** Depth only, with the 3D vertex stage: what a shadow map needs of a mesh. */
 func makeDepthPipeline(device: Long, library: Long): Long {
-    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("v3_main"))
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("sceneVertex"))
     if vertex == 0 then return 0
     defer { send0(vertex, sel("release")) }
     fin descriptor = newObject("MTLRenderPipelineDescriptor")

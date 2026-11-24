@@ -1,0 +1,19 @@
+/** Height fog: thick low down, thinning with altitude, starting a set distance from the eye. */
+@Execution("GPU")
+module engine.atmosphere.fog
+
+/**
+ * How much of the light from [surface] the fog between it and [eye] hides: [density], and
+ * [shape] = (fog's base height, falloff with height, start distance, most it may hide).
+ */
+func heightFog(eye: Float3, surface: Float3, density: Float, shape: Float4): Float {
+    fin rayLength = length(surface - eye)
+    if density <= 0.0 || rayLength <= shape.z then return 0.0
+    fin startHeight = mix(eye.y, surface.y, shape.z / rayLength)
+    fin nearExp = clamp(-shape.y * (startHeight - shape.x), -40.0, 20.0)
+    fin farExp = clamp(-shape.y * (surface.y - shape.x), -40.0, 20.0)
+    fin diff = abs(nearExp - farExp)
+    fin mean = if diff < 0.001 then exp((nearExp + farExp) * 0.5) else exp(max(nearExp, farExp)) * (1.0 - exp(-diff)) / diff
+    fin opticalDepth = density * (rayLength - shape.z) * mean
+    return min(saturate(shape.w), 1.0 - exp(-opticalDepth))
+}

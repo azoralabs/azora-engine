@@ -1,0 +1,110 @@
+@Execution("GPU")
+module engine.shaders.render.skinning
+
+inline fin linearClamp = Sampler(.Linear, .ClampToEdge, .None)
+
+pack SkinLighting {
+    var lightFrame: Float4
+    var blend: Float4
+    var eye: Float4
+}
+
+pack SkinUniforms {
+    var clip: Float4x4
+    var model: Float4x4
+    var lighting: SkinLighting
+}
+
+pack SkinVertex {
+    @Position
+    var position: Float4
+    @Location(0)
+    var uv: Float2
+    @Location(1)
+    var light: Float
+    @Location(2)
+    var world: Float3
+    @Location(3)
+    var normal: Float3
+}
+
+func palette(bones: @ReadOnlyStorage Float4x4, joints: UInt4, weights: Float4): Float4x4 {
+    return bones[joints.x] * weights.x + bones[joints.y] * weights.y + bones[joints.z] * weights.z + bones[joints.w] * weights.w
+}
+
+@Vertex
+func skinVertex(
+    id: @VertexIndex UInt
+    vertices: @ReadOnlyStorage(0) Float
+    pose: @ReadOnlyStorage(1) Float4x4
+    next: @ReadOnlyStorage(2) Float4x4
+    previous: @ReadOnlyStorage(3) Float4x4
+    older: @ReadOnlyStorage(4) Float4x4
+    u: @Uniform(5) SkinUniforms
+): SkinVertex {
+    fin base = Int(id) * 16
+    fin joints: UInt4 = min(UInt4(vertices[base + 8], vertices[base + 9], vertices[base + 10], vertices[base + 11]), UInt4(UInt(u.lighting.blend.z) - 1))
+    fin weights: Float4 = Float4(vertices[base + 12], vertices[base + 13], vertices[base + 14], vertices[base + 15])
+    fin p: Float4 = Float4(vertices[base], vertices[base + 1], vertices[base + 2], 1)
+    fin n: Float4 = Float4(vertices[base + 3], vertices[base + 4], vertices[base + 5], 0)
+    var a: Float4x4 = palette(pose, joints, weights)
+    var b: Float4x4 = palette(next, joints, weights)
+    var moved: Float4 = mix(a * p, b * p, u.lighting.lightFrame.w)
+    var normal: Float4 = mix(a * n, b * n, u.lighting.lightFrame.w)
+    if u.lighting.blend.y < 1 {
+        a = palette(previous, joints, weights)
+        b = palette(older, joints, weights)
+        moved = mix(mix(a * p, b * p, u.lighting.blend.x), moved, u.lighting.blend.y)
+        normal = mix(mix(a * n, b * n, u.lighting.blend.x), normal, u.lighting.blend.y)
+    }
+    fin world: Float4 = u.model * moved
+    fin worldNormal: Float3 = normalize((u.model * normal).xyz)
+    fin diffuse: Float = saturate(dot(worldNormal, normalize(u.lighting.lightFrame.xyz)))
+    return .(u.clip * world, Float2(vertices[base + 6], vertices[base + 7]), 0.60 + 0.40 * diffuse, world.xyz, worldNormal)
+}
+
+@Fragment
+func skinFragment(
+    input: SkinVertex
+    u: @Uniform(0) SkinLighting
+    albedo: @Texture(0) Texture2D
+    surface: @Texture(1) Texture2D
+): Float4 {
+    fin color: Float4 = albedo.sample(linearClamp, input.uv)
+    fin base: Float3 = color.rgb / max(color.a, 0.48)
+    if u.blend.w < 0.5 {
+        if color.a < 0.48 then discardFragment()
+        return Float4(base * input.light, 1)
+    }
+    fin pX: Float3 = dpdx(input.world)
+    fin pY: Float3 = dpdy(input.world)
+    fin uvX: Float2 = dpdx(input.uv)
+    fin uvY: Float2 = dpdy(input.uv)
+    fin properties: Float3 = surface.sample(linearClamp, input.uv).rgb
+    if color.a < 0.48 then discardFragment()
+    var n: Float3 = normalize(input.normal)
+    fin det: Float = uvX.x * uvY.y - uvX.y * uvY.x
+    if abs(det) > 1e-10 {
+        var t: Float3 = (pX * uvY.y - pY * uvX.y) * sign(det)
+        var b: Float3 = (pY * uvX.x - pX * uvY.x) * sign(det)
+        t -= n * dot(n, t)
+        b -= n * dot(n, b)
+        fin xy: Float2 = properties.xy * 2.0 - 1.0
+        n = normalize(n * sqrt(max(0.02, 1.0 - dot(xy, xy))) + xy.x * normalize(t) + xy.y * normalize(b))
+    }
+    fin l: Float3 = normalize(u.lightFrame.xyz)
+    fin v: Float3 = normalize(u.eye.xyz - input.world)
+    fin h: Float3 = normalize(l + v + Float3(1e-5))
+    fin rough: Float = clamp(properties.z, 0.24, 1.0)
+    fin nl: Float = saturate(dot(n, l))
+    fin nv: Float = saturate(dot(n, v))
+    fin nh: Float = saturate(dot(n, h))
+    fin a2: Float = pow(rough, 4.0)
+    fin d: Float = nh * nh * (a2 - 1.0) + 1.0
+    fin k: Float = (rough + 1.0) * (rough + 1.0) / 8.0
+    fin f: Float = 0.028 + 0.972 * pow(1.0 - saturate(dot(v, h)), 5.0)
+    fin specular: Float = f * a2 / (12.56637 * d * d * max(0.01, (nl * (1.0 - k) + k) * (nv * (1.0 - k) + k)))
+    fin ambient: Float = max(0.34, u.eye.w)
+    fin linear: Float3 = pow(base, Float3(2.2)) * (ambient + nl * (1.0 - ambient) * 0.86) + specular * nl * 0.82
+    return Float4(pow(saturate(linear), Float3(1.0 / 2.2)), 1)
+}

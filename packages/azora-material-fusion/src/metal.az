@@ -1,16 +1,16 @@
 module engine.material.fusion.metal
 
 import std.traits
+import std.string
+import std.serializer
 import engine.core
 import engine.io
 import engine.objc
+import engine.objc.shader
 import engine.material.fusion
-import engine.material.fusion.compiler
 
 pack FusionPipeline derives Clone {
     var handle: Long = 0
-    var metal: Int = 0
-    var baked: Bool = false
     var diagnostic: String = ""
     var albedo: Rgba = .(0.8, 0.8, 0.82, 1.0)
     var textures: Array<Long> = []
@@ -29,9 +29,7 @@ pack FusionLibrary {
 
 func metalError(address: Long, message: String): String {
     fin diagnostic = azPeek64(address, 0)
-    if diagnostic == 0 then return message
-    fin text = "${nsStringText(send0(diagnostic, sel("localizedDescription")))} "
-    return substring(text, 0, stringLength(text) - 1)
+    return if diagnostic == 0 then message else nsStringText(send0(diagnostic, sel("localizedDescription")))
 }
 
 func fusionReadText(path: String, limit: Int = 262144): String {
@@ -40,31 +38,18 @@ func fusionReadText(path: String, limit: Int = 262144): String {
     return if blob.size > limit || !blob.ok() then "" else blob.text(0, blob.size)
 }
 
-func buildFusionPipeline(device: Long, source: String, standard: Int, compiled: String): FusionPipeline {
-    fin diagnostic = azAlloc(8)
-    if diagnostic == 0 then return FusionPipeline(0, standard, false, "Could not allocate Metal diagnostic storage")
-    defer { azFree(diagnostic) }
-    azPoke64(diagnostic, 0, 0)
-    var library: Long = 0
-    if compiled != "" {
-        fin url = send1(cls("NSURL"), sel("fileURLWithPath:"), nsString(compiled))
-        library = send2(device, sel("newLibraryWithURL:error:"), url, diagnostic)
-    }
-    fin baked = library != 0
-    if library == 0 {
-        fin options = newObject("MTLCompileOptions")
-        defer { send0(options, sel("release")) }
-        send1(options, sel("setLanguageVersion:"), (standard as Long) * 65536)
-        azPoke64(diagnostic, 0, 0)
-        library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(source), options, diagnostic)
-        if library == 0 then return FusionPipeline(0, standard, false, metalError(diagnostic, "Metal library compilation failed"))
-    }
+func buildFusionPipeline(device: Long, compiled: String): FusionPipeline {
+    if device == 0 then return .(diagnostic: "A Metal device is required")
+    fin library = metalShaderLibrary(device, compiled)
+    if library == 0 then return .(diagnostic: "Could not load ${compiled}")
     defer { send0(library, sel("release")) }
-    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("fusion_vertex"))
-    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("fusion_fragment"))
-    defer { send0(vertex, sel("release"))
-        send0(fragment, sel("release")) }
-    if vertex == 0 || fragment == 0 then return FusionPipeline(0, standard, baked, "Material Fusion shader entry points are missing")
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString("materialVertex"))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString("materialFragment"))
+    defer {
+        send0(vertex, sel("release"))
+        send0(fragment, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return .(diagnostic: "Material shader must define materialVertex and materialFragment")
     fin descriptor = newObject("MTLRenderPipelineDescriptor")
     defer { send0(descriptor, sel("release")) }
     send1(descriptor, sel("setVertexFunction:"), vertex)
@@ -72,28 +57,56 @@ func buildFusionPipeline(device: Long, source: String, standard: Int, compiled: 
     fin attachment = send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0)
     send1(attachment, sel("setPixelFormat:"), 80)
     send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    fin diagnostic = azAlloc(8)
+    if diagnostic == 0 then return .(diagnostic: "Could not allocate Metal diagnostic storage")
+    defer { azFree(diagnostic) }
     azPoke64(diagnostic, 0, 0)
     fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, diagnostic)
-    if pipeline == 0 then return FusionPipeline(0, standard, baked, metalError(diagnostic, "Metal pipeline creation failed"))
-    return .(pipeline, standard, baked, "")
+    return if pipeline == 0 then .(diagnostic: metalError(diagnostic, "Metal pipeline creation failed")) else .(handle: pipeline)
 }
 
-/** Prepares once per asset or edit. Falls back to MSL 2.0 on Metal 2 devices or a failed Metal 3 pipeline. */
-func precompileFusion(device: Long, program: FusionProgram&, cache: String = ""): FusionPipeline {
-    if program.diagnostic != "" then return FusionPipeline(0, 0, false, program.diagnostic)
-    if device == 0 then return FusionPipeline(0, 0, false, "A Metal device is required")
-    fin output = if cache == "" then "" else "${cache}.${fusionSourceKey(program.source)}"
-    fin validCache = output != "" && fusionReadText("${output}.metal") == program.source
-    fin supportsFamilies = send1(device, sel("respondsToSelector:"), sel("supportsFamily:")) != 0
-    if supportsFamilies && send1(device, sel("supportsFamily:"), 5001) != 0 {
-        fin modern = buildFusionPipeline(device, program.source, 3, if validCache then "${output}.metal3.metallib" else "")
-        if modern.handle != 0 then return modern
-        fin classic = buildFusionPipeline(device, program.source, 2, if validCache then "${output}.metal2.metallib" else "")
-        if classic.handle != 0 then return classic
-        return FusionPipeline(0, 2, false, "Metal 3: ${modern.diagnostic}
-Metal 2: ${classic.diagnostic}")
+func loadMaterialBindings(path: String, root: String, device: Long, queue: Long, built: FusionPipeline!): String {
+    fin text = fusionReadText(path, 32768)
+    if text == "" then return ""
+    fin manifest = decodeSerialValue(text, serializerOptions()) catch SerialValue.Null
+    when manifest {
+        .Object(fields) -> {
+            fin colors = fusionMember(fields, "albedo")
+            if colors >= 0 {
+                when fields[colors].value {
+                    .Array(values) -> {
+                        if values.size == 3 {
+                            fin red = serialAsReal(values[0]) catch 0.8
+                            fin green = serialAsReal(values[1]) catch 0.8
+                            fin blue = serialAsReal(values[2]) catch 0.82
+                            built.albedo = .(red, green, blue, 1.0)
+                        }
+                    }
+                    else -> {}
+                }
+            }
+            fin sets = fusionMember(fields, "textures")
+            if sets < 0 then return "Invalid material texture bindings"
+            when fields[sets].value {
+                .Array(values) -> {
+                    if values.size > 8 then return "Too many material texture sets"
+                    for index: Int in 0..<values.size {
+                        fin asset = serialAsText(values[index]) catch ""
+                        if !fusionTexturePath(asset) || !loadFusionTextureSet(device, queue, "${root}/${asset}", built.textures) then
+                            return "Could not load ${asset}"
+                    }
+                }
+                else -> return "Invalid material texture bindings"
+            }
+        }
+        else -> return "Invalid material bindings: ${path}"
     }
-    return buildFusionPipeline(device, program.source, 2, if validCache then "${output}.metal2.metallib" else "")
+    return ""
+}
+
+func releaseFusionPipeline(pipeline: FusionPipeline&) {
+    for texture in pipeline.textures then send0(texture, sel("release"))
+    if pipeline.handle != 0 then send0(pipeline.handle, sel("release"))
 }
 
 impl FusionLibrary {
@@ -104,46 +117,48 @@ impl FusionLibrary {
         return -1
     }
 
-    /** Keeps the last valid pipeline when rebuilding an edited asset fails. */
-    func !.replace(device: Long, key: String, document: FusionGraph&, cache: String = ""): FusionPipeline {
-        fin program = compileFusionGraph(document)
-        var built = precompileFusion(device, program, cache)
-        built.albedo = program.albedo
+    /** A failed shader or texture load leaves the previous pipeline active. */
+    func !.reload(device: Long, path: String): FusionPipeline {
+        if !fusionAssetPath(path) then return .(diagnostic: "Invalid material shader path")
+        fin stem = substring(path, 0, stringLength(path) - 3)
+        fin relative = "project/${stem}.metallib"
+        // Studio uses the project's independent shader build. Packaged games
+        // keep a copy next to the Engine's own shader libraries.
+        fin projectLibrary = "${self.root}/.azora-build/shaders/${relative}"
+        fin probe = fopen(projectLibrary, "rb")
+        if probe != 0 then fclose(probe)
+        fin compiled = if probe != 0 then projectLibrary else shaderFolder() + "/" + relative
+        var built = buildFusionPipeline(device, compiled)
         if built.handle != 0 {
-            for asset in program.textureSets {
-                if !loadFusionTextureSet(device, self.queue, "${self.root}/${asset}", built.textures) {
-                    send0(built.handle, sel("release"))
-                    built.handle = 0
-                    for texture in built.textures then send0(texture, sel("release"))
-                    built.textures.clear()
-                    built.diagnostic = "Could not load ${asset}"
-                    break
-                }
+            built.diagnostic = loadMaterialBindings(compiled + ".bindings", self.root, device, self.queue, built)
+            if built.diagnostic != "" {
+                releaseFusionPipeline(built)
+                built.handle = 0
+                built.textures.clear()
             }
         }
-        fin index = self.index(key)
+        fin index = self.index(path)
         if index < 0 {
-            self.items.add(FusionPipelineEntry(key, built.clone()))
+            fin entry: FusionPipelineEntry = .(path, built.clone())
+            self.items.add(take entry)
         } else if built.handle != 0 {
-            fin old = self.items[index].pipeline.handle
-            for texture in self.items[index].pipeline.textures then send0(texture, sel("release"))
+            releaseFusionPipeline(self.items[index].pipeline)
             self.items[index].pipeline = built.clone()
-            if old != 0 then send0(old, sel("release"))
         }
         return built
     }
 
-    func !.reload(device: Long, path: String): FusionPipeline {
-        if !fusionAssetPath(path) then return FusionPipeline(0, 0, false, "Invalid Material Fusion asset path")
-        fin document = readFusionGraph(fusionReadText("${self.root}/${path}"))
-        return self.replace(device, path, document, "${self.root}/.azora-build/fusion/${path}")
-    }
-
     func !.resolve(device: Long, path: String): Long {
-        // A loaded material was checked when it loaded; only a new path is.
         fin index = self.index(path)
         if index >= 0 then return self.items[index].pipeline.handle
         return if fusionAssetPath(path) then self.reload(device, path).handle else 0
+    }
+
+    func !.reloadAll(device: Long) {
+        for index: Int in 0..<self.items.size {
+            fin path = self.items[index].key
+            self.reload(device, path)
+        }
     }
 
     func &.bindTextures(encoder: Long, pipeline: Long) {
@@ -158,11 +173,7 @@ impl FusionLibrary {
     }
 
     func !.release() {
-        for i: Int in 0..<self.items.size {
-            fin handle = self.items[i].pipeline.handle
-            for texture in self.items[i].pipeline.textures then send0(texture, sel("release"))
-            if handle != 0 then send0(handle, sel("release"))
-        }
+        for item in self.items then releaseFusionPipeline(item.pipeline)
         self.items.clear()
     }
 }
@@ -179,23 +190,17 @@ func loadFusionTextureSet(device: Long, queue: Long, path: String, handles: Arra
     if (blob.size as Long) != 12 + imageBytes * 3 then return false
     fin descriptor = send4TextureDescriptor(70, width, height, if queue != 0 then 1 else 0)
     fin from = handles.size
-    var i = 0
-    while i < 3 {
+    for i: Int in 0..<3 {
         fin texture = send1(device, sel("newTextureWithDescriptor:"), descriptor)
         if texture == 0 then return false
         azSendRegion(texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
             0, 0, 0, width, height, 1, 0, blob.data + 12 + (i as Long)*imageBytes, width*4)
         handles.add(texture)
-        i++
     }
     if queue != 0 {
         fin command = send0(queue, sel("commandBuffer"))
         fin blit = send0(command, sel("blitCommandEncoder"))
-        i = from
-        while i < handles.size {
-            send1(blit, sel("generateMipmapsForTexture:"), handles[i])
-            i++
-        }
+        for i: Int in from..<handles.size then send1(blit, sel("generateMipmapsForTexture:"), handles[i])
         send0(blit, sel("endEncoding"))
         send0(command, sel("commit"))
         send0(command, sel("waitUntilCompleted"))

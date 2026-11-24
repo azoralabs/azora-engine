@@ -1,0 +1,45 @@
+/**
+ * Compiled shader libraries. The engine's shaders are written in Azora (`.az`, under each
+ * package's `shaders/` folder) and compiled ahead of time by `tools/shader-cook.sh` into
+ * `.metallib` files, which a game finds in its bundle's `Resources/shaders` (or beside its
+ * executable, in `shaders/`). AZORA_SHADER_DIR points elsewhere, for tools and tests.
+ */
+module engine.objc.shader
+
+import std.io
+import std.os::{envVar}
+import engine.objc
+import engine.io
+
+/** The folder compiled shader libraries are read from. */
+func shaderFolder(): String {
+    fin chosen = envVar("AZORA_SHADER_DIR")
+    if chosen != "" then return chosen
+    fin bundle = send0(cls("NSBundle"), sel("mainBundle"))
+    fin resources = if bundle != 0 then send0(bundle, sel("resourcePath")) else 0
+    return if resources != 0 then nsStringText(resources) + "/shaders" else "shaders"
+}
+
+/**
+ * The Metal library compiled from shader file [name] (`<name>.metallib`), retained (the caller
+ * releases it), or 0 with the reason printed when it is missing or cannot be read.
+ */
+func shaderLibrary(device: Long, name: String): Long {
+    return metalShaderLibrary(device, shaderFolder() + "/" + name + ".metallib")
+}
+
+func metalShaderLibrary(device: Long, path: String): Long {
+    if device == 0 then return 0
+    fin url = send1(cls("NSURL"), sel("fileURLWithPath:"), nsString(path))
+    fin failure = azAlloc(8)
+    if failure == 0 then return 0
+    defer { azFree(failure) }
+    azPoke64(failure, 0, 0)
+    fin library = send2(device, sel("newLibraryWithURL:error:"), url, failure)
+    if library == 0 {
+        fin problem = azPeek64(failure, 0)
+        fin reason = if problem != 0 then nsStringText(send0(problem, sel("localizedDescription"))) else "unknown error"
+        println("azora-engine: cannot load shader library ${path}: ${reason}")
+    }
+    return library
+}

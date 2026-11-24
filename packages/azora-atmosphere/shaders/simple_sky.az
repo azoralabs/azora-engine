@@ -1,0 +1,40 @@
+/** The simple sky (without Aether): a gradient by day and night, sunset glow, sun and moon discs, stars. */
+@Execution("GPU")
+module engine.atmosphere.simpleSky
+
+/** The view's corners and the bodies: rect, camera forward/right/up, sun (w = day), moon. */
+pack SkyUniform {
+    fin rect: Float4
+    fin forward: Float4
+    fin right: Float4
+    fin up: Float4
+    fin sun: Float4
+    fin moon: Float4
+}
+
+func skyHash(p: Float3): Float = fract(sin(dot(p, Float3(135.9, 47.13, 19.27))) * 43758.5453)
+
+/** The sky's colour toward screen point [ndc]. */
+func simpleSkyColor(u: @Uniform SkyUniform, ndc: Float2): Float3 {
+    fin ray = normalize(u.forward.xyz + ndc.x * u.right.xyz + ndc.y * u.up.xyz)
+    fin y = max(ray.y, 0.0)
+    fin day = u.sun.w
+    fin sd = dot(ray, u.sun.xyz)
+    fin md = dot(ray, u.moon.xyz)
+    fin sunset = exp(-abs(u.sun.y) * 8.0) * max(0.0, pow(saturate(sd), 4.0))
+    fin daySky = mix(Float3(0.72, 0.84, 0.92), Float3(0.16, 0.43, 0.72), pow(y, 0.39))
+    fin nightSky = mix(Float3(0.11, 0.15, 0.24), Float3(0.016, 0.026, 0.067), pow(y, 0.46))
+    var color = mix(nightSky, daySky, day) + Float3(0.57, 0.29, 0.12) * sunset * exp(-5.0 * y)
+    fin cells = ray * 460.0
+    fin f = fract(cells) - 0.5
+    fin rnd = skyHash(floor(cells))
+    fin stars = step(0.991, rnd) * exp(-dot(f, f) * 42.0) * (1.0 - day) * smoothstep(0.0, 0.15, ray.y)
+    color += stars * mix(Float3(0.49, 0.68, 1.0), Float3(1.0, 0.88, 0.67), fract(rnd * 129.0))
+    fin glow = pow(saturate(sd), 680.0) * smoothstep(-0.025, 0.03, u.sun.y)
+    fin disc = smoothstep(0.99972, 0.99984, sd) * smoothstep(-0.024, 0.02, u.sun.y)
+    color += Float3(1.0, 0.76, 0.46) * glow * 0.46 + Float3(1.0, 0.95, 0.78) * disc * 2.5
+    fin moon = smoothstep(0.99957, 0.99972, md) * smoothstep(-0.015, 0.08, u.moon.y) * (1.0 - day)
+    fin crater = 0.76 + 0.24 * skyHash(floor(ray * 1600.0))
+    color += Float3(0.76, 0.84, 1.0) * (moon * crater + 0.15 * pow(saturate(md), 430.0) * (1.0 - day))
+    return color
+}

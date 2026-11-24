@@ -1,0 +1,58 @@
+@Execution("GPU")
+module engine.shaders.water.water
+
+/** A simple water plane (a Water component without an ocean): rippled, Fresnel-tinted, cut to its shore mask. */
+
+/** clip, model; eyeTime (eye, time); lightStrength (direction, ripple strength); colorSpeed (colour, drift); dimensions (size, wave tile, has a shore mask). */
+pack WaterUniforms {
+    fin clip: Float4x4
+    fin model: Float4x4
+    fin eyeTime: Float4
+    fin lightStrength: Float4
+    fin colorSpeed: Float4
+    fin dimensions: Float4
+}
+
+pack SurfacePoint {
+    @Position
+    fin position: Float4
+    @Location(0)
+    fin world: Float3
+    @Location(1)
+    fin local: Float2
+}
+
+inline fin repeatWaves = Sampler(.Linear, .Repeat)
+inline fin clampShore = Sampler(.Linear, .ClampToEdge)
+
+@Vertex
+func waterVertex(id: @VertexIndex UInt, mesh: @ReadOnlyStorage(0) Float, u: @Uniform(1) WaterUniforms): SurfacePoint {
+    fin base = Int(id) * 6
+    fin local = Float3(mesh[base], mesh[base + 1], mesh[base + 2])
+    fin world = u.model * Float4(local, 1.0)
+    return SurfacePoint(u.clip * world, world.xyz, local.xz)
+}
+
+@Fragment
+func waterFragment(input: SurfacePoint, u: @Uniform(1) WaterUniforms, waves: @Texture(0) Texture2D, shore: @Texture(1) Texture2D): Float4 {
+    var foam = 0.0
+    if u.dimensions.w > 0.5 {
+        fin uv = input.local / max(u.dimensions.xy, 1.0) + 0.5
+        fin mask = shore.sample(clampShore, uv).r
+        if mask < 0.49 then discardFragment()
+        foam = (1.0 - smoothstep(0.49, 0.86, mask)) * 0.42
+    }
+    fin waveUv = input.world.xz / max(u.dimensions.z, 0.01)
+    fin drift = u.eyeTime.w * u.colorSpeed.w
+    var ripple = waves.sample(repeatWaves, waveUv + Float2(drift, drift * 0.37)).rg
+    ripple += waves.sample(repeatWaves, waveUv * 0.63 + Float2(-drift * 0.31, drift * 0.8)).gr
+    fin footprint = max(length(dpdx(waveUv)), length(dpdy(waveUv)))
+    ripple = (ripple - 1.0) * (1.0 - smoothstep(0.02, 0.4, footprint))
+    fin n = normalize(Float3(ripple.x * u.lightStrength.w, 1.0, ripple.y * u.lightStrength.w))
+    fin v = normalize(u.eyeTime.xyz - input.world)
+    fin l = normalize(u.lightStrength.xyz)
+    fin fresnel = 0.025 + 0.52 * pow(1.0 - saturate(dot(n, v)), 5.0)
+    fin gloss = pow(saturate(dot(n, normalize(l + v))), 95.0) * 0.45
+    fin color = mix(u.colorSpeed.rgb * (0.85 + saturate(dot(l, n)) * 0.25), Float3(0.33, 0.56, 0.72), fresnel)
+    return Float4(mix(color + gloss, Float3(0.68, 0.84, 0.86), foam), 1.0)
+}

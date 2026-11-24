@@ -1,0 +1,141 @@
+@Execution("GPU")
+module engine.shaders.water.underwater
+
+/**
+ * Light travelling through water from the scene depth to a submerged eye, pixel by pixel: a pixel
+ * is under water when its point on the camera's near plane is below the sea's surface there - the
+ * same waves the surface is drawn with - so a camera dipping through the surface sees the
+ * waterline cross the screen, a thin, soft meniscus between air and water. Under it the view
+ * wavers in slow horizontal ripples and blurs with distance; caustics on the bed, light shafts.
+ */
+import engine.water.oceanCommon
+
+/** inverseView; eye (xyz, sea height); screen (size, jitter); absorption (rgb, clarity); scatter (rgb, time); sun (dir, ambient); plane (0, 1, 0, height). */
+pack WaterVolume {
+    fin inverseView: Float4x4
+    fin eye: Float4
+    fin screen: Float4
+    fin absorption: Float4
+    fin scatter: Float4
+    fin sun: Float4
+    fin plane: Float4
+}
+
+pack WaterPixel {
+    @Position
+    fin position: Float4
+}
+
+inline fin sceneSampler = Sampler(.Linear, .ClampToEdge)
+fin rayMarks: Array<Float, 8> = [0.05, 0.2, 0.4, 0.7, 1.1, 1.6, 2.4, 3.4]
+
+@Vertex
+func underwaterVertex(index: @VertexIndex UInt): WaterPixel =
+    WaterPixel(Float4(if index == 1 then 3.0 else -1.0, if index == 2 then 3.0 else -1.0, 0.0, 1.0))
+
+func waterCaustics(p: Float2, t: Float): Float {
+    fin q = p * 1.7 + Float2(sin(p.y * 0.65 + t * 0.71), cos(p.x * 0.81 - t * 0.53)) * 0.85
+    fin a = sin(dot(q, Float2(0.82, 0.57)) + t * 0.79)
+    fin b = sin(dot(q, Float2(-0.42, 1.03)) - t * 0.94)
+    fin c = sin(dot(q, Float2(1.21, -0.59)) + t * 0.42)
+    return exp2(-12.0 * abs(a * 0.46 + b * 0.34 + c * 0.20))
+}
+
+func nearPlanePoint(uv: Float2, u: @Uniform WaterVolume): Float3 {
+    fin p = u.inverseView * Float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 1.0, 1.0)
+    return p.xyz / p.w
+}
+
+@Fragment
+func underwaterFragment(pixel: WaterPixel, u: @Uniform(0) WaterVolume, o: @Uniform(1) OceanU, depth: @Texture(0) DepthTexture2D,
+                        d0: @Texture(1) Texture2D, d1: @Texture(2) Texture2D, d2: @Texture(3) Texture2D,
+                        shore: @Texture(4) Texture2D, farShore: @Texture(5) Texture2D, sceneCopy: @Texture(6) Texture2D): Float4 {
+    fin at = UInt2(pixel.position.xy)
+    fin scene = sceneCopy.read(at)
+    fin size = Float2(sceneCopy.size())
+    fin uv = (pixel.position.xy - u.screen.zw) / u.screen.xy
+    // Is this pixel's point on the near plane below the sea's surface there?
+    fin lens = nearPlanePoint(uv, u)
+    fin sea = seaHeightAt(lens.xz, o, d0, d1, d2, shore, farShore)
+    fin below = sea - lens.y
+    fin perPixel = length(nearPlanePoint(Float2(0.5, 0.0), u) - nearPlanePoint(Float2(0.5, 1.0), u)) / max(u.plane.w, 1.0)
+    var pixels = below / max(perPixel, 1.0e-6)
+    var submerged = smoothstep(-1.5, 1.5, pixels)
+    if pixels < 1.5 {
+        // The lens is in the air (or at the waterline). Its ray may still enter the water before what it strikes - a crest
+        // just ahead of the lens seen from inside, or the surface closer than the near plane and so not drawn: walk the
+        // first metres of the ray; once a step is clearly in the water, the pixel looks through water.
+        if below < -1.2 then return scene
+        fin inAir = pixels < -2.5
+        fin zHere = depth.read(at)
+        fin ray0 = normalize(nearPlanePoint(uv, u) - u.eye.xyz)
+        var limit = 3.5
+        if zHere > 0.0 {
+            fin met = u.inverseView * Float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, zHere, 1.0)
+            limit = min(limit, length(met.xyz / met.w - lens) - 0.2)
+        }
+        var wet = false
+        for i: Int in 0..<8 {
+            if wet || rayMarks[i] > limit then break
+            fin q = lens + ray0 * rayMarks[i]
+            wet = q.y < seaHeightQuick(q.xz, o, d0, d1, d2, shore, farShore) - 0.02
+        }
+        if wet {
+            submerged = 1.0
+            pixels = 1.0e3
+        } else if inAir {
+            return scene
+        }
+    }
+    fin time = u.scatter.w
+    // Under water the view wavers in slow horizontal ripples and blurs with the distance it looks through.
+    fin waver = Float2(sin(uv.y * 38.0 + time * 1.7) * 0.0028 + sin(uv.y * 71.0 - time * 2.3) * 0.0012,
+        sin(uv.x * 23.0 + time * 1.1) * 0.0009) * submerged
+    fin seenUv = clamp(pixel.position.xy / size + waver, Float2(0.0), Float2(1.0))
+    fin z = depth.sample(sceneSampler, seenUv)
+    fin unprojected = u.inverseView * Float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, max(z, 0.000001), 1.0)
+    fin hit = unprojected.xyz / unprojected.w
+    fin travel = hit - u.eye.xyz
+    fin ray = normalize(travel)
+    fin immersion = max(sea - u.eye.y, 0.0)
+    var reach = if z > 0.0 then min(length(travel), 240.0) else 240.0
+    // Higher rays leave the medium at the surface. The ocean mesh fills most of these rays with its
+    // refracted sky, while the same bound also keeps boats and the shore above it clear.
+    if ray.y > 0.0001 then reach = min(reach, (immersion + 0.35) / ray.y)
+    fin spread = mix(0.6, 3.2, saturate(reach / 30.0)) / size.y * submerged
+    var blurred = sceneCopy.sample(sceneSampler, seenUv).rgb * 0.4
+    blurred += sceneCopy.sample(sceneSampler, seenUv + Float2(spread, 0.0)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, seenUv - Float2(spread, 0.0)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, seenUv + Float2(0.0, spread)).rgb * 0.15
+    blurred += sceneCopy.sample(sceneSampler, seenUv - Float2(0.0, spread)).rgb * 0.15
+    fin day = saturate(u.sun.y * 2.1 + 0.14)
+    fin turbidity = mix(0.075, 0.026, saturate(u.absorption.w))
+    fin extinction = max(u.absorption.rgb * Float3(0.66, 0.77, 0.80), Float3(0.038, 0.021, 0.014)) + turbidity
+    fin transmit = exp(-extinction * reach)
+    fin floorDepth = max(sea - hit.y, 0.0)
+    fin sunRay = refract(-normalize(u.sun.xyz), Float3(0.0, 1.0, 0.0), 0.7502)
+    fin sunSlope = sunRay.xz / max(-sunRay.y, 0.42)
+    var light = pow(max(blurred, 0.0), 2.2)
+    if z > 0.0 && floorDepth > 0.22 && reach < 48.0 {
+        fin surfacePoint = hit.xz - sunSlope * floorDepth
+        fin caustic = waterCaustics(surfacePoint, time) * day * exp(-floorDepth * 0.16) * (1.0 - smoothstep(20.0, 46.0, reach))
+        light *= 1.0 + caustic * Float3(0.64, 0.90, 0.94)
+        // Incident daylight loses its warmer wavelengths before it reaches the bed.
+        light *= exp(-extinction * min(floorDepth, 35.0) * 0.25)
+    }
+    fin mid = u.eye.xyz + ray * reach * 0.43
+    fin midDepth = max(sea - mid.y, 0.0)
+    fin beam = mid.xz - sunSlope * midDepth
+    fin shaft = pow(saturate(0.5 + 0.5 * sin(beam.x * 0.33 + sin(beam.y * 0.28 + time * 0.23))), 4.0)
+    fin forward = pow(saturate(dot(ray, -sunRay) * 0.5 + 0.5), 5.0)
+    var waterLight = u.scatter.rgb * Float3(0.31, 0.70, 0.90) + Float3(0.002, 0.022, 0.033)
+    waterLight *= (0.18 + day * (0.70 + forward * (0.50 + shaft * 0.32))) * exp(-midDepth * 0.036)
+    waterLight += Float3(0.001, 0.012, 0.023) * max(u.sun.w, 0.16)
+    fin seen = light * transmit + waterLight * (1.0 - transmit)
+    fin under = pow(saturate(seen), 1.0 / 2.2)
+    // The meniscus: a few pixels where the surface touches the lens, darker and tinted by the water.
+    fin meniscus = exp(-pixels * pixels / 4.0)
+    var color = mix(scene.rgb, under, submerged)
+    color = mix(color, color * 0.45 + u.scatter.rgb * 0.6, meniscus * 0.75)
+    return Float4(color, scene.a)
+}

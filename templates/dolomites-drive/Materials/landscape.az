@@ -1,0 +1,51 @@
+@Execution("GPU")
+module project.materials.landscape
+
+import engine.shaders.sceneUniforms
+import engine.material.surface
+
+// @Material {"albedo":[0.6125,0.645,0.59],"textures":["Textures/Alpine/grass/surface.aztexture","Textures/Alpine/rock/surface.aztexture","Textures/Alpine/snow/surface.aztexture"]}
+
+@Vertex
+func materialVertex(id: @VertexIndex UInt, vertices: @ReadOnlyStorage(0) Float, u: @Uniform(1) U3): MaterialVertex =
+    materialMesh(id, vertices, u)
+
+@Fragment
+func materialFragment(
+    input: MaterialVertex
+    u: @Uniform(1) U3
+    photons: @ReadOnlyStorage(2) Float
+    baked: @ReadOnlyStorage(3) Float
+    detailLight: @Constant(4) Float4
+    spots: @Constant(5) Float4
+    env: @Constant(6) Float4
+    detail: @Texture(30) DepthTexture2D
+    clouds: @Texture(31) Texture2D
+    base0: @Texture(0) Texture2D
+    normal0: @Texture(1) Texture2D
+    surfaceMap0: @Texture(2) Texture2D
+    base1: @Texture(3) Texture2D
+    normal1: @Texture(4) Texture2D
+    surfaceMap1: @Texture(5) Texture2D
+    base2: @Texture(6) Texture2D
+    normal2: @Texture(7) Texture2D
+    surfaceMap2: @Texture(8) Texture2D
+): Float4 {
+    fin context = materialContext(input, u, photons, baked, detailLight, env, detail, clouds)
+    fin n = normalize(input.normal)
+    // Grass · Bombing
+    fin surface1 = textureSlab(context, input.world, n, base0, normal0, surfaceMap0, 5.6, 0.34, 0.0, 1.36, 0.67, 56.0, 1.0, 0.0)
+    // Rock · Bombing
+    fin surface2 = textureSlab(context, input.world, n, base1, normal1, surfaceMap1, 8.8, 0.51, 0.0, 2.4, 0.79, 44.0, 1.0, 0.0)
+    // Steep Slopes
+    fin surface3 = smoothstep(0.069, 0.235, 1.0 - saturate(n.y) + 0.13 * (noiseMask(input.world * 0.15) - 0.5))
+    // Grass / Rock
+    fin surface4 = mixSurfaces(surface1, surface2, surface3)
+    // Snow · Bombing
+    fin surface5 = textureSlab(context, input.world, n, base2, normal2, surfaceMap2, 6.5, 0.23, 0.0, 1.66, 0.51, 68.0, 1.0, 0.0)
+    // Snow Line
+    fin surface6 = altitudeMask(input.world, n, 465.0, 640.0, 33.0, 0.65)
+    // Rock / Snow
+    fin surface7 = mixSurfaces(surface4, surface5, surface6)
+    return materialColor(surface7, input, context, u, spots)
+}

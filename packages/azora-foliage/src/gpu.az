@@ -5,13 +5,13 @@ import std.math
 import engine.core
 import engine.ecs
 import engine.foliage
-import engine.foliage.shader
 import engine.gpu
 import engine.gpu.terrain
 import engine.io
 import engine.math
 import engine.math.mat
 import engine.objc
+import engine.objc.shader
 import engine.roads
 import engine.scene.terrain
 import engine.scene.transforms
@@ -99,15 +99,11 @@ func foliagePipeline(device: Long): Long {
     if diagnostic == 0 then return 0
     defer { azFree(diagnostic) }
     azPoke64(diagnostic,0,0)
-    fin library = send3(device,sel("newLibraryWithSource:options:error:"),nsString(foliageMetalSource()),0,diagnostic)
-    if library == 0 {
-        fin issue = azPeek64(diagnostic,0)
-        if issue != 0 then println("Azora Foliage: ${nsStringText(send0(issue,sel("localizedDescription")))}")
-        return 0
-    }
+    fin library = shaderLibrary(device, "foliage")
+    if library == 0 then return 0
     defer { send0(library,sel("release")) }
-    fin vertex = send1(library,sel("newFunctionWithName:"),nsString("foliage_vertex"))
-    fin fragment = send1(library,sel("newFunctionWithName:"),nsString("foliage_fragment"))
+    fin vertex = send1(library,sel("newFunctionWithName:"),nsString("foliageVertex"))
+    fin fragment = send1(library,sel("newFunctionWithName:"),nsString("foliageFragment"))
     fin descriptor = newObject("MTLRenderPipelineDescriptor")
     defer {
         if vertex != 0 then send0(vertex,sel("release"))

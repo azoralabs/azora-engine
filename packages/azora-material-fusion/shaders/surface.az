@@ -1,0 +1,353 @@
+@Execution("GPU")
+module engine.material.surface
+
+import engine.shaders.sceneUniforms
+import engine.lighting.photon
+import engine.atmosphere.fog
+
+inline fin linearRepeatMipLinear = Sampler(.Linear, .Repeat, .Linear)
+inline fin linearClampMipLinear = Sampler(.Linear, .ClampToEdge, .Linear)
+
+pack MaterialVertex {
+    @Position
+    var clip: Float4
+    @Location(0)
+    var normal: Float3
+    @Location(1)
+    var world: Float3
+    @Location(2)
+    var local: Float3
+}
+
+func materialMesh(i: UInt, v: @ReadOnlyStorage Float, u: @Uniform U3): MaterialVertex {
+    fin p: Float3 = Float3(v[i * 6], v[i * 6 + 1], v[i * 6 + 2])
+    fin n: Float3 = Float3(v[i * 6 + 3], v[i * 6 + 4], v[i * 6 + 5])
+    fin x: Float3 = u.model[0].xyz
+    fin y: Float3 = u.model[1].xyz
+    fin z: Float3 = u.model[2].xyz
+    fin cof: Float3x3 = Float3x3(cross(y, z), cross(z, x), cross(x, y))
+    fin world: Float4 = u.model * Float4(p, 1)
+    return .(u.viewProj * world, (cof * n) * ((if dot(x, cof[0]) < 0 then -1.0 else 1.0)), world.xyz, p)
+}
+
+pack Context {
+    var nl: Float
+    var nv: Float
+    var nh: Float
+    var vh: Float
+    var ambient: Float
+    var lighting: PhotonLighting
+    var l: Float3
+    var v: Float3
+    var h: Float3
+    var footprint: Float
+    var wet: Float
+    var snow: Float
+    var flash: Float3
+    var sky: Float3
+}
+
+pack Sample {
+    var color: Float3
+    var light: Float3
+    var f0: Float3
+}
+
+func fresnel(f0: Float3, cosAngle: Float): Float3 {
+    return f0 + (1.0 - f0) * pow(1.0 - cosAngle, 5.0)
+}
+
+func slab(c: Context, colorValue: Float3, roughnessValue: Float, metalValue: Float, emission: Float): Sample {
+    var color = colorValue
+    var roughness = roughnessValue
+    var metal = metalValue
+    // Weather: water darkens a porous surface and smooths it; snow covers what faces up.
+    color = mix(color * (1.0 - 0.5 * c.wet * (1.0 - metal)), Float3(0.82, 0.85, 0.9), c.snow)
+    // A water film smooths a surface only as far as it can fill it: grass stays rough, stone and asphalt shine.
+    roughness = mix(mix(roughness, 0.07, c.wet * saturate(1.3 - roughness)), 0.62, c.snow)
+    metal *= 1.0 - c.snow
+    fin f0: Float3 = mix(Float3(0.04), color, metal)
+    fin f: Float3 = fresnel(f0, c.vh)
+    fin alpha: Float = roughness * roughness
+    fin a2: Float = alpha * alpha
+    fin denom: Float = c.nh * c.nh * (a2 - 1.0) + 1.0
+    fin d: Float = a2 / max(3.14159265 * denom * denom, 1e-7)
+    fin k: Float = (roughness + 1.0) * (roughness + 1.0) / 8.0
+    fin vis: Float = 0.25 / max((c.nv * (1.0 - k) + k) * (c.nl * (1.0 - k) + k), 1e-5)
+    fin diffuse: Float3 = color * (1.0 - metal) * (1.0 - f)
+    var lit: Float3 = (diffuse + f * d * vis) * c.nl * (1.0 - c.ambient) * c.lighting.visibility * c.lighting.sunColor + color * (c.ambient * (1.0 - 0.35 * metal) + emission + c.lighting.indirect * (1.0 - metal) + c.flash)
+    // A wet surface mirrors the sky's colour at grazing angles.
+    lit += c.wet * (1.0 - c.snow) * fresnel(f0, c.nv) * (1.0 - roughness) * (1.0 - roughness) * c.sky * 0.6
+    return .(color, lit, f0)
+}
+
+func mixSurfaces(a: Sample, b: Sample, mask: Float): Sample {
+    fin t: Float = saturate(mask)
+    return .(mix(a.color, b.color, t), mix(a.light, b.light, t), mix(a.f0, b.f0, t))
+}
+
+func stackLayers(c: Context, bottom: Sample, top: Sample, mask: Float, thickness: Float): Sample {
+    fin t: Float = saturate(mask)
+    fin f: Float3 = fresnel(top.f0, c.nv)
+    fin transmission: Float3 = exp(-thickness * (1.05 - top.color) / max(c.nv, 0.15))
+    fin through: Float3 = bottom.light * transmission * (1.0 - f)
+    fin coated: Sample = .(mix(bottom.color * transmission, top.color, f), mix(through, top.light, 1.0 - transmission * (1.0 - f)), top.f0)
+    return mixSurfaces(bottom, coated, t)
+}
+
+func checker(p: Float3): Float {
+    fin q: Float3 = floor(p)
+    return fract((q.x + q.y + q.z) * 0.5) * 2.0
+}
+
+func hashPoint(p: Float3): Float {
+    return fract(sin(dot(p, Float3(127.1, 311.7, 74.7))) * 43758.5453)
+}
+
+func noiseMask(p: Float3): Float {
+    var q: Float3 = floor(p)
+    fin t: Float3 = smoothstep(Float3(0), Float3(1), fract(p))
+    fin a: Float = mix(mix(hashPoint(q), hashPoint(q + Float3(1, 0, 0)), t.x), mix(hashPoint(q + Float3(0, 1, 0)), hashPoint(q + Float3(1, 1, 0)), t.x), t.y)
+    q.z += 1
+    fin b: Float = mix(mix(hashPoint(q), hashPoint(q + Float3(1, 0, 0)), t.x), mix(hashPoint(q + Float3(0, 1, 0)), hashPoint(q + Float3(1, 1, 0)), t.x), t.y)
+    return mix(a, b, t.z)
+}
+
+func makeContext(n: Float3, l: Float3, v: Float3, h: Float3, ambient: Float, lighting: PhotonLighting, footprint: Float): Context {
+    return .(saturate(dot(n, l)), max(saturate(dot(n, v)), 1e-4), saturate(dot(n, h)), saturate(dot(v, h)), ambient, lighting, l, v, h, footprint, 0.0, 0.0, Float3(0), Float3(0))
+}
+
+func altitudeMask(wp: Float3, n: Float3, low: Float, high: Float, variation: Float, slopeWeight: Float): Float {
+    fin warped: Float = wp.y + (noiseMask(wp * 0.05) - 0.5) * variation
+    fin height: Float = smoothstep(low, max(high, low + 0.001), warped)
+    return height * mix(1.0, smoothstep(0.48, 0.79, n.y), slopeWeight)
+}
+
+pack BombSample {
+    var color: Float3
+    var bump: Float2
+    var surface: Float4
+}
+
+// Trace the packed height field around its midpoint. Explicit gradients keep mip selection stable.
+func reliefPoint(surfaceMap: Texture2D, filter: Sampler, point: Float2, dx: Float2, dy: Float2, ray: Float2): Float2 {
+    if dot(ray, ray) < 1e-9 then return point
+    var last: Float2 = point + ray * 0.5
+    var previous: Float = 1.0 - surfaceMap.sampleGrad(filter, last, dx, dy).b
+    for step: Int in 1..6 {
+        fin depth: Float = Float(step) / 6.0
+        fin next: Float2 = point + ray * (0.5 - depth)
+        fin gap: Float = 1.0 - surfaceMap.sampleGrad(filter, next, dx, dy).b - depth
+        if gap <= 0.0 then return mix(last, next, previous / max(previous - gap, 1e-5))
+        last = next
+        previous = gap
+    }
+    return last
+}
+
+func viewRelief(along: Float2, across: Float, depth: Float, dx: Float2, dy: Float2): Float2 {
+    fin lod: Float = max(length(dx), length(dy))
+    return along * (depth * (1.0 - smoothstep(0.018, 0.075, lod)) / max(abs(across), 0.28))
+}
+
+func bombRotation(cell: Float2, rotation: Float): Float2x2 {
+    fin angle: Float = rotation * 6.2831853 * hashPoint(Float3(cell, 23.4))
+    fin s: Float = sin(angle)
+    fin c: Float = cos(angle)
+    fin flip: Float = if hashPoint(Float3(cell, 78.6)) < 0.5 then -1.0 else 1.0
+    return Float2x2(Float2(c, s) * flip, Float2(-s, c))
+}
+
+func bombTile(
+    base: Texture2D
+    normals: Texture2D
+    surfaceMap: Texture2D
+    uv: Float2
+    dx: Float2
+    dy: Float2
+    cell: Float2
+    offset: Float
+    rotation: Float
+    ray: Float2
+): BombSample {
+    fin axes: Float2x2 = bombRotation(cell, rotation)
+    fin randomOffset: Float2 = Float2(hashPoint(Float3(cell, 8.1)), hashPoint(Float3(cell, 49.5)))
+    fin point: Float2 = reliefPoint(surfaceMap, linearRepeatMipLinear, axes * uv + randomOffset * offset, axes * dx, axes * dy, axes * ray)
+    fin col: Float3 = pow(base.sampleGrad(linearRepeatMipLinear, point, axes * dx, axes * dy).rgb, Float3(2.2))
+    fin xy: Float2 = normals.sampleGrad(linearRepeatMipLinear, point, axes * dx, axes * dy).xy * 2.0 - 1.0
+    return .(col, transpose(axes) * xy, surfaceMap.sampleGrad(linearRepeatMipLinear, point, axes * dx, axes * dy))
+}
+
+func bombProjection(
+    base: Texture2D
+    normals: Texture2D
+    surfaceMap: Texture2D
+    uv: Float2
+    dx: Float2
+    dy: Float2
+    offset: Float
+    contrast: Float
+    rotation: Float
+    ray: Float2
+): BombSample {
+    // Three adjacent vertices of a skewed triangular grid. The two cells sharing
+    // an edge evaluate the same samples with the same weights along that edge.
+    fin grid: Float2 = Float2(uv.x + uv.y * 0.57735027, uv.y * 1.15470054) * 0.69
+    fin cell: Float2 = floor(grid)
+    fin f: Float2 = fract(grid)
+    fin upper: Bool = f.x + f.y > 1.0
+    var w: Float3 = Float3(abs(1.0 - f.x - f.y), (if upper then 1.0 - f.y else f.x), (if upper then 1.0 - f.x else f.y))
+    fin a: BombSample = bombTile(base, normals, surfaceMap, uv, dx, dy, cell + Float2((if upper then 1.0 else 0.0)), offset, rotation, ray)
+    fin b: BombSample = bombTile(base, normals, surfaceMap, uv, dx, dy, cell + Float2(1, 0), offset, rotation, ray)
+    fin c: BombSample = bombTile(base, normals, surfaceMap, uv, dx, dy, cell + Float2(0, 1), offset, rotation, ray)
+    w = smoothstep(Float3(0), Float3(1), w)
+    // Height lerp biases transitions toward the higher texels and keeps each
+    // sample at zero contribution when crossing its opposite cell edge.
+    fin peaks: Float3 = w + (Float3(a.surface.b, b.surface.b, c.surface.b) - 0.5) * 0.55 * saturate(4.0 * w)
+    fin highest: Float = max(max(peaks.x, peaks.y), peaks.z)
+    fin transition: Float = mix(1.0, 0.16, contrast)
+    w *= mix(Float3(1), max(Float3(0.03), saturate((peaks - highest + transition) / transition)), contrast)
+    w /= max(w.x + w.y + w.z, 1e-5)
+    return .(a.color * w.x + b.color * w.y + c.color * w.z, a.bump * w.x + b.bump * w.y + c.bump * w.z, a.surface * w.x + b.surface * w.y + c.surface * w.z)
+}
+
+func textureSlab(
+    cValue: Context
+    wp: Float3
+    n: Float3
+    base: Texture2D
+    normals: Texture2D
+    surfaceMap: Texture2D
+    tile: Float
+    detail: Float
+    emission: Float
+    offset: Float
+    contrast: Float
+    macroScale: Float
+    rotation: Float
+    displacement: Float
+): Sample {
+    var c = cValue
+    fin uv: Float3 = wp / max(tile, 0.01)
+    fin dx: Float3 = dpdx(uv) * c.footprint
+    fin dy: Float3 = dpdy(uv) * c.footprint
+    var w: Float3 = max(pow(abs(n), Float3(4)) - 0.025, 0.0)
+    w /= max(w.x + w.y + w.z, 1e-5)
+    var col: Float3 = Float3(0.0)
+    var bump: Float3 = Float3(0.0)
+    var surface: Float4 = Float4(0.0)
+    if w.x > 0.0 {
+        fin s: BombSample = bombProjection(base, normals, surfaceMap, uv.zy, dx.zy, dy.zy, offset, contrast, rotation, viewRelief(c.v.zy, c.v.x, displacement / tile, dx.zy, dy.zy))
+        col += s.color * w.x
+        surface += s.surface * w.x
+        bump += Float3(0, s.bump.y, s.bump.x) * w.x
+    }
+    if w.y > 0.0 {
+        fin s: BombSample = bombProjection(base, normals, surfaceMap, uv.xz, dx.xz, dy.xz, offset, contrast, rotation, viewRelief(c.v.xz, c.v.y, displacement / tile, dx.xz, dy.xz))
+        col += s.color * w.y
+        surface += s.surface * w.y
+        bump += Float3(s.bump.x, 0, s.bump.y) * w.y
+    }
+    if w.z > 0.0 {
+        fin s: BombSample = bombProjection(base, normals, surfaceMap, uv.xy, dx.xy, dy.xy, offset, contrast, rotation, viewRelief(c.v.xy, c.v.z, displacement / tile, dx.xy, dy.xy))
+        col += s.color * w.z
+        surface += s.surface * w.z
+        bump += Float3(s.bump.x, s.bump.y, 0) * w.z
+    }
+    fin factor: Float = noiseMask(wp / max(macroScale, 0.1) + Float3(12, 37, 19)) * 0.65 + noiseMask(wp * (0.29 / max(macroScale, 0.1)) + Float3(48, 17, 33)) * 0.35
+    col *= if macroScale > 0.0 then 0.71 + 0.61 * factor else 1.0
+    fin perturbed: Float3 = normalize(n + detail * (bump - n * dot(n, bump)))
+    fin weather: Context = c
+    c = makeContext(perturbed, c.l, c.v, c.h, c.ambient * (0.40 + 0.60 * surface.g), c.lighting, c.footprint)
+    c.wet = weather.wet
+    c.snow = weather.snow
+    c.flash = weather.flash
+    c.sky = weather.sky
+    return slab(c, col, max(surface.r, 0.04), surface.a, emission)
+}
+
+func scatterSlab(
+    c: Context
+    wp: Float3
+    n: Float3
+    previous: Sample
+    base: Texture2D
+    normals: Texture2D
+    surfaceMap: Texture2D
+    spacing: Float
+    width: Float
+    density: Float
+    detail: Float
+    displacement: Float
+): Sample {
+    fin dX: Float2 = dpdx(wp.xz) * c.footprint
+    fin dY: Float2 = dpdy(wp.xz) * c.footprint
+    fin cell: Float2 = floor(wp.xz / spacing)
+    fin patch: Float = 0.45 + 0.9 * noiseMask(Float3(cell * 0.19, 41.6))
+    if n.y < 0.65 || hashPoint(Float3(cell, 91.3)) > density * patch then return previous
+    fin size: Float = min(width * (0.53 + 0.92 * hashPoint(Float3(cell, 71.6))), spacing * 0.20)
+    fin footprint: Float = max(length(dX), length(dY)) / size
+    if footprint > 0.46 then return previous
+    fin center: Float2 = (cell + 0.24 + 0.52 * Float2(hashPoint(Float3(cell, 17.1)), hashPoint(Float3(cell, 39.3)))) * spacing
+    fin axes: Float2x2 = bombRotation(cell, 1.0)
+    fin uv: Float2 = axes * (wp.xz - center) / size + 0.5
+    if any(abs(uv - 0.5) > 0.55) then return previous
+    fin atlasIndex: Float = floor(hashPoint(Float3(cell, 115.4)) * 4.0)
+    fin atlas: Float2 = Float2(fmod(atlasIndex, 2.0), floor(atlasIndex * 0.5)) * 0.5
+    fin dx: Float2 = axes * dX / (2.0 * size)
+    fin dy: Float2 = axes * dY / (2.0 * size)
+    fin ray: Float2 = axes * viewRelief(c.v.xz, c.v.y, min(displacement, size * 0.20) / (size * 2.0), dx, dy)
+    fin point: Float2 = reliefPoint(surfaceMap, linearClampMipLinear, atlas + uv * 0.5, dx, dy, ray)
+    if any(point < atlas) || any(point > atlas + 0.5) then return previous
+    fin color: Float4 = base.sampleGrad(linearClampMipLinear, point, dx, dy)
+    fin cover: Float = color.a * (1.0 - smoothstep(0.24, 0.46, footprint))
+    if cover <= 0.003 then return previous
+    fin bump: Float2 = transpose(axes) * (normals.sampleGrad(linearClampMipLinear, point, dx, dy).xy * 2.0 - 1.0)
+    fin surface: Float4 = surfaceMap.sampleGrad(linearClampMipLinear, point, dx, dy)
+    fin perturbed: Float3 = normalize(n + detail * Float3(bump.x, 0, bump.y))
+    var tex: Context = makeContext(perturbed, c.l, c.v, c.h, c.ambient * (0.4 + 0.6 * surface.g), c.lighting, c.footprint)
+    tex.wet = c.wet
+    tex.snow = c.snow
+    tex.flash = c.flash
+    tex.sky = c.sky
+    return mixSurfaces(previous, slab(tex, pow(color.rgb, Float3(2.2)), max(surface.r, 0.04), surface.a, 0.0), cover)
+}
+
+func materialContext(
+    input: MaterialVertex
+    u: @Uniform U3
+    photons: @ReadOnlyStorage Float
+    baked: @ReadOnlyStorage Float
+    detailLight: @Constant Float4
+    env: @Constant Float4
+    detail: DepthTexture2D
+    clouds: Texture2D
+): Context {
+    fin n = normalize(input.normal)
+    fin l = normalize(u.light.xyz)
+    fin v = normalize(u.eye.xyz - input.world)
+    fin h = normalize(l + v + Float3(1e-6))
+    var lighting = scenePhotonLight(photons, baked, detail, detailLight, input.world, n, u.eye.w, u.sun.xyz)
+    lighting.visibility *= cloudShade(env, clouds, input.world)
+    // Keep the same mip footprint when the scene is rendered at half resolution.
+    fin footprint = if u.sun.w > 0.0 then u.sun.w else 1.0
+    var context = makeContext(n, l, v, h, saturate(u.light.w), lighting, footprint)
+    context.wet = sceneWetness(env, n)
+    context.snow = sceneSnow(env, n, input.world)
+    context.flash = sceneFlash(env, n)
+    context.sky = pow(u.fog.xyz, Float3(2.2))
+    return context
+}
+
+func materialColor(
+    surface: Sample
+    input: MaterialVertex
+    context: Context
+    u: @Uniform U3
+    spots: @Constant Float4
+): Float4 {
+    if (Int(u.eye.w) & 1) != 0 then return Float4(pow(saturate(surface.color), Float3(0.454545)), 1.0)
+    fin local = localLights(spots, input.world, normalize(input.normal), context.v, surface.color, surface.f0)
+    fin fog = heightFog(u.eye.xyz, input.world, u.fog.w, u.fogShape)
+    return Float4(pow(saturate(mix(surface.light + local, context.sky, fog)), Float3(0.454545)), 1.0)
+}

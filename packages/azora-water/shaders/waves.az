@@ -1,0 +1,119 @@
+@Execution("GPU")
+module engine.shaders.water.waves
+
+/**
+ * The sea's simulation, one cascade at a time (Tessendorf): its spectrum moved to time t, an
+ * inverse FFT of rows then columns, and the maps the surface reads. Parameters `p`:
+ * p[0] tile length, samples, time, choppiness; p[1] foam threshold, foam decay share, foam gain,
+ * columns pass; p[2] depth, log2(samples), gravity, 0.
+ */
+
+@Compute(8, 8, 1)
+func waveSpectrum(id: @GlobalInvocationId UInt3, h0: @Texture(0) Texture2D, outA: @Texture(1) WriteTexture2D,
+                  outB: @Texture(2) WriteTexture2D, p: @Constant(0) Float4) {
+    fin n = p[0].y
+    if Float(id.x) >= n || Float(id.y) >= n then return
+    fin k = (Float2(id.xy) - n * 0.5) * (6.283185307 / p[0].x)
+    fin kl = length(k)
+    fin h = h0.read(id.xy)
+    fin depth = p[2].x
+    fin g = p[2].z
+    fin omega = if depth > 0.0 then sqrt(g * kl * tanh(min(kl * depth, 20.0))) else sqrt(g * kl)
+    // The phase wraps every 2π: reduce it before it loses its fraction.
+    fin phase = fmod(omega * p[0].z, 6.283185307)
+    fin c = cos(phase)
+    fin s = sin(phase)
+    // ĥ = h0 e^{iφ} + conj(h0(-k)) e^{-iφ}
+    fin hh = Float2(h.x * c - h.y * s + h.z * c + h.w * s, h.x * s + h.y * c - h.z * s + h.w * c)
+    fin u = if kl > 1.0e-6 then k / kl else Float2(0.0)
+    fin lam = p[0].w
+    fin minusI = Float2(hh.y, -hh.x)
+    fin plusI = Float2(-hh.y, hh.x)
+    fin dx = lam * u.x * minusI
+    fin dz = lam * u.y * minusI
+    fin sx = k.x * plusI
+    fin sz = k.y * plusI
+    fin dxx = lam * u.x * k.x * hh
+    fin dzz = lam * u.y * k.y * hh
+    fin dxz = lam * u.x * k.y * hh
+    // Two real fields per complex transform: a + i b.
+    outA.write(Float4(hh.x - dx.y, hh.y + dx.x, dz.x - sx.y, dz.y + sx.x), id.xy)
+    outB.write(Float4(sz.x - dxx.y, sz.y + dxx.x, dzz.x - dxz.y, dzz.y + dxz.x), id.xy)
+}
+
+/**
+ * One row (or column, p[1].w) of the grid per workgroup, samples/2 threads: an in-place radix-2
+ * inverse FFT of four complex numbers per sample in workgroup memory.
+ */
+@Compute(128, 1, 1)
+func waveFft(thread: @LocalInvocationId UInt3, group: @WorkgroupId UInt3, inA: @Texture(0) Texture2D, inB: @Texture(1) Texture2D,
+             outA: @Texture(2) WriteTexture2D, outB: @Texture(3) WriteTexture2D, p: @Constant(0) Float4,
+             sa: @Workgroup Array<Float4, 256>, sb: @Workgroup Array<Float4, 256>) {
+    fin t = thread.x
+    fin line = group.x
+    fin n = UInt(p[0].y)
+    fin bits = UInt(p[2].y)
+    fin columns = p[1].w > 0.5
+    fin pairs = n / 2
+    if t < pairs {
+        for part: UInt in 0..<2 {
+            fin e = t + part * pairs
+            fin at = if columns then UInt2(line, e) else UInt2(e, line)
+            fin r = reverseBits(e) >> (32 - bits)
+            sa[r] = inA.read(at)
+            sb[r] = inB.read(at)
+        }
+    }
+    workgroupBarrier()
+    var span: UInt = 1
+    while span < n {
+        if t < pairs {
+            fin pos = t % span
+            fin i = (t / span) * span * 2 + pos
+            fin j = i + span
+            fin angle = 3.141592653589793 * Float(pos) / Float(span)
+            fin w = Float2(cos(angle), sin(angle))
+            fin a = sa[i]
+            fin b = sb[i]
+            fin c = sa[j]
+            fin d = sb[j]
+            fin cw = Float4(c.x * w.x - c.y * w.y, c.x * w.y + c.y * w.x, c.z * w.x - c.w * w.y, c.z * w.y + c.w * w.x)
+            fin dw = Float4(d.x * w.x - d.y * w.y, d.x * w.y + d.y * w.x, d.z * w.x - d.w * w.y, d.z * w.y + d.w * w.x)
+            sa[i] = a + cw
+            sa[j] = a - cw
+            sb[i] = b + dw
+            sb[j] = b - dw
+        }
+        workgroupBarrier()
+        span = span << 1
+    }
+    if t < pairs {
+        for part: UInt in 0..<2 {
+            fin e = t + part * pairs
+            fin at = if columns then UInt2(line, e) else UInt2(e, line)
+            outA.write(sa[e], at)
+            outB.write(sb[e], at)
+        }
+    }
+}
+
+/**
+ * The transformed fields into the maps the surface reads: displacement (x, y, z, dDx/dz), slopes
+ * (dη/dx, dη/dz, dDx/dx, dDz/dz) and foam, which builds where the surface folds (Jacobian below
+ * the threshold) and fades by the decay share each step.
+ */
+@Compute(8, 8, 1)
+func waveFinalize(id: @GlobalInvocationId UInt3, a: @Texture(0) Texture2D, b: @Texture(1) Texture2D,
+                  displacement: @Texture(2, Rgba16Float) WriteTexture2D, slopes: @Texture(3, Rgba16Float) WriteTexture2D,
+                  foamIn: @Texture(4) Texture2D, foamOut: @Texture(5, R16Float) WriteTexture2D, p: @Constant(0) Float4) {
+    fin n = p[0].y
+    if Float(id.x) >= n || Float(id.y) >= n then return
+    fin sign = if ((id.x + id.y) & 1) != 0 then -1.0 else 1.0
+    fin va = a.read(id.xy) * sign
+    fin vb = b.read(id.xy) * sign
+    displacement.write(Float4(va.y, va.x, va.z, vb.w), id.xy)
+    slopes.write(Float4(va.w, vb.x, vb.y, vb.z), id.xy)
+    fin jacobian = (1.0 + vb.y) * (1.0 + vb.z) - vb.w * vb.w
+    fin foam = max(foamIn.read(id.xy).r * p[1].y, saturate((p[1].x - jacobian) * p[1].z))
+    foamOut.write(Float4(foam, 0.0, 0.0, 0.0), id.xy)
+}

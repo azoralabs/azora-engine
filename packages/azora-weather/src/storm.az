@@ -8,6 +8,7 @@ import engine.gpu
 import engine.io
 import engine.math
 import engine.objc
+import engine.objc.shader
 import engine.audio.dsp
 import engine.render.scene
 import engine.atmosphere.components
@@ -80,55 +81,12 @@ impl AetherStorm {
     }
 }
 
-func boltMetalSource(): String = "#include <metal_stdlib>
-using namespace metal;
-struct BoltU { float4x4 viewProj; float4 screen; float4 params; };
-struct BoltOut { float4 pos [[position]]; float across; float glow; float depth; };
-
-/** One segment of a bolt as a ribbon facing the eye, at least a pixel and a half wide. */
-vertex BoltOut bolt_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], device const float4* s [[buffer(0)]], constant BoltU& u [[buffer(1)]]) {
-    float4 a = s[iid * 2u], b = s[iid * 2u + 1u];
-    float4 ca = u.viewProj * float4(a.xyz, 1.0), cb = u.viewProj * float4(b.xyz, 1.0);
-    BoltOut o;
-    if (ca.w < 1.0 || cb.w < 1.0) { o.pos = float4(0.0, 0.0, -1.0, 1.0); o.across = 0.0; o.glow = 0.0; o.depth = 0.0; return o; }
-    float2 halfScreen = u.screen.xy * 0.5;
-    float2 sa = ca.xy / ca.w * halfScreen, sb = cb.xy / cb.w * halfScreen;
-    float2 d = sb - sa;
-    float2 axis = length(d) > 1e-3 ? normalize(d) : float2(0.0, 1.0);
-    float2 normal = float2(-axis.y, axis.x);
-    bool tail = vid >= 2u;
-    float side = (vid & 1u) == 0u ? -1.0 : 1.0;
-    float4 clip = tail ? cb : ca;
-    // The glow reaches several times the channel's width.
-    float width = max(a.w * u.params.x / clip.w, 1.5) * 6.0;
-    float2 at = (tail ? sb : sa) + normal * side * width * 0.5 + axis * (tail ? 1.0 : -1.0);
-    o.pos = float4(at / halfScreen * clip.w, 0.0, clip.w);
-    o.across = side;
-    o.glow = b.w * u.params.y;
-    o.depth = clip.w;
-    return o;
-}
-
-fragment float4 bolt_fragment(BoltOut in [[stage_in]], constant BoltU& u [[buffer(1)]], depth2d<float> scene [[texture(0)]]) {
-    if (in.glow <= 0.001) discard_fragment();
-    float2 px = in.pos.xy * (u.screen.zw / u.screen.xy);
-    float z = scene.read(uint2(clamp(px, float2(0.0), u.screen.zw - 1.0)));
-    // Reversed depth: near 1, far 0.
-    float sceneDistance = u.params.z * u.params.w / max(u.params.z + z * (u.params.w - u.params.z), 1e-4);
-    // Behind a mountain, hidden.
-    if (z > 0.0 && sceneDistance < in.depth) discard_fragment();
-    float x = in.across;
-    float light = exp(-x * x * 40.0) * 2.4 + exp(-x * x * 4.0) * 0.45;
-    return float4(float3(0.82, 0.86, 1.0) * light * in.glow, 0.0);
-}
-"
-
 func stormPipeline(device: Long): Long {
-    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(boltMetalSource()), 0, 0)
+    fin library = shaderLibrary(device, "storm")
     if library == 0 then return 0
     defer { send0(library, sel("release")) }
-    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("bolt_vertex"))
-    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("bolt_fragment"))
+    fin vertexStage = send1(library, sel("newFunctionWithName:"), nsString("boltVertex"))
+    fin fragmentStage = send1(library, sel("newFunctionWithName:"), nsString("boltFragment"))
     defer {
         if vertexStage != 0 then send0(vertexStage, sel("release"))
         if fragmentStage != 0 then send0(fragmentStage, sel("release"))

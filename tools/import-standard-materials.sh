@@ -18,7 +18,7 @@ import sys
 from tempfile import NamedTemporaryFile
 
 library, project = map(Path, sys.argv[1:])
-for pattern in ("Textures/Standard/*/*.aztexture", "Materials/Standard/*.azmaterial"):
+for pattern in ("Textures/Standard/*/*.aztexture", "Materials/Standard/*.az"):
     sources = sorted(library.glob(pattern))
     if not sources:
         sys.exit(f"Standard material library assets missing: {library / pattern}")

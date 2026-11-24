@@ -1,0 +1,28 @@
+@Execution("GPU")
+module project.materials.vehicleGlass
+
+import engine.shaders.sceneUniforms
+import engine.material.surface
+
+// @Material {"albedo":[0.02332,0.04611,0.07102000000000001],"textures":[]}
+
+@Vertex
+func materialVertex(id: @VertexIndex UInt, vertices: @ReadOnlyStorage(0) Float, u: @Uniform(1) U3): MaterialVertex =
+    materialMesh(id, vertices, u)
+
+@Fragment
+func materialFragment(
+    input: MaterialVertex
+    u: @Uniform(1) U3
+    photons: @ReadOnlyStorage(2) Float
+    baked: @ReadOnlyStorage(3) Float
+    detailLight: @Constant(4) Float4
+    spots: @Constant(5) Float4
+    env: @Constant(6) Float4
+    detail: @Texture(30) DepthTexture2D
+    clouds: @Texture(31) Texture2D
+): Float4 {
+    fin context = materialContext(input, u, photons, baked, detailLight, env, detail, clouds)
+    fin surface1 = slab(context, Float3(0.044, 0.087, 0.134), 0.15, 0.47, 0.0)
+    return materialColor(surface1, input, context, u, spots)
+}

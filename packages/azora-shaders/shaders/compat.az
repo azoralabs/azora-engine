@@ -1,0 +1,112 @@
+@Execution("GPU")
+module engine.shaders.compat
+
+pack MeshUniforms {
+    fin viewProj: Float4x4
+    fin model: Float4x4
+    fin color: Float4
+    fin light: Float4
+}
+
+pack MeshPoint {
+    @Position
+    fin clip: Float4
+    @Location(0)
+    fin normal: Float3
+}
+
+func lambert(normal: Float3, light: Float4, color: Float4): Float4 {
+    fin diffuse = max(dot(normalize(normal), normalize(light.xyz)), 0.0)
+    fin ambient = saturate(light.w)
+    return Float4(color.rgb * (ambient + (1.0 - ambient) * diffuse), color.a)
+}
+
+@Vertex
+func vulkanMeshVertex(position: @Location(0) Float3, normal: @Location(1) Float3, u: @Uniform(0) MeshUniforms): MeshPoint {
+    return .(u.viewProj * u.model * Float4(position, 1.0), (u.model * Float4(normal, 0.0)).xyz)
+}
+
+@Fragment
+func vulkanMeshFragment(input: MeshPoint, u: @Uniform(0) MeshUniforms): Float4 = lambert(input.normal, u.light, u.color)
+
+pack WebMeshUniforms {
+    fin modelViewMatrix: Float4x4
+    fin projectionMatrix: Float4x4
+    fin normalMatrix: Float3x3
+}
+
+pack WebLightUniforms {
+    fin uColor: Float4
+    fin uLight: Float4
+}
+
+@Vertex
+func webMeshVertex(position: @Location(0) Float3, normal: @Location(1) Float3, u: @Uniform(0) WebMeshUniforms): MeshPoint {
+    return .(u.projectionMatrix * u.modelViewMatrix * Float4(position, 1.0), normalize(u.normalMatrix * normal))
+}
+
+@Fragment
+func webMeshFragment(input: MeshPoint, u: @Uniform(0) WebLightUniforms): Float4 = lambert(input.normal, u.uLight, u.uColor)
+
+pack CanvasUniforms {
+    fin viewport: Float2
+    fin useTex: Float
+    fin pad: Float
+}
+
+pack WebCanvasUniforms {
+    fin uViewport: Float2
+}
+
+pack CanvasPoint {
+    @Position
+    fin clip: Float4
+    @Location(0)
+    fin uv: Float2
+    @Location(1)
+    fin color: Float4
+}
+
+func canvasPoint(position: Float2, uv: Float2, color: Float4, viewport: Float2): CanvasPoint {
+    fin ndc = position / viewport * Float2(2.0, -2.0) + Float2(-1.0, 1.0)
+    return .(Float4(ndc, 0.0, 1.0), uv, color)
+}
+
+@Vertex
+func vulkanCanvasVertex(
+    position: @Location(0) Float2
+    uv: @Location(1) Float2
+    color: @Location(2) Float4
+    u: @Uniform(0) CanvasUniforms
+): CanvasPoint = canvasPoint(position, uv, color, u.viewport)
+
+@Fragment
+func vulkanCanvasFragment(
+    input: CanvasPoint
+    u: @Uniform(0) CanvasUniforms
+    tex: @Texture(1) Texture2D
+    filter: @Sampler(0) Sampler
+): Float4 {
+    if u.useTex <= 0.5 then return input.color
+    fin pixel = tex.sample(filter, input.uv)
+    return if u.useTex > 1.5 then pixel * input.color else Float4(input.color.rgb, pixel.a * input.color.a)
+}
+
+@Vertex
+func webCanvasVertex(
+    position: @Location(0) Float3
+    uv: @Location(1) Float2
+    color: @Location(2) Float4
+    u: @Uniform(0) WebCanvasUniforms
+): CanvasPoint = canvasPoint(position.xy, uv, color, u.uViewport)
+
+@Fragment
+func webCanvasFragment(
+    input: CanvasPoint
+    uUseTexture: @Uniform(0) Int
+    uTexture: @Texture(1) Texture2D
+    filter: @Sampler(0) Sampler
+): Float4 {
+    if uUseTexture == 0 then return input.color
+    return Float4(input.color.rgb, input.color.a * uTexture.sample(filter, input.uv).a)
+}

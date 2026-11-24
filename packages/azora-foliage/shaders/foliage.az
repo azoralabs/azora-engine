@@ -1,0 +1,184 @@
+@Execution("GPU")
+module engine.shaders.foliage.foliage
+
+pack FoliageU {
+    var viewProj: Float4x4
+    var terrain: Float4x4
+    var eye: Float4
+    var light: Float4
+    var sun: Float4
+    var fog: Float4
+    var fogShape: Float4
+    var wind: Float4
+    var cell: Float4
+    var options: Float4
+    var shape: Float4
+}
+
+pack FoliageVertex {
+    @Position
+    var position: Float4
+    @Location(0)
+    var world: Float3
+    @Location(1)
+    var color: Float3
+    @Location(2)
+    var normal: Float3
+}
+
+func foldedVertex(x: Int, z: Int, step: Int, mask: Int): Int {
+    var i: Int = x
+    var j: Int = z
+    if step < 32 {
+        if ((z == 0 && ((mask & 1) != 0)) || (z == 32 && ((mask & 2) != 0))) && (x / step) % 2 != 0 then i -= step
+        if ((x == 0 && ((mask & 4) != 0)) || (x == 32 && ((mask & 8) != 0))) && (z / step) % 2 != 0 then j -= step
+    }
+    return j * 33 + i
+}
+
+func groundVertex(ground: @ReadOnlyStorage Float, index: Int): Float3 {
+    fin base: Int = index * 6
+    return Float3(ground[base + 0], ground[base + 1], ground[base + 2])
+}
+
+func groundTriangle(point: Float2, a: Float3, b: Float3, c: Float3): Float2 {
+    fin u: Float2 = b.xz - a.xz
+    fin v: Float2 = c.xz - a.xz
+    fin p: Float2 = point - a.xz
+    fin det: Float = u.x * v.y - u.y * v.x
+    if abs(det) < 1e-15 then return Float2(0.0)
+    fin s: Float = (p.x * v.y - p.y * v.x) / det
+    fin t: Float = (u.x * p.y - u.y * p.x) / det
+    if s < - 0.00005 || t < - 0.00005 || s + t > 1.00005 then return Float2(0.0)
+    return Float2(a.y + s * (b.y - a.y) + t * (c.y - a.y), 1.0)
+}
+
+func groundCell(point: Float2, x: Int, z: Int, step: Int, mask: Int, ground: @ReadOnlyStorage Float): Float2 {
+    fin a: Float3 = groundVertex(ground, foldedVertex(x * step, z * step, step, mask))
+    fin b: Float3 = groundVertex(ground, foldedVertex((x + 1) * step, z * step, step, mask))
+    fin c: Float3 = groundVertex(ground, foldedVertex(x * step, (z + 1) * step, step, mask))
+    fin d: Float3 = groundVertex(ground, foldedVertex((x + 1) * step, (z + 1) * step, step, mask))
+    fin even: Bool = (x + z) % 2 == 0
+    fin first: Float2 = groundTriangle(point, a, c, (if even then d else b))
+    if first.y > 0.0 then return first
+    return if even then groundTriangle(point, a, d, b) else groundTriangle(point, b, c, d)
+}
+
+// Follow the visible terrain's LOD and the exact index fold at a tile edge.
+// A folded triangle can cross into a neighbouring cell on the same tile.
+func plantedHeight(point: Float2, ground: @ReadOnlyStorage Float, u: @Uniform FoliageU): Float {
+    fin step: Int = 1 << Int(u.options.x)
+    fin mask: Int = Int(u.options.y)
+    fin cells: Int = 32 / step
+    fin xy: Int2 = clamp(Int2(floor((point - u.cell.xy) / u.cell.zw / Float(step))), 0, cells - 1)
+    fin initial: Float2 = groundCell(point, xy.x, xy.y, step, mask, ground)
+    if initial.y > 0.0 then return initial.x
+    for z: Int in max(0, xy.y - 1)..min(cells - 1, xy.y + 1) {
+        for x: Int in max(0, xy.x - 1)..min(cells - 1, xy.x + 1) {
+            fin found: Float2 = groundCell(point, x, z, step, mask, ground)
+            if found.y > 0.0 then return found.x
+        }
+    }
+    return groundVertex(ground, xy.y * step * 33 + xy.x * step).y
+}
+
+func circle(angle: Float): Float2 {
+    return Float2(cos(angle), sin(angle))
+}
+
+@Vertex
+func foliageVertex(
+    vid: @VertexIndex UInt
+    iid: @InstanceIndex UInt
+    plants: @ReadOnlyStorage(0) Float4
+    u: @Uniform(1) FoliageU
+    ground: @ReadOnlyStorage(2) Float
+): FoliageVertex {
+    fin plant: Float4 = plants[iid]
+    fin seed: Float = plant.w
+    var root: Float3 = (u.terrain * Float4(plant.x, plantedHeight(plant.xy, ground, u), plant.y, 1.0)).xyz
+    fin distance: Float = length(root.xz - u.eye.xz)
+    fin lod: Int = Int(u.options.w)
+    fin fir: Bool = u.options.z > 0.5
+    var offset: Float3 = Float3(0)
+    var n: Float3 = Float3(0)
+    var tint: Float3 = Float3(0)
+    fin turn: Float = seed * 6.2831853
+    fin phase: Float = u.wind.z * 1.75 + dot(root.xz, Float2(0.095, 0.127)) + turn * 0.35
+    fin wind: Float2 = (Float2(0.55, 0.24) + clamp(u.wind.xy * 0.11, -1.0, 1.0)) * sin(phase)
+    if fir {
+        root.y -= 0.10
+        if vid < 24 {
+            fin side: Int = Int(vid) / 6
+            fin v: Int = Int(vid) % 6
+            fin a: Float2 = circle(turn + Float(side) * 1.5707963)
+            fin b: Float2 = circle(turn + Float(side + 1) * 1.5707963)
+            fin top: Bool = v == 2 || v == 4 || v == 5
+            var p: Float2 = if (v == 0 || v == 3 || v == 5) then a else b
+            fin width: Float = plant.z * ((if top then 0.018 else 0.029))
+            offset = Float3(p.x * width, (if top then plant.z * 0.56 else 0.0), p.y * width)
+            n = Float3((a + b).x, 0.0, (a + b).y)
+            tint = Float3(0.23, 0.145, 0.09)
+        } else {
+            var sides: Int = if lod == 0 then 7 else (if lod == 1 then 5 else 4)
+            fin tiers: Int = if lod == 0 then 4 else (if lod == 1 then 3 else 2)
+            fin face: Int = (Int(vid) - 24) / 3
+            fin tier: Int = face / sides
+            fin side: Int = face % sides
+            fin v: Int = (Int(vid) - 24) % 3
+            fin fraction: Float = Float(tier) / Float(tiers - 1)
+            fin angle: Float = turn + Float(side) * 6.2831853 / Float(sides) + fraction * 1.82
+            fin a: Float2 = circle(angle)
+            fin b: Float2 = circle(angle + 6.2831853 / Float(sides))
+            fin p: Float2 = if v == 0 then b else a
+            var radius: Float = plant.z * mix(0.143, 0.054, fraction) * (0.88 + 0.21 * sin(angle * 3.0 + turn))
+            fin base: Float = plant.z * (0.21 + 0.49 * fraction + 0.025 * sin(angle + turn))
+            fin tip: Float = plant.z * (0.63 + 0.37 * fraction)
+            offset = if v == 2 then Float3(0, tip, 0) else Float3(p.x * radius, base, p.y * radius)
+            n = normalize(Float3((a + b).x, 0.53, (a + b).y))
+            var variation: Float = Float(0.83 + seed * 0.24 + 0.06 * sin(angle * 1.5 + turn))
+            tint = mix(Float3(0.045, 0.145, 0.09), Float3(0.105, 0.26, 0.15), Float(fraction)) * variation
+            offset.xz += wind * (offset.y / plant.z) * (0.04 + 0.025 * plant.z)
+        }
+    } else {
+        root.y -= 0.022
+        var blade: Int = Int(vid) / 3
+        fin v: Int = Int(vid) % 3
+        fin angle: Float = turn + Float(blade) * 2.3999632
+        fin side: Float2 = circle(angle)
+        fin bend: Float2 = Float2(-side.y, side.x)
+        var height: Float = plant.z * (0.66 + 0.3 * fract(seed * 3.79 + Float(blade) * 0.41))
+        // Grass shrinks away over the last share (u.shape.y) of its view distance (u.shape.x).
+        height *= 1.0 - smoothstep(u.shape.x * (1.0 - u.shape.y), u.shape.x, distance)
+        var width: Float = plant.z * ((if lod == 0 then 0.12 else 0.16))
+        var p: Float2 = if v == 2 then bend * height * 0.23 + wind * height * 0.31 else side * width * ((if v == 0 then -1.0 else 1.0))
+        p += bend * plant.z * Float(blade) * 0.13
+        offset = Float3(p.x, (if v == 2 then height else 0.0), p.y)
+        n = normalize(Float3(bend.x, 0.9, bend.y))
+        var deep: Float3 = mix(Float3(0.11, 0.23, 0.055), Float3(0.19, 0.31, 0.08), Float(seed))
+        fin tip: Float3 = mix(Float3(0.23, 0.37, 0.09), Float3(0.36, 0.45, 0.14), Float(seed))
+        tint = if v == 2 then tip else deep
+    }
+    // A tree shrinks away over the last share of its view distance, the same way.
+    if fir then offset *= 1.0 - smoothstep(u.shape.x * (1.0 - u.shape.y), u.shape.x + 0.001, distance)
+    var result: FoliageVertex = .(Float4(0), Float3(0), Float3(0), Float3(0))
+    result.world = root + offset
+    result.position = u.viewProj * Float4(result.world, 1.0)
+    result.color = tint
+    result.normal = Float3(n)
+    return result
+}
+
+@Fragment
+func foliageFragment(input: FoliageVertex, u: @Uniform(1) FoliageU, env: @Constant(6) Float4): Float4 {
+    fin ambient: Float = Float(clamp(u.light.w + 0.2, 0.0, 1.0))
+    fin diffuse: Float = Float(0.32 + 0.68 * max(dot(normalize(input.normal), Float3(u.light.xyz)), Float(0)))
+    // The scene's weather (buffer 6): wet leaves darken, a lightning flash lights them as it lights the ground.
+    fin color: Float3 = input.color * Float(1.0 - 0.3 * clamp(env[0].x, 0.0, 1.0))
+    fin flash: Float3 = Float3(env[1].xyz * env[0].z * (0.55 + 0.45 * saturate(Float(input.normal.y))))
+    var lit: Float3 = color * (ambient + (Float(1) - ambient) * diffuse * Float3(u.sun.xyz) * Float(u.sun.w) + flash)
+    if u.eye.w > 0.5 then lit = input.color
+    fin dist: Float = distance(input.world, u.eye.xyz)
+    fin haze: Float = 1.0 - exp(-max(0.0, dist - u.fogShape.z) * max(u.fog.w, 0.0))
+    return Float4(mix(lit, Float3(u.fog.xyz), Float(min(haze, u.fogShape.w))), 1.0)
+}

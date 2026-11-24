@@ -1,0 +1,808 @@
+@Execution("GPU")
+module engine.shaders.atmosphere.aether
+
+inline fin linearClamp = Sampler(.Linear, .ClampToEdge, .None)
+inline fin linearRepeat = Sampler(.Linear, .Repeat, .None)
+inline fin linearRepeatMipLinear = Sampler(.Linear, .Repeat, .Linear)
+
+inline fin Rg: Float = 6360.0
+
+inline fin Rt: Float = 6460.0
+
+inline fin PI: Float = 3.14159265
+
+pack AetherU {
+    var sun: Float4
+    // toward the sun, its light
+    var moon: Float4
+    // toward the moon, its light
+    var camera: Float4
+    // eye in world metres, camera radius in km
+    var air: Float4
+    // Rayleigh, Mie, ozone, ground albedo
+    var screen: Float4
+    // tan(fov/2)*aspect, tan(fov/2), exposure, stars
+    var forward: Float4
+    var right: Float4
+    var up: Float4
+    var moonInfo: Float4
+    // lit fraction, phase, disc brightness, daylight
+    var fog: Float4
+    // density /km at its base, base height km (world), falloff /km, ambient
+    var time: Float4
+    // seconds, aerial reach km, scene width, scene height
+    var inverse: Float4x4
+    var sky0: Float4
+    // rows of the turn from the celestial sphere to the world
+    var sky1: Float4
+    var sky2: Float4
+    var cloud: Float4
+    // sky cover 0..1, sun reaching the fog, unused, unused
+    var cloudShape: Float4
+    // base m, top m, coverage, type
+    var cloudMore: Float4
+    // density, detail, drift X m, drift Z m
+    var cloudMarch: Float4
+    // steps, frame, cloud target width, height
+    var previous: Float4x4
+    // last frame's clip transform
+    var flash: Float4
+    // flash position (world m) and strength
+    var shadow: Float4
+    // shadow map centre X, Z, side m, strength
+    var dust: Float4
+    // dust colour, share of the haze that is dust
+}
+
+pack Medium {
+    var rayleigh: Float3
+    var mie: Float
+    var extinction: Float3
+}
+
+func mediumAt(h: Float, u: @Uniform AetherU): Medium {
+    fin rd: Float = exp(-h / 8.0)
+    fin md: Float = exp(-h / 1.2)
+    fin od: Float = max(0.0, 1.0 - abs(h - 25.0) / 15.0)
+    var m: Medium = .(Float3(0), 0, Float3(0))
+    m.rayleigh = Float3(5.802, 13.558, 33.1) * 1e-3 * rd * u.air.x
+    m.mie = 3.996e-3 * md * u.air.y
+    m.extinction = m.rayleigh + 4.40e-3 * md * u.air.y + Float3(0.650, 1.881, 0.085) * 1e-3 * od * u.air.z
+    return m
+}
+
+func sphereHit(o: Float3, d: Float3, R: Float): Float {
+    fin b: Float = dot(o, d)
+    fin c: Float = dot(o, o) - R * R
+    fin disc: Float = b * b - c
+    if disc < 0.0 then return -1.0
+    fin s: Float = sqrt(disc)
+    fin t0: Float = -b - s
+    fin t1: Float = -b + s
+    return if t0 >= 0.0 then t0 else ((if t1 >= 0.0 then t1 else -1.0))
+}
+
+func rayleighPhase(c: Float): Float {
+    return 3.0 / (16.0 * PI) * (1.0 + c * c)
+}
+
+func miePhase(c: Float, g: Float): Float {
+    fin k: Float = 3.0 / (8.0 * PI) * (1.0 - g * g) / (2.0 + g * g)
+    return k * (1.0 + c * c) / pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5)
+}
+
+func transmittanceUV(r: Float, mu: Float): Float2 {
+    fin H: Float = sqrt(Rt * Rt - Rg * Rg)
+    fin rho: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin d: Float = max(0.0, -r * mu + sqrt(max(r * r * (mu * mu - 1.0) + Rt * Rt, 0.0)))
+    fin dmin: Float = Rt - r
+    fin dmax: Float = rho + H
+    return Float2((d - dmin) / max(dmax - dmin, 1e-4), rho / H)
+}
+
+func transmittanceTo(table: Texture2D, r: Float, mu: Float): Float3 {
+    return table.sampleLevel(linearClamp, transmittanceUV(r, mu), 0.0).rgb
+}
+
+/** Sunlight reaching a point at radius r toward cosine mu, nothing where the planet is in the way. */
+func lightAt(table: Texture2D, r: Float, mu: Float): Float3 {
+    fin horizon: Float = -sqrt(max(1.0 - (Rg / r) * (Rg / r), 0.0))
+    return if mu < horizon then Float3(0.0) else transmittanceTo(table, r, mu)
+}
+
+func multipleAt(table: Texture2D, r: Float, mu: Float): Float3 {
+    return table.sampleLevel(linearClamp, Float2(mu * 0.5 + 0.5, saturate((r - Rg) / (Rt - Rg))), 0.0).rgb
+}
+
+pack FullOut {
+    @Position
+    var pos: Float4
+    @Location(0)
+    var uv: Float2
+    @Location(1)
+    var ndc: Float2
+}
+
+@Vertex
+func aetherFull(vid: @VertexIndex UInt): FullOut {
+    fin p: Float2 = Float2((if vid == 1 then 3.0 else -1.0), (if vid == 2 then 3.0 else -1.0))
+    var o: FullOut = .(Float4(0), Float2(0), Float2(0))
+    o.pos = Float4(p, 0.0, 1.0)
+    o.uv = Float2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5)
+    o.ndc = p
+    return o
+}
+
+@Vertex
+func aetherSkyQuad(vid: @VertexIndex UInt, rect: @Uniform(0) Float4): FullOut {
+    fin points: Array<Float2, 6> = [Float2(-1, -1), Float2(1, -1), Float2(1, 1), Float2(-1, -1), Float2(1, 1), Float2(-1, 1)]
+    fin p: Float2 = points[vid]
+    var o: FullOut = .(Float4(0), Float2(0), Float2(0))
+    o.pos = Float4(p * rect.xy + rect.zw, 0.0, 1.0)
+    o.uv = Float2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5)
+    o.ndc = p
+    return o
+}
+
+@Fragment
+func aetherTransmittance(input: FullOut, u: @Uniform(0) AetherU): Float4 {
+    fin H: Float = sqrt(Rt * Rt - Rg * Rg)
+    fin rho: Float = H * input.uv.y
+    fin r: Float = sqrt(rho * rho + Rg * Rg)
+    fin dmin: Float = Rt - r
+    fin dmax: Float = rho + H
+    fin d: Float = dmin + input.uv.x * (dmax - dmin)
+    fin mu: Float = if d <= 0.0 then 1.0 else clamp((H * H - rho * rho - d * d) / (2.0 * r * d), -1.0, 1.0)
+    fin o: Float3 = Float3(0.0, r, 0.0)
+    fin dir: Float3 = Float3(sqrt(max(1.0 - mu * mu, 0.0)), mu, 0.0)
+    fin span: Float = max(sphereHit(o, dir, Rt), 0.0)
+    var depth: Float3 = Float3(0.0)
+    fin dt: Float = span / 40.0
+    for i: Int in 0..<40 {
+        fin p: Float3 = o + dir * ((Float(i) + 0.5) * dt)
+        depth += mediumAt(length(p) - Rg, u).extinction * dt
+    }
+    return Float4(exp(-depth), 1.0)
+}
+
+/** Second-order light and the share scattered on, for a sun at uv.x and a height at uv.y; their series is what one more bounce adds forever. */
+@Fragment
+func aetherMultiple(input: FullOut, u: @Uniform(0) AetherU, transmittance: @Texture(0) Texture2D): Float4 {
+    fin cosSun: Float = input.uv.x * 2.0 - 1.0
+    fin r: Float = Rg + mix(0.01, Rt - Rg - 0.01, input.uv.y)
+    fin o: Float3 = Float3(0.0, r, 0.0)
+    fin sun: Float3 = Float3(sqrt(max(1.0 - cosSun * cosSun, 0.0)), cosSun, 0.0)
+    var total: Float3 = Float3(0.0)
+    var transfer: Float3 = Float3(0.0)
+    for i: Int in 0..<8 {
+        for j: Int in 0..<8 {
+            fin c: Float = 1.0 - 2.0 * (Float(j) + 0.5) / 8.0
+            fin s: Float = sqrt(max(1.0 - c * c, 0.0))
+            fin phi: Float = 2.0 * PI * (Float(i) + 0.5) / 8.0
+            fin dir: Float3 = Float3(s * cos(phi), c, s * sin(phi))
+            fin ground: Float = sphereHit(o, dir, Rg)
+            fin top: Float = sphereHit(o, dir, Rt)
+            fin end: Float = if ground > 0.0 then ground else top
+            fin dt: Float = max(end, 0.0) / 20.0
+            var through: Float3 = Float3(1.0)
+            for k: Int in 0..<20 {
+                fin p: Float3 = o + dir * ((Float(k) + 0.5) * dt)
+                fin pr: Float = length(p)
+                fin m: Medium = mediumAt(pr - Rg, u)
+                fin scattering: Float3 = m.rayleigh + m.mie
+                fin fade: Float3 = exp(-m.extinction * dt)
+                fin lit: Float3 = lightAt(transmittance, pr, dot(p, sun) / pr) * scattering / (4.0 * PI)
+                fin share: Float3 = (1.0 - fade) / max(m.extinction, 1e-6)
+                total += through * lit * share
+                transfer += through * scattering * share
+                through *= fade
+            }
+            if ground > 0.0 {
+                fin p: Float3 = o + dir * ground
+                fin n: Float3 = normalize(p)
+                total += through * lightAt(transmittance, Rg, dot(n, sun)) * saturate(dot(n, sun)) * u.air.w / PI
+            }
+        }
+    }
+    total /= 64.0
+    transfer /= 64.0
+    return Float4(total / max(1.0 - transfer, 1e-3), 1.0)
+}
+
+func skyViewDirection(uv: Float2, r: Float): Float3 {
+    fin horizon: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin beta: Float = acos(clamp(horizon / r, -1.0, 1.0))
+    fin zenithHorizon: Float = PI - beta
+    var zenith: Float = Float(0)
+    if uv.y < 0.5 {
+        fin c: Float = 1.0 - 2.0 * uv.y
+        zenith = zenithHorizon * (1.0 - c * c)
+    } else {
+        var c: Float = uv.y * 2.0 - 1.0
+        zenith = zenithHorizon + beta * c * c
+    }
+    fin azimuth: Float = (uv.x - 0.5) * 2.0 * PI
+    fin s: Float = sin(zenith)
+    return Float3(s * cos(azimuth), cos(zenith), s * sin(azimuth))
+}
+
+func skyViewUV(d: Float3, r: Float): Float2 {
+    fin horizon: Float = sqrt(max(r * r - Rg * Rg, 0.0))
+    fin beta: Float = acos(clamp(horizon / r, -1.0, 1.0))
+    fin zenithHorizon: Float = PI - beta
+    fin zenith: Float = acos(clamp(d.y, -1.0, 1.0))
+    var v: Float = Float(0)
+    if zenith < zenithHorizon then v = (1.0 - sqrt(max(1.0 - zenith / zenithHorizon, 0.0))) * 0.5
+    else v = 0.5 + sqrt(saturate((zenith - zenithHorizon) / beta)) * 0.5
+    return Float2(atan2(d.z, d.x) / (2.0 * PI) + 0.5, v)
+}
+
+/** The light scattered toward the eye along one ray, from the sun and the moon, single and multiple. */
+func scatterAlong(
+    o: Float3
+    dir: Float3
+    span: Float
+    steps: Int
+    u: @Uniform AetherU
+    transmittance: Texture2D
+    multiple: Texture2D
+): Float3 {
+    var total: Float3 = Float3(0.0)
+    var through: Float3 = Float3(1.0)
+    fin cs: Float = dot(dir, u.sun.xyz)
+    fin cm: Float = dot(dir, u.moon.xyz)
+    fin pr0: Float = rayleighPhase(cs)
+    fin pm0: Float = miePhase(cs, 0.8)
+    fin pr1: Float = rayleighPhase(cm)
+    fin pm1: Float = miePhase(cm, 0.8)
+    var previous: Float = 0.0
+    for i: Int in 0..<steps {
+        fin f: Float = (Float(i) + 1.0) / Float(steps)
+        fin t: Float = span * f * f
+        fin dt: Float = t - previous
+        fin mid: Float = previous + dt * 0.5
+        previous = t
+        fin p: Float3 = o + dir * mid
+        fin pr: Float = length(p)
+        fin m: Medium = mediumAt(pr - Rg, u)
+        fin up: Float3 = p / pr
+        fin sunLight: Float3 = lightAt(transmittance, pr, dot(up, u.sun.xyz))
+        fin moonLight: Float3 = lightAt(transmittance, pr, dot(up, u.moon.xyz))
+        fin scattering: Float3 = m.rayleigh + m.mie
+        fin single: Float3 = (m.rayleigh * pr0 + m.mie * pm0) * sunLight * u.sun.w + (m.rayleigh * pr1 + m.mie * pm1) * moonLight * u.moon.w
+        fin many: Float3 = scattering * (multipleAt(multiple, pr, dot(up, u.sun.xyz)) * u.sun.w + multipleAt(multiple, pr, dot(up, u.moon.xyz)) * u.moon.w)
+        fin fade: Float3 = exp(-m.extinction * dt)
+        total += through * (single + many) * (1.0 - fade) / max(m.extinction, 1e-6)
+        through *= fade
+    }
+    return total
+}
+
+@Fragment
+func aetherSkyView(
+    input: FullOut
+    u: @Uniform(0) AetherU
+    transmittance: @Texture(0) Texture2D
+    multiple: @Texture(1) Texture2D
+): Float4 {
+    fin r: Float = u.camera.w
+    fin dir: Float3 = skyViewDirection(input.uv, r)
+    fin o: Float3 = Float3(0.0, r, 0.0)
+    fin ground: Float = sphereHit(o, dir, Rg)
+    fin top: Float = sphereHit(o, dir, Rt)
+    fin span: Float = if ground > 0.0 then ground else max(top, 0.0)
+    fin light: Float3 = scatterAlong(o, dir, span, 30, u, transmittance, multiple)
+    return Float4(light, 1.0)
+}
+
+/** A hash of a cell of the celestial sphere: where a star sits and how bright it is. */
+func starHash(p: Float3): Float {
+    return fract(sin(dot(p, Float3(127.1, 311.7, 74.7))) * 43758.5453)
+}
+
+// The clouds' eighth-resolution target read through a cubic B-spline in four bilinear taps:
+// round, soft edges where a plain bilinear read shows the low resolution's blocks.
+func cloudSample(clouds: Texture2D, uv: Float2, size: Float2): Float4 {
+    if size.x < 1.0 || size.y < 1.0 then return clouds.sample(linearClamp, uv)
+    fin p: Float2 = uv * size - 0.5
+    fin i: Float2 = floor(p)
+    fin f: Float2 = p - i
+    fin f2: Float2 = f * f
+    fin f3: Float2 = f2 * f
+    fin w0: Float2 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0
+    fin w1: Float2 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0
+    fin w2: Float2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0
+    fin w3: Float2 = f3 / 6.0
+    fin g0: Float2 = w0 + w1
+    fin g1: Float2 = w2 + w3
+    fin h0: Float2 = (i - 0.5 + w1 / g0) / size
+    fin h1: Float2 = (i + 1.5 + w3 / g1) / size
+    fin a: Float4 = clouds.sample(linearClamp, Float2(h0.x, h0.y))
+    fin b: Float4 = clouds.sample(linearClamp, Float2(h1.x, h0.y))
+    fin c: Float4 = clouds.sample(linearClamp, Float2(h0.x, h1.y))
+    fin d: Float4 = clouds.sample(linearClamp, Float2(h1.x, h1.y))
+    return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d)
+}
+
+func starField(dir: Float3, time: Float): Float3 {
+    fin cells: Float3 = dir * 300.0
+    fin cell: Float3 = floor(cells)
+    fin pick: Float = starHash(cell)
+    if pick < 0.985 then return Float3(0.0)
+    // The star keeps to the middle of its cell, so its glow is never cut by the cell's edge.
+    fin at: Float3 = cell + 0.25 + 0.5 * Float3(starHash(cell + 1.3), starHash(cell + 2.7), starHash(cell + 4.1))
+    fin d: Float = length(cells - at)
+    fin magnitude: Float = pow((pick - 0.985) / 0.015, 6.0)
+    fin twinkle: Float = 0.75 + 0.25 * sin(time * (3.0 + 7.0 * starHash(cell + 9.2)) + pick * 40.0)
+    fin tint: Float3 = mix(Float3(0.62, 0.74, 1.0), Float3(1.0, 0.86, 0.68), starHash(cell + 5.5))
+    return tint * magnitude * twinkle * exp(-d * d * 30.0)
+}
+
+@Fragment
+func aetherSky(
+    input: FullOut
+    u: @Uniform(0) AetherU
+    skyView: @Texture(0) Texture2D
+    transmittance: @Texture(1) Texture2D
+    clouds: @Texture(2) Texture2D
+): Float4 {
+    fin cloud: Float4 = cloudSample(clouds, input.uv, u.cloudMarch.zw)
+    fin ray: Float3 = normalize(u.forward.xyz + input.ndc.x * u.screen.x * u.right.xyz + input.ndc.y * u.screen.y * u.up.xyz)
+    fin r: Float = u.camera.w
+    var light: Float3 = skyView.sample(linearRepeat, skyViewUV(ray, r)).rgb
+    fin horizon: Float = -sqrt(max(1.0 - (Rg / r) * (Rg / r), 0.0))
+    fin through: Float3 = if ray.y < horizon then Float3(0.0) else transmittanceTo(transmittance, r, ray.y)
+    // The sun's disc, 0.53 degrees across, darker toward its limb.
+    fin cs: Float = dot(ray, u.sun.xyz)
+    fin edge: Float = cos(0.00465)
+    if cs > edge - 2e-5 {
+        fin across: Float = saturate(acos(clamp(cs, -1.0, 1.0)) / 0.00465)
+        fin limb: Float = 1.0 - 0.6 * (1.0 - sqrt(max(1.0 - across * across, 0.0)))
+        light += through * u.sun.w * 18.0 * limb * smoothstep(edge - 2e-5, edge + 2e-5, cs)
+    }
+    // The moon: its sunlit part, a sphere lit from the sun's side, with darker seas.
+    fin cm: Float = dot(ray, u.moon.xyz)
+    fin moonEdge: Float = cos(0.00452)
+    fin night: Float = 1.0 - u.moonInfo.w
+    if cm > moonEdge - 2e-5 {
+        fin m: Float3 = u.moon.xyz
+        fin east: Float3 = normalize(cross(Float3(0.0, 1.0, 0.0), m) + Float3(1e-5, 0.0, 0.0))
+        fin north: Float3 = cross(m, east)
+        fin q: Float2 = Float2(dot(ray - m * cm, east), dot(ray - m * cm, north)) / sin(0.00452)
+        fin n: Float3 = Float3(q, sqrt(max(1.0 - dot(q, q), 0.0)))
+        fin toSun: Float3 = normalize(Float3(dot(u.sun.xyz, east), dot(u.sun.xyz, north), dot(u.sun.xyz, m)))
+        fin lit: Float = saturate(dot(n, toSun) * 4.0 + 0.1)
+        fin seas: Float = 0.78 + 0.22 * smoothstep(0.35, 0.65, starHash(floor(Float3(q * 5.0, 1.0))) * 0.5 + starHash(floor(Float3(q * 11.0, 2.0))) * 0.5)
+        fin disc: Float = smoothstep(moonEdge - 2e-5, moonEdge + 2e-5, cm)
+        light += through * u.moonInfo.z * lit * seas * disc * (0.35 + 0.65 * night)
+    }
+    // Stars, fixed to the celestial sphere, fading in daylight and near the haze of the horizon.
+    fin celestial: Float3 = Float3(dot(u.sky0.xyz, ray), dot(u.sky1.xyz, ray), dot(u.sky2.xyz, ray))
+    light += starField(celestial, u.time.x) * u.screen.w * through * night * night * 0.06
+    // The clouds in front of all of it: the sky, the sun and moon, the stars.
+    light = light * cloud.a + cloud.rgb
+    fin color: Float3 = 1.0 - exp(-light * u.screen.z)
+    return Float4(pow(color, Float3(1.0 / 2.2)), 1.0)
+}
+
+/** One column of the aerial-perspective volume per thread: the air between the eye and each slice. */
+@Compute(8, 8, 1)
+func aetherAerial(
+    volume: @Texture(0, Rgba16Float) WriteTexture3D
+    transmittance: @Texture(1) Texture2D
+    multiple: @Texture(2) Texture2D
+    skyView: @Texture(3) Texture2D
+    u: @Uniform(0) AetherU
+    idGrid: @GlobalInvocationId UInt3
+) {
+    fin id = idGrid.xy
+    // The light fog droplets get from all around: the sky's, or under a deck the clouds' grey, dimmer the denser they are.
+    fin skyUp: Float3 = skyView.sampleLevel(linearRepeat, Float2(0.5, 0.02), 0.0).rgb
+    fin skySide: Float3 = skyView.sampleLevel(linearRepeat, Float2(0.25, 0.45), 0.0).rgb
+    fin skyAround: Float3 = (skyUp + skySide) * 0.5
+    fin under: Float = saturate(u.cloud.x * 1.3 - 0.3)
+    fin around: Float3 = mix(skyAround, Float3(dot(skyAround, Float3(0.3, 0.5, 0.2))) * 0.55 / (0.5 + 0.5 * u.cloudMore.x), under)
+    if id.x >= 32 || id.y >= 32 then return
+    var ndc: Float2 = (Float2(id) + 0.5) / 32.0 * 2.0 - 1.0
+    ndc.y = -ndc.y
+    fin world: Float4 = u.inverse * Float4(ndc, 0.5, 1.0)
+    fin dir: Float3 = normalize(world.xyz / world.w - u.camera.xyz)
+    fin r: Float = u.camera.w
+    fin o: Float3 = Float3(0.0, r, 0.0)
+    fin cs: Float = dot(dir, u.sun.xyz)
+    fin cm: Float = dot(dir, u.moon.xyz)
+    fin pr0: Float = rayleighPhase(cs)
+    fin pm0: Float = miePhase(cs, 0.8)
+    fin pr1: Float = rayleighPhase(cm)
+    fin pm1: Float = miePhase(cm, 0.8)
+    fin pf0: Float = miePhase(cs, 0.55)
+    fin pf1: Float = miePhase(cm, 0.55)
+    var total: Float3 = Float3(0.0)
+    var through: Float3 = Float3(1.0)
+    var previous: Float = 0.0
+    fin eyeY: Float = u.camera.y / 1000.0
+    for s: Int in 0..<32 {
+        fin f: Float = (Float(s) + 1.0) / 32.0
+        fin t: Float = u.time.y * f * f
+        // Two samples per slice keep the near slices, where fog is thick, from banding.
+        for k: Int in 0..<2 {
+            fin a: Float = previous + (t - previous) * (Float(k) * 0.5)
+            fin b: Float = previous + (t - previous) * (Float(k) * 0.5 + 0.5)
+            fin dt: Float = b - a
+            fin p: Float3 = o + dir * ((a + b) * 0.5)
+            fin pr: Float = length(p)
+            fin m: Medium = mediumAt(pr - Rg, u)
+            fin y: Float = eyeY + dir.y * (a + b) * 0.5
+            fin fog: Float = u.fog.x * exp(-max(y - u.fog.y, 0.0) * u.fog.z)
+            fin up: Float3 = p / pr
+            fin sunLight: Float3 = lightAt(transmittance, pr, dot(up, u.sun.xyz)) * u.sun.w
+            fin moonLight: Float3 = lightAt(transmittance, pr, dot(up, u.moon.xyz)) * u.moon.w
+            fin sky: Float3 = multipleAt(multiple, pr, dot(up, u.sun.xyz)) * u.sun.w + multipleAt(multiple, pr, dot(up, u.moon.xyz)) * u.moon.w
+            fin scattering: Float3 = m.rayleigh + m.mie
+            fin single: Float3 = (m.rayleigh * pr0 + m.mie * pm0) * sunLight + (m.rayleigh * pr1 + m.mie * pm1) * moonLight
+            // Fog droplets scatter nearly all they meet: sun and moon through a broad forward lobe, and the sky's own light.
+            var droplets: Float3 = fog * 0.95 * ((sunLight * pf0 + moonLight * pf1) * u.cloud.y + around * u.fog.w)
+            // Dust takes its colour from what it scatters: the share of the haze it is tints the light it sends on.
+            droplets *= mix(Float3(1.0), u.dust.rgb * 1.25, saturate(u.dust.w))
+            fin extinction: Float3 = m.extinction + fog
+            fin fade: Float3 = exp(-extinction * dt)
+            total += through * (single + scattering * sky + droplets) * (1.0 - fade) / max(extinction, 1e-6)
+            through *= fade
+        }
+        previous = t
+        volume.write(Float4(total, (through.r + through.g + through.b) / 3.0), UInt3(id.x, id.y, UInt(s)))
+    }
+}
+
+/** The air between the eye and every surface of the scene, over its colour (read in place). */
+@Fragment
+func aetherApply(
+    input: FullOut
+    u: @Uniform(0) AetherU
+    sceneColor: @Texture(2) Texture2D
+    depth: @Texture(0) DepthTexture2D
+    volume: @Texture(1) Texture3D
+): Float4 {
+    fin scene: Float4 = sceneColor.read(UInt2(input.pos.xy))
+    fin z: Float = depth.read(UInt2(input.pos.xy))
+    fin uv: Float2 = input.pos.xy / u.time.zw
+    if z <= 0.0 {
+        // The sky itself drawn its own air; only thick fog and rain veil it, with the air of the farthest slice.
+        fin veil: Float = saturate(u.fog.x / 3.0)
+        if veil <= 0.0 then return scene
+        var air: Float4 = volume.sample(linearClamp, Float3(uv, 31.5 / 32.0))
+        fin lin: Float3 = pow(max(scene.rgb, 0.0), Float3(2.2))
+        fin seen: Float3 = mix(lin, lin * air.a + (1.0 - exp(-air.rgb * u.screen.z)), veil)
+        return Float4(pow(seen, Float3(1.0 / 2.2)), scene.a)
+    }
+    fin world: Float4 = u.inverse * Float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0)
+    fin reach: Float = length(world.xyz / world.w - u.camera.xyz) / 1000.0
+    fin slice: Float = sqrt(saturate(reach / u.time.y)) * 32.0 - 1.0
+    var air: Float4 = volume.sample(linearClamp, Float3(uv, (max(slice, 0.0) + 0.5) / 32.0))
+    fin near: Float = saturate(slice + 1.0)
+    air = mix(Float4(0.0, 0.0, 0.0, 1.0), air, near)
+    fin lin: Float3 = pow(max(scene.rgb, 0.0), Float3(2.2))
+    fin seen: Float3 = lin * air.a + (1.0 - exp(-air.rgb * u.screen.z))
+    return Float4(pow(seen, Float3(1.0 / 2.2)), scene.a)
+}
+
+// ---- Tiling noise ----------------------------------------------------------
+func pcgHash(vValue: UInt3): UInt3 {
+    var v = vValue
+    v = v * 1664525 + 1013904223
+    v.x += v.y * v.z
+    v.y += v.z * v.x
+    v.z += v.x * v.y
+    v ^= v >> 16
+    v.x += v.y * v.z
+    v.y += v.z * v.x
+    v.z += v.x * v.y
+    return v
+}
+
+func cellPoint(cell: Int3, period: Int, salt: UInt): Float3 {
+    fin wrapped: UInt3 = UInt3((cell % period + period) % period)
+    return Float3(pcgHash(wrapped + UInt3(salt, salt * 7, salt * 13))) / 4294967295.0
+}
+
+/** 1 at a feature point falling to 0 a cell away: cellular (Worley) noise, tiling every [cells]. */
+func worley(p: Float3, cells: Int, salt: UInt): Float {
+    fin q: Float3 = p * Float(cells)
+    fin base: Int3 = Int3(floor(q))
+    fin f: Float3 = q - Float3(base)
+    var nearest: Float = 1.0
+    for z: Int in -1..1 then
+        for y: Int in -1..1 then
+            for x: Int in -1..1 {
+                fin offset: Int3 = Int3(x, y, z)
+                fin d: Float3 = Float3(offset) + cellPoint(base + offset, cells, salt) - f
+                nearest = min(nearest, dot(d, d))
+            }
+    return 1.0 - saturate(sqrt(nearest))
+}
+
+func worleyFbm(p: Float3, cells: Int, salt: UInt): Float {
+    return worley(p, cells, salt) * 0.625 + worley(p, cells * 2, salt + 1) * 0.25 + worley(p, cells * 4, salt + 2) * 0.125
+}
+
+func latticeGradient(cell: Int3, period: Int): Float3 {
+    fin h: Float3 = cellPoint(cell, period, 91) * 2.0 - 1.0
+    return normalize(h + Float3(1e-4))
+}
+
+/** Gradient (Perlin) noise in about -1..1, tiling every [period]. */
+func gradientNoise(p: Float3, period: Int): Float {
+    fin q: Float3 = p * Float(period)
+    fin i: Int3 = Int3(floor(q))
+    fin f: Float3 = q - Float3(i)
+    fin w: Float3 = f * f * f * (f * (f * 6.0 - 15.0) + 10.0)
+    fin n000: Float = dot(latticeGradient(i, period), f)
+    fin n100: Float = dot(latticeGradient(i + Int3(1, 0, 0), period), f - Float3(1, 0, 0))
+    fin n010: Float = dot(latticeGradient(i + Int3(0, 1, 0), period), f - Float3(0, 1, 0))
+    fin n110: Float = dot(latticeGradient(i + Int3(1, 1, 0), period), f - Float3(1, 1, 0))
+    fin n001: Float = dot(latticeGradient(i + Int3(0, 0, 1), period), f - Float3(0, 0, 1))
+    fin n101: Float = dot(latticeGradient(i + Int3(1, 0, 1), period), f - Float3(1, 0, 1))
+    fin n011: Float = dot(latticeGradient(i + Int3(0, 1, 1), period), f - Float3(0, 1, 1))
+    fin n111: Float = dot(latticeGradient(i + Int3(1, 1, 1), period), f - Float3(1, 1, 1))
+    return mix(mix(mix(n000, n100, w.x), mix(n010, n110, w.x), w.y), mix(mix(n001, n101, w.x), mix(n011, n111, w.x), w.y), w.z) * 1.6
+}
+
+func gradientFbm(p: Float3, period: Int, octaves: Int): Float {
+    var total: Float = 0.0
+    var amplitude: Float = 0.5
+    var weight: Float = 0.0
+    var f: Int = period
+    for o: Int in 0..<octaves {
+        total += gradientNoise(p, f) * amplitude
+        weight += amplitude
+        amplitude *= 0.5
+        f *= 2
+    }
+    return total / weight
+}
+
+func remap(v: Float, lo: Float, hi: Float, newLo: Float, newHi: Float): Float {
+    return newLo + (v - lo) * (newHi - newLo) / max(hi - lo, 1e-5)
+}
+
+/** R: Perlin-Worley, the clouds' billows; G, B, A: Worley at rising frequency, to break them up. */
+@Compute(8, 8, 8)
+func cloudShapeNoise(output: @Texture(0, Rgba8Unorm) WriteTexture3D, id: @GlobalInvocationId UInt3) {
+    if any(id >= 128) then return
+    fin p: Float3 = (Float3(id) + 0.5) / 128.0
+    fin perlin: Float = saturate(gradientFbm(p, 4, 5) * 0.5 + 0.5)
+    fin cells: Float = worleyFbm(p, 4, 3)
+    fin billows: Float = saturate(remap(perlin, 0.0, 1.0, cells, 1.0))
+    output.write(Float4(billows, worleyFbm(p, 6, 11), worleyFbm(p, 12, 17), worleyFbm(p, 24, 23)), id)
+}
+
+@Compute(8, 8, 8)
+func cloudDetailNoise(output: @Texture(0, Rgba8Unorm) WriteTexture3D, id: @GlobalInvocationId UInt3) {
+    if any(id >= 32) then return
+    fin p: Float3 = (Float3(id) + 0.5) / 32.0
+    output.write(Float4(worleyFbm(p, 2, 31), worleyFbm(p, 4, 37), worleyFbm(p, 8, 41), 1.0), id)
+}
+
+/** R: where clouds may grow, G: how tall; a 2D tile the layer is laid out by. */
+@Compute(8, 8, 1)
+func cloudWeatherMap(output: @Texture(0, Rg8Unorm) WriteTexture2D, idGrid: @GlobalInvocationId UInt3) {
+    fin id = idGrid.xy
+    if any(id >= 256) then return
+    fin p: Float3 = Float3((Float2(id) + 0.5) / 256.0, 0.37)
+    fin cover: Float = saturate(gradientFbm(p, 4, 5) * 0.75 + 0.5)
+    fin tall: Float = saturate(gradientFbm(p + 0.31, 3, 3) * 0.8 + 0.5)
+    output.write(Float4(cover, tall, 0.0, 1.0), id)
+}
+
+// ---- The cloud layer --------------------------------------------------------
+inline fin planetMetres: Float = 6360000.0
+
+func layerHeight(p: Float3, eye: Float3): Float {
+    fin centre: Float3 = Float3(eye.x, -planetMetres, eye.z)
+    return length(p - centre) - planetMetres
+}
+
+/** Where along the ray the sphere of radius R around the planet's centre is crossed going outward. */
+func shellExit(o: Float3, d: Float3, R: Float): Float {
+    fin b: Float = dot(o, d)
+    fin c: Float = dot(o, o) - R * R
+    fin disc: Float = b * b - c
+    if disc < 0.0 then return -1.0
+    return -b + sqrt(disc)
+}
+
+func heightProfile(hf: Float, type: Float): Float {
+    fin stratus: Float4 = Float4(0.0, 0.07, 0.14, 0.32)
+    fin cumulus: Float4 = Float4(0.0, 0.16, 0.42, 0.72)
+    fin tower: Float4 = Float4(0.0, 0.08, 0.72, 1.0)
+    fin g: Float4 = if type < 0.5 then mix(stratus, cumulus, type * 2.0) else mix(cumulus, tower, type * 2.0 - 1.0)
+    return smoothstep(g.x, g.y, hf) * (1.0 - smoothstep(g.z, g.w, hf))
+}
+
+/** Extinction per metre at [p]; [cheap] skips the detail erosion (light marches, shadows). */
+func cloudDensity(
+    p: Float3
+    eye: Float3
+    u: @Uniform AetherU
+    shape: Texture3D
+    detail: Texture3D
+    weather: Texture2D
+    lod: Float
+    cheap: Bool
+): Float {
+    fin h: Float = layerHeight(p, eye)
+    fin hf: Float = (h - u.cloudShape.x) / max(u.cloudShape.y - u.cloudShape.x, 1.0)
+    if hf <= 0.0 || hf >= 1.0 then return 0.0
+    fin drifted: Float3 = p - Float3(u.cloudMore.z, 0.0, u.cloudMore.w)
+    fin map: Float2 = weather.sampleLevel(linearRepeatMipLinear, drifted.xz / 36000.0 + 0.5, 0.0).rg
+    fin local: Float = saturate(u.cloudShape.z * 1.6 - 0.8 + map.r * 0.8)
+    if local <= 0.0 then return 0.0
+    fin type: Float = saturate(u.cloudShape.w + (map.g - 0.5) * 0.35)
+    fin low: Float4 = shape.sampleLevel(linearRepeatMipLinear, (drifted + Float3(0.0, h * 0.2, 0.0)) / 7000.0, lod)
+    fin fbm: Float = low.g * 0.625 + low.b * 0.25 + low.a * 0.125
+    var base: Float = remap(low.r, -(1.0 - fbm), 1.0, 0.0, 1.0) * heightProfile(hf, type)
+    base = saturate(remap(base, 1.0 - local, 1.0, 0.0, 1.0)) * local
+    if base <= 0.0 then return 0.0
+    if ! cheap {
+        fin d: Float3 = detail.sampleLevel(linearRepeatMipLinear, drifted / 900.0 + Float3(0.0, u.time.x * 0.004, 0.0), lod).rgb
+        fin wisps: Float = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
+        fin erosion: Float = mix(wisps, 1.0 - wisps, saturate(hf * 6.0)) * 0.35 * u.cloudMore.y
+        base = saturate(remap(base, erosion, 1.0, 0.0, 1.0))
+    }
+    return base * u.cloudMore.x * 0.045
+}
+
+func hg(c: Float, g: Float): Float {
+    return(1.0 - g * g) / (4.0 * PI * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5))
+}
+
+/** Interleaved gradient noise: a per-pixel offset for the march that the temporal blend averages away. */
+func pixelJitter(pixel: Float2, frame: Float): Float {
+    fin p: Float2 = pixel + Float2(47.0, 17.0) * fmod(frame, 64.0)
+    return fract(52.9829189 * fract(dot(p, Float2(0.06711056, 0.00583715))))
+}
+
+/**
+ * The clouds in one direction: the light they send to the eye (already faded
+ * into the sky with distance) and how much of what lies behind shows through.
+ */
+@Fragment
+func cloudMarch(
+    input: FullOut
+    u: @Uniform(0) AetherU
+    shape: @Texture(0) Texture3D
+    detail: @Texture(1) Texture3D
+    weather: @Texture(2) Texture2D
+    transmittance: @Texture(3) Texture2D
+    skyView: @Texture(4) Texture2D
+    history: @Texture(5) Texture2D
+): Float4 {
+    fin dir: Float3 = normalize(u.forward.xyz + input.ndc.x * u.screen.x * u.right.xyz + input.ndc.y * u.screen.y * u.up.xyz)
+    fin eye: Float3 = u.camera.xyz
+    var result: Float4 = Float4(0.0, 0.0, 0.0, 1.0)
+    if dir.y > - 0.06 && u.cloudShape.z > 0.001 {
+        fin o: Float3 = Float3(0.0, planetMetres + eye.y, 0.0)
+        fin enter: Float = shellExit(o, dir, planetMetres + u.cloudShape.x)
+        fin leave: Float = shellExit(o, dir, planetMetres + u.cloudShape.y)
+        fin start: Float = max(enter, 0.0)
+        fin end: Float = min(leave, start + 60000.0)
+        if end > start {
+            fin steps: Int = Int(u.cloudMarch.x)
+            fin dt: Float = (end - start) / Float(steps)
+            var t: Float = start + dt * pixelJitter(input.pos.xy, u.cloudMarch.y)
+            fin sun: Float3 = u.sun.xyz
+            fin cosine: Float = dot(dir, sun)
+            fin phase: Float = mix(hg(cosine, 0.8), hg(cosine, -0.35), 0.35)
+            fin rSun: Float = Rg + (u.cloudShape.x + u.cloudShape.y) * 0.0005 + 1.5
+            fin sunLight: Float3 = lightAt(transmittance, rSun, sun.y) * u.sun.w
+            fin moonLight: Float3 = lightAt(transmittance, rSun, u.moon.y) * u.moon.w * 1.6
+            fin moonPhase: Float = mix(hg(dot(dir, u.moon.xyz), 0.8), hg(dot(dir, u.moon.xyz), -0.35), 0.35)
+            // The sky's light, from overhead and from the side, a little greyed by the clouds around.
+            fin skyUp: Float3 = skyView.sample(linearRepeat, Float2(0.5, 0.02)).rgb
+            fin skySide: Float3 = skyView.sample(linearRepeat, Float2(0.25, 0.45)).rgb
+            fin ambient: Float3 = mix(skyUp + skySide, Float3(dot(skyUp + skySide, Float3(0.3, 0.5, 0.2))), 0.35) * 1.3 + Float3(0.004, 0.005, 0.008)
+            var total: Float3 = Float3(0.0)
+            var through: Float = 1.0
+            var weighted: Float = 0.0
+            var weights: Float = 0.0
+            for i: Int in 0..<steps {
+                fin p: Float3 = eye + dir * t
+                fin lod: Float = clamp(log2(t / 6000.0 + 1.0) * 1.5, 0.0, 4.0)
+                fin density: Float = cloudDensity(p, eye, u, shape, detail, weather, lod, false)
+                if density > 0.0 {
+                    // Toward the sun in six growing steps: how much of its light gets this deep.
+                    var depthToSun: Float = 0.0
+                    var reach: Float = 40.0
+                    var q: Float3 = p
+                    for k: Int in 0..<6 {
+                        q += sun * reach
+                        depthToSun += cloudDensity(q, eye, u, shape, detail, weather, lod + 1.0, true) * reach
+                        reach *= 1.8
+                    }
+                    fin hf: Float = saturate((layerHeight(p, eye) - u.cloudShape.x) / max(u.cloudShape.y - u.cloudShape.x, 1.0))
+                    // Three octaves of multiple scattering (Wrenninge): each fainter, deeper reaching, rounder.
+                    var lit: Float = 0.0
+                    var a: Float = 1.0
+                    var b: Float = 1.0
+                    var c: Float = 1.0
+                    for o: Int in 0..<3 {
+                        lit += a * exp(-depthToSun * b) * mix(hg(cosine * c, 0.8 * c), hg(cosine * c, -0.35 * c), 0.35)
+                        a *= 0.5
+                        b *= 0.45
+                        c *= 0.6
+                    }
+                    fin powder: Float = 1.0 - exp(-density * 2.0 * 90.0)
+                    // The cloud overhead, in four rising samples: under a thick deck little of the sky's light gets in.
+                    var depthUp: Float = 0.0
+                    var below: Float = 0.0
+                    fin lift: Float3 = normalize(p - Float3(eye.x, -planetMetres, eye.z))
+                    for k: Int in 1..4 {
+                        fin above: Float = Float(k * k) * 120.0
+                        depthUp += cloudDensity(p + lift * above, eye, u, shape, detail, weather, lod + 1.0, true) * (above - below)
+                        below = above
+                    }
+                    // Light that diffused through the cloud: deep in a thick deck it is what remains, white and dim.
+                    fin diffuse: Float = 1.0 / (1.0 + 0.1 * depthToSun + 0.08 * depthUp)
+                    fin skyward: Float = 1.0 / (1.0 + 0.12 * depthUp)
+                    var scattered: Float3 = sunLight * (lit * mix(1.0, powder, 0.55) * PI + 0.2 * diffuse) + moonLight * (moonPhase * exp(-depthToSun) * PI + 0.2 * diffuse) + ambient * mix(0.4, 1.0, hf) * mix(skyward, 1.0, 0.06)
+                    // A strike inside or below the cloud lights it from within.
+                    if u.flash.w > 0.0 {
+                        fin toFlash: Float3 = p - u.flash.xyz
+                        scattered += Float3(0.75, 0.8, 1.0) * u.flash.w * exp(-length(toFlash) / 1700.0) * 0.5
+                    }
+                    fin fade: Float = exp(-density * dt)
+                    total += through * scattered * (1.0 - fade)
+                    weighted += through * (1.0 - fade) * t
+                    weights += through * (1.0 - fade)
+                    through *= fade
+                    if through < 0.01 then break
+                }
+                t += dt
+            }
+            // Far clouds melt into the sky's own haze.
+            fin seenAt: Float = if weights > 0.0 then weighted / weights else end
+            fin haze: Float = exp(-seenAt / 42000.0)
+            // What the far clouds fade into: the clear sky's haze, or under a deck, the deck's own grey.
+            fin sky: Float3 = skyView.sample(linearRepeat, skyViewUV(dir, u.camera.w)).rgb
+            fin own: Float3 = total / max(1.0 - through, 1e-3)
+            fin farther: Float3 = mix(sky, own * 0.9 + sky * 0.1, saturate(u.cloudShape.z * 1.4 - 0.4))
+            result = Float4(total * haze + farther * (1.0 - through) * (1.0 - haze), through)
+        }
+    }
+    // Clouds are far: last frame's pixel in the same direction is where the history is.
+    fin before: Float4 = u.previous * Float4(eye + dir * 20000.0, 1.0)
+    fin seen: Float2 = Float2(before.x / before.w * 0.5 + 0.5, 0.5 - before.y / before.w * 0.5)
+    if before.w > 0.0 && all(seen > 0.0) && all(seen < 1.0) && u.cloudMarch.y > 0.5 {
+        fin kept: Float4 = history.sample(linearClamp, seen)
+        result = mix(result, kept, 0.85)
+    }
+    return result
+}
+
+/** How much sunlight reaches the ground through the clouds, over a square around the camera. */
+@Compute(8, 8, 1)
+func cloudShadow(
+    output: @Texture(0, R16Float) WriteTexture2D
+    u: @Uniform(0) AetherU
+    shape: @Texture(1) Texture3D
+    detail: @Texture(2) Texture3D
+    weather: @Texture(3) Texture2D
+    idGrid: @GlobalInvocationId UInt3
+) {
+    fin id = idGrid.xy
+    if any(id >= 512) then return
+    fin at: Float2 = u.shadow.xy + ((Float2(id) + 0.5) / 512.0 - 0.5) * u.shadow.z
+    fin eye: Float3 = u.camera.xyz
+    var sun: Float3 = if u.sun.y > u.moon.y || u.sun.y > - 0.04 then u.sun.xyz else u.moon.xyz
+    sun = normalize(Float3(sun.x, max(sun.y, 0.12), sun.z))
+    fin ground: Float3 = Float3(at.x, 40.0, at.y)
+    fin t0: Float = (u.cloudShape.x - ground.y) / sun.y
+    fin t1: Float = (u.cloudShape.y - ground.y) / sun.y
+    var depth: Float = 0.0
+    fin dt: Float = (t1 - t0) / 12.0
+    for i: Int in 0..<12 {
+        fin p: Float3 = ground + sun * (t0 + (Float(i) + 0.5) * dt)
+        depth += cloudDensity(p, eye, u, shape, detail, weather, 1.0, true) * dt
+    }
+    output.write(Float4(exp(-depth * 0.6), 0.0, 0.0, 1.0), id)
+}

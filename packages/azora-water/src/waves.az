@@ -32,11 +32,11 @@ import engine.gpu
 import engine.io
 import engine.math
 import engine.objc
+import engine.objc.shader
 import engine.platform
 import engine.water.components
 import engine.water.spectrum
 import engine.water.seas
-import engine.water.oceanshader
 
 /** Metal pixel formats and texture usage the sea uses. */
 inline fin waveFloat4: Long = 125
@@ -77,16 +77,6 @@ impl WaterGpu {
 func waterMetalReason(failure: Long): String {
     fin issue = azPeek64(failure, 0)
     return if issue == 0 then "no reason given" else azCstring(send0(send0(issue, sel("localizedDescription")), sel("UTF8String")), 0)
-}
-
-/** The Metal library of [source] on [device], 0 (and a printed reason) when it does not compile. */
-func waterLibrary(device: Long, source: String, what: String): Long {
-    fin failure = azAlloc(8)
-    defer { azFree(failure) }
-    azPoke64(failure, 0, 0)
-    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(source), 0, failure)
-    if library == 0 then println("Azora Water: ${what} did not compile: ${waterMetalReason(failure)}")
-    return library
 }
 
 func waterKernel(device: Long, library: Long, name: String): Long {
@@ -132,16 +122,16 @@ func waterGpuRow(world: World!, device: Long): Int {
     let cache = ensureStorage<WaterGpu>(world)
     for row: Int in 0..<storageLength<WaterGpu>(cache) then if cache.values[row].device == device then return row
     var programs: WaterGpu = .(device: device)
-    fin kernels = waterLibrary(device, waveKernelSource(), "the wave kernels")
+    fin kernels = shaderLibrary(device, "waves")
     if kernels != 0 {
-        programs.spectrum = waterKernel(device, kernels, "wave_spectrum")
-        programs.fft = waterKernel(device, kernels, "wave_fft")
-        programs.finalize = waterKernel(device, kernels, "wave_finalize")
+        programs.spectrum = waterKernel(device, kernels, "waveSpectrum")
+        programs.fft = waterKernel(device, kernels, "waveFft")
+        programs.finalize = waterKernel(device, kernels, "waveFinalize")
         send0(kernels, sel("release"))
     }
-    fin surface = waterLibrary(device, oceanRenderSource(), "the ocean surface")
+    fin surface = shaderLibrary(device, "ocean")
     if surface != 0 {
-        programs.ocean = waterSurfacePipeline(device, surface, "ocean_vertex", "ocean_fragment")
+        programs.ocean = waterSurfacePipeline(device, surface, "oceanVertex", "oceanFragment")
         send0(surface, sel("release"))
     }
     programs.still = waveTexture(device, waveHalf4, 1, false)
@@ -301,20 +291,20 @@ func simulateSeaGpu(app: App!, programs: WaterGpu&, sea: Sea&, sim: SeaGpu!, foa
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 2)
         send3(encoder, sel("setBytes:length:atIndex:"), sim.params, 48, 0)
         dispatchWaves(encoder, sim.sizes, groups, groups, 8, 8)
-        // Rows, then columns: one threadgroup a line, half a line of threads.
+        // Rows, then columns: one threadgroup per line, with one lane per butterfly.
         send1(encoder, sel("setComputePipelineState:"), programs.fft)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 0)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 1)
         send2(encoder, sel("setTexture:atIndex:"), maps.rowsA, 2)
         send2(encoder, sel("setTexture:atIndex:"), maps.rowsB, 3)
-        dispatchWaves(encoder, sim.sizes, n as Long, 1, (n / 2) as Long, 1)
+        dispatchWaves(encoder, sim.sizes, n as Long, 1, 128, 1)
         pokeWaveParams(sim, sea, c, time, share, foam, true)
         send3(encoder, sel("setBytes:length:atIndex:"), sim.params, 48, 0)
         send2(encoder, sel("setTexture:atIndex:"), maps.rowsA, 0)
         send2(encoder, sel("setTexture:atIndex:"), maps.rowsB, 1)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 2)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 3)
-        dispatchWaves(encoder, sim.sizes, n as Long, 1, (n / 2) as Long, 1)
+        dispatchWaves(encoder, sim.sizes, n as Long, 1, 128, 1)
         send1(encoder, sel("setComputePipelineState:"), programs.finalize)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 0)
         send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 1)

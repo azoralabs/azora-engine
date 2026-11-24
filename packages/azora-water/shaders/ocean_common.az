@@ -1,0 +1,350 @@
+/**
+ * What the sea's surface and its underwater view share: the ocean's block, the cascades laid
+ * without repeating (engine.water.spectrum: cascadeTurn, tileBlend, laidWaveGrid), the shore
+ * maps (engine.water.shore) and the surf on them, and the sea's displacement and height at a point.
+ */
+@Execution("GPU")
+module engine.water.oceanCommon
+
+/**
+ * tiles: the three cascades' tile lengths and the sea's level. weights: the sea resolution, the
+ * eye's height over the water, whether opaque scene reflections are available and whether the
+ * opaque scene behind the water is. scatter/absorb: the water's colour. look: clarity, subsurface,
+ * roughness, reflection. foam: colour and shore band. shore/far: a shore map's centre x/z, one
+ * over its side and whether it is ready. extra: shore depth reach, foam strength, time (wrapped
+ * hourly), the surf's white water (WaterFoam.surf). surf: deep height, deep wavelength, run-up, 0.
+ * phases: both trains' ω and phases now. texels: each map's texel in metres, the foam's opacity, 0.
+ * shallow: the shallow water's colour and the depth it turns deep over.
+ */
+pack OceanU {
+    fin tiles: Float4
+    fin weights: Float4
+    fin scatter: Float4
+    fin absorb: Float4
+    fin look: Float4
+    fin foam: Float4
+    fin shore: Float4
+    fin extra: Float4
+    fin far: Float4
+    fin surf: Float4
+    fin phases: Float4
+    fin texels: Float4
+    fin shallow: Float4
+}
+
+inline fin waveSampler = Sampler(.Linear, .Repeat, .Linear)
+inline fin shoreSampler = Sampler(.Linear, .ClampToEdge)
+
+/** Waves shorter than about four cells cannot be shown by the grid: they fade out of the geometry. */
+func cascadeWeight(tile: Float, cell: Float): Float = 1.0 - smoothstep(tile / 48.0, tile / 12.0, cell)
+
+fin cascadeTurns: Array<Float, 3> = [0.31, 0.83, 2.17]
+inline fin secondTurn: Float = 2.4
+inline fin secondMove: Float2 = Float2(0.37, 0.61)
+
+func tileBlend(cascade: Int, p: Float2): Float {
+    fin px = p.x + Float(cascade) * 1731.0
+    fin pz = p.y - Float(cascade) * 977.0
+    return saturate(0.5 + 0.35 * sin(0.0061 * px + 1.7 * sin(0.0043 * pz + 0.6)) + 0.3 * sin(0.0057 * pz + 1.3 * sin(0.0037 * px + 2.1)))
+}
+
+func turnInto(p: Float2, a: Float): Float2 {
+    fin c = cos(a)
+    fin s = sin(a)
+    return Float2(c * p.x + s * p.y, -s * p.x + c * p.y)
+}
+
+func turnBack(v: Float2, a: Float): Float2 {
+    fin c = cos(a)
+    fin s = sin(a)
+    return Float2(c * v.x - s * v.y, s * v.x + c * v.y)
+}
+
+/** Where a cascade's two readings sample its tile at a world point, and how they blend. */
+pack Laid {
+    fin first: Float2
+    fin second: Float2
+    fin w: Float
+    fin keep: Float
+    fin a: Float
+    fin b: Float
+}
+
+func laidAt(cascade: Int, p: Float2, tile: Float): Laid {
+    fin a = cascadeTurns[cascade]
+    fin b = a + secondTurn
+    fin w = tileBlend(cascade, p)
+    return Laid(turnInto(p, a) / tile, turnInto(p, b) / tile + secondMove, w, rsqrt((1.0 - w) * (1.0 - w) + w * w), a, b)
+}
+
+func laidDisplacement(map: Texture2D, l: Laid): Float3 {
+    var one = Float3(0.0)
+    var two = Float3(0.0)
+    if l.w < 0.999 {
+        one = map.sampleLevel(waveSampler, l.first, 0.0).xyz
+        one.xz = turnBack(one.xz, l.a)
+    }
+    if l.w > 0.001 {
+        two = map.sampleLevel(waveSampler, l.second, 0.0).xyz
+        two.xz = turnBack(two.xz, l.b)
+    }
+    return mix(one, two, l.w) * l.keep
+}
+
+/** Slopes (dη/dx, dη/dz) turned back into the world, and the stretch of the surface (mean of dDx/dx and dDz/dz). */
+func laidSlopes(map: Texture2D, l: Laid): Float3 {
+    fin one = map.sample(waveSampler, l.first)
+    fin two = map.sample(waveSampler, l.second)
+    fin slope = mix(turnBack(one.xy, l.a), turnBack(two.xy, l.b), l.w) * l.keep
+    fin stretch = mix(one.z + one.w, two.z + two.w, l.w) * 0.5 * l.keep
+    return Float3(slope, stretch)
+}
+
+func laidFoam(map: Texture2D, l: Laid): Float = mix(map.sample(waveSampler, l.first).r, map.sample(waveSampler, l.second).r, l.w)
+
+// ── The shore and its surf (engine.water.shore) ──
+
+/** The ground at a point; the travel time's gradient (the waves' heading) is found only where the surf needs it. */
+pack Shore {
+    var found: Bool
+    var depth: Float
+    var travel: Float
+    var gradient: Float2
+    var uv: Float2
+    var texel: Float
+    var far: Bool
+    var blend: Float
+}
+
+func shoreMapAt(map: Texture2D, uv: Float2): Float4 = map.sampleLevel(shoreSampler, uv, 0.0)
+
+func shoreIn(map: Texture2D, place: Float4, texel: Float, p: Float2): Shore {
+    fin uv = (p - place.xy) * place.z + 0.5
+    fin here = shoreMapAt(map, uv)
+    return Shore(true, here.x, here.z, Float2(0.0), uv, texel, false, 0.0)
+}
+
+func travelGradient(map: Texture2D, uv: Float2, texel: Float): Float2 {
+    fin texelUv = 1.0 / 256.0
+    fin east = shoreMapAt(map, uv + Float2(texelUv, 0.0)).z
+    fin west = shoreMapAt(map, uv - Float2(texelUv, 0.0)).z
+    fin south = shoreMapAt(map, uv + Float2(0.0, texelUv)).z
+    fin north = shoreMapAt(map, uv - Float2(0.0, texelUv)).z
+    return Float2(east - west, south - north) / (2.0 * texel)
+}
+
+/** [s] with its gradient filled in from the map(s) it was read from. */
+func withGradient(s: Shore, p: Float2, o: @Uniform OceanU, nearMap: Texture2D, farMap: Texture2D): Shore {
+    if !s.found then return s
+    var result = s
+    if s.far {
+        result.gradient = travelGradient(farMap, s.uv, s.texel)
+        return result
+    }
+    result.gradient = travelGradient(nearMap, s.uv, s.texel)
+    if s.blend > 0.0 {
+        fin uvFar = (p - o.far.xy) * o.far.z + 0.5
+        result.gradient = mix(result.gradient, travelGradient(farMap, uvFar, o.texels.y), s.blend)
+    }
+    return result
+}
+
+func insideShore(place: Float4, p: Float2): Bool {
+    fin uv = (p - place.xy) * place.z + 0.5
+    return place.w > 0.5 && all(uv > 0.0) && all(uv < 1.0)
+}
+
+/** The fine map where it reaches (fading into the far one toward its edge), else the far one, else open sea. */
+func shoreAt(p: Float2, o: @Uniform OceanU, nearMap: Texture2D, farMap: Texture2D): Shore {
+    fin inNear = insideShore(o.shore, p)
+    fin inFar = insideShore(o.far, p)
+    if !inNear {
+        if !inFar then return Shore(false, 1.0e4, 0.0, Float2(0.0), Float2(0.0), 1.0, false, 0.0)
+        var wide = shoreIn(farMap, o.far, o.texels.y, p)
+        wide.far = true
+        return wide
+    }
+    var fine = shoreIn(nearMap, o.shore, o.texels.x, p)
+    fin uv = abs((p - o.shore.xy) * o.shore.z)
+    fin toFar = smoothstep(0.42, 0.49, max(uv.x, uv.y))
+    if toFar <= 0.0 || !inFar then return fine
+    fin wide = shoreIn(farMap, o.far, o.texels.y, p)
+    fine.depth = mix(fine.depth, wide.depth, toFar)
+    fine.travel = mix(fine.travel, wide.travel, toFar)
+    fine.blend = toFar
+    return fine
+}
+
+func smoothShore(x: Float): Float {
+    fin t = saturate(x)
+    return t * t * (3.0 - 2.0 * t)
+}
+
+/** Value noise for the lace of white water (coordinates kept small so the hash keeps its fraction). */
+func foamHash(q: Float2): Float {
+    fin v = UInt2(Int2(q) + Int2(65536))
+    var h: UInt = v.x * 1597334677 ^ v.y * 3812015801
+    h = (h ^ (h >> 16)) * 2246822519
+    h ^= h >> 13
+    return Float(h & 16777215) / 16777215.0
+}
+
+func foamNoise(q: Float2): Float {
+    fin i = floor(q)
+    fin f = fract(q)
+    fin w = f * f * (3.0 - 2.0 * f)
+    return mix(mix(foamHash(i), foamHash(i + Float2(1.0, 0.0)), w.x), mix(foamHash(i + Float2(0.0, 1.0)), foamHash(i + Float2(1.0, 1.0)), w.x), w.y)
+}
+
+func foamFbm(q: Float2): Float = 0.5 * foamNoise(q) + 0.3 * foamNoise(q * 2.3 + 17.0) + 0.2 * foamNoise(q * 5.1 - 9.0)
+
+/**
+ * How much of a patch is white when [cover] of it should be: the lace where the noise falls under
+ * the cover. The lace rides the water's [flow] (m/s): two readings, half a cycle apart, each
+ * carried along the flow from where it last started and faded out before it restarts elsewhere,
+ * so it moves and changes without ever stretching or repeating (a flow map).
+ */
+func foamLace(p: Float2, cover: Float, time: Float, flow: Float2): Float {
+    fin cycle = 1.6
+    fin scale = 0.42
+    fin c = saturate(cover)
+    if c <= 0.0 then return 0.0
+    var n = 0.0
+    for reading: Int in 0..<2 {
+        fin shifted = time / cycle + Float(reading) * 0.5
+        fin age = fract(shifted)
+        fin start = floor(shifted)
+        fin q = (p - flow * age * cycle) * scale + Float2(start * 7.31 + Float(reading) * 3.7, start * 3.17)
+        n += foamFbm(q) * (1.0 - abs(2.0 * age - 1.0))
+    }
+    // Two faded readings sum to a narrower spread: stretch back about the middle.
+    n = 0.5 + (n - 0.5) * 1.45
+    return smoothstep(1.0 - c - 0.1, 1.0 - c + 0.1, n) * saturate(c * 1.8)
+}
+
+/**
+ * A train's shape at phase [theta] (crest at 0): (value, d/dθ, share of the period since the
+ * crest). Round while it swells, a bore's sawtooth (slow fall, steep front) once broken.
+ */
+func surfShape(theta: Float, breaking: Float): Float3 {
+    fin tau = 6.283185307
+    fin front = 0.14
+    fin u = fract(theta / tau)
+    fin rise = 1.0 - front
+    fin t = saturate((u - rise) / front)
+    fin saw = if u < rise then 1.0 - 2.0 * u / rise else -1.0 + 2.0 * t * t * (3.0 - 2.0 * t)
+    fin slope = if u < rise then -2.0 / rise / tau else 12.0 * t * (1.0 - t) / front / tau
+    return Float3(cos(theta) * (1.0 - breaking) + saw * breaking, -sin(theta) * (1.0 - breaking) + slope * breaking, u)
+}
+
+/** A train's (height, breaking) in water [depth] deep: shoaled, then held at what the depth carries. */
+func surfTrain(deep: Float, wavelength: Float, depth: Float): Float2 {
+    if depth <= 0.0 || deep <= 0.0 then return Float2(0.0)
+    fin deepGroup = 0.5 * sqrt(9.81 * wavelength / 6.283185307)
+    fin group = sqrt(9.81 * max(depth, 0.3))
+    fin grown = deep * clamp(sqrt(deepGroup / group), 0.9, 2.5)
+    fin breaking = smoothShore((grown / (0.78 * depth) - 0.7) / 0.3)
+    fin kept = 0.62 * depth + 0.16 * depth * (1.0 - breaking)
+    return Float2(min(grown, kept), breaking)
+}
+
+func surfPresence(depth: Float, wavelength: Float): Float = 1.0 - smoothShore((depth - 0.3 * wavelength) / (0.2 * wavelength))
+
+func surfWander(p: Float2, t: Float): Float =
+    0.9 * sin(0.0213 * p.x + 1.3 * sin(0.0171 * p.y + 0.7 * t) + 2.1 * t) + 0.6 * sin(0.0147 * p.y - 1.1 * sin(0.0193 * p.x + 1.9 * t))
+
+func surfStrength(p: Float2, t: Float): Float = 0.8 + 0.2 * sin(0.0087 * p.x + 0.0063 * p.y + 1.7 * t + 0.9 * sin(0.011 * p.y - 0.4 * t))
+
+/**
+ * The surf at a point: its elevation, its slope, how much of it is breaking white water, the
+ * horizontal lean of unbroken crests, the swash's reach over the beach, how much of the sea it
+ * replaces and the water's flow.
+ */
+pack Surf {
+    var height: Float
+    var slope: Float2
+    var foam: Float
+    var lean: Float2
+    var swash: Float
+    var presence: Float
+    var flow: Float2
+}
+
+func surfAt(p: Float2, shore: Shore, o: @Uniform OceanU, nearMap: Texture2D, farMap: Texture2D): Surf {
+    var f = Surf(0.0, Float2(0.0), 0.0, Float2(0.0), 0.0, 0.0, Float2(0.0))
+    if !shore.found || o.surf.x <= 0.0 then return f
+    fin presence = surfPresence(shore.depth, o.surf.y)
+    f.presence = presence
+    if presence <= 0.0 then return f
+    fin s = withGradient(shore, p, o, nearMap, farMap)
+    fin glen = length(s.gradient)
+    fin toward = if glen > 1.0e-6 then -s.gradient / glen else Float2(0.0)
+    for train: Int in 0..<2 {
+        fin t = Float(train)
+        fin omega = if train == 0 then o.phases.x else o.phases.y
+        fin theta = (if train == 0 then o.phases.z else o.phases.w) + omega * s.travel + surfWander(p, t)
+        fin wave = surfTrain(o.surf.x * (if train == 0 then 0.75 else 0.45) * surfStrength(p, t), o.surf.y, s.depth)
+        fin shape = surfShape(theta, wave.y)
+        fin amplitude = wave.x * 0.5 * presence
+        f.height += amplitude * shape.x
+        f.slope += amplitude * shape.y * omega * s.gradient
+        // Unbroken crests sharpen (Gerstner); broken ones are bores.
+        f.lean += toward * amplitude * 0.6 * (1.0 - wave.y) * sin(theta)
+        // The water under the wave sways with it (smoothly in space, so the foam it carries never tears).
+        f.flow += toward * min(amplitude, 1.0) * cos(theta) * 0.8
+        // White water on the bore's face, and the foam it leaves trailing behind its crest.
+        fin white = max(smoothstep(0.82, 0.97, shape.z), exp(-shape.z * 3.2))
+        f.foam = max(f.foam, wave.y * presence * white * (if train == 0 then 1.0 else 0.75))
+    }
+    // The swash runs up the beach with each bore and slides back.
+    fin theta = o.phases.z + o.phases.x * s.travel + surfWander(p, 0.0)
+    fin up = surfShape(theta, 1.0)
+    fin reach = if s.depth <= 0.0 then 1.0 else 1.0 - smoothShore(s.depth / (o.surf.z * 3.0 + 0.05))
+    f.height += o.surf.z * (0.5 + 0.5 * up.x) * reach
+    f.slope += o.surf.z * 0.5 * up.y * o.phases.x * s.gradient * reach
+    f.swash = reach
+    // The surf zone's foam drifts shoreward; the swash's moves up the sand and back with it.
+    f.flow += toward * (0.7 * presence + 1.2 * reach * sin(theta) * step(0.001, o.surf.z))
+    return f
+}
+
+/**
+ * The sea's displacement at undisplaced point [plane]: the cascades (each faded where a grid of
+ * [cell] metres cannot show it; 0 shows all), calmed in the shallows, plus the surf.
+ */
+func seaShift(plane: Float2, cell: Float, o: @Uniform OceanU, d0: Texture2D, d1: Texture2D, d2: Texture2D,
+              nearMap: Texture2D, farMap: Texture2D): Float3 {
+    fin s = shoreAt(plane, o, nearMap, farMap)
+    fin surf = surfAt(plane, s, o, nearMap, farMap)
+    // Shallow water calms the open sea's waves; where the surf comes in, it takes the swell's place.
+    fin calm = saturate(s.depth / max(o.extra.x * 0.25, 0.5))
+    fin w0 = cascadeWeight(o.tiles.x, cell) * calm * (1.0 - 0.8 * surf.presence)
+    fin w1 = cascadeWeight(o.tiles.y, cell) * calm
+    fin w2 = cascadeWeight(o.tiles.z, cell) * calm
+    var shift = Float3(0.0)
+    if w0 > 0.0 then shift += laidDisplacement(d0, laidAt(0, plane, o.tiles.x)) * w0
+    if w1 > 0.0 then shift += laidDisplacement(d1, laidAt(1, plane, o.tiles.y)) * w1
+    if w2 > 0.0 then shift += laidDisplacement(d2, laidAt(2, plane, o.tiles.z)) * w2
+    return shift + Float3(surf.lean.x, surf.height, surf.lean.y)
+}
+
+/** The sea's surface height near [p] in one step (the lean corrected once): cheaper, a few centimetres off on steep crests. */
+func seaHeightQuick(p: Float2, o: @Uniform OceanU, d0: Texture2D, d1: Texture2D, d2: Texture2D,
+                    nearMap: Texture2D, farMap: Texture2D): Float {
+    fin shift = seaShift(p, 0.0, o, d0, d1, d2, nearMap, farMap)
+    return o.tiles.w + seaShift(p - shift.xz, 0.0, o, d0, d1, d2, nearMap, farMap).y
+}
+
+/**
+ * The sea's surface height over world (x, z) = [p]: the undisplaced point whose crest leans onto
+ * p is found by a few steps (as `waveHeightAt` on the CPU).
+ */
+func seaHeightAt(p: Float2, o: @Uniform OceanU, d0: Texture2D, d1: Texture2D, d2: Texture2D,
+                 nearMap: Texture2D, farMap: Texture2D): Float {
+    var q = p
+    for i: Int in 0..<3 {
+        fin shift = seaShift(q, 0.0, o, d0, d1, d2, nearMap, farMap)
+        q = p - shift.xz
+    }
+    return o.tiles.w + seaShift(q, 0.0, o, d0, d1, d2, nearMap, farMap).y
+}

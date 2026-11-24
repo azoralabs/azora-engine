@@ -1,0 +1,67 @@
+@Execution("GPU")
+module engine.shaders.weather.storm
+
+pack BoltU {
+    var viewProj: Float4x4
+    var screen: Float4
+    var params: Float4
+}
+
+pack BoltOut {
+    @Position
+    var pos: Float4
+    @Location(0)
+    var across: Float
+    @Location(1)
+    var glow: Float
+    @Location(2)
+    var depth: Float
+}
+
+/** One segment of a bolt as a ribbon facing the eye, at least a pixel and a half wide. */
+@Vertex
+func boltVertex(vid: @VertexIndex UInt, iid: @InstanceIndex UInt, s: @ReadOnlyStorage(0) Float4, u: @Uniform(1) BoltU): BoltOut {
+    fin a: Float4 = s[iid * 2]
+    fin b: Float4 = s[iid * 2 + 1]
+    fin ca: Float4 = u.viewProj * Float4(a.xyz, 1.0)
+    fin cb: Float4 = u.viewProj * Float4(b.xyz, 1.0)
+    var o: BoltOut = .(Float4(0), 0, 0, 0)
+    if ca.w < 1.0 || cb.w < 1.0 {
+        o.pos = Float4(0.0, 0.0, -1.0, 1.0)
+        o.across = 0.0
+        o.glow = 0.0
+        o.depth = 0.0
+        return o
+    }
+    fin halfScreen: Float2 = u.screen.xy * 0.5
+    fin sa: Float2 = ca.xy / ca.w * halfScreen
+    fin sb: Float2 = cb.xy / cb.w * halfScreen
+    fin d: Float2 = sb - sa
+    fin axis: Float2 = if length(d) > 1e-3 then normalize(d) else Float2(0.0, 1.0)
+    fin normal: Float2 = Float2(-axis.y, axis.x)
+    fin tail: Bool = vid >= 2
+    fin side: Float = if (vid & 1) == 0 then -1.0 else 1.0
+    fin clip: Float4 = if tail then cb else ca
+    // The glow reaches several times the channel's width.
+    fin width: Float = max(a.w * u.params.x / clip.w, 1.5) * 6.0
+    fin at: Float2 = ((if tail then sb else sa)) + normal * side * width * 0.5 + axis * ((if tail then 1.0 else -1.0))
+    o.pos = Float4(at / halfScreen * clip.w, 0.0, clip.w)
+    o.across = side
+    o.glow = b.w * u.params.y
+    o.depth = clip.w
+    return o
+}
+
+@Fragment
+func boltFragment(input: BoltOut, u: @Uniform(1) BoltU, scene: @Texture(0) DepthTexture2D): Float4 {
+    if input.glow <= 0.001 then discardFragment()
+    fin px: Float2 = input.pos.xy * (u.screen.zw / u.screen.xy)
+    fin z: Float = scene.read(UInt2(clamp(px, Float2(0.0), u.screen.zw - 1.0)))
+    // Reversed depth: near 1, far 0.
+    fin sceneDistance: Float = u.params.z * u.params.w / max(u.params.z + z * (u.params.w - u.params.z), 1e-4)
+    // Behind a mountain, hidden.
+    if z > 0.0 && sceneDistance < input.depth then discardFragment()
+    fin x: Float = input.across
+    fin light: Float = exp(-x * x * 40.0) * 2.4 + exp(-x * x * 4.0) * 0.45
+    return Float4(Float3(0.82, 0.86, 1.0) * light * input.glow, 0.0)
+}
