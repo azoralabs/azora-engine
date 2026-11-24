@@ -494,7 +494,10 @@ vertex SeaPoint ocean_vertex(uint vid [[vertex_id]], constant U3& u [[buffer(1)]
     float2 g = float2(grid);
     float2 plane = r.ring.xy + (g - fract(g * 0.5) * 2.0 * morph - float(cells) * 0.5) * size;
     float seaLevel = o.tiles.w;
-    float3 shift = seaShift(plane, size, o, d0, d1, d2, shore, farShore);
+    // The waves the grid can show are filtered by its cell, which doubles across the folded band:
+    // at its edge a ring filters as the coarser ring outside, so both displace the shared
+    // vertices alike (no step, no seam in the foam and light along the boundary).
+    float3 shift = seaShift(plane, size * (1.0 + morph), o, d0, d1, d2, shore, farShore);
     float3 world = float3(plane.x + shift.x, seaLevel + shift.y, plane.y + shift.z);
     result.position = u.viewProj * float4(world, 1.0);
     result.world = world;
@@ -578,12 +581,24 @@ fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer
                                depth2d<float> detail [[texture(30)]], texture2d<float> clouds [[texture(31)]]) {
     constexpr sampler depthSampler(filter::nearest, address::clamp_to_edge);
     constexpr sampler colorSampler(filter::linear, address::clamp_to_edge);
-    // No water inside a Water Exclusion box (a boat's cockpit, a dry dock).
+    // No water seen inside a Water Exclusion box (a boat's cockpit, a dry dock): only the water
+    // the eye sees through the box's open top (or from inside it) is hidden. Water in the box
+    // seen from the side is outside the hull walls, so it stays: the sea reaches the hull.
     int cutCount = int(cuts[0].x);
     for (int k = 0; k < cutCount; ++k) {
-        float3 d = in.world - cuts[1 + k * 4].xyz;
+        float3 c = cuts[1 + k * 4].xyz;
         float4 ax = cuts[2 + k * 4], ay = cuts[3 + k * 4], az = cuts[4 + k * 4];
-        if (abs(dot(d, ax.xyz)) < ax.w && abs(dot(d, ay.xyz)) < ay.w && abs(dot(d, az.xyz)) < az.w) discard_fragment();
+        float3 extent = float3(ax.w, ay.w, az.w);
+        float3 d = in.world - c, e = u.eye.xyz - c;
+        float3 waterIn = float3(dot(d, ax.xyz), dot(d, ay.xyz), dot(d, az.xyz));
+        float3 eyeIn = float3(dot(e, ax.xyz), dot(e, ay.xyz), dot(e, az.xyz));
+        if (any(abs(waterIn) >= extent)) continue;
+        if (all(abs(eyeIn) < extent)) discard_fragment();
+        // The segment eye -> water enters the box through the face where its entry is latest.
+        float3 dir = waterIn - eyeIn;
+        float3 safe = select(dir, float3(1.0e-6), abs(dir) < 1.0e-6);
+        float3 enter = min((-extent - eyeIn) / safe, (extent - eyeIn) / safe);
+        if (enter.y >= enter.x && enter.y >= enter.z && eyeIn.y > extent.y) discard_fragment();
     }
     float2 p = in.plane;
     Shore here = shoreAt(p, o, shore, farShore);
