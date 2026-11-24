@@ -14,6 +14,10 @@ import engine.atmosphere.components
 import engine.weather.components
 import engine.weather.state
 import engine.atmosphere.skyrender
+import engine.atmosphere
+import engine.atmosphere.view
+import engine.platform
+import engine.audio.output
 
 /** Strikes alive at once (their flash, then their thunder), segments a bolt may have, and the thunder's arrival bins. */
 inline fin strikeSlots: Int = 3
@@ -432,5 +436,53 @@ func lightningNow(world: World!, now: Double, eye: Vec3&, forward: Vec3&) {
     while i < storageLength<AetherStorm>(storms) {
         strike(storms.values[i], now, eye.x, eye.z, sceneClouds(world).baseAltitude, eye.y, true, forward.x, forward.z)
         i++
+    }
+}
+
+/** Draws the bolts of ground strikes while they flash, over the finished view; mountains in front hide them. */
+@System(phase: .RenderTransparent)
+func drawAetherBolts(app: App!, view: SceneView&, skies: @query [AetherSky&, AetherStorm&]) {
+    while skies.hasNext() {
+        let row = skies.next()
+        let sky: AetherSky& = row.1
+        let storm: AetherStorm& = row.2
+        if !sky.enabled || !storm.ready || view.encoder == 0 || view.depth == 0 || view.matrices == 0 then continue
+        fin encoder = view.encoder
+        azCopy(storm.block, view.matrices, 64)
+        fin focal = (view.fullHeight as Double) * 0.5 / view.tangent
+        for s: Int in 0..<strikeSlots {
+            if field(storm, s, 0) > 0.5 && field(storm, s, 5) > 0.5 {
+                fin glow = flashOf(storm, s, view.time - field(storm, s, 1))
+                if glow > 0.01 {
+                    pokeVector(storm.block, 64, view.fullWidth as Double, view.fullHeight as Double, view.width as Double,
+                        view.height as Double)
+                    pokeVector(storm.block, 80, focal, glow, view.near, view.far)
+                    send1(encoder, sel("setRenderPipelineState:"), storm.boltPipeline)
+                    send1(encoder, sel("setDepthStencilState:"), app.gpu.depthOff)
+                    send3(encoder, sel("setVertexBuffer:offset:atIndex:"), storm.segments, ((s * boltSegments) as Long) * segmentBytes, 0)
+                    send3(encoder, sel("setVertexBytes:length:atIndex:"), storm.block, 96, 1)
+                    send3(encoder, sel("setFragmentBytes:length:atIndex:"), storm.block, 96, 1)
+                    send2(encoder, sel("setFragmentTexture:atIndex:"), view.depth, 0)
+                    send4(encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, field(storm, s, 12) as Long)
+                }
+            }
+        }
+        app.gpu.mode = -1
+        app.gpu.meshPipeline = 0
+        return
+    }
+}
+
+/** The thunder heard from the camera. */
+@System(phase: .Audio)
+func mixAetherThunder(audio: AudioOutput!, world: World!, skies: @query [AetherSky&, AetherStorm!]) {
+    while skies.hasNext() {
+        let row = skies.next()
+        let sky: AetherSky& = row.1
+        let storm: AetherStorm! = row.2
+        if !sky.enabled || audio.frames <= 0 then continue
+        fin thunder = weatherParts(world).thunder
+        mixThunder(storm, audio.mix, audio.frames, audio.rate as Double, if thunder.enabled then thunder.volume else 1.0)
+        return
     }
 }

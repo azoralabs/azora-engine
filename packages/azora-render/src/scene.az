@@ -42,12 +42,26 @@ import engine.landscape.volume
 import engine.foliage
 import engine.foliage.gpu
 import engine.gpu.terrain
-exposed import engine.water
 import engine.material.fusion.metal
 import engine.lighting.photon
 import engine.atmosphere
 import engine.objc
 import engine.io
+
+/** The sun's sharp cascade while it is drawn: what [App.endSunCascade] needs to finish it and give the camera back. */
+pack SunCascade {
+    var open: Bool = false
+    var commands: Long = 0
+    var encoder: Long = 0
+    var frameEncoder: Long = 0
+    var cameraView: Mat4 = mat4Identity()
+    var cameraClip: Long = 0
+    var cameraDepth: Long = 0
+    var light: Mat4 = mat4Identity()
+    var texel: Double = 0.0
+    /** How far along the sun's rays the square reaches, in metres. */
+    var reach: Double = 1500.0
+}
 
 /** One GPU mesh per [Mesh3d] shape, built once. */
 pack PrimitiveMeshes {
@@ -200,25 +214,6 @@ pack SceneEnvironment derives Clone {
     var shadowSize: Double = 0.0
     var windX: Double = 0.0
     var windZ: Double = 0.0
-}
-
-/** The scene's first enabled, visible `Wind`, or none. */
-func sceneWindEntity(world: World!): Entity {
-    fin winds = ensureStorage<Wind>(world)
-    var index = 0
-    while index < storageLength<Wind>(winds) {
-        fin entity = storageEntityAt<Wind>(winds, index)
-        if winds.values[index].enabled && world.isAlive(entity) && visibleInWorld(world, entity) then return entity
-        index++
-    }
-    return ::invalid
-}
-
-/** How the scene's wind blows at [time], m/s; still air when it has none. */
-func sceneWind(world: World!, time: Double): Vec3 {
-    fin entity = sceneWindEntity(world)
-    if !world.isAlive(entity) then return Vec3(0.0, 0.0, 0.0)
-    return windAt(storageGet<Wind>(ensureStorage(world), entity), time)
 }
 
 inline fin sceneLightName = "SceneLight"
@@ -543,37 +538,68 @@ impl App {
         return drawn
     }
 
-    /** Draws every visible mesh in [world] under the view already begun. */
+    /**
+     * Draws every visible mesh in [world] under the view already begun: the
+     * steps a game or an editor viewport takes one by one when its systems
+     * draw too ([prepareSceneDraw], the sun's cascade, [drawSceneOpaque]).
+     */
     func !.drawScene(world: World!, meshes: PrimitiveMeshes&, sculpted: Bool = true, elapsed: Double = 0.0) {
+        self.prepareSceneDraw(world)
+        self.drawDetailShadows(world, meshes)
+        self.drawSceneOpaque(world, meshes, sculpted)
+    }
+
+    /** What a frame's scene draws gather first: the lamps nearest the eye and the road network. */
+    func !.prepareSceneDraw(world: World!) {
         if self.gpu.localLights != 0 {
             // The eye setMaterialEye left in the uniforms picks the nearest lights.
             fin eye: Vec3 = .(peekFloat32(self.gpu.viewProj, 64), peekFloat32(self.gpu.viewProj, 68), peekFloat32(self.gpu.viewProj, 72))
             gatherLocalLights(world, eye, self.gpu.localLights)
         }
         self.prepareRoads(world)
-        self.drawDetailShadows(world, meshes)
+    }
+
+    /** The built-in opaque scene: meshes, terrain, roads, sculpted landscapes ([sculpted]) and skinned meshes. */
+    func !.drawSceneOpaque(world: World!, meshes: PrimitiveMeshes&, sculpted: Bool = true) {
         self.drawSceneMeshes(world, meshes)
         self.drawHeightfields(world)
         self.drawRoads()
         if sculpted then self.drawSculptedLandscapes(world)
         self.drawSkinnedMeshes(world, self.gpu.fusion.root)
-        self.drawWater(world, self.gpu.fusion.root, elapsed)
+    }
+
+    /** The built-in shadow casters into the sun's cascade begun: meshes and terrain. */
+    func !.drawSceneCasters(world: World!, meshes: PrimitiveMeshes&) {
+        self.drawSceneMeshes(world, meshes)
+        self.drawHeightfields(world)
+    }
+
+    /** The sharp cascade drawn with the built-in casters only (see [beginSunCascade]). */
+    func !.drawDetailShadows(world: World!, meshes: PrimitiveMeshes&) {
+        var cascade = self.beginSunCascade()
+        if !cascade.open then return
+        self.drawSceneCasters(world, meshes)
+        self.endSunCascade(cascade)
     }
 
     /**
-     * The sharp cascade of Virtual Shadows: the scene's depth from the sun over
-     * a square around the focus, in a command buffer of its own that runs before
-     * the frame's. The square is snapped to whole texels in the sun's plane so
-     * its shadows do not shimmer as the focus moves, and reaches far along the
-     * sun's rays, so a slope that shades the square from afar is in it too.
+     * Opens the sharp cascade of Virtual Shadows: the scene's depth from the
+     * sun over a square around the focus, in a command buffer of its own that
+     * runs before the frame's. Until [endSunCascade], draws go into it
+     * (`AzGpu.casting`): the built-in casters and `RenderShadow` systems. The
+     * square is snapped to whole texels in the sun's plane so its shadows do
+     * not shimmer as the focus moves, and reaches far along the sun's rays, so
+     * a slope that shades the square from afar is in it too. Not [SunCascade.open]
+     * when shadows are off or the sun is down.
      */
-    func !.drawDetailShadows(world: World!, meshes: PrimitiveMeshes&) {
+    func !.beginSunCascade(): SunCascade {
         self.gpu.detailReady = false
+        var cascade: SunCascade = .()
         if !self.gpu.virtualShadows || !self.gpu.shadowsActive || self.gpu.flatMaterials || !self.gpu.hasEncoder ||
-            self.gpu.detailPipeline == 0 || self.gpu.detailMap == 0 || self.gpu.detailLight == 0 then return
+            self.gpu.detailPipeline == 0 || self.gpu.detailMap == 0 || self.gpu.detailLight == 0 then return take cascade
         fin z: Vec3 = .(self.gpu.lightX, self.gpu.lightY, self.gpu.lightZ)
         // A sun at or below the horizon lights nothing a cascade could shade.
-        if z.y <= 0.02 then return
+        if z.y <= 0.02 then return take cascade
         fin up = if absValue(z.y) > 0.95 then Vec3(1.0, 0.0, 0.0) else Vec3(0.0, 1.0, 0.0)
         fin x = photonUnit(photonCross(up, z))
         fin y = photonCross(z, x)
@@ -583,53 +609,61 @@ impl App {
         fin cx = (floor(photonDot(x, focus) / texel) as Double) * texel
         fin cy = (floor(photonDot(y, focus) / texel) as Double) * texel
         fin cz = photonDot(z, focus)
-        fin reach = 1500.0
-        fin light = Mat4(
+        fin reach = cascade.reach
+        cascade.light = Mat4(
             x.x / half, x.y / half, x.z / half, -cx / half
             y.x / half, y.y / half, y.z / half, -cy / half,
             -z.x / (2.0 * reach), -z.y / (2.0 * reach), -z.z / (2.0 * reach), 0.5 + cz / (2.0 * reach)
             0.0, 0.0, 0.0, 1.0
         )
-        fin commands = send0(self.gpu.queue, sel("commandBuffer"))
+        cascade.texel = texel
+        cascade.commands = send0(self.gpu.queue, sel("commandBuffer"))
         fin pass = send0(cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"))
         fin depth = send0(pass, sel("depthAttachment"))
         send1(depth, sel("setTexture:"), self.gpu.detailMap)
         send1(depth, sel("setLoadAction:"), 2)
         send1(depth, sel("setStoreAction:"), 1)
         azSendF1(depth, sel("setClearDepth:"), 1.0)
-        fin encoder = send1(commands, sel("renderCommandEncoderWithDescriptor:"), pass)
+        cascade.encoder = send1(cascade.commands, sel("renderCommandEncoderWithDescriptor:"), pass)
         // The frame's encoder and camera wait while the sun's view is drawn.
-        fin frameEncoder = self.gpu.enc
-        fin cameraView = copyMat4(self.gpu.view)
-        fin cameraClip = azAlloc(64)
-        azCopy(cameraClip, self.gpu.viewProj, 64)
-        self.gpu.enc = encoder
+        cascade.frameEncoder = self.gpu.enc
+        cascade.cameraView = copyMat4(self.gpu.view)
+        cascade.cameraClip = azAlloc(64)
+        azCopy(cascade.cameraClip, self.gpu.viewProj, 64)
+        self.gpu.enc = cascade.encoder
         self.gpu.mode = -1
         self.gpu.casting = true
         // The shadow map keeps ordinary depth; the camera's is reversed.
-        fin cameraDepth = self.gpu.depthOn
+        cascade.cameraDepth = self.gpu.depthOn
         self.gpu.depthOn = self.gpu.depthLess
-        pokeMat4(self.gpu.viewProj, 0, light)
-        self.gpu.view = copyMat4(light)
-        self.drawSceneMeshes(world, meshes)
-        self.drawHeightfields(world)
+        pokeMat4(self.gpu.viewProj, 0, cascade.light)
+        self.gpu.view = copyMat4(cascade.light)
+        cascade.open = true
+        return take cascade
+    }
+
+    /** Closes the cascade [beginSunCascade] opened, commits it and gives the frame's encoder and camera back. */
+    func !.endSunCascade(cascade: SunCascade!) {
+        if !cascade.open then return
         self.gpu.casting = false
-        self.gpu.depthOn = cameraDepth
-        send0(encoder, sel("endEncoding"))
-        send0(commands, sel("commit"))
-        self.gpu.enc = frameEncoder
+        self.gpu.depthOn = cascade.cameraDepth
+        send0(cascade.encoder, sel("endEncoding"))
+        send0(cascade.commands, sel("commit"))
+        self.gpu.enc = cascade.frameEncoder
         self.gpu.mode = -1
         self.gpu.meshPipeline = 0
-        azCopy(self.gpu.viewProj, cameraClip, 64)
-        azFree(cameraClip)
-        self.gpu.view = copyMat4(cameraView)
-        pokeMat4(self.gpu.detailLight, 0, light)
-        azPokeF32(self.gpu.detailLight, 64, texel)
+        azCopy(self.gpu.viewProj, cascade.cameraClip, 64)
+        azFree(cascade.cameraClip)
+        cascade.cameraClip = 0
+        self.gpu.view = copyMat4(cascade.cameraView)
+        pokeMat4(self.gpu.detailLight, 0, cascade.light)
+        azPokeF32(self.gpu.detailLight, 64, cascade.texel)
         azPokeF32(self.gpu.detailLight, 68, 1.0 / (detailResolution as Double))
         azPokeF32(self.gpu.detailLight, 72, self.gpu.detailStrength)
         // Two texels of depth: enough that a lit slope does not shade itself.
-        azPokeF32(self.gpu.detailLight, 76, texel / reach)
+        azPokeF32(self.gpu.detailLight, 76, cascade.texel / cascade.reach)
         self.gpu.detailReady = true
+        cascade.open = false
     }
 
     /**

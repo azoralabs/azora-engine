@@ -10,6 +10,11 @@ import engine.particles
 import engine.atmosphere.components
 import engine.weather.components
 import engine.weather.state
+import engine.weather.wind
+import engine.platform
+import engine.atmosphere
+import engine.atmosphere.view
+import engine.render.scene
 
 /**
  * Rain, snow and dust as the Engine's GPU particles: drops, flakes and motes in two camera
@@ -140,3 +145,121 @@ func moteEmitter(half: Double, size: Double, color: Rgba&): ParticleEmitter = Pa
     extent: .(half, half * 0.5, half), lifeMin: 1.0, lifeMax: 1.0, spread: 0.0, gravity: 0.15, drag: 2.5, terminalSpeed: 0.25
     wind: 1.1, turbulence: 1.6, sizeStart: size, sizeEnd: size, colorStart: .(color.r, color.g, color.b, 0.55)
     colorEnd: .(color.r, color.g, color.b, 0.55), shape: 0, lit: 1.0, softness: 0.3, nearFade: 0.4)
+
+/**
+ * How particles see this frame: the camera and its targets, last frame's
+ * transform and depth for collisions, the scene's light, wind and lamps.
+ * [commands] is where a simulation is encoded (0 to draw).
+ */
+func sceneParticleView(app: App&, view: SceneView&, world: World!, commands: Long): ParticleView {
+    let gpu: AzGpu& = app.gpu
+    fin light = sceneLightFrom(world, view.time)
+    fin weather = resourceNamedOr<SceneEnvironment>(world, "SceneEnvironment", SceneEnvironment())
+    // A Wind in the scene blows the particles; without one, the weather's own wind does.
+    fin windy = world.isAlive(sceneWindEntity(world))
+    fin blowing = if windy then sceneWind(world, view.time) else Vec3(weather.windX, 0.0, weather.windZ)
+    fin matrices = view.matrices
+    return ParticleView(commands: commands, viewProj: matrices, previousViewProj: matrices + 128, previousInverse: matrices + 192,
+        depth: view.depth, eyeX: view.eyeX, eyeY: view.eyeY, eyeZ: view.eyeZ, time: view.time
+        delta: view.delta, motionX: view.motionX, motionY: view.motionY, motionZ: view.motionZ
+        fullWidth: view.fullWidth as Double, fullHeight: view.fullHeight as Double
+        depthWidth: view.width as Double, depthHeight: view.height as Double, near: view.near, far: view.far
+        focal: (view.fullHeight as Double) * 0.5 / view.tangent, windX: blowing.x, windY: blowing.y, windZ: blowing.z
+        lightX: light.direction.x, lightY: light.direction.y, lightZ: light.direction.z, lightStrength: light.intensity
+        lightRed: light.color.r, lightGreen: light.color.g, lightBlue: light.color.b, ambient: light.ambient
+        airRed: light.haze.r * (0.25 + 0.75 * light.daylight), airGreen: light.haze.g * (0.25 + 0.75 * light.daylight)
+        airBlue: light.haze.b * (0.25 + 0.75 * light.daylight), lights: gpu.localLights)
+}
+
+/**
+ * Moves rain, snow and dust one step, on the GPU, in a command buffer
+ * committed before the frame's: the drops' collisions read the depth the last
+ * frame left, and their hits spawn the splashes.
+ */
+@System(phase: .RenderSky)
+func simulateAetherPrecipitation(app: App!, view: SceneView&, world: World!, particles: ParticlePipelines&, skies: @query [AetherSky&, AetherState&, AetherPrecipitation!]) {
+    while skies.hasNext() {
+        let row = skies.next()
+        let sky: AetherSky& = row.1
+        let state: AetherState& = row.2
+        let rain: AetherPrecipitation! = row.3
+        if !sky.enabled || !rain.ready || !particles.ready then continue
+        fin parts = weatherParts(world)
+        // How far and how much landing drops splash: the Rain's settings.
+        fin reach = weatherClamp(parts.rain.splashDistance, 5.0, 80.0)
+        if absValue(reach - rain.reach) > 0.5 then sizeImpacts(rain, app.gpu.device, app.gpu.queue, reach)
+        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
+        fin falling = weatherClamp(state.rain, 0.0, 1.0)
+        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
+        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
+        if falling <= 0.0 && snowing <= 0.0 && dusting <= 0.0 && rain.rings.active == 0 && rain.puffs.active == 0 then return
+        fin commands = send0(app.gpu.queue, sel("commandBuffer"))
+        fin seen = sceneParticleView(app, view, world, commands)
+        fin eye: Vec3 = .(seen.eyeX, seen.eyeY, seen.eyeZ)
+        rain.dropsNear.simulate(particles, dropEmitter(9.0, 4.5, falling, false), seen, eye, falling)
+        rain.dropsFar.simulate(particles, dropEmitter(35.0, 35.0, falling, false), seen, eye, falling)
+        rain.impacts.simulate(particles, impactEmitter(reach, falling), seen, eye, falling)
+        rain.impactsNear.simulate(particles, impactEmitter(nearReach, falling), seen, eye, falling)
+        rain.rings.spawnFromHits(particles, ringEmitter(state.wetness, splashes), seen, rain.impacts, 1, 1, false)
+        rain.rings.spawnFromHits(particles, ringEmitter(state.wetness, splashes), seen, rain.impactsNear, 1, 1)
+        // A weak splash throws one droplet a landing; a strong one, three.
+        fin perLanding = if splashes < 0.05 then 0 else if splashes < 0.4 then 1 else if splashes < 0.75 then 2 else 3
+        if perLanding > 0 {
+            rain.droplets.spawnFromHits(particles, dropletEmitter(splashes), seen, rain.impacts, perLanding, 3, false)
+            rain.droplets.spawnFromHits(particles, dropletEmitter(splashes), seen, rain.impactsNear, perLanding, 3)
+        }
+        rain.flakesNear.simulate(particles, flakeEmitter(9.0, true), seen, eye, snowing)
+        rain.flakesFar.simulate(particles, flakeEmitter(35.0, false), seen, eye, snowing)
+        rain.puffs.spawnFromHits(particles, puffEmitter(), seen, rain.flakesNear, 1, 2)
+        fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
+        rain.motesNear.simulate(particles, moteEmitter(12.0, mote, parts.dust.color), seen, eye, dusting)
+        rain.motesFar.simulate(particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, eye, dusting)
+        send0(commands, sel("commit"))
+        // Under AZORA_GPU_TIMING the frame's GPU time counts this command buffer too.
+        if app.gpu.timing {
+            send0(commands, sel("waitUntilCompleted"))
+            app.gpu.gpuSeconds += azSendD0(commands, sel("GPUEndTime")) - azSendD0(commands, sel("GPUStartTime"))
+        }
+        return
+    }
+}
+
+/** Draws rain, snow, dust and their splashes over the finished view, soft against what the scene drew. */
+@System(phase: .RenderTransparent)
+func drawAetherPrecipitation(app: App!, view: SceneView&, world: World!, particles: ParticlePipelines&, skies: @query [AetherSky&, AetherState&, AetherPrecipitation&]) {
+    while skies.hasNext() {
+        let row = skies.next()
+        let sky: AetherSky& = row.1
+        let state: AetherState& = row.2
+        let rain: AetherPrecipitation& = row.3
+        if !sky.enabled || !rain.ready || !particles.ready || view.encoder == 0 || view.depth == 0 then continue
+        fin parts = weatherParts(world)
+        fin falling = weatherClamp(state.rain, 0.0, 1.0)
+        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
+        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
+        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
+        fin seen = sceneParticleView(app, view, world, 0)
+        fin encoder = view.encoder
+        fin depth = view.depth
+        fin still = app.gpu.depthOff
+        rain.rings.draw(particles, ringEmitter(state.wetness, splashes), seen, encoder, depth, still)
+        rain.droplets.draw(particles, dropletEmitter(splashes), seen, encoder, depth, still)
+        rain.puffs.draw(particles, puffEmitter(), seen, encoder, depth, still)
+        if falling > 0.0 {
+            rain.dropsFar.draw(particles, dropEmitter(35.0, 35.0, falling, false), seen, encoder, depth, still)
+            rain.dropsNear.draw(particles, dropEmitter(9.0, 4.5, falling, true), seen, encoder, depth, still)
+        }
+        if snowing > 0.0 {
+            rain.flakesFar.draw(particles, flakeEmitter(35.0, false), seen, encoder, depth, still)
+            rain.flakesNear.draw(particles, flakeEmitter(9.0, true), seen, encoder, depth, still)
+        }
+        if dusting > 0.0 {
+            fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
+            rain.motesFar.draw(particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, encoder, depth, still)
+            rain.motesNear.draw(particles, moteEmitter(12.0, mote, parts.dust.color), seen, encoder, depth, still)
+        }
+        app.gpu.mode = -1
+        app.gpu.meshPipeline = 0
+        return
+    }
+}

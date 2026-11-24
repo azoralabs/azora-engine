@@ -152,105 +152,90 @@ impl Aabb3D {
 
     func &.halfExtents(): Vec3 = self.size().scale(0.5)
 
-    func &.overlaps(other: Aabb3D): Bool {
-        return self.min.x < other.max.x && other.min.x < self.max.x &&
-            self.min.y < other.max.y && other.min.y < self.max.y &&
-            self.min.z < other.max.z && other.min.z < self.max.z
-    }
+    func &.overlaps(other: Aabb3D): Bool =
+        self.min.x < other.max.x && other.min.x < self.max.x &&
+        self.min.y < other.max.y && other.min.y < self.max.y &&
+        self.min.z < other.max.z && other.min.z < self.max.z
 
-    func &.contains(point: Vec3): Bool {
-        return point.x >= self.min.x && point.x <= self.max.x &&
-            point.y >= self.min.y && point.y <= self.max.y &&
-            point.z >= self.min.z && point.z <= self.max.z
-    }
+    func &.contains(point: Vec3): Bool =
+        point.x >= self.min.x && point.x <= self.max.x &&
+        point.y >= self.min.y && point.y <= self.max.y &&
+        point.z >= self.min.z && point.z <= self.max.z
 
     func &.translate(delta: Vec3): Aabb3D = .(self.min.add(delta), self.max.add(delta))
 
     func &.expand(amount: Vec3): Aabb3D = .(self.min.subtract(amount), self.max.add(amount))
 
     /** The box covering this one and where it would be after [motion]. */
-    func &.sweptBy(motion: Vec3): Aabb3D {
-        return Aabb3D(
-            Vec3(
-                realMinOf(self.min.x, self.min.x + motion.x)
-                realMinOf(self.min.y, self.min.y + motion.y)
-                realMinOf(self.min.z, self.min.z + motion.z)
-            )
-            Vec3(
-                realMaxOf(self.max.x, self.max.x + motion.x)
-                realMaxOf(self.max.y, self.max.y + motion.y)
-                realMaxOf(self.max.z, self.max.z + motion.z)
-            )
+    func &.sweptBy(motion: Vec3): Aabb3D = .(
+        .(
+            realMinOf(self.min.x, self.min.x + motion.x)
+            realMinOf(self.min.y, self.min.y + motion.y)
+            realMinOf(self.min.z, self.min.z + motion.z)
         )
-    }
+        .(
+            realMaxOf(self.max.x, self.max.x + motion.x)
+            realMaxOf(self.max.y, self.max.y + motion.y)
+            realMaxOf(self.max.z, self.max.z + motion.z)
+        )
+    )
 
-    func &.union(other: Aabb3D): Aabb3D {
-        return Aabb3D(
-            Vec3(
-                realMinOf(self.min.x, other.min.x)
-                realMinOf(self.min.y, other.min.y)
-                realMinOf(self.min.z, other.min.z)
-            )
-            Vec3(
-                realMaxOf(self.max.x, other.max.x)
-                realMaxOf(self.max.y, other.max.y)
-                realMaxOf(self.max.z, other.max.z)
-            )
+    func &.union(other: Aabb3D): Aabb3D = .(
+        .(
+            realMinOf(self.min.x, other.min.x)
+            realMinOf(self.min.y, other.min.y)
+            realMinOf(self.min.z, other.min.z)
         )
-    }
+        .(
+            realMaxOf(self.max.x, other.max.x)
+            realMaxOf(self.max.y, other.max.y)
+            realMaxOf(self.max.z, other.max.z)
+        )
+    )
 }
 
 impl Aabb3D {
     /** Moves the box by [delta]. */
-    oper+ &.(delta: Vec3): Aabb3D {
-        return self.translate(delta)
-    }
+    oper+ &.(delta: Vec3): Aabb3D = self.translate(delta)
 }
 
-func boxCollider3d(halfExtents: Vec3): Collider3D = .(.Box, halfExtents, 0.0, vec3Zero(), allLayers(), false)
+func boxCollider3d(halfExtents: Vec3): Collider3D =
+    .(.Box, halfExtents, 0.0, vec3Zero(), allLayers(), false)
 
-func sphereCollider3d(radius: Double): Collider3D {
-    return .(.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), allLayers(), false)
-}
+func sphereCollider3d(radius: Double): Collider3D =
+    .(.Sphere, Vec3(radius, radius, radius), radius, vec3Zero(), allLayers(), false)
 
 /** A vertical capsule [halfHeight] tall through the centre, with caps of [radius]. */
-func capsuleCollider3d(radius: Double, halfHeight: Double): Collider3D {
-    return Collider3D(
-        ColliderShape3D.Capsule
-        Vec3(radius, halfHeight, radius)
-        radius
-        vec3Zero()
-        allLayers()
-        false
-    )
-}
+func capsuleCollider3d(radius: Double, halfHeight: Double): Collider3D = .(
+    ColliderShape3D.Capsule
+    Vec3(radius, halfHeight, radius)
+    radius
+    vec3Zero()
+    allLayers()
+    false
+)
 
 /** [collider] moved to sit at [offset] from its body. */
-func colliderAt3d(collider: Collider3D, offset: Vec3): Collider3D {
-    return .(collider.shape, collider.halfExtents, collider.radius, offset, collider.layers, collider.sensor)
-}
+func colliderAt3d(collider: Collider3D, offset: Vec3): Collider3D =
+    .(collider.shape, collider.halfExtents, collider.radius, offset, collider.layers, collider.sensor)
 
 /** [collider] restricted to the given layers. */
-func colliderOn3d(collider: Collider3D, layers: CollisionLayers): Collider3D {
-    return .(collider.shape, collider.halfExtents, collider.radius, collider.offset, layers, collider.sensor)
-}
+func colliderOn3d(collider: Collider3D, layers: CollisionLayers): Collider3D =
+    .(collider.shape, collider.halfExtents, collider.radius, collider.offset, layers, collider.sensor)
 
 /** [collider] turned into a trigger volume that reports but does not resolve. */
-func colliderAsSensor3d(collider: Collider3D): Collider3D {
-    return .(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
-}
+func colliderAsSensor3d(collider: Collider3D): Collider3D =
+    .(collider.shape, collider.halfExtents, collider.radius, collider.offset, collider.layers, true)
 
 /** The box half-extents a collider is treated as for a box-vs-box test. */
-func boxHalfOf3d(collider: Collider3D&): Vec3 {
-    return when collider.shape {
-        .Sphere -> Vec3(collider.radius, collider.radius, collider.radius)
-        .Capsule -> Vec3(
-            collider.radius
-            collider.halfExtents.y + collider.radius
-            collider.radius
-        )
-        else -> collider.halfExtents
-    }
+func boxHalfOf3d(collider: Collider3D&): Vec3 = when collider.shape {
+    .Sphere -> .(collider.radius, collider.radius, collider.radius)
+    .Capsule -> .(
+        collider.radius
+        collider.halfExtents.y + collider.radius
+        collider.radius
+    )
+    else -> collider.halfExtents
 }
 
 /** The world-space bounding box of [collider] on a body at [position]. */
@@ -494,27 +479,21 @@ func sweepBox3d(moving: Aabb3D, motion: Vec3, target: Aabb3D): Sweep3D {
 }
 
 /** True when [sweep] was interrupted. */
-func sweepBlocked3d(sweep: Sweep3D): Bool {
-    return when sweep {
-        .Blocked(t, normal, point) -> true
-        else -> false
-    }
+func sweepBlocked3d(sweep: Sweep3D): Bool = when sweep {
+    .Blocked(t, normal, point) -> true
+    else -> false
 }
 
 /** The safe fraction of the motion [sweep] permits. */
-func sweepFraction3d(sweep: Sweep3D): Double {
-    return when sweep {
-        .Blocked(t, normal, point) -> t
-        else -> 1.0
-    }
+func sweepFraction3d(sweep: Sweep3D): Double = when sweep {
+    .Blocked(t, normal, point) -> t
+    else -> 1.0
 }
 
 /** The surface normal [sweep] struck, or zero. */
-func sweepNormal3d(sweep: Sweep3D): Vec3 {
-    return when sweep {
-        .Blocked(t, normal, point) -> normal
-        else -> vec3Zero()
-    }
+func sweepNormal3d(sweep: Sweep3D): Vec3 = when sweep {
+    .Blocked(t, normal, point) -> normal
+    else -> vec3Zero()
 }
 
 /**
@@ -523,11 +502,10 @@ func sweepNormal3d(sweep: Sweep3D): Vec3 {
  * The direction is not normalised and `t` is a fraction of it, so casting from
  * A to B is `rayBox3d(a, b - a, target)` with no length to compute.
  */
-func rayBox3d(origin: Vec3, direction: Vec3, target: Aabb3D): RayHit3D {
-    return when sweepBox3d(.(origin, origin), direction, target) {
-        .Blocked(t, normal, point) -> RayHit3D.Hit(t, normal, origin.add(direction.scale(t)))
-        else -> RayHit3D.Miss
-    }
+func rayBox3d(origin: Vec3, direction: Vec3, target: Aabb3D): RayHit3D
+scope return when sweepBox3d(.(origin, origin), direction, target) {
+    .Blocked(t, normal, point) -> RayHit3D.Hit(t, normal, origin.add(direction.scale(t)))
+    else -> RayHit3D.Miss
 }
 
 /** Casts a ray against a sphere. */
@@ -558,11 +536,9 @@ func rayHit3d(hit: RayHit3D&): Bool {
 }
 
 /** The fraction of the ray travelled before the hit, or `-1`. */
-func rayFraction3d(hit: RayHit3D&): Double {
-    return when hit {
-        .Hit(t, normal, point) -> t
-        else -> -1.0
-    }
+func rayFraction3d(hit: RayHit3D&): Double = when hit {
+    .Hit(t, normal, point) -> t
+    else -> -1.0
 }
 
 // ── Response ────────────────────────────────────────────────────────────

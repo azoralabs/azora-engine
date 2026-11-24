@@ -278,6 +278,29 @@ fragment float4 aether_sky_view(FullOut in [[stage_in]], constant AetherU& u [[b
 /** A hash of a cell of the celestial sphere: where a star sits and how bright it is. */
 float starHash(float3 p) { return fract(sin(dot(p, float3(127.1, 311.7, 74.7))) * 43758.5453); }
 
+// The clouds' eighth-resolution target read through a cubic B-spline in four bilinear taps:
+// round, soft edges where a plain bilinear read shows the low resolution's blocks.
+float4 cloudSample(texture2d<float> clouds, float2 uv, float2 size) {
+    constexpr sampler linearEdge(filter::linear, address::clamp_to_edge);
+    if (size.x < 1.0 || size.y < 1.0) return clouds.sample(linearEdge, uv);
+    float2 p = uv * size - 0.5;
+    float2 i = floor(p);
+    float2 f = p - i;
+    float2 f2 = f * f, f3 = f2 * f;
+    float2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    float2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    float2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    float2 w3 = f3 / 6.0;
+    float2 g0 = w0 + w1, g1 = w2 + w3;
+    float2 h0 = (i - 0.5 + w1 / g0) / size;
+    float2 h1 = (i + 1.5 + w3 / g1) / size;
+    float4 a = clouds.sample(linearEdge, float2(h0.x, h0.y));
+    float4 b = clouds.sample(linearEdge, float2(h1.x, h0.y));
+    float4 c = clouds.sample(linearEdge, float2(h0.x, h1.y));
+    float4 d = clouds.sample(linearEdge, float2(h1.x, h1.y));
+    return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
+}
+
 float3 starField(float3 dir, float time) {
     float3 cells = dir * 300.0;
     float3 cell = floor(cells);
@@ -296,7 +319,7 @@ fragment float4 aether_sky(FullOut in [[stage_in]], constant AetherU& u [[buffer
         texture2d<float> clouds [[texture(2)]]) {
     constexpr sampler wrap(filter::linear, address::repeat);
     constexpr sampler clampS(filter::linear, address::clamp_to_edge);
-    float4 cloud = clouds.sample(clampS, in.uv);
+    float4 cloud = cloudSample(clouds, in.uv, u.cloudMarch.zw);
     float3 ray = normalize(u.forward.xyz + in.ndc.x * u.screen.x * u.right.xyz + in.ndc.y * u.screen.y * u.up.xyz);
     float r = u.camera.w;
     float3 light = skyView.sample(wrap, skyViewUV(ray, r)).rgb;

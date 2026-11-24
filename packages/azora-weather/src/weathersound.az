@@ -8,6 +8,8 @@ import engine.audio.dsp
 import engine.audio.output
 import engine.weather.components
 import engine.weather.state
+import engine.weather.wind
+import engine.atmosphere
 
 /** Drops heard at once on each side, and the numbers each one keeps (amplitude, phase, pitch, glide, decay, click). */
 inline fin dropVoices: Int = 24
@@ -174,5 +176,23 @@ func mixWeather(sound: AetherSound!, state: AetherState&, rainVolume: Double, wi
         right += (sound.windBandRight.process(sound.windRight.next()) * body + sound.whistleRight.process(sound.windRight.next()) * whistle + rumble) * windLevel
         addSample(mix, i * 2, left)
         addSample(mix, i * 2 + 1, right)
+    }
+}
+
+/** The weather heard from the camera: rain and wind, into this frame's block (thunder has its own system). */
+@System(phase: .Audio)
+func mixAetherWeather(audio: AudioOutput!, world: World!, skies: @query [AetherSky&, AetherState&, AetherSound!]) {
+    while skies.hasNext() {
+        let row = skies.next()
+        let sky: AetherSky& = row.1
+        let state: AetherState& = row.2
+        let sound: AetherSound! = row.3
+        if !sky.enabled || audio.frames <= 0 then continue
+        fin rain = weatherParts(world).rain
+        fin windy = sceneWindEntity(world)
+        fin windVolume = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).volume else 0.0
+        mixWeather(sound, state, if rain.enabled then rain.volume else 1.0, windVolume, audio.mix, audio.frames,
+            audio.rate as Double)
+        return
     }
 }

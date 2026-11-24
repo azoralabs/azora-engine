@@ -5,8 +5,6 @@ import std.math
 import std.reflection
 import engine.core
 import engine.ecs
-import engine.audio.output
-import engine.gizmos
 import engine.gpu
 import engine.gpu.draw
 import engine.input
@@ -14,18 +12,24 @@ import engine.io
 import engine.math
 import engine.math.mat
 import engine.objc
-import engine.particles
-import engine.platform
 import engine.render.scene
 import engine.render.atmosphere
 import engine.scene
 import engine.scene.io
-import engine.atmosphere
 exposed import engine.atmosphere.view
 import engine.ui.compose
 import engine.ui.paint
 import engine.ui.systems
-import engine.weather
+// The packages whose systems every scene game runs, exposed: a system's parameters
+// (its components, App, SceneView, AudioOutput, EditorCamera, ParticlePipelines) are
+// resolved where the program starts, so the entry that imports engine.game sees them all.
+exposed import engine.weather
+exposed import engine.water
+exposed import engine.atmosphere
+exposed import engine.audio.output
+exposed import engine.particles
+exposed import engine.gizmos
+exposed import engine.platform
 import std.os::{envVar}
 
 /** A scene game declares one configuration named game in its entry module. */
@@ -76,12 +80,32 @@ pack Game {
     var drawWorld: Bool = true
 }
 
+// What a system may ask for, by its parameters' types: the frame's world,
+// clock, window and GPU (App), 3D view, sound, camera and queries. A package's
+// systems name these types, never `Game`, so they need not depend on the game.
 impl Game { func fromGame(frame: Game!): Game! = frame }
 impl World { func fromGame(frame: Game!): World! = frame.world }
 impl Time { func fromGame(frame: Game!): Time& = frame.time }
+impl App { func fromGame(frame: Game!): App! = frame.window }
+impl SceneView { func fromGame(frame: Game!): SceneView& = frame.view }
+impl AudioOutput { func fromGame(frame: Game!): AudioOutput! = frame.audio }
+impl EditorCamera { func fromGame(frame: Game!): EditorCamera& = frame.camera }
 impl Anchor { func fromGame(frame: Game!): Anchor = Anchor(frame.overlay, frame.overlay.root) }
+impl ParticlePipelines {
+    /** The particle stages, compiled the first time a system asks (check [ParticlePipelines.ready]). */
+    func fromGame(frame: Game!): ParticlePipelines& {
+        ensureParticles(frame)
+        return frame.particles
+    }
+}
 impl QueryOf<...T> {
     func fromGame(frame: Game!): QueryOf<...T> = QueryOf::provide(frame.world)
+}
+impl QueryWith<Q, ...T> {
+    func fromGame(frame: Game!): QueryWith<Q, ...T> = QueryWith::provide(frame.world)
+}
+impl QueryWithout<Q, ...T> {
+    func fromGame(frame: Game!): QueryWithout<Q, ...T> = QueryWithout::provide(frame.world)
 }
 
 /** Resolve each declared parameter at the point its system runs. */
@@ -93,6 +117,26 @@ react func dispatchGame(plan: SystemPlan&, phase: SystemPhase, frame: Game!) {
             inline for S in reflect<*>.withAnnot<System> {
                 if index == due {
                     S(inline for P in reflect<S>.params { P::fromGame(frame) })
+                }
+                index++
+            }
+        }
+    }
+}
+
+/**
+ * Runs [phase]'s editor systems (`@System(editor: true)`) in [plan]'s order:
+ * what an editor's viewport runs on the scene it edits. Not `react`, so the
+ * editor can call it from its drawing; gameplay systems are not run.
+ */
+func dispatchEditor(plan: SystemPlan&, phase: SystemPhase, frame: Game!) {
+    for step: Int in 0..<plan.resolvedCount {
+        fin due = plan.resolved[step]
+        if plan.systems[due].phase == phase && plan.systems[due].enabled {
+            var index = 0
+            inline for S in reflect<*>.withAnnot<System> {
+                inline if reflect<S>.annotMeta<System>.editor {
+                    if index == due then S(inline for P in reflect<S>.params { P::fromGame(frame) })
                 }
                 index++
             }
@@ -171,30 +215,8 @@ func ensureParticles(frame: Game!): Bool {
     return frame.particles.ready
 }
 
-/**
- * How particles see this frame: the camera and its targets, last frame's
- * transform and depth for collisions, the scene's light, wind and lamps.
- * [commands] is where the simulation is encoded.
- */
-func particleViewOf(frame: Game!, commands: Long): ParticleView {
-    let gpu: AzGpu! = frame.window.gpu
-    fin light = sceneLightFrom(frame.world, frame.view.time)
-    fin weather = resourceNamedOr<SceneEnvironment>(frame.world, "SceneEnvironment", SceneEnvironment())
-    // A Wind in the scene blows the particles; without one, the weather's own wind does.
-    fin windy = frame.world.isAlive(sceneWindEntity(frame.world))
-    fin blowing = if windy then sceneWind(frame.world, frame.view.time) else Vec3(weather.windX, 0.0, weather.windZ)
-    fin matrices = frame.view.matrices
-    return ParticleView(commands: commands, viewProj: matrices, previousViewProj: matrices + 128, previousInverse: matrices + 192,
-        depth: frame.view.depth, eyeX: frame.view.eyeX, eyeY: frame.view.eyeY, eyeZ: frame.view.eyeZ, time: frame.view.time
-        delta: frame.view.delta, motionX: frame.view.motionX, motionY: frame.view.motionY, motionZ: frame.view.motionZ
-        fullWidth: frame.view.fullWidth as Double, fullHeight: frame.view.fullHeight as Double
-        depthWidth: frame.view.width as Double, depthHeight: frame.view.height as Double, near: frame.view.near, far: frame.view.far
-        focal: (frame.view.fullHeight as Double) * 0.5 / frame.view.tangent, windX: blowing.x, windY: blowing.y, windZ: blowing.z
-        lightX: light.direction.x, lightY: light.direction.y, lightZ: light.direction.z, lightStrength: light.intensity
-        lightRed: light.color.r, lightGreen: light.color.g, lightBlue: light.color.b, ambient: light.ambient
-        airRed: light.haze.r * (0.25 + 0.75 * light.daylight), airGreen: light.haze.g * (0.25 + 0.75 * light.daylight)
-        airBlue: light.haze.b * (0.25 + 0.75 * light.daylight), lights: gpu.localLights)
-}
+/** How particles see this frame (see [sceneParticleView]); [commands] is where the simulation is encoded. */
+func particleViewOf(frame: Game!, commands: Long): ParticleView = sceneParticleView(frame.window, frame.view, frame.world, commands)
 
 /** Steps every scene emitter, in a command buffer of its own committed before the frame's (collisions read last frame's depth). */
 func simulateSceneEmitters(frame: Game!) {
@@ -295,7 +317,18 @@ react func drawGameScene(frame: Game!, plan: SystemPlan&, meshes: PrimitiveMeshe
     frame.window.setMaterialEye(camera.position())
     frame.window.applySceneLight(frame.world, elapsed)
     frame.window.updateScenePhotons(frame.world, camera.target, elapsed)
-    frame.window.drawScene(frame.world, meshes, elapsed: elapsed)
+    // The world's opaque scene: the built-ins, with the systems' casters in the sun's cascade and their own draws after.
+    frame.window.prepareSceneDraw(frame.world)
+    var cascade = frame.window.beginSunCascade()
+    if cascade.open {
+        frame.window.drawSceneCasters(frame.world, meshes)
+        dispatchGame(plan, .RenderShadow, frame)
+        frame.window.endSunCascade(cascade)
+    }
+    frame.window.drawSceneOpaque(frame.world, meshes)
+    dispatchGame(plan, .RenderOpaque, frame)
+    gpu.mode = -1
+    gpu.meshPipeline = 0
     if (frame.stages.volumes || (physicalSky && frame.atmosphere.ready)) && gpu.scenePass.active {
         frame.window.suspendScenePass()
         frame.view.encoder = 0
@@ -407,200 +440,3 @@ scope {
         dispatchGame(plan, .Last, frame)
     }
 }
-
-// Weather stages
-
-/**
- * The weather's runtime on the Atmosphere's entity, made when it is first
- * needed: its state; the precipitation pools once Rain, Snow or Dust is in
- * the scene; the storm once Thunder is; the voices once there is rain or
- * wind to hear. A scene without them pays for none of it.
- */
-@System(phase: .PreUpdate)
-func prepareWeather(frame: Game!) {
-    fin owner = atmosphereEntity(frame.world)
-    if !frame.world.isAlive(owner) then return
-    if !storageHas<AetherState>(ensureStorage(frame.world), owner) then storageInsert<AetherState>(ensureStorage(frame.world), owner, .())
-    fin parts = weatherParts(frame.world)
-    if (parts.rain.enabled || parts.snow.enabled || parts.dust.enabled) && !storageHas<AetherPrecipitation>(ensureStorage(frame.world), owner) {
-        storageInsert<AetherPrecipitation>(ensureStorage(frame.world), owner, aetherPrecipitation(frame.window.gpu.device, frame.window.gpu.queue))
-    }
-    if parts.thunder.enabled && !storageHas<AetherStorm>(ensureStorage(frame.world), owner) {
-        storageInsert<AetherStorm>(ensureStorage(frame.world), owner, aetherStorm(frame.window.gpu.device, frame.audio.rate as Double))
-    }
-    if (parts.rain.enabled || frame.world.isAlive(sceneWindEntity(frame.world))) && !storageHas<AetherSound>(ensureStorage(frame.world), owner) {
-        storageInsert<AetherSound>(ensureStorage(frame.world), owner, aetherSound())
-    }
-}
-
-/** Moves the weather on and hands it to the atmosphere's renderer. */
-@System(phase: .PostUpdate)
-func simulateWeather(frame: Game!) {
-    fin owner = atmosphereEntity(frame.world)
-    if !frame.world.isAlive(owner) then return
-    let store = ensureStorage<AetherState>(frame.world)
-    fin at = storageIndexOf<AetherState>(store, owner)
-    if at < 0 then return
-    previewWeather(frame.world, owner, store.values[at], frame.time.elapsedSecs, frame.time.deltaSecs, frame.camera.position(),
-        frame.camera.right())
-}
-
-/**
- * Moves rain, snow and dust one step, on the GPU, in a command buffer
- * committed before the frame's: the drops' collisions read the depth the last
- * frame left, and their hits spawn the splashes.
- */
-@System(phase: .RenderSky)
-func simulateAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherState&, AetherPrecipitation!]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        let sky: AetherSky& = row.1
-        let state: AetherState& = row.2
-        let rain: AetherPrecipitation! = row.3
-        if !sky.enabled || !rain.ready || !ensureParticles(frame) then continue
-        fin parts = weatherParts(frame.world)
-        // How far and how much landing drops splash: the Rain's settings.
-        fin reach = weatherClamp(parts.rain.splashDistance, 5.0, 80.0)
-        if absValue(reach - rain.reach) > 0.5 then sizeImpacts(rain, frame.window.gpu.device, frame.window.gpu.queue, reach)
-        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
-        fin falling = weatherClamp(state.rain, 0.0, 1.0)
-        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
-        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
-        if falling <= 0.0 && snowing <= 0.0 && dusting <= 0.0 && rain.rings.active == 0 && rain.puffs.active == 0 then return
-        fin commands = send0(frame.window.gpu.queue, sel("commandBuffer"))
-        fin seen = particleViewOf(frame, commands)
-        fin eye: Vec3 = .(seen.eyeX, seen.eyeY, seen.eyeZ)
-        rain.dropsNear.simulate(frame.particles, dropEmitter(9.0, 4.5, falling, false), seen, eye, falling)
-        rain.dropsFar.simulate(frame.particles, dropEmitter(35.0, 35.0, falling, false), seen, eye, falling)
-        rain.impacts.simulate(frame.particles, impactEmitter(reach, falling), seen, eye, falling)
-        rain.impactsNear.simulate(frame.particles, impactEmitter(nearReach, falling), seen, eye, falling)
-        rain.rings.spawnFromHits(frame.particles, ringEmitter(state.wetness, splashes), seen, rain.impacts, 1, 1, false)
-        rain.rings.spawnFromHits(frame.particles, ringEmitter(state.wetness, splashes), seen, rain.impactsNear, 1, 1)
-        // A weak splash throws one droplet a landing; a strong one, three.
-        fin perLanding = if splashes < 0.05 then 0 else if splashes < 0.4 then 1 else if splashes < 0.75 then 2 else 3
-        if perLanding > 0 {
-            rain.droplets.spawnFromHits(frame.particles, dropletEmitter(splashes), seen, rain.impacts, perLanding, 3, false)
-            rain.droplets.spawnFromHits(frame.particles, dropletEmitter(splashes), seen, rain.impactsNear, perLanding, 3)
-        }
-        rain.flakesNear.simulate(frame.particles, flakeEmitter(9.0, true), seen, eye, snowing)
-        rain.flakesFar.simulate(frame.particles, flakeEmitter(35.0, false), seen, eye, snowing)
-        rain.puffs.spawnFromHits(frame.particles, puffEmitter(), seen, rain.flakesNear, 1, 2)
-        fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
-        rain.motesNear.simulate(frame.particles, moteEmitter(12.0, mote, parts.dust.color), seen, eye, dusting)
-        rain.motesFar.simulate(frame.particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, eye, dusting)
-        send0(commands, sel("commit"))
-        // Under AZORA_GPU_TIMING the frame's GPU time counts this command buffer too.
-        if frame.window.gpu.timing {
-            send0(commands, sel("waitUntilCompleted"))
-            frame.window.gpu.gpuSeconds += azSendD0(commands, sel("GPUEndTime")) - azSendD0(commands, sel("GPUStartTime"))
-        }
-        return
-    }
-}
-
-/** Draws rain, snow, dust and their splashes over the finished view, soft against what the scene drew. */
-@System(phase: .RenderTransparent)
-func drawAetherPrecipitation(frame: Game!, skies: @query [AetherSky&, AetherState&, AetherPrecipitation&]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        let sky: AetherSky& = row.1
-        let state: AetherState& = row.2
-        let rain: AetherPrecipitation& = row.3
-        if !sky.enabled || !rain.ready || !frame.particles.ready || frame.view.encoder == 0 || frame.view.depth == 0 then continue
-        fin parts = weatherParts(frame.world)
-        fin falling = weatherClamp(state.rain, 0.0, 1.0)
-        fin snowing = weatherClamp(state.snow, 0.0, 1.0)
-        fin dusting = weatherClamp(state.dust, 0.0, 1.0)
-        fin splashes = weatherClamp(parts.rain.splashes, 0.0, 1.0)
-        fin seen = particleViewOf(frame, 0)
-        fin encoder = frame.view.encoder
-        fin depth = frame.view.depth
-        fin still = frame.window.gpu.depthOff
-        rain.rings.draw(frame.particles, ringEmitter(state.wetness, splashes), seen, encoder, depth, still)
-        rain.droplets.draw(frame.particles, dropletEmitter(splashes), seen, encoder, depth, still)
-        rain.puffs.draw(frame.particles, puffEmitter(), seen, encoder, depth, still)
-        if falling > 0.0 {
-            rain.dropsFar.draw(frame.particles, dropEmitter(35.0, 35.0, falling, false), seen, encoder, depth, still)
-            rain.dropsNear.draw(frame.particles, dropEmitter(9.0, 4.5, falling, true), seen, encoder, depth, still)
-        }
-        if snowing > 0.0 {
-            rain.flakesFar.draw(frame.particles, flakeEmitter(35.0, false), seen, encoder, depth, still)
-            rain.flakesNear.draw(frame.particles, flakeEmitter(9.0, true), seen, encoder, depth, still)
-        }
-        if dusting > 0.0 {
-            fin mote = weatherClamp(parts.dust.moteSize, 0.2, 10.0) * 0.001
-            rain.motesFar.draw(frame.particles, moteEmitter(40.0, mote * 4.0, parts.dust.color), seen, encoder, depth, still)
-            rain.motesNear.draw(frame.particles, moteEmitter(12.0, mote, parts.dust.color), seen, encoder, depth, still)
-        }
-        frame.window.gpu.mode = -1
-        frame.window.gpu.meshPipeline = 0
-        return
-    }
-}
-
-/** Draws the bolts of ground strikes while they flash, over the finished view; mountains in front hide them. */
-@System(phase: .RenderTransparent)
-func drawAetherBolts(frame: Game!, skies: @query [AetherSky&, AetherStorm&]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        let sky: AetherSky& = row.1
-        let storm: AetherStorm& = row.2
-        if !sky.enabled || !storm.ready || frame.view.encoder == 0 || frame.view.depth == 0 || frame.view.matrices == 0 then continue
-        fin encoder = frame.view.encoder
-        azCopy(storm.block, frame.view.matrices, 64)
-        fin focal = (frame.view.fullHeight as Double) * 0.5 / frame.view.tangent
-        for s: Int in 0..<strikeSlots {
-            if field(storm, s, 0) > 0.5 && field(storm, s, 5) > 0.5 {
-                fin glow = flashOf(storm, s, frame.view.time - field(storm, s, 1))
-                if glow > 0.01 {
-                    pokeVector(storm.block, 64, frame.view.fullWidth as Double, frame.view.fullHeight as Double, frame.view.width as Double,
-                        frame.view.height as Double)
-                    pokeVector(storm.block, 80, focal, glow, frame.view.near, frame.view.far)
-                    send1(encoder, sel("setRenderPipelineState:"), storm.boltPipeline)
-                    send1(encoder, sel("setDepthStencilState:"), frame.window.gpu.depthOff)
-                    send3(encoder, sel("setVertexBuffer:offset:atIndex:"), storm.segments, ((s * boltSegments) as Long) * segmentBytes, 0)
-                    send3(encoder, sel("setVertexBytes:length:atIndex:"), storm.block, 96, 1)
-                    send3(encoder, sel("setFragmentBytes:length:atIndex:"), storm.block, 96, 1)
-                    send2(encoder, sel("setFragmentTexture:atIndex:"), frame.view.depth, 0)
-                    send4(encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, field(storm, s, 12) as Long)
-                }
-            }
-        }
-        frame.window.gpu.mode = -1
-        frame.window.gpu.meshPipeline = 0
-        return
-    }
-}
-
-/** The thunder heard from the camera. */
-@System(phase: .Audio)
-func mixAetherThunder(frame: Game!, skies: @query [AetherSky&, AetherStorm!]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        let sky: AetherSky& = row.1
-        let storm: AetherStorm! = row.2
-        if !sky.enabled || frame.audio.frames <= 0 then continue
-        fin thunder = weatherParts(frame.world).thunder
-        mixThunder(storm, frame.audio.mix, frame.audio.frames, frame.audio.rate as Double, if thunder.enabled then thunder.volume else 1.0)
-        return
-    }
-}
-
-/** The weather heard from the camera: rain and wind, into this frame's block (thunder has its own system). */
-@System(phase: .Audio)
-func mixAetherWeather(frame: Game!, skies: @query [AetherSky&, AetherState&, AetherSound!]) {
-    while skies.hasNext() {
-        let row = skies.next()
-        let sky: AetherSky& = row.1
-        let state: AetherState& = row.2
-        let sound: AetherSound! = row.3
-        if !sky.enabled || frame.audio.frames <= 0 then continue
-        fin rain = weatherParts(frame.world).rain
-        fin windy = sceneWindEntity(frame.world)
-        fin windVolume = if frame.world.isAlive(windy) then storageGet<Wind>(ensureStorage(frame.world), windy).volume else 0.0
-        mixWeather(sound, state, if rain.enabled then rain.volume else 1.0, windVolume, frame.audio.mix, frame.audio.frames,
-            frame.audio.rate as Double)
-        return
-    }
-}
-

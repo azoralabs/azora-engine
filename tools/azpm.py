@@ -172,6 +172,12 @@ class Workspace:
 def _cmd_resolve(ws: Workspace, project_dir: str) -> None:
     pkgs = ws.resolve(project_dir)
     manifest = os.path.join(project_dir, "azora.azon")
+    # The project's entry file (azora.azon project.entry), main.az when it names none.
+    project = load_manifest(manifest).get("project", {}) if os.path.isfile(manifest) else {}
+    entry_file = project.get("entry", "main.az") if isinstance(project, dict) else "main.az"
+    if not isinstance(entry_file, str) or not entry_file.endswith(".az") or "/" in entry_file:
+        raise SystemExit(f"azpm: project.entry must name an .az file in src, not {entry_file!r}")
+    print(f"ENTRY\t{entry_file}")
     if os.path.isfile(manifest) and "azora-game" in load_manifest(manifest).get("dependencies", {}):
         entry = os.path.join(ws.packages["azora-game"].dir, "entrypoint.az")
         print(f"ENTRYPOINT\t{entry}")

@@ -1,0 +1,341 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.waves
+ *
+ * A [Sea] simulated on the GPU: each cascade's amplitudes uploaded when the
+ * sea is made again, then every frame moved to the frame's time and inverse
+ * transformed in Metal compute (engine.water.oceanshader), giving the maps a
+ * surface reads - displacement, slopes and foam - with their mipmaps.
+ */
+module engine.water.waves
+
+import std.io
+import std.math
+import engine.core
+import engine.ecs
+import engine.gpu
+import engine.io
+import engine.math
+import engine.objc
+import engine.platform
+import engine.water.components
+import engine.water.spectrum
+import engine.water.seas
+import engine.water.oceanshader
+
+/** Metal pixel formats and texture usage the sea uses. */
+inline fin waveFloat4: Long = 125
+inline fin waveHalf4: Long = 115
+inline fin waveHalf1: Long = 25
+inline fin waveReadWrite: Long = 3
+
+/** The water's GPU programs on one device: the sea's kernels, its surface, and a flat map for still water. */
+@Component
+pack WaterGpu {
+    var device: Long = 0
+    var spectrum: Long = 0
+    var fft: Long = 0
+    var finalize: Long = 0
+    var ocean: Long = 0
+    /** A 1×1 map of zeros: what a surface without a sea samples. */
+    var still: Long = 0
+}
+
+impl WaterGpu {
+    dtor .() {
+        if self.spectrum != 0 then send0(self.spectrum, sel("release"))
+        if self.fft != 0 then send0(self.fft, sel("release"))
+        if self.finalize != 0 then send0(self.finalize, sel("release"))
+        if self.ocean != 0 then send0(self.ocean, sel("release"))
+        if self.still != 0 then send0(self.still, sel("release"))
+    }
+}
+
+/** What Metal said went wrong, from the NSError at [failure]. */
+func waterMetalReason(failure: Long): String {
+    fin issue = azPeek64(failure, 0)
+    return if issue == 0 then "no reason given" else azCstring(send0(send0(issue, sel("localizedDescription")), sel("UTF8String")), 0)
+}
+
+/** The Metal library of [source] on [device], 0 (and a printed reason) when it does not compile. */
+func waterLibrary(device: Long, source: String, what: String): Long {
+    fin failure = azAlloc(8)
+    defer { azFree(failure) }
+    azPoke64(failure, 0, 0)
+    fin library = send3(device, sel("newLibraryWithSource:options:error:"), nsString(source), 0, failure)
+    if library == 0 then println("Azora Water: ${what} did not compile: ${waterMetalReason(failure)}")
+    return library
+}
+
+func waterKernel(device: Long, library: Long, name: String): Long {
+    fin function = send1(library, sel("newFunctionWithName:"), nsString(name))
+    if function == 0 then return 0
+    defer { send0(function, sel("release")) }
+    return send2(device, sel("newComputePipelineStateWithFunction:error:"), function, 0)
+}
+
+/** A render pipeline of [vertexName]/[fragmentName] from [library], drawing into the scene's colour and depth. */
+func waterSurfacePipeline(device: Long, library: Long, vertexName: String, fragmentName: String): Long {
+    fin vertex = send1(library, sel("newFunctionWithName:"), nsString(vertexName))
+    fin fragment = send1(library, sel("newFunctionWithName:"), nsString(fragmentName))
+    fin descriptor = newObject("MTLRenderPipelineDescriptor")
+    defer {
+        if vertex != 0 then send0(vertex, sel("release"))
+        if fragment != 0 then send0(fragment, sel("release"))
+        send0(descriptor, sel("release"))
+    }
+    if vertex == 0 || fragment == 0 then return 0
+    send1(descriptor, sel("setVertexFunction:"), vertex)
+    send1(descriptor, sel("setFragmentFunction:"), fragment)
+    send1(send1(send0(descriptor, sel("colorAttachments")), sel("objectAtIndexedSubscript:"), 0), sel("setPixelFormat:"), 80)
+    send1(descriptor, sel("setDepthAttachmentPixelFormat:"), 252)
+    fin failure = azAlloc(8)
+    defer { azFree(failure) }
+    azPoke64(failure, 0, 0)
+    fin pipeline = send2(device, sel("newRenderPipelineStateWithDescriptor:error:"), descriptor, failure)
+    if pipeline == 0 then println("Azora Water: ${vertexName} pipeline failed: ${waterMetalReason(failure)}")
+    return pipeline
+}
+
+/** A [width]² texture of [format] the GPU reads and writes, with mipmaps when [mipmapped]. */
+func waveTexture(device: Long, format: Long, width: Int, mipmapped: Bool): Long {
+    fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+        format, width as Long, width as Long, if mipmapped then 1 else 0)
+    send1(descriptor, sel("setUsage:"), waveReadWrite)
+    return send1(device, sel("newTextureWithDescriptor:"), descriptor)
+}
+
+/** The water's programs for [device] in [world], compiled the first time. */
+func waterGpuRow(world: World!, device: Long): Int {
+    let cache = ensureStorage<WaterGpu>(world)
+    for row: Int in 0..<storageLength<WaterGpu>(cache) then if cache.values[row].device == device then return row
+    var programs: WaterGpu = .(device: device)
+    fin kernels = waterLibrary(device, waveKernelSource(), "the wave kernels")
+    if kernels != 0 {
+        programs.spectrum = waterKernel(device, kernels, "wave_spectrum")
+        programs.fft = waterKernel(device, kernels, "wave_fft")
+        programs.finalize = waterKernel(device, kernels, "wave_finalize")
+        send0(kernels, sel("release"))
+    }
+    fin surface = waterLibrary(device, oceanRenderSource(), "the ocean surface")
+    if surface != 0 {
+        programs.ocean = waterSurfacePipeline(device, surface, "ocean_vertex", "ocean_fragment")
+        send0(surface, sel("release"))
+    }
+    programs.still = waveTexture(device, waveHalf4, 1, false)
+    fin zero = azAlloc(16)
+    for i: Int in 0..<4 then azPoke32(zero, (i * 4) as Long, 0)
+    azSendRegion(programs.still, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, 1, 1, 1, 0, zero, 8)
+    azFree(zero)
+    fin row = storageLength<WaterGpu>(cache)
+    storageInsert<WaterGpu>(cache, world.spawnResource("Water GPU"), take programs)
+    return row
+}
+
+/** One cascade's maps on the GPU. */
+pack WaveCascadeGpu {
+    var h0: Long = 0
+    var spectrumA: Long = 0
+    var spectrumB: Long = 0
+    var rowsA: Long = 0
+    var rowsB: Long = 0
+    var displacement: Long = 0
+    var slopes: Long = 0
+    var foamA: Long = 0
+    var foamB: Long = 0
+}
+
+impl WaveCascadeGpu {
+    dtor .() {
+        for texture in [self.h0, self.spectrumA, self.spectrumB, self.rowsA, self.rowsB, self.displacement, self.slopes, self.foamA, self.foamB] {
+            if texture != 0 then send0(texture, sel("release"))
+        }
+    }
+}
+
+/** A [Sea]'s simulation on the GPU, beside it on its entity (never saved). */
+@Component
+pack SeaGpu {
+    var device: Long = 0
+    var size: Int = 0
+    /** The Sea's revision whose amplitudes are uploaded (-1 none). */
+    var revision: Int = -1
+    var cascades: Array<WaveCascadeGpu> = []
+    /** The app frame and the time last simulated, and which foam map holds the latest. */
+    var frame: Int = -1
+    var time: Double = 0.0
+    var foamFlip: Bool = false
+    var ready: Bool = false
+    var params: Long = 0
+    var sizes: Long = 0
+}
+
+impl SeaGpu {
+    dtor .() {
+        if self.params != 0 then azFree(self.params)
+        if self.sizes != 0 then azFree(self.sizes)
+    }
+}
+
+/** The latest foam map of [cascade] in [sim]. */
+func latestFoam(sim: SeaGpu&, cascade: Int): Long = if sim.foamFlip then sim.cascades[cascade].foamB else sim.cascades[cascade].foamA
+
+/** Makes [sim]'s textures for [size]² cascades on [device] (dropping older ones). */
+func makeSeaTextures(sim: SeaGpu!, device: Long, size: Int) {
+    sim.cascades.clear()
+    for c: Int in 0..<waveCascades {
+        sim.cascades.add(WaveCascadeGpu(
+            h0: waveTexture(device, waveFloat4, size, false)
+            spectrumA: waveTexture(device, waveFloat4, size, false)
+            spectrumB: waveTexture(device, waveFloat4, size, false)
+            rowsA: waveTexture(device, waveFloat4, size, false)
+            rowsB: waveTexture(device, waveFloat4, size, false)
+            displacement: waveTexture(device, waveHalf4, size, true)
+            slopes: waveTexture(device, waveHalf4, size, true)
+            foamA: waveTexture(device, waveHalf1, size, true)
+            foamB: waveTexture(device, waveHalf1, size, true)
+        ))
+    }
+    sim.device = device
+    sim.size = size
+    sim.revision = -1
+    if sim.params == 0 then sim.params = azAlloc(64)
+    if sim.sizes == 0 then sim.sizes = azAlloc(48)
+}
+
+/** Uploads [sea]'s amplitudes into [sim]'s h0 maps (as 32-bit floats). */
+func uploadSeaTiles(sim: SeaGpu!, sea: Sea&) {
+    fin n = sim.size
+    fin bytes = azAlloc((n * n * 16) as Long)
+    defer { azFree(bytes) }
+    for c: Int in 0..<sea.tiles.size {
+        fin tile = sea.tiles[c].&
+        if tile.size != n then continue
+        for i: Int in 0..<(n * n * 4) then azPokeF32(bytes, (i * 4) as Long, tile.amplitudes[i])
+        azSendRegion(sim.cascades[c].h0, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, n as Long, n as Long, 1, 0,
+            bytes, (n * 16) as Long)
+    }
+    sim.revision = sea.revision
+}
+
+/** The kernel parameters of cascade [cascade] at [time] (see `wave_spectrum`), with [columns] for the FFT's second pass. */
+func pokeWaveParams(sim: SeaGpu&, sea: Sea&, cascade: Int, time: Double, foamShare: Double, foam: WaterFoam&, columns: Bool) {
+    fin p = sim.params
+    azPokeF32(p, 0, sea.state.tiles[cascade])
+    azPokeF32(p, 4, sim.size as Double)
+    azPokeF32(p, 8, time)
+    azPokeF32(p, 12, sea.state.choppiness)
+    // Foam builds where the Jacobian falls below the threshold coverage sets.
+    azPokeF32(p, 16, if foam.enabled then waveClamp(foam.coverage, 0.0, 1.0) * 1.2 - 0.25 else -10.0)
+    azPokeF32(p, 20, foamShare)
+    azPokeF32(p, 24, 2.5)
+    azPokeF32(p, 28, if columns then 1.0 else 0.0)
+    azPokeF32(p, 32, sea.state.depth)
+    azPokeF32(p, 36, (round(log2(sim.size as Double)) as Int) as Double)
+    azPokeF32(p, 40, waterGravity)
+    azPokeF32(p, 44, 0.0)
+}
+
+/** Encodes [kernel] over [groups] threadgroups of [threads] threads (x and y), its textures and parameters already set. */
+func dispatchWaves(encoder: Long, sizes: Long, groupsX: Long, groupsY: Long, threadsX: Long, threadsY: Long) {
+    azPoke64(sizes, 0, groupsX)
+    azPoke64(sizes, 8, groupsY)
+    azPoke64(sizes, 16, 1)
+    azPoke64(sizes, 24, threadsX)
+    azPoke64(sizes, 32, threadsY)
+    azPoke64(sizes, 40, 1)
+    send2(encoder, sel("dispatchThreadgroups:threadsPerThreadgroup:"), sizes, sizes + 24)
+}
+
+/**
+ * Moves [sim] to [time]: uploads new amplitudes when [sea] was made again,
+ * then for each cascade evolves the spectrum, transforms rows and columns,
+ * writes the maps and their mipmaps - in a command buffer of its own,
+ * committed before the frame's. Once per app frame.
+ */
+func simulateSeaGpu(app: App!, programs: WaterGpu&, sea: Sea&, sim: SeaGpu!, foam: WaterFoam&, time: Double) {
+    let gpu: AzGpu! = app.gpu
+    if programs.spectrum == 0 || programs.fft == 0 || programs.finalize == 0 || sea.tiles.size < waveCascades then return
+    if sim.frame == app.framesRun then return
+    fin n = sea.state.resolution
+    if sim.device != gpu.device || sim.size != n then makeSeaTextures(sim, gpu.device, n)
+    if sim.revision != sea.revision then uploadSeaTiles(sim, sea)
+    fin dt = waveClamp(time - sim.time, 0.0, 0.1)
+    // Foam fades to a third over its persistence, whatever the frame rate.
+    fin share = exp(-1.0986122886681098 * dt / waveClamp(foam.persistence, 0.1, 30.0))
+    sim.frame = app.framesRun
+    sim.time = time
+    fin commands = send0(gpu.queue, sel("commandBuffer"))
+    fin groups = ((n + 7) / 8) as Long
+    for c: Int in 0..<waveCascades {
+        fin maps = sim.cascades[c].&
+        fin foamIn = if sim.foamFlip then maps.foamB else maps.foamA
+        fin foamOut = if sim.foamFlip then maps.foamA else maps.foamB
+        fin encoder = send0(commands, sel("computeCommandEncoder"))
+        pokeWaveParams(sim, sea, c, time, share, foam, false)
+        send1(encoder, sel("setComputePipelineState:"), programs.spectrum)
+        send2(encoder, sel("setTexture:atIndex:"), maps.h0, 0)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 1)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 2)
+        send3(encoder, sel("setBytes:length:atIndex:"), sim.params, 48, 0)
+        dispatchWaves(encoder, sim.sizes, groups, groups, 8, 8)
+        // Rows, then columns: one threadgroup a line, half a line of threads.
+        send1(encoder, sel("setComputePipelineState:"), programs.fft)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 0)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 1)
+        send2(encoder, sel("setTexture:atIndex:"), maps.rowsA, 2)
+        send2(encoder, sel("setTexture:atIndex:"), maps.rowsB, 3)
+        dispatchWaves(encoder, sim.sizes, n as Long, 1, (n / 2) as Long, 1)
+        pokeWaveParams(sim, sea, c, time, share, foam, true)
+        send3(encoder, sel("setBytes:length:atIndex:"), sim.params, 48, 0)
+        send2(encoder, sel("setTexture:atIndex:"), maps.rowsA, 0)
+        send2(encoder, sel("setTexture:atIndex:"), maps.rowsB, 1)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 2)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 3)
+        dispatchWaves(encoder, sim.sizes, n as Long, 1, (n / 2) as Long, 1)
+        send1(encoder, sel("setComputePipelineState:"), programs.finalize)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumA, 0)
+        send2(encoder, sel("setTexture:atIndex:"), maps.spectrumB, 1)
+        send2(encoder, sel("setTexture:atIndex:"), maps.displacement, 2)
+        send2(encoder, sel("setTexture:atIndex:"), maps.slopes, 3)
+        send2(encoder, sel("setTexture:atIndex:"), foamIn, 4)
+        send2(encoder, sel("setTexture:atIndex:"), foamOut, 5)
+        dispatchWaves(encoder, sim.sizes, groups, groups, 8, 8)
+        send0(encoder, sel("endEncoding"))
+        fin blit = send0(commands, sel("blitCommandEncoder"))
+        send1(blit, sel("generateMipmapsForTexture:"), maps.displacement)
+        send1(blit, sel("generateMipmapsForTexture:"), maps.slopes)
+        send1(blit, sel("generateMipmapsForTexture:"), foamOut)
+        send0(blit, sel("endEncoding"))
+    }
+    send0(commands, sel("commit"))
+    sim.foamFlip = !sim.foamFlip
+    sim.ready = true
+    if gpu.timing {
+        send0(commands, sel("waitUntilCompleted"))
+        gpu.gpuSeconds += azSendD0(commands, sel("GPUEndTime")) - azSendD0(commands, sel("GPUStartTime"))
+    }
+}
+
+/** The GPU maps of a sea that is gone (its Water Waves taken off or switched off) are let go. */
+@System(phase: .PreUpdate, editor: true)
+func dropSeaMaps(world: World!, maps: @query [SeaGpu&] without Sea) {
+    var bodies: Array<Entity> = []
+    while maps.hasNext() then bodies.add(maps.nextEntity())
+    for entity in bodies then storageRemove<SeaGpu>(ensureStorage(world), entity)
+}

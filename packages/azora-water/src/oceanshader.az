@@ -1,0 +1,285 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.oceanshader
+ *
+ * The Metal source of the sea: compute kernels that move a cascade's
+ * spectrum to time t and inverse-transform it (Tessendorf), and the surface
+ * drawn in rings around the eye, lit as the scene is (the standard `U3`
+ * block, the Photon Field, the sun's cascade, cloud shadows, local lights,
+ * haze).
+ */
+module engine.water.oceanshader
+
+import engine.lighting.photon.shader
+import engine.atmosphere.legacyshader
+
+/** Compute kernels: `wave_spectrum`, `wave_fft`, `wave_finalize`. */
+func waveKernelSource(): String = "#include <metal_stdlib>
+using namespace metal;
+
+// p[0]: tile length, samples, time, choppiness. p[1]: foam threshold, foam decay share, foam gain, columns pass.
+// p[2]: depth, log2(samples), gravity, 0.
+kernel void wave_spectrum(texture2d<float, access::read> h0 [[texture(0)]],
+                          texture2d<float, access::write> outA [[texture(1)]],
+                          texture2d<float, access::write> outB [[texture(2)]],
+                          constant float4* p [[buffer(0)]], uint2 id [[thread_position_in_grid]]) {
+    float n = p[0].y;
+    if (float(id.x) >= n || float(id.y) >= n) return;
+    float2 k = (float2(id) - n * 0.5) * (6.283185307 / p[0].x);
+    float kl = length(k);
+    float4 h = h0.read(id);
+    float depth = p[2].x;
+    float g = p[2].z;
+    float omega = depth > 0.0 ? sqrt(g * kl * tanh(min(kl * depth, 20.0))) : sqrt(g * kl);
+    // The phase wraps every 2π: reduce it in double-free float before it loses its fraction.
+    float phase = fmod(omega * p[0].z, 6.283185307);
+    float c = cos(phase), s = sin(phase);
+    // ĥ = h0 e^{iφ} + conj(h0(-k)) e^{-iφ}
+    float2 hh = float2(h.x * c - h.y * s + h.z * c + h.w * s, h.x * s + h.y * c - h.z * s + h.w * c);
+    float2 u = kl > 1e-6 ? k / kl : float2(0.0);
+    float lam = p[0].w;
+    float2 minusI = float2(hh.y, -hh.x);   // -i ĥ
+    float2 plusI = float2(-hh.y, hh.x);    //  i ĥ
+    float2 dx = lam * u.x * minusI;
+    float2 dz = lam * u.y * minusI;
+    float2 sx = k.x * plusI;
+    float2 sz = k.y * plusI;
+    float2 dxx = lam * u.x * k.x * hh;
+    float2 dzz = lam * u.y * k.y * hh;
+    float2 dxz = lam * u.x * k.y * hh;
+    // Two real fields per complex transform: a + i b.
+    outA.write(float4(hh.x - dx.y, hh.y + dx.x, dz.x - sx.y, dz.y + sx.x), id);
+    outB.write(float4(sz.x - dxx.y, sz.y + dxx.x, dzz.x - dxz.y, dzz.y + dxz.x), id);
+}
+
+// One row (or column, p[1].w) of the grid per threadgroup, samples/2 threads: an in-place
+// radix-2 inverse FFT of four complex numbers per sample in threadgroup memory.
+kernel void wave_fft(texture2d<float, access::read> inA [[texture(0)]],
+                     texture2d<float, access::read> inB [[texture(1)]],
+                     texture2d<float, access::write> outA [[texture(2)]],
+                     texture2d<float, access::write> outB [[texture(3)]],
+                     constant float4* p [[buffer(0)]],
+                     uint t [[thread_position_in_threadgroup]], uint line [[threadgroup_position_in_grid]]) {
+    threadgroup float4 sa[256];
+    threadgroup float4 sb[256];
+    uint n = uint(p[0].y);
+    uint bits = uint(p[2].y);
+    bool columns = p[1].w > 0.5;
+    uint pairs = n / 2;
+    for (uint e = t; e < n; e += pairs) {
+        uint2 at = columns ? uint2(line, e) : uint2(e, line);
+        uint r = reverse_bits(e) >> (32 - bits);
+        sa[r] = inA.read(at);
+        sb[r] = inB.read(at);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint span = 1; span < n; span <<= 1) {
+        uint pos = t % span;
+        uint i = (t / span) * span * 2 + pos;
+        uint j = i + span;
+        float angle = 3.141592653589793 * float(pos) / float(span);
+        float2 w = float2(cos(angle), sin(angle));
+        float4 a = sa[i], b = sb[i], c = sa[j], d = sb[j];
+        float4 cw = float4(c.x * w.x - c.y * w.y, c.x * w.y + c.y * w.x, c.z * w.x - c.w * w.y, c.z * w.y + c.w * w.x);
+        float4 dw = float4(d.x * w.x - d.y * w.y, d.x * w.y + d.y * w.x, d.z * w.x - d.w * w.y, d.z * w.y + d.w * w.x);
+        sa[i] = a + cw;
+        sa[j] = a - cw;
+        sb[i] = b + dw;
+        sb[j] = b - dw;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (uint e = t; e < n; e += pairs) {
+        uint2 at = columns ? uint2(line, e) : uint2(e, line);
+        outA.write(sa[e], at);
+        outB.write(sb[e], at);
+    }
+}
+
+// The transformed fields into the maps the surface reads: displacement (x, y, z, dDx/dz),
+// slopes (dη/dx, dη/dz, dDx/dx, dDz/dz) and foam, which builds where the surface folds
+// (Jacobian below the threshold) and fades by the decay share each step.
+kernel void wave_finalize(texture2d<float, access::read> a [[texture(0)]],
+                          texture2d<float, access::read> b [[texture(1)]],
+                          texture2d<float, access::write> displacement [[texture(2)]],
+                          texture2d<float, access::write> slopes [[texture(3)]],
+                          texture2d<float, access::read> foamIn [[texture(4)]],
+                          texture2d<float, access::write> foamOut [[texture(5)]],
+                          constant float4* p [[buffer(0)]], uint2 id [[thread_position_in_grid]]) {
+    float n = p[0].y;
+    if (float(id.x) >= n || float(id.y) >= n) return;
+    float sign = ((id.x + id.y) & 1) ? -1.0 : 1.0;
+    float4 va = a.read(id) * sign;
+    float4 vb = b.read(id) * sign;
+    displacement.write(float4(va.y, va.x, va.z, vb.w), id);
+    slopes.write(float4(va.w, vb.x, vb.y, vb.z), id);
+    float jacobian = (1.0 + vb.y) * (1.0 + vb.z) - vb.w * vb.w;
+    float foam = foamIn.read(id).r * p[1].y;
+    foam = max(foam, saturate((p[1].x - jacobian) * p[1].z));
+    foamOut.write(float4(foam, 0.0, 0.0, 0.0), id);
+}
+"
+
+/** The sea's surface: `ocean_vertex` (rings around the eye, displaced) and `ocean_fragment`. */
+func oceanRenderSource(): String = "#include <metal_stdlib>
+using namespace metal;
+" + photonMetalSource() + localLightMetalSource() + sceneEnvironmentMetalSource() + heightFogShader() + "
+struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; float4 eye; float4 fog; float4 direct; float4 fogShape; float4 extra; };
+
+// tiles: the three cascades' tile lengths and the sea's level. weights: their weight in geometry
+// at the finest cell and the eye's height over the water. scatter/absorb: the water's colour.
+// look: clarity, subsurface, roughness, reflection. foam: colour and shore band.
+// shore: the depth map's centre x/z, one over its side and whether one is bound.
+// extra: shore depth reach, foam strength, time, 0.
+struct OceanU { float4 tiles; float4 weights; float4 scatter; float4 absorb; float4 look; float4 foam; float4 shore; float4 extra; };
+
+// ring: centre x/z (snapped), cell size, cells across; hole: first cell x/z of the finer ring inside (or -1e6), morph start/width in cells.
+struct RingU { float4 ring; float4 hole; };
+
+struct SeaPoint { float4 position [[position]]; float3 world; float2 plane; float lift; };
+
+constexpr sampler waveSampler(coord::normalized, address::repeat, filter::linear, mip_filter::linear);
+constexpr sampler shoreSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+
+float cascadeWeight(float tile, float cell) {
+    // Waves shorter than about four cells cannot be shown by the grid: they fade out of the geometry.
+    return 1.0 - smoothstep(tile / 48.0, tile / 12.0, cell);
+}
+
+float shoreDepth(float2 p, constant OceanU& o, texture2d<float> shore) {
+    if (o.shore.w < 0.5) return 1.0e4;
+    float2 uv = (p - o.shore.xy) * o.shore.z + 0.5;
+    if (any(uv < 0.0) || any(uv > 1.0)) return 1.0e4;
+    return shore.sample(shoreSampler, uv).r;
+}
+
+vertex SeaPoint ocean_vertex(uint vid [[vertex_id]], constant U3& u [[buffer(1)]], constant OceanU& o [[buffer(7)]],
+                             constant RingU& r [[buffer(8)]],
+                             texture2d<float> d0 [[texture(0)]], texture2d<float> d1 [[texture(1)]], texture2d<float> d2 [[texture(2)]],
+                             texture2d<float> shore [[texture(9)]]) {
+    const int2 corners[6] = { int2(0,0), int2(1,0), int2(1,1), int2(0,0), int2(1,1), int2(0,1) };
+    int cells = int(r.ring.w);
+    int quad = int(vid) / 6;
+    int2 cell = int2(quad % cells, quad / cells);
+    SeaPoint result;
+    // A quad the finer ring inside covers is not drawn.
+    float2 hole = r.hole.xy;
+    if (float(cell.x) >= hole.x && float(cell.x) < hole.x + float(cells / 2) && float(cell.y) >= hole.y && float(cell.y) < hole.y + float(cells / 2)) {
+        result.position = float4(0.0, 0.0, -2.0, 1.0);
+        result.world = float3(0.0);
+        result.plane = float2(0.0);
+        result.lift = 0.0;
+        return result;
+    }
+    int2 grid = cell + corners[vid % 6];
+    float size = r.ring.z;
+    float2 local = float2(grid) - float(cells) * 0.5;
+    // Toward its outer edge a ring folds every odd vertex onto its even neighbour: the coarser
+    // ring's grid there, so the two meet without cracks and nothing pops (CDLOD morphing).
+    float edge = max(abs(local.x), abs(local.y));
+    float morph = saturate((edge - r.hole.z) / max(r.hole.w, 1.0));
+    float2 g = float2(grid);
+    float2 plane = r.ring.xy + (g - fract(g * 0.5) * 2.0 * morph - float(cells) * 0.5) * size;
+    float3 shift = float3(0.0);
+    float seaLevel = o.tiles.w;
+    float depth = shoreDepth(plane, o, shore);
+    // Shallow water calms the waves (and the shore stays dry).
+    float calm = saturate(depth / max(o.extra.x * 0.25, 0.5));
+    float w0 = cascadeWeight(o.tiles.x, size), w1 = cascadeWeight(o.tiles.y, size), w2 = cascadeWeight(o.tiles.z, size);
+    if (w0 > 0.0) shift += d0.sample(waveSampler, plane / o.tiles.x, level(0.0)).xyz * w0;
+    if (w1 > 0.0) shift += d1.sample(waveSampler, plane / o.tiles.y, level(0.0)).xyz * w1;
+    if (w2 > 0.0) shift += d2.sample(waveSampler, plane / o.tiles.z, level(0.0)).xyz * w2;
+    shift *= calm;
+    float3 world = float3(plane.x + shift.x, seaLevel + shift.y, plane.y + shift.z);
+    result.position = u.viewProj * float4(world, 1.0);
+    result.world = world;
+    result.plane = plane;
+    result.lift = shift.y;
+    return result;
+}
+
+float ggx(float nh, float roughness) {
+    float a = roughness * roughness;
+    float d = nh * nh * (a * a - 1.0) + 1.0;
+    return a * a / (3.14159265 * d * d + 1e-6);
+}
+
+fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer(1)]], constant OceanU& o [[buffer(7)]],
+                               const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]],
+                               constant float4* detailLight [[buffer(4)]], constant float4* spots [[buffer(5)]], constant float4* env [[buffer(6)]],
+                               texture2d<float> s0 [[texture(3)]], texture2d<float> s1 [[texture(4)]], texture2d<float> s2 [[texture(5)]],
+                               texture2d<float> f0 [[texture(6)]], texture2d<float> f1 [[texture(7)]], texture2d<float> f2 [[texture(8)]],
+                               texture2d<float> shore [[texture(9)]],
+                               depth2d<float> detail [[texture(30)]], texture2d<float> clouds [[texture(31)]]) {
+    float2 p = in.plane;
+    float depth = shoreDepth(p, o, shore);
+    float calm = saturate(depth / max(o.extra.x * 0.25, 0.5));
+    float4 a = s0.sample(waveSampler, p / o.tiles.x);
+    float4 b = s1.sample(waveSampler, p / o.tiles.y);
+    float4 c = s2.sample(waveSampler, p / o.tiles.z);
+    float2 slope = (a.xy + b.xy + c.xy) * calm;
+    float2 stretch = 1.0 + (a.zw + b.zw + c.zw) * calm;
+    float3 n = normalize(float3(-slope.x / max(stretch.x, 0.2), 1.0, -slope.y / max(stretch.y, 0.2)));
+    float3 v = normalize(u.eye.xyz - in.world);
+    if (dot(n, v) < 0.0) n = normalize(n + v * (0.01 - dot(n, v)));
+    float3 l = normalize(u.light.xyz);
+    float ambient = clamp(u.light.w, 0.0, 1.0);
+    PhotonLighting light = scenePhotonLight(photons, baked, detail, detailLight, in.world, n, u.eye.w, u.direct.xyz);
+    float sun = light.visibility * cloudShade(env, clouds, in.world);
+    float3 sunColor = light.direct * sun;
+    // The sky it mirrors: the haze at the horizon, deeper overhead, dimmer by night.
+    float3 horizon = max(u.fog.xyz, float3(0.02));
+    float3 r = reflect(-v, n);
+    float3 zenith = horizon * float3(0.55, 0.72, 1.05);
+    float3 sky = mix(horizon, zenith, pow(saturate(r.y), 0.6)) * (0.35 + 0.65 * saturate(l.y * 3.0 + 0.3)) + sceneFlash(env, n);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(n, v)), 5.0);
+    fresnel *= o.look.w;
+    // Light scattered back from deep water, and through thin crests when the sun is behind them.
+    float3 scatter = o.scatter.rgb * (ambient * 1.6 + sunColor * (0.35 + 0.65 * saturate(l.y)));
+    float behind = pow(saturate(dot(v, -l) * 0.5 + 0.5), 4.0);
+    scatter += o.scatter.rgb * float3(0.6, 1.4, 1.2) * o.look.y * behind * saturate(in.lift * 0.6 + 0.2) * sunColor * 1.8;
+    // Shallow water shows a sandy bed through it, dimmed by depth colour by colour.
+    float3 transmit = exp(-o.absorb.rgb * max(depth, 0.0));
+    float3 bed = float3(0.62, 0.55, 0.4) * (ambient + sunColor * saturate(l.y)) * 0.6;
+    float3 body = mix(scatter, bed, transmit * o.look.x);
+    float3 color = mix(body, sky, fresnel);
+    // The sun's glitter.
+    float3 h = normalize(l + v);
+    float rough = clamp(o.look.z + length(fwidth(slope)) * 0.2, 0.02, 0.7);
+    color += sunColor * ggx(saturate(dot(n, h)), rough) * fresnel * 0.25 * step(0.0, l.y);
+    // Foam: breaking crests and the wash along the shore.
+    float foam = max(max(f0.sample(waveSampler, p / o.tiles.x).r, f1.sample(waveSampler, p / o.tiles.y).r), f2.sample(waveSampler, p / o.tiles.z).r);
+    foam *= o.extra.y;
+    // Along the shore: lines of foam that the waves push in over the shallows, broken up by the
+    // finest cascade's foam and slopes, thinning out with depth; a thin wet line at the water's edge.
+    float band = o.foam.w;
+    if (band > 0.0 && depth < band) {
+        float shallow = 1.0 - saturate(depth / band);
+        float surge = 0.5 + 0.5 * sin(depth * 9.0 - o.extra.z * 1.7);
+        float lines = smoothstep(0.55, 0.95, surge) * shallow * shallow;
+        float breakup = saturate(f2.sample(waveSampler, p / o.tiles.z * 0.37).r * 2.0 + abs(c.x + c.y) * 0.6 + 0.15);
+        float edge = smoothstep(0.12 * band, 0.0, depth);
+        foam = max(foam, max(lines * breakup, edge * 0.85));
+    }
+    foam = saturate(foam);
+    float3 foamLit = o.foam.rgb * (ambient + sunColor * saturate(dot(n, l) * 0.6 + 0.4));
+    color = mix(color, foamLit, foam);
+    color += localLights(spots, in.world, n, v, o.scatter.rgb, float3(0.02));
+    float haze = heightFog(u.eye.xyz, in.world, u.fog.w, u.fogShape);
+    return float4(mix(color, u.fog.xyz, haze), 1.0);
+}
+"

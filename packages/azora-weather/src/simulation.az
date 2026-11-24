@@ -4,50 +4,223 @@ import engine.core
 import engine.ecs
 import engine.math
 import engine.scene
+import engine.scene.transforms
+import engine.platform
+import engine.gizmos
+import engine.audio.output
 import engine.atmosphere
 import engine.weather.components
 import engine.weather.state
 import engine.weather.storm
-import engine.render.scene::{sceneWindEntity, sceneWind}
+import engine.weather.precipitation
+import engine.weather.weathersound
+import engine.weather.wind
 
-/**
- * Moves the weather on [owner] (the Atmosphere's entity) [dt] seconds on and
- * supplies the atmospheric renderer with it. Each part is found wherever it
- * is in the scene and does only its own work: Rain and Snow fall, soak and
- * whiten the ground and grey the air; Dust hazes the air in its colour; the
- * Wind blows and carries the clouds; Thunder strikes. The clouds are as their
- * own component sets them.
- */
-func previewWeather(world: World!, owner: Entity, state: AetherState!, elapsed: Double, dt: Double, eye: Vec3&, right: Vec3&) {
+// The weather is systems over its parts. Each part is a component wherever it
+// is in the scene (Rain, Snow, Dust, Thunder, Wind) and a system of its own
+// moves the Atmosphere's AetherState on from it: rain, snow and dust ease to
+// their intensities, thunder charges, the wind blows and carries the clouds,
+// the ground soaks and whitens, the air hazes, lightning strikes. The game
+// runs them every frame; an editor runs them too (`editor: true`), so the
+// scene previews the weather the game will have.
+
+// ── Runtime, made when first needed ─────────────────────────────────────
+
+/** Gives every Atmosphere its weather state, from its first frame on. */
+@System(phase: .PreUpdate, editor: true)
+func startWeather(world: World!, skies: @query [AetherSky&] without AetherState) {
+    var owners: Array<Entity> = []
+    while skies.hasNext() then owners.add(skies.nextEntity())
+    for owner in owners then storageInsert<AetherState>(ensureStorage(world), owner, .())
+}
+
+/** The precipitation's GPU pools, once Rain, Snow or Dust is in the scene: a scene without them pays for none. */
+@System(phase: .PreUpdate, runAfter: "startWeather")
+func startPrecipitation(app: App!, world: World!, skies: @query [AetherSky&, AetherState&] without AetherPrecipitation) {
     fin parts = weatherParts(world)
-    followParts(state, parts, dt)
+    // The pools live on the GPU: a run without one (a headless check) has none.
+    if app.gpu.device == 0 || (!parts.rain.enabled && !parts.snow.enabled && !parts.dust.enabled) then return
+    var owners: Array<Entity> = []
+    while skies.hasNext() then owners.add(skies.nextEntity())
+    for owner in owners then storageInsert<AetherPrecipitation>(ensureStorage(world), owner, aetherPrecipitation(app.gpu.device, app.gpu.queue))
+}
+
+/** The storm (lightning and thunder), once Thunder is in the scene. It lights the editor's preview too. */
+@System(phase: .PreUpdate, runAfter: "startWeather", editor: true)
+func startStorm(app: App!, audio: AudioOutput!, world: World!, skies: @query [AetherSky&, AetherState&] without AetherStorm) {
+    // Its bolts are drawn from GPU buffers: a run without a GPU (a headless check) has no storm.
+    if app.gpu.device == 0 || !weatherParts(world).thunder.enabled then return
+    var owners: Array<Entity> = []
+    while skies.hasNext() then owners.add(skies.nextEntity())
+    for owner in owners then storageInsert<AetherStorm>(ensureStorage(world), owner, aetherStorm(app.gpu.device, audio.rate as Double))
+}
+
+/** The rain's and wind's voices, once there is rain or wind to hear. */
+@System(phase: .PreUpdate, runAfter: "startWeather")
+func startWeatherSound(world: World!, skies: @query [AetherSky&, AetherState&] without AetherSound) {
+    if !weatherParts(world).rain.enabled && !world.isAlive(sceneWindEntity(world)) then return
+    var owners: Array<Entity> = []
+    while skies.hasNext() then owners.add(skies.nextEntity())
+    for owner in owners then storageInsert<AetherSound>(ensureStorage(world), owner, aetherSound())
+}
+
+// ── The parts, each moving the state on ─────────────────────────────────
+
+/** Rain eases toward its first enabled, shown Rain's intensity (none without one); an editor shows it at once. */
+@System(phase: .PostUpdate, editor: true)
+func easeRain(world: World!, time: Time&, rains: @query [Rain&], skies: @query [AetherState!]) {
+    var target: Double = 0.0
+    while rains.hasNext() {
+        let row = rains.next()
+        let rain: Rain& = row.1
+        if rain.enabled && shownPart(world, row.0) {
+            target = weatherClamp(rain.intensity, 0.0, 1.0)
+            break
+        }
+    }
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        state.rain = easeTo(state.rain, target, time.deltaSecs, state.opening || time.editing)
+    }
+}
+
+/** Snow eases toward its first enabled, shown Snow's intensity. */
+@System(phase: .PostUpdate, editor: true)
+func easeSnow(world: World!, time: Time&, snows: @query [Snow&], skies: @query [AetherState!]) {
+    var target: Double = 0.0
+    while snows.hasNext() {
+        let row = snows.next()
+        let snow: Snow& = row.1
+        if snow.enabled && shownPart(world, row.0) {
+            target = weatherClamp(snow.intensity, 0.0, 1.0)
+            break
+        }
+    }
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        state.snow = easeTo(state.snow, target, time.deltaSecs, state.opening || time.editing)
+    }
+}
+
+/** Dust eases toward its first enabled, shown Dust's intensity. */
+@System(phase: .PostUpdate, editor: true)
+func easeDust(world: World!, time: Time&, dusts: @query [Dust&], skies: @query [AetherState!]) {
+    var target: Double = 0.0
+    while dusts.hasNext() {
+        let row = dusts.next()
+        let dust: Dust& = row.1
+        if dust.enabled && shownPart(world, row.0) {
+            target = weatherClamp(dust.intensity, 0.0, 1.0)
+            break
+        }
+    }
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        state.dust = easeTo(state.dust, target, time.deltaSecs, state.opening || time.editing)
+    }
+}
+
+/** Lightning as often as the first enabled, shown Thunder asks (none without one). */
+@System(phase: .PostUpdate, editor: true)
+func chargeThunder(world: World!, thunders: @query [Thunder&], skies: @query [AetherState!]) {
+    var rate: Double = 0.0
+    while thunders.hasNext() {
+        let row = thunders.next()
+        let thunder: Thunder& = row.1
+        if thunder.enabled && shownPart(world, row.0) {
+            rate = weatherClamp(thunder.strikesPerMinute, 0.0, 30.0)
+            break
+        }
+    }
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        state.lightning = rate
+    }
+}
+
+/** The scene's Wind blows (gusts included) and carries the clouds. */
+@System(phase: .PostUpdate, editor: true)
+func carryWind(world: World!, time: Time&, skies: @query [AetherState!]) {
     fin windy = sceneWindEntity(world)
     fin steady = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).speed else 0.0
-    blowWind(state, sceneWind(world, elapsed), steady, dt)
-    soakGround(state, parts, dt)
-    var air = AtmosphereConditions(driftX: state.driftX, driftZ: state.driftZ)
-    // The haze, per kilometre at the ground: rain and snow grey the distance, dust thickens it in its colour and hugs the ground.
-    fin rainHaze = state.rain * 0.9 * weatherClamp(parts.rain.haze, 0.0, 2.0)
-    fin snowHaze = state.snow * 1.6 * weatherClamp(parts.snow.haze, 0.0, 2.0)
-    fin dustHaze = state.dust * state.dust * 8.0 * weatherClamp(parts.dust.haze, 0.0, 2.0)
-    fin haze = rainHaze + snowHaze + dustHaze
-    air.fogDensity = haze
-    air.fogFalloff = if haze > 0.0001 then (1.2 * (rainHaze + snowHaze) + 2.5 * dustHaze) / haze else 1.2
-    air.dust = if haze > 0.0001 then dustHaze / haze else 0.0
-    air.dustColor = parts.dust.color.clone()
-    let storms = ensureStorage<AetherStorm>(world)
-    fin stormAt = storageIndexOf<AetherStorm>(storms, owner)
-    if stormAt >= 0 {
-        fin lit = stepStorm(storms.values[stormAt], elapsed, dt, state.lightning, sceneClouds(world).baseAltitude,
-            eye.x, eye.y, eye.z, right.x, right.z)
-        fin bright = if parts.thunder.enabled then weatherClamp(parts.thunder.brightness, 0.0, 3.0) else 1.0
-        air.flash = lit.y * bright
-        air.flashX = lit.x
-        air.flashZ = lit.z
+    fin blowing = sceneWind(world, time.elapsedSecs)
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        blowWind(state, blowing, steady, time.deltaSecs)
     }
-    air.wetness = state.wetness
-    air.snow = state.snowCover
-    air.windX = state.windX
-    air.windZ = state.windZ
-    storageInsert<AtmosphereConditions>(ensureStorage(world), owner, take air)
+}
+
+/** The ground soaks and whitens with what falls, and dries and melts after (the Rain's and Snow's times). */
+@System(phase: .PostUpdate, runAfter: "easeRain,easeSnow", editor: true)
+func soakWeatherGround(world: World!, time: Time&, skies: @query [AetherState!]) {
+    fin parts = weatherParts(world)
+    // A part switched off still says how fast the ground dries or melts: its defaults when there is none.
+    fin rain: Rain = if storageLength<Rain>(ensureStorage(world)) > 0 then storageValueAt<Rain>(ensureStorage(world), 0).clone() else .()
+    fin snow: Snow = if storageLength<Snow>(ensureStorage(world)) > 0 then storageValueAt<Snow>(ensureStorage(world), 0).clone() else .()
+    fin raining = if parts.rain.enabled then parts.rain.clone() else rain
+    fin snowing = if parts.snow.enabled then parts.snow.clone() else snow
+    while skies.hasNext() {
+        let state: AetherState! = skies.next().1
+        // An editor shows the ground as the weather leaves it, not drying or melting toward it.
+        if time.editing then state.opening = true
+        soakGround(state, raining, snowing, time.deltaSecs)
+    }
+}
+
+/**
+ * The air the atmosphere draws: rain and snow grey the distance, dust thickens
+ * it in its colour and hugs the ground; with the ground's wetness and snow and
+ * the wind, the conditions the renderer and every surface see.
+ */
+@System(phase: .PostUpdate, runAfter: "soakWeatherGround,carryWind,easeDust", editor: true)
+func hazeWeatherAir(world: World!, skies: @query [AetherState&]) {
+    fin parts = weatherParts(world)
+    var owners: Array<Entity> = []
+    var airs: Array<AtmosphereConditions> = []
+    while skies.hasNext() {
+        let row = skies.next()
+        fin owner = row.0
+        let state: AetherState& = row.1
+        var air = AtmosphereConditions(driftX: state.driftX, driftZ: state.driftZ)
+        // The haze, per kilometre at the ground.
+        fin rainHaze = state.rain * 0.9 * weatherClamp(parts.rain.haze, 0.0, 2.0)
+        fin snowHaze = state.snow * 1.6 * weatherClamp(parts.snow.haze, 0.0, 2.0)
+        fin dustHaze = state.dust * state.dust * 8.0 * weatherClamp(parts.dust.haze, 0.0, 2.0)
+        fin haze = rainHaze + snowHaze + dustHaze
+        air.fogDensity = haze
+        air.fogFalloff = if haze > 0.0001 then (1.2 * (rainHaze + snowHaze) + 2.5 * dustHaze) / haze else 1.2
+        air.dust = if haze > 0.0001 then dustHaze / haze else 0.0
+        air.dustColor = parts.dust.color.clone()
+        air.wetness = state.wetness
+        air.snow = state.snowCover
+        air.windX = state.windX
+        air.windZ = state.windZ
+        owners.add(owner)
+        airs.add(take air)
+    }
+    for i: Int in 0..<owners.size then storageInsert<AtmosphereConditions>(ensureStorage(world), owners[i], airs[i].clone())
+}
+
+/** Lightning strikes as Thunder asks, near the camera, and lights the air ([AtmosphereConditions.flash]). */
+@System(phase: .PostUpdate, runAfter: "hazeWeatherAir,chargeThunder", editor: true)
+func strikeLightning(world: World!, time: Time&, camera: EditorCamera&, skies: @query [AetherState&, AetherStorm!]) {
+    fin thunder = weatherParts(world).thunder
+    fin bright = if thunder.enabled then weatherClamp(thunder.brightness, 0.0, 3.0) else 1.0
+    fin base = sceneClouds(world).baseAltitude
+    fin eye = camera.position()
+    fin right = camera.right()
+    while skies.hasNext() {
+        let row = skies.next()
+        fin owner = row.0
+        let state: AetherState& = row.1
+        let storm: AetherStorm! = row.2
+        fin lit = stepStorm(storm, time.elapsedSecs, time.deltaSecs, state.lightning, base, eye.x, eye.y, eye.z, right.x, right.z)
+        let airs = ensureStorage<AtmosphereConditions>(world)
+        fin at = storageIndexOf<AtmosphereConditions>(airs, owner)
+        if at >= 0 {
+            airs.values[at].flash = lit.y * bright
+            airs.values[at].flashX = lit.x
+            airs.values[at].flashZ = lit.z
+        }
+    }
 }

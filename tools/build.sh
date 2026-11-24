@@ -111,8 +111,10 @@ RESOLVE="$("$PYTHON_BIN" "$LIB_DIR/tools/azpm.py" resolve "$PROJECT_DIR")"
 
 NATIVE_FLAGS=""
 ENTRYPOINT=""
+ENTRY_FILE="main.az"
 while IFS=$'\t' read -r kind a b; do
     case "$kind" in
+        ENTRY) ENTRY_FILE="$a" ;;
         ENTRYPOINT) ENTRYPOINT="$a" ;;
         STAGE)
             mkdir -p "$SRC_DIR/$b"
@@ -129,28 +131,30 @@ done <<< "$RESOLVE"
 
 cp "$PROJECT_DIR/src/"*.az "$SRC_DIR/"
 
-if [ ! -f "$SRC_DIR/main.az" ]; then
-    echo "error: project has no src/main.az entry point" >&2
+# The entry is the file azora.azon names (project.entry), src/main.az when it names none.
+ENTRY_SOURCE="$SRC_DIR/$ENTRY_FILE"
+if [ ! -f "$ENTRY_SOURCE" ]; then
+    echo "error: project has no src/$ENTRY_FILE entry point (azora.azon project.entry)" >&2
     exit 1
 fi
 
 # Append only to the staged copy so editor diagnostics keep their source lines.
 if [ -n "$ENTRYPOINT" ]; then
-    printf '\n' >> "$SRC_DIR/main.az"
-    cat "$ENTRYPOINT" >> "$SRC_DIR/main.az"
+    printf '\n' >> "$ENTRY_SOURCE"
+    cat "$ENTRYPOINT" >> "$ENTRY_SOURCE"
 fi
 
 if [ "$ACTION" = "inspect" ]; then
-    exec "${AZORA_COMPILER_BIN:?select a native compiler}" analyze "$SRC_DIR/main.az"
+    exec "${AZORA_COMPILER_BIN:?select a native compiler}" analyze "$ENTRY_SOURCE"
 fi
 
 APP_NAME="$(basename "$PROJECT_DIR" | tr -cd '[:alnum:]_-')"
 [ -n "$APP_NAME" ] || APP_NAME="app"
 
-COMPILER_ARGS=(compile llvm "$SRC_DIR/main.az")
+COMPILER_ARGS=(compile llvm "$ENTRY_SOURCE")
 OUTPUT_FILE="$BUILD_DIR/$APP_NAME.ll"
 if [ "$ACTION" = "check" ]; then
-    COMPILER_ARGS=(check "$SRC_DIR/main.az")
+    COMPILER_ARGS=(check "$ENTRY_SOURCE")
     OUTPUT_FILE="$BUILD_DIR/$APP_NAME.check.txt"
 fi
 

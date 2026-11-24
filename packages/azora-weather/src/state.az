@@ -26,7 +26,7 @@ func easeShare(dt: Double, seconds: Double): Double = if seconds <= 0.0 then 1.0
  * the clouds have drifted. Not saved with the scene.
  */
 @Component
-pack AetherState {
+pack AetherState derives Clone {
     var rain: Double = 0.0
     var snow: Double = 0.0
     var dust: Double = 0.0
@@ -45,21 +45,9 @@ pack AetherState {
     var driftZ: Double = 0.0
 }
 
-/**
- * Moves [state] [dt] seconds on toward what [parts] ask for: rain, snow and
- * dust ease to their intensities (a part that is off or missing to none), the
- * lightning is what Thunder asks.
- */
-func followParts(state: AetherState!, parts: WeatherParts&, dt: Double) {
-    fin rain = if parts.rain.enabled then weatherClamp(parts.rain.intensity, 0.0, 1.0) else 0.0
-    fin snow = if parts.snow.enabled then weatherClamp(parts.snow.intensity, 0.0, 1.0) else 0.0
-    fin dust = if parts.dust.enabled then weatherClamp(parts.dust.intensity, 0.0, 1.0) else 0.0
-    fin share = if state.opening then 1.0 else easeShare(dt, weatherEase)
-    state.rain += (rain - state.rain) * share
-    state.snow += (snow - state.snow) * share
-    state.dust += (dust - state.dust) * share
-    state.lightning = if parts.thunder.enabled then weatherClamp(parts.thunder.strikesPerMinute, 0.0, 30.0) else 0.0
-}
+/** [current] moved [dt] seconds toward [target] (eased over [weatherEase]); at the weather's opening, there at once. */
+func easeTo(current: Double, target: Double, dt: Double, opening: Bool): Double =
+    current + (target - current) * (if opening then 1.0 else easeShare(dt, weatherEase))
 
 /**
  * The wind [dt] seconds on: the scene's Wind blowing [wind] m/s (gusts
@@ -76,11 +64,13 @@ func blowWind(state: AetherState!, wind: Vec3&, steady: Double, dt: Double) {
 }
 
 /**
- * The ground [dt] seconds on: wet where it rains, soaking in the Rain's soak
- * time and drying in its dry time; white where it snows, settling and melting
- * in the Snow's times. Without a part, its defaults say how fast it dries or melts.
+ * The ground [dt] seconds on: wet where it rains, soaking in [rain]'s soak time
+ * and drying in its dry time; white where it snows, settling and melting in
+ * [snow]'s times (a part switched off still says how fast the ground dries
+ * or melts). At the weather's opening the ground is as the weather would
+ * have made it.
  */
-func soakGround(state: AetherState!, parts: WeatherParts&, dt: Double) {
+func soakGround(state: AetherState!, rain: Rain&, snow: Snow&, dt: Double) {
     if state.opening {
         state.wetness = state.rain
         state.snowCover = state.snow
@@ -88,17 +78,15 @@ func soakGround(state: AetherState!, parts: WeatherParts&, dt: Double) {
         return
     }
     if state.rain > 0.001 {
-        fin soak = weatherClamp(parts.rain.soakSeconds, 1.0, 600.0)
+        fin soak = weatherClamp(rain.soakSeconds, 1.0, 600.0)
         state.wetness += (weatherClamp(state.rain * 1.2, 0.0, 1.0) - state.wetness) * easeShare(dt, soak)
     } else {
-        fin dry = weatherClamp(if parts.rain.enabled then parts.rain.drySeconds else Rain().drySeconds, 10.0, 3600.0)
-        state.wetness -= state.wetness * easeShare(dt, dry)
+        state.wetness -= state.wetness * easeShare(dt, weatherClamp(rain.drySeconds, 10.0, 3600.0))
     }
     if state.snow > 0.001 {
-        fin settle = weatherClamp(parts.snow.settleSeconds, 1.0, 1200.0)
+        fin settle = weatherClamp(snow.settleSeconds, 1.0, 1200.0)
         state.snowCover += (weatherClamp(state.snow * 1.1, 0.0, 1.0) - state.snowCover) * easeShare(dt, settle)
     } else {
-        fin melt = weatherClamp(if parts.snow.enabled then parts.snow.meltSeconds else Snow().meltSeconds, 10.0, 7200.0)
-        state.snowCover -= state.snowCover * easeShare(dt, melt)
+        state.snowCover -= state.snowCover * easeShare(dt, weatherClamp(snow.meltSeconds, 10.0, 7200.0))
     }
 }

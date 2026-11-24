@@ -16,7 +16,7 @@
 #
 # Azora Engine — project test harness.
 #
-# Builds a test project (an azora.azon + src/main.az that prints one line per
+# Builds a test project (an azora.azon + its src entry file that prints one line per
 # check), runs it from its own folder and compares what it printed with the
 # project's expected.txt. A harness.env beside it, KEY=VALUE per line, is
 # exported first.

@@ -1,0 +1,248 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.components
+ *
+ * Water as small parts an entity combines. A body says where the water is:
+ * an [Ocean] to the horizon, a [Lake] filling a basin, a [River] down its
+ * valley. Beside it, [WaterWaves] says how the wind raises its surface,
+ * [WaterOptics] how it looks, [WaterFoam] where it whitens. A body without
+ * the others takes their defaults; any other body may carry them too.
+ */
+module engine.water.components
+
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+
+/**
+ * Open sea to the horizon at the entity's height. It is drawn around the
+ * eye in rings that double in size outward, each finer near the eye.
+ */
+@Component
+@Inspectable(title: "Ocean", serializedName: "Ocean", icon: "waves", category: "Water", order: 10)
+pack Ocean derives Clone {
+    var enabled: Bool = true
+    /** The finest ring's cell, in metres; finer shows smaller waves in geometry near the eye (and costs more). */
+    @Range(min: 0.05, max: 4.0, step: 0.05)
+    var detail: Double = 0.25
+    /** Rings around the finest square, each twice as wide: 12 at 0.25 m reach about 33 km. */
+    @Range(min: 2.0, max: 16.0, step: 1.0)
+    var rings: Int = 12
+    /** Cells across each ring's square (even): more is smoother, heavier. */
+    @Range(min: 16.0, max: 256.0, step: 2.0)
+    var cells: Int = 96
+    /** How deep the ground under it is measured (shore colour, foam and calmer shallows), in metres. */
+    @Range(min: 1.0, max: 500.0, step: 1.0)
+    var shoreDepth: Double = 40.0
+}
+
+/**
+ * The sea a water body's surface is: how the wind raises it. The wind is not
+ * here: it is the [Wind] on the same entity, or the scene's Wind when the
+ * entity has none (systems `raiseWindSeas` / `raiseSceneSeas` join them). A
+ * JONSWAP sea of that wind's speed over [fetch], spread about its bearing,
+ * simulated as three cascades of different sizes (swell, waves, ripples);
+ * the GPU surface and what floats feel the same sea.
+ */
+@Component
+@Inspectable(title: "Water Waves", serializedName: "WaterWaves", icon: "waves", category: "Water", order: 11)
+pack WaterWaves derives Clone {
+    var enabled: Bool = true
+    /** How far the wind has blown over open water, in kilometres: a short fetch keeps waves short. */
+    @Range(min: 0.1, max: 2000.0, step: 0.1)
+    var fetch: Double = 300.0
+    /** JONSWAP's peak enhancement: 3.3 a young sea, 1 one fully developed. */
+    @Range(min: 1.0, max: 7.0, step: 0.1)
+    var peakSharpening: Double = 3.3
+    /** How widely waves spread about the wind's bearing: 0 nearly all along it, 1 widely. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var spread: Double = 0.4
+    /** How sharp the crests are (horizontal displacement): 0 round, 1 sharp. */
+    @Range(min: 0.0, max: 1.5, step: 0.01)
+    var choppiness: Double = 0.9
+    /** Scales every wave's height. */
+    @Range(min: 0.0, max: 4.0, step: 0.01)
+    var height: Double = 1.0
+    /** The water's depth for the waves' speed, in metres (shallow water slows waves); 0 deep. */
+    @Range(min: 0.0, max: 1000.0, step: 1.0)
+    var depth: Double = 0.0
+    /** Seconds the sea takes to follow a change of wind: it builds up and calms down, it does not jump. */
+    @Range(min: 0.0, max: 3600.0, step: 1.0)
+    var development: Double = 45.0
+    /** The three cascades' tile sizes, in metres. */
+    @Range(min: 50.0, max: 2000.0, step: 1.0)
+    var largeTile: Double = 280.0
+    @Range(min: 8.0, max: 400.0, step: 1.0)
+    var mediumTile: Double = 41.0
+    @Range(min: 1.0, max: 60.0, step: 0.1)
+    var smallTile: Double = 6.3
+    /** Samples across each tile on the GPU. */
+    @Choice(options: "64|128|256")
+    var resolution: Int = 2
+    /** Samples across each tile for what floats (CPU), the finest waves left out. */
+    @Choice(options: "16|32|64")
+    var physicsResolution: Int = 1
+    var seed: Int = 1977
+}
+
+/**
+ * A swell on a water body with [WaterWaves]: long, regular waves raised by a
+ * storm far away, arriving from their own bearing whatever the local wind.
+ */
+@Component
+@Inspectable(title: "Water Swell", serializedName: "WaterSwell", icon: "waves", category: "Water", order: 12)
+pack WaterSwell derives Clone {
+    var enabled: Bool = true
+    /** The swell's significant height, in metres. */
+    @Range(min: 0.0, max: 8.0, step: 0.05)
+    var height: Double = 0.8
+    /** The compass bearing it arrives from, in degrees. */
+    @Range(min: 0.0, max: 360.0, step: 1.0)
+    var direction: Double = 250.0
+    /** Its wavelength, in metres. */
+    @Range(min: 20.0, max: 600.0, step: 1.0)
+    var length: Double = 160.0
+    /** How narrowly it keeps to its bearing: 0 spread, 1 a single train. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var focus: Double = 0.7
+}
+
+/** How a water body looks: what colour deep water scatters, how fast light dies in it, how it glints and glows. */
+@Component
+@Inspectable(title: "Water Optics", serializedName: "WaterOptics", icon: "droplets", category: "Water", order: 13)
+pack WaterOptics derives Clone {
+    /** The colour deep water scatters back: blue for open sea, green for a lake, brown for a muddy river. */
+    var scatter: Rgba = .(0.012, 0.075, 0.12, 1.0)
+    /** How fast each colour dies with depth, per metre: red goes first. */
+    var absorption: Rgba = .(0.42, 0.075, 0.045, 1.0)
+    /** How clearly the ground shows through shallow water: 0 opaque, 1 glass clear. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var clarity: Double = 0.75
+    /** Light through thin crests with the sun behind them. */
+    @Range(min: 0.0, max: 4.0, step: 0.01)
+    var subsurface: Double = 1.0
+    /** How rough the finest surface is: the width of the sun's glitter. */
+    @Range(min: 0.01, max: 0.6, step: 0.005)
+    var roughness: Double = 0.06
+    /** How much of the sky it mirrors at grazing angles (1 physical). */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var reflection: Double = 1.0
+}
+
+/** Where a water body whitens: on crests that break, behind obstacles, along the shore. */
+@Component
+@Inspectable(title: "Water Foam", serializedName: "WaterFoam", icon: "waves", category: "Water", order: 14)
+pack WaterFoam derives Clone {
+    var enabled: Bool = true
+    /** How readily crests break into foam: 0 never, 1 on every steep crest. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var coverage: Double = 0.45
+    /** Seconds foam takes to fade to a third once the crest has passed. */
+    @Range(min: 0.1, max: 30.0, step: 0.1)
+    var persistence: Double = 2.5
+    /** The band along the shore where waves wash white, in metres of depth. */
+    @Range(min: 0.0, max: 10.0, step: 0.05)
+    var shoreBand: Double = 0.8
+    var color: Rgba = .(0.9, 0.94, 0.95, 1.0)
+}
+
+/**
+ * A lake: still water at the entity's height filling the basin around it,
+ * as far as the ground stays below that level (at most [reach] metres away).
+ */
+@Component
+@Inspectable(title: "Lake", serializedName: "Lake", icon: "droplets", category: "Water", order: 14)
+pack Lake derives Clone {
+    var enabled: Bool = true
+    /** How far from its entity the water may spread looking for the shore, in metres. */
+    @Range(min: 4.0, max: 20000.0, step: 1.0)
+    var reach: Double = 600.0
+    /** The cell of its surface mesh, in metres. */
+    @Range(min: 0.25, max: 32.0, step: 0.25)
+    var cell: Double = 2.0
+}
+
+/**
+ * A river: water flowing down its ordered child [RiverPoint]s, as wide and
+ * deep as each point says. Its surface never climbs: where the bed drops it
+ * steps down in a rapid, where it drops sheer, a waterfall.
+ */
+@Component
+@Inspectable(title: "River", serializedName: "River", icon: "waves", category: "Water", order: 15)
+pack River derives Clone {
+    var enabled: Bool = true
+    /** The flow at an ordinary width and slope, m/s; narrows and steeper reaches run faster. */
+    @Range(min: 0.0, max: 12.0, step: 0.05)
+    var flow: Double = 1.4
+    /** The largest distance between the surface's cross-sections, in metres. */
+    @Range(min: 0.5, max: 32.0, step: 0.5)
+    var sampleSpacing: Double = 2.0
+    /** The steepest fall, rise over run, the surface keeps as a rapid; steeper falls are waterfalls. */
+    @Range(min: 0.05, max: 4.0, step: 0.01)
+    var waterfallSlope: Double = 0.7
+    /** How much white water the river throws on rapids and falls: 0 none. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var whiteWater: Double = 1.0
+    /** Cross-sections across the surface (2 a flat ribbon). */
+    @Range(min: 2.0, max: 32.0, step: 1.0)
+    var columns: Int = 8
+}
+
+/** A point on a river's course, in order: where its centre passes and how wide and deep it is there. */
+@Component
+@Inspectable(title: "River Point", serializedName: "RiverPoint", icon: "circle-dot", category: "Water", order: 16)
+pack RiverPoint derives Clone {
+    @Range(min: 0.0, max: 100000.0, step: 1.0)
+    var order: Int = 0
+    @Range(min: 0.5, max: 2000.0, step: 0.1)
+    var width: Double = 12.0
+    @Range(min: 0.1, max: 60.0, step: 0.1)
+    var depth: Double = 1.6
+}
+
+/**
+ * Makes its entity float: [points] pontoons in a ring of [radius] around its
+ * centre (plus the centre) each pushed up by the water it displaces, dragged
+ * by the water's flow and damped. Needs the entity's rigid body.
+ */
+@Component
+@Inspectable(title: "Buoyancy", serializedName: "Buoyancy", icon: "anchor", category: "Water", order: 17)
+pack Buoyancy derives Clone {
+    var enabled: Bool = true
+    /** Volume under water at which it would float level, in cubic metres per pontoon at full submersion. */
+    @Range(min: 0.001, max: 10000.0, step: 0.01)
+    var volume: Double = 1.0
+    /** The pontoons' ring radius around the centre, in metres. */
+    @Range(min: 0.0, max: 200.0, step: 0.05)
+    var radius: Double = 1.0
+    @Range(min: 1.0, max: 16.0, step: 1.0)
+    var points: Int = 4
+    /** A pontoon's height: submersion grows from 0 to 1 over it. */
+    @Range(min: 0.01, max: 20.0, step: 0.01)
+    var pontoonHeight: Double = 0.5
+    /** Water density, kg/m³ (fresh 1000, sea 1025). */
+    @Range(min: 500.0, max: 1500.0, step: 1.0)
+    var density: Double = 1025.0
+    /** How hard the water drags against motion through it (per second). */
+    @Range(min: 0.0, max: 20.0, step: 0.01)
+    var drag: Double = 1.2
+    /** How hard it resists turning while afloat (per second). */
+    @Range(min: 0.0, max: 20.0, step: 0.01)
+    var angularDrag: Double = 1.6
+}

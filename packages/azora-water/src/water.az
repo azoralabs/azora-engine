@@ -1,5 +1,12 @@
 module engine.water
 
+exposed import engine.water.components
+exposed import engine.water.spectrum
+exposed import engine.water.seas
+exposed import engine.water.waves
+exposed import engine.water.ocean
+exposed import engine.water.query
+
 import std.traits
 import engine.core
 import engine.ecs
@@ -12,6 +19,7 @@ import engine.objc
 import engine.platform
 import engine.scene
 import engine.scene.transforms
+import engine.atmosphere.view
 import engine.water.shader
 
 /** A surface mesh with a repeatable wave texture and an optional shoreline mask in local X/Z. */
@@ -125,3 +133,7 @@ impl App {
         }
     }
 }
+
+/** Draws the scene's Water Surfaces with the opaque scene, in the game and in the editor. */
+@System(phase: .RenderOpaque, editor: true)
+func drawWaterSurfaces(app: App!, view: SceneView&, world: World!) = app.drawWater(world, app.gpu.fusion.root, view.time)

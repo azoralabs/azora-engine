@@ -46,6 +46,10 @@ enum SystemPhase {
     FixedUpdate
     /** Inside the 3D view, before the opaque scene: a system that draws the sky claims it with `App.beginCustomSky`. */
     RenderSky
+    /** Into the sun's sharp shadow cascade (`AzGpu.casting` is set): what casts shadows draws its depth, from the sun. */
+    RenderShadow
+    /** With the opaque scene, after the built-in meshes, terrain and roads: depth tested and written (water, plants, road furniture). */
+    RenderOpaque
     /** After the opaque scene, its encoder ended: passes that read the scene's colour and depth and draw over it (fog, clouds). */
     RenderVolumes
     /** After the view is reconstructed, at full resolution: blended effects tested against the scene's depth (rain, snow). */
@@ -131,6 +135,13 @@ annot @System for (.Func, .AsyncFunc) {
     fin runBefore: String = ""
     fin runAfter: String = ""
     fin inSet: String = ""
+    /**
+     * Whether the system also runs in an editor's viewport (Azora Studio) on
+     * the scene being edited, not only in the game: what draws a feature and
+     * what keeps its preview alive (weather easing, a sea developing, seasons
+     * turning). Gameplay leaves it false. An editor system is not `react`.
+     */
+    fin editor: Bool = false
 }
 
 /**
@@ -174,6 +185,12 @@ pack Time {
     var elapsedSecs: Double
     var fixedDeltaSecs: Double
     var frame: Long
+    /**
+     * True while an editor's viewport runs the systems on the scene it edits:
+     * what eases toward a setting in play (a sea building up under its wind)
+     * shows the setting at once, as the author changes it.
+     */
+    var editing: Bool = false
 }
 
 /** Creates a clock with a 60 Hz fixed timestep. */
@@ -240,17 +257,11 @@ solo pack EngineRegistry {
 }
 
 impl EngineRegistry {
-    func !.markModuleLoaded() {
-        self.loadedModules++
-    }
+    func !.markModuleLoaded() scope self.loadedModules++
 
-    func !.nextFrame() {
-        self.frameIndex++
-    }
+    func !.nextFrame() scope self.frameIndex++
 
-    func !.markWorldChanged() {
-        self.worldRevision++
-    }
+    func !.markWorldChanged() scope self.worldRevision++
 }
 
 /** Shared frame clock resolved by `inject EngineClock`. */
@@ -259,9 +270,7 @@ solo pack EngineClock {
 }
 
 impl EngineClock {
-    func !.advance(deltaSecs: Double) {
-        self.value.advance(deltaSecs)
-    }
+    func !.advance(deltaSecs: Double) scope self.value.advance(deltaSecs)
 }
 
 /**

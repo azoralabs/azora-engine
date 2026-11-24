@@ -1,0 +1,755 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.spectrum
+ *
+ * A wind sea as Tessendorf's statistical ocean: each wave vector k of a
+ * square tile gets a random complex amplitude h0(k) whose energy is the
+ * JONSWAP spectrum of the wind's speed and fetch, spread about its bearing
+ * (Mitsuyasu), plus an optional swell. At time t every wave has turned by its
+ * frequency ω(k) (deep or finite depth); an inverse FFT of the amplitudes
+ * gives the height, the horizontal displacement (sharp crests) and their
+ * slopes over the tile, which repeats seamlessly. Three tiles of different
+ * sizes (cascades) cover swell to ripples without repeating visibly.
+ *
+ * The same h0 drives the GPU surface ([engine.water.waves]) and, through the
+ * low frequencies of each cascade, [CpuWaves]: the sea that floating bodies
+ * and gameplay ask (`waterSurfaceAt`).
+ */
+module engine.water.spectrum
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.math
+import engine.scene
+import engine.water.components
+
+inline fin waterGravity: Double = 9.81
+inline fin waterTau: Double = 6.283185307179586
+
+/** How many cascades a sea is simulated in. */
+inline fin waveCascades: Int = 3
+
+/** A [WaterWaves] resolved against the scene: the wind actually blowing, sizes and limits applied. */
+pack SeaState derives Clone {
+    /** Wind speed at ten metres, m/s. */
+    var windSpeed: Double = 8.0
+    /** The unit direction the wind blows toward, in X/Z. */
+    var towardX: Double = 1.0
+    var towardZ: Double = 0.0
+    var fetch: Double = 300000.0
+    var gamma: Double = 3.3
+    var spread: Double = 0.4
+    var swell: Double = 0.0
+    var swellTowardX: Double = 1.0
+    var swellTowardZ: Double = 0.0
+    var swellLength: Double = 160.0
+    var swellFocus: Double = 0.7
+    var choppiness: Double = 0.9
+    var height: Double = 1.0
+    var depth: Double = 0.0
+    var tiles: Array<Double> = [280.0, 41.0, 6.3]
+    var resolution: Int = 256
+    var physicsResolution: Int = 32
+    var seed: Int = 1977
+}
+
+/** The unit X/Z a wind from compass [bearing] degrees blows toward (0 north is -Z, 90 east +X), as `windAt` blows. */
+func towardFromBearing(bearing: Double): Vec3 {
+    fin radians = bearing * 0.017453292519943295
+    return .(-sin(radians), 0.0, cos(radians))
+}
+
+func waveClamp(x: Double, low: Double, high: Double): Double = if x < low then low else if x > high then high else x
+
+/** tanh(x), for the waves' speed in finite depth. */
+func waveTanh(x: Double): Double {
+    fin e = exp(2.0 * waveClamp(x, -20.0, 20.0))
+    return (e - 1.0) / (e + 1.0)
+}
+
+func waveCosh(x: Double): Double = (exp(x) + exp(-x)) * 0.5
+
+/**
+ * The sea [waves] describes under a wind of [windSpeed] m/s blowing toward
+ * ([towardX], [towardZ]) - the wind is not the sea's: its system takes it
+ * from a `Wind` - with [swell] when it is enabled.
+ */
+func seaStateOf(waves: WaterWaves&, windSpeed: Double, towardX: Double, towardZ: Double, swell: WaterSwell&): SeaState {
+    fin swellToward = towardFromBearing(swell.direction)
+    fin tiles: Array<Double> = [waveClamp(waves.largeTile, 50.0, 2000.0), waveClamp(waves.mediumTile, 8.0, 400.0), waveClamp(waves.smallTile, 1.0, 60.0)]
+    return .(
+        windSpeed: waveClamp(windSpeed, 0.0, 40.0)
+        towardX: towardX
+        towardZ: towardZ
+        fetch: waveClamp(waves.fetch, 0.1, 2000.0) * 1000.0
+        gamma: waveClamp(waves.peakSharpening, 1.0, 7.0)
+        spread: waveClamp(waves.spread, 0.0, 1.0)
+        swell: if swell.enabled then waveClamp(swell.height, 0.0, 8.0) else 0.0
+        swellTowardX: swellToward.x
+        swellTowardZ: swellToward.z
+        swellLength: waveClamp(swell.length, 20.0, 600.0)
+        swellFocus: waveClamp(swell.focus, 0.0, 1.0)
+        choppiness: waveClamp(waves.choppiness, 0.0, 1.5)
+        height: waveClamp(waves.height, 0.0, 4.0)
+        depth: waveClamp(waves.depth, 0.0, 1000.0)
+        tiles: take tiles
+        resolution: when waves.resolution {
+            0 -> 64
+            1 -> 128
+            else -> 256
+        }
+        physicsResolution: when waves.physicsResolution {
+            0 -> 16
+            2 -> 64
+            else -> 32
+        }
+        seed: waves.seed
+    )
+}
+
+/** A fingerprint of everything h0 is made from: when it changes, the sea is made again. */
+func seaStateKey(state: SeaState&): Long {
+    var print: Fingerprint = .()
+    print.addReal(state.windSpeed)
+    print.addReal(state.towardX)
+    print.addReal(state.towardZ)
+    print.addReal(state.fetch)
+    print.addReal(state.gamma)
+    print.addReal(state.spread)
+    print.addReal(state.swell)
+    print.addReal(state.swellTowardX)
+    print.addReal(state.swellTowardZ)
+    print.addReal(state.swellLength)
+    print.addReal(state.swellFocus)
+    print.addReal(state.height)
+    print.addReal(state.depth)
+    for tile in state.tiles then print.addReal(tile)
+    print.addInt(state.resolution)
+    print.addInt(state.seed)
+    return print.value
+}
+
+/** ω(k): the angular frequency of a wave of wavenumber [k] in water [depth] metres deep (0 deep). */
+func waveFrequency(k: Double, depth: Double): Double =
+    if depth > 0.0 then sqrt(waterGravity * k * waveTanh(k * depth)) else sqrt(waterGravity * k)
+
+/** dω/dk at [k] in water [depth] deep (0 deep). */
+func waveGroupFactor(k: Double, depth: Double): Double {
+    fin omega = waveFrequency(k, depth)
+    if omega <= 0.0 then return 0.0
+    if depth <= 0.0 then return waterGravity / (2.0 * omega)
+    fin kh = k * depth
+    fin th = waveTanh(kh)
+    fin ch = waveCosh(waveClamp(kh, 0.0, 20.0))
+    return waterGravity * (th + kh / (ch * ch)) / (2.0 * omega)
+}
+
+/** The peak angular frequency of a JONSWAP sea of wind [speed] m/s over [fetch] metres. */
+func jonswapPeak(speed: Double, fetch: Double): Double = 22.0 * powr(waterGravity * waterGravity / (speed * fetch), 1.0 / 3.0)
+
+/** JONSWAP S(ω), m²·s: the energy of the wind sea per angular frequency. */
+func jonswap(omega: Double, speed: Double, fetch: Double, gamma: Double): Double {
+    if omega <= 0.0 || speed <= 0.01 then return 0.0
+    fin alpha = 0.076 * powr(speed * speed / (fetch * waterGravity), 0.22)
+    fin peak = jonswapPeak(speed, fetch)
+    fin sigma = if omega <= peak then 0.07 else 0.09
+    fin offset = omega - peak
+    fin r = exp(-offset * offset / (2.0 * sigma * sigma * peak * peak))
+    fin ratio = peak / omega
+    return alpha * waterGravity * waterGravity / powr(omega, 5.0) * exp(-1.25 * ratio * ratio * ratio * ratio) * powr(gamma, r)
+}
+
+/** ln Γ(x) for x > 0 (Lanczos, g = 7). */
+func lnGamma(x: Double): Double {
+    if x < 0.5 then return log(3.141592653589793 / absValue(sin(3.141592653589793 * x))) - lnGamma(1.0 - x)
+    fin c: Array<Double> = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+        -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
+    fin z = x - 1.0
+    var sum = c[0]
+    for i: Int in 1..<9 then sum += c[i] / (z + (i as Double))
+    fin t = z + 7.5
+    return 0.9189385332046727 + (z + 0.5) * log(t) - t + log(sum)
+}
+
+/**
+ * Mitsuyasu's directional spreading at [omega] for an angle [theta] from the
+ * wind: cos²ˢ(θ/2), normalised over the circle, s largest at the peak
+ * (s_p = 11.5 (ω_p U / g)^-2.5). [spread] widens it (0 keeps Mitsuyasu's own,
+ * 1 nearly round).
+ */
+func waveSpreading(theta: Double, omega: Double, peak: Double, speed: Double, spread: Double): Double {
+    fin ratio = omega / peak
+    fin atPeak = 11.5 * powr(waveClamp(peak * speed / waterGravity, 0.05, 100.0), -2.5)
+    fin mitsuyasu = if ratio <= 1.0 then atPeak * powr(ratio, 5.0) else atPeak * powr(ratio, -2.5)
+    fin s = waveClamp(mitsuyasu * (1.0 - 0.95 * spread), 0.5, 60.0)
+    return cosineSpreading(theta, s)
+}
+
+/** cos²ˢ(θ/2) normalised over the circle: ∫ = 1 over -π..π. */
+func cosineSpreading(theta: Double, s: Double): Double {
+    fin norm = exp(2.0 * lnGamma(s + 1.0) - lnGamma(2.0 * s + 1.0)) * powr(2.0, 2.0 * s - 1.0) / 3.141592653589793
+    fin c = absValue(cos(theta * 0.5))
+    return if c <= 0.0 then 0.0 else norm * powr(c, 2.0 * s)
+}
+
+/**
+ * The wavenumbers cascade [cascade] of [count] covers, as (low, high): each
+ * tile takes the waves too short for the larger one before it, so no wave is
+ * counted twice; the largest takes everything from its own tile size.
+ */
+func cascadeBand(state: SeaState&, cascade: Int): Vec3 {
+    fin size = state.tiles[cascade]
+    fin samples = state.resolution as Double
+    // Waves shorter than four samples of a tile alias: the next tile takes them.
+    fin low = if cascade == 0 then 0.0 else waterTau / state.tiles[cascade - 1] * samples * 0.25
+    fin high = if cascade == waveCascades - 1 then waterTau / size * samples * 0.5 else waterTau / size * samples * 0.25
+    return .(low, high, 0.0)
+}
+
+/** S(kx, kz): the wind sea's energy per wave vector area (two-sided), m⁴, shortest waves damped. */
+func windEnergy(state: SeaState&, kx: Double, kz: Double, k: Double): Double {
+    if k <= 0.000001 || state.windSpeed <= 0.01 then return 0.0
+    fin omega = waveFrequency(k, state.depth)
+    fin peak = jonswapPeak(state.windSpeed, state.fetch)
+    fin theta = atan2(kz, kx) - atan2(state.towardZ, state.towardX)
+    fin energy = jonswap(omega, state.windSpeed, state.fetch, state.gamma) * waveSpreading(theta, omega, peak, state.windSpeed, state.spread) *
+        waveGroupFactor(k, state.depth) / k
+    return energy * exp(-k * k * 0.0001) * state.height * state.height
+}
+
+/**
+ * The swell's shape over wave vectors, not yet scaled: a band about its
+ * wavelength (at least [minimumWidth] wide, so a tile's grid sees it), narrow
+ * about its bearing. [SeaBuild] scales it so the grid's sum is the asked height.
+ */
+func swellShape(state: SeaState&, kx: Double, kz: Double, k: Double, minimumWidth: Double): Double {
+    if state.swell <= 0.0 || k <= 0.000001 then return 0.0
+    fin centre = waterTau / state.swellLength
+    fin width = if centre * 0.08 > minimumWidth then centre * 0.08 else minimumWidth
+    fin offset = (k - centre) / width
+    if offset * offset > 25.0 then return 0.0
+    fin theta = atan2(kz, kx) - atan2(state.swellTowardZ, state.swellTowardX)
+    return exp(-0.5 * offset * offset) * cosineSpreading(theta, 2.0 + 46.0 * state.swellFocus) / k
+}
+
+/** A deterministic stream of standard normal numbers (Park–Miller + Box–Muller). */
+pack WaveRandom derives Clone {
+    var word: Long = 1
+    var spare: Double = 0.0
+    var hasSpare: Bool = false
+}
+
+func waveUniform(random: WaveRandom!): Double {
+    random.word = (random.word * 48271) % 2147483647
+    return ((random.word as Double) + 0.5) / 2147483647.0
+}
+
+func waveGaussian(random: WaveRandom!): Double {
+    if random.hasSpare {
+        random.hasSpare = false
+        return random.spare
+    }
+    fin u = waveUniform(random)
+    fin v = waveUniform(random)
+    fin radius = sqrt(-2.0 * log(u))
+    random.spare = radius * sin(waterTau * v)
+    random.hasSpare = true
+    return radius * cos(waterTau * v)
+}
+
+/**
+ * The initial amplitudes of one cascade: for each sample (m, n) of the
+ * [WaveTile.size]² grid, wave vector k = 2π(m - N/2, n - N/2)/L, h0(k) and
+ * the conjugate of h0(-k), interleaved as four numbers (re, im, re, im).
+ */
+pack WaveTile derives Clone {
+    var size: Int = 0
+    var length: Double = 1.0
+    var amplitudes: Array<Double> = []
+}
+
+/**
+ * A sea's tiles being made a few rows at a time ([stepSeaBuild]), so a new
+ * sea - the wind changed - never stalls a frame: h0 of the rows done so far,
+ * the random stream where it stopped, and the cascades finished.
+ */
+pack SeaBuild derives Clone {
+    var state: SeaState = .()
+    var key: Long = 0
+    var active: Bool = false
+    var cascade: Int = 0
+    var row: Int = 0
+    var random: WaveRandom = .()
+    /** The swell's own phases: drawn for every sample, so a swell switched on or off leaves the wind sea as it was. */
+    var swellRandom: WaveRandom = .()
+    var h0: Array<Double> = []
+    var tiles: Array<WaveTile> = []
+    /** What the swell's shape is multiplied by in the cascade being made: its grid sum gives the swell's variance. */
+    var swellScale: Double = 0.0
+}
+
+/** Starts making [state]'s tiles (keyed [key]) in [build]. */
+func startSeaBuild(build: SeaBuild!, state: SeaState&, key: Long) {
+    build.state = state.clone()
+    build.key = key
+    build.active = true
+    build.tiles.clear()
+    beginSeaCascade(build, 0)
+}
+
+func beginSeaCascade(build: SeaBuild!, cascade: Int) {
+    fin n = build.state.resolution
+    build.cascade = cascade
+    build.row = 0
+    build.random = .(word: ((build.state.seed as Long) * 7919 + (cascade as Long) * 104729) % 2147483646 + 1)
+    build.swellRandom = .(word: ((build.state.seed as Long) * 3301 + (cascade as Long) * 65537 + 17) % 2147483646 + 1)
+    build.h0 = .() * (n * n * 2)
+    // The swell lives in the one cascade whose band holds its wavelength: there its shape is scaled so the
+    // grid's sum is its variance, H² / 16, however coarse the grid is against its band.
+    build.swellScale = 0.0
+    if build.state.swell <= 0.0 then return
+    fin band = cascadeBand(build.state, cascade)
+    fin dk = waterTau / build.state.tiles[cascade]
+    var sum: Double = 0.0
+    for row: Int in 0..<n {
+        for column: Int in 0..<n {
+            fin kx = ((column - n / 2) as Double) * dk
+            fin kz = ((row - n / 2) as Double) * dk
+            fin k = sqrt(kx * kx + kz * kz)
+            if k >= band.x && k < band.y then sum += swellShape(build.state, kx, kz, k, dk * 0.6) * dk * dk
+        }
+    }
+    if sum > 0.0 then build.swellScale = build.state.swell * build.state.swell / 16.0 / sum
+}
+
+/**
+ * Makes up to [samples] more samples of [build]'s tiles; answers whether all
+ * are made. The numbers drawn per sample do not depend on the band (every
+ * sample draws its two), so a sea made again for a new wind keeps every
+ * wave's phase: its waves grow and turn, they do not jump.
+ */
+func stepSeaBuild(build: SeaBuild!, samples: Int): Bool {
+    if !build.active then return true
+    var left = samples
+    while left > 0 && build.cascade < waveCascades {
+        fin n = build.state.resolution
+        fin length = build.state.tiles[build.cascade]
+        fin band = cascadeBand(build.state, build.cascade)
+        fin dk = waterTau / length
+        fin row = build.row
+        for column: Int in 0..<n {
+            fin kx = ((column - n / 2) as Double) * dk
+            fin kz = ((row - n / 2) as Double) * dk
+            fin k = sqrt(kx * kx + kz * kz)
+            fin gr = waveGaussian(build.random)
+            fin gi = waveGaussian(build.random)
+            fin phase = waveUniform(build.swellRandom) * waterTau
+            if k < band.x || k >= band.y || k <= 0.0 then continue
+            // The wind sea: Gaussian amplitudes (Rayleigh heights). The swell: a regular train, its height as set, its phase random.
+            fin amplitude = sqrt(windEnergy(build.state, kx, kz, k) * dk * dk * 0.5) * 0.7071067811865476
+            fin regular = if build.swellScale > 0.0 then sqrt(build.swellScale * swellShape(build.state, kx, kz, k, dk * 0.6) * dk * dk * 0.5) else 0.0
+            build.h0[(row * n + column) * 2] = gr * amplitude + regular * cos(phase)
+            build.h0[(row * n + column) * 2 + 1] = gi * amplitude + regular * sin(phase)
+        }
+        left -= n
+        build.row++
+        if build.row == n {
+            build.tiles.add(finishWaveTile(n, length, build.h0))
+            if build.cascade + 1 < waveCascades then beginSeaCascade(build, build.cascade + 1) else build.cascade = waveCascades
+        }
+    }
+    if build.cascade < waveCascades then return false
+    build.active = false
+    build.h0 = []
+    return true
+}
+
+/** A tile of [n]² samples [length] metres wide from its [h0]: each sample with the conjugate of its mirror -k. */
+func finishWaveTile(n: Int, length: Double, h0: Array<Double>&): WaveTile {
+    var tile: WaveTile = .(n, length, .() * (n * n * 4))
+    for row: Int in 0..<n {
+        for column: Int in 0..<n {
+            fin at = row * n + column
+            // -k: (N - m) mod N about the centre.
+            fin mirror = ((n - row) % n) * n + (n - column) % n
+            tile.amplitudes[at * 4] = h0[at * 2]
+            tile.amplitudes[at * 4 + 1] = h0[at * 2 + 1]
+            tile.amplitudes[at * 4 + 2] = h0[mirror * 2]
+            tile.amplitudes[at * 4 + 3] = -h0[mirror * 2 + 1]
+        }
+    }
+    return take tile
+}
+
+/** Every cascade of [state] at once (a first sea, a check): what [stepSeaBuild] makes a few rows at a time. */
+func seaTiles(state: SeaState&): Array<WaveTile> {
+    var build: SeaBuild = .()
+    startSeaBuild(build, state, seaStateKey(state))
+    while !stepSeaBuild(build, 1000000000) then continue
+    return build.tiles.clone()
+}
+
+/** The significant wave height of [tile] (4 σ of its height field), in metres. */
+func tileSignificantHeight(tile: WaveTile&): Double {
+    var variance: Double = 0.0
+    for i: Int in 0..<(tile.size * tile.size) {
+        fin a = tile.amplitudes[i * 4]
+        fin b = tile.amplitudes[i * 4 + 1]
+        // |ĥ|² = |h0|² + |h0(-k)|² on average: each h0 counted once for itself and once as a mirror.
+        variance += 2.0 * (a * a + b * b)
+    }
+    return 4.0 * sqrt(variance)
+}
+
+// ── CPU sea ─────────────────────────────────────────────────────────────
+
+/**
+ * What a sea sends toward a shore: the significant heights of its wind sea
+ * and of its swell (metres), the wavelength of its peak in deep water
+ * (metres, the heavier of the two weighing more) and the directions each
+ * travels toward. The surf breaking on a beach is made from it.
+ */
+pack SurfSource derives Clone {
+    var wind: Double = 0.0
+    var swell: Double = 0.0
+    var length: Double = 100.0
+    var windX: Double = 1.0
+    var windZ: Double = 0.0
+    var swellX: Double = 1.0
+    var swellZ: Double = 0.0
+}
+
+/** The surf [state]'s sea made as [tiles] sends to a shore. */
+func surfSource(state: SeaState&, tiles: Array<WaveTile>&): SurfSource {
+    var variance: Double = 0.0
+    for tile in tiles {
+        fin h = tileSignificantHeight(tile) / 4.0
+        variance += h * h
+    }
+    fin total = 4.0 * sqrt(variance)
+    fin swell = if state.swell < total then state.swell else total
+    fin wind = sqrt(waveClamp(total * total - swell * swell, 0.0, 1.0e6))
+    // Deep water: L = 2πg / ω², at the wind sea's peak and at the swell's own length.
+    fin peak = if state.windSpeed > 0.3 then jonswapPeak(state.windSpeed, state.fetch) else 0.0
+    fin windLength = if peak > 0.0 then waterTau * waterGravity / (peak * peak) else 0.0
+    fin weight = wind * wind + swell * swell
+    fin length = if weight > 0.000001 then (wind * wind * windLength + swell * swell * state.swellLength) / weight else 100.0
+    return .(wind, swell, waveClamp(length, 8.0, 600.0), state.towardX, state.towardZ, state.swellTowardX, state.swellTowardZ)
+}
+
+/** In-place radix-2 complex FFT of [count] numbers ([re], [im]) at [start] with [stride]; [inverse] uses e^{+i}. No scaling. */
+func waveFft(re: Array<Double>!, im: Array<Double>!, start: Int, stride: Int, count: Int, inverse: Bool) {
+    // Bit-reversed order.
+    var j = 0
+    for i: Int in 0..<(count - 1) {
+        if i < j {
+            fin a = start + i * stride
+            fin b = start + j * stride
+            fin r = re[a]
+            re[a] = re[b]
+            re[b] = r
+            fin m = im[a]
+            im[a] = im[b]
+            im[b] = m
+        }
+        var bit = count / 2
+        while bit <= j && bit > 0 {
+            j -= bit
+            bit /= 2
+        }
+        j += bit
+    }
+    fin sign = if inverse then 1.0 else -1.0
+    var half = 1
+    while half < count {
+        fin angle = sign * 3.141592653589793 / (half as Double)
+        fin stepRe = cos(angle)
+        fin stepIm = sin(angle)
+        for group: Int in 0..<(count / (half * 2)) {
+            var wRe: Double = 1.0
+            var wIm: Double = 0.0
+            for pos: Int in 0..<half {
+                fin a = start + (group * half * 2 + pos) * stride
+                fin b = a + half * stride
+                fin tRe = re[b] * wRe - im[b] * wIm
+                fin tIm = re[b] * wIm + im[b] * wRe
+                re[b] = re[a] - tRe
+                im[b] = im[a] - tIm
+                re[a] += tRe
+                im[a] += tIm
+                fin nextRe = wRe * stepRe - wIm * stepIm
+                wIm = wRe * stepIm + wIm * stepRe
+                wRe = nextRe
+            }
+        }
+        half *= 2
+    }
+}
+
+/** A 2D inverse FFT of an [n]² grid, rows then columns, in place. */
+func waveInverse2d(re: Array<Double>!, im: Array<Double>!, n: Int) {
+    for row: Int in 0..<n then waveFft(re, im, row * n, 1, n, true)
+    for column: Int in 0..<n then waveFft(re, im, column, n, n, true)
+}
+
+/**
+ * One cascade of the CPU sea at one moment: height and horizontal
+ * displacement over [size]² samples of a tile [length] metres wide.
+ */
+pack CpuWaveGrid derives Clone {
+    var size: Int = 0
+    var length: Double = 1.0
+    var height: Array<Double> = []
+    var shiftX: Array<Double> = []
+    var shiftZ: Array<Double> = []
+}
+
+/**
+ * The sea floating bodies feel: per cascade the [CpuWaves.size]² lowest
+ * frequencies of the GPU's h0, evaluated at two moments [times] apart, so a
+ * question between them is answered by linear blend (it is made again only
+ * [CpuWaves.rate] times a second, whatever the frame or step rate).
+ */
+pack CpuWaves derives Clone {
+    var key: Long = 0
+    var size: Int = 0
+    var choppiness: Double = 0.9
+    var depth: Double = 0.0
+    /** Per cascade: h0 and the conjugate mirror (4 numbers a sample), and its tile length. */
+    var amplitudes: Array<Double> = []
+    var lengths: Array<Double> = []
+    /** The two moments evaluated, and their grids (cascade after cascade). */
+    var earlier: Double = -1.0
+    var later: Double = -1.0
+    var before: Array<CpuWaveGrid> = []
+    var after: Array<CpuWaveGrid> = []
+    /** Moments a second the sea is evaluated at. */
+    var rate: Double = 20.0
+}
+
+/** The CPU sea of [state] from its [tiles]: the [SeaState.physicsResolution]² central amplitudes of every cascade. */
+func cpuWaves(state: SeaState&, tiles: Array<WaveTile>&): CpuWaves {
+    fin p = state.physicsResolution
+    var waves: CpuWaves = .(key: seaStateKey(state), size: p, choppiness: state.choppiness, depth: state.depth)
+    for tile in tiles {
+        fin n = tile.size
+        waves.lengths.add(tile.length)
+        for row: Int in 0..<p {
+            for column: Int in 0..<p {
+                // The same wave vector: (m - p/2) in the small grid is (m - p/2 + n/2) in the GPU's. The first
+                // row and column (-p/2) have no mirror inside the small grid: left out, the fields stay real.
+                fin source = ((row - p / 2 + n / 2) * n + column - p / 2 + n / 2) * 4
+                fin paired = row > 0 && column > 0
+                for c: Int in 0..<4 then waves.amplitudes.add(if paired then tile.amplitudes[source + c] else 0.0)
+            }
+        }
+    }
+    return take waves
+}
+
+/** Cascade [cascade] of [waves] at [time] seconds: an inverse FFT of the evolved amplitudes. */
+func cpuWaveGrid(waves: CpuWaves&, cascade: Int, time: Double): CpuWaveGrid {
+    fin p = waves.size
+    fin length = waves.lengths[cascade]
+    fin dk = waterTau / length
+    // Two transforms: height + i·shiftX, and shiftZ alone.
+    var aRe: Array<Double> = .() * (p * p)
+    var aIm: Array<Double> = .() * (p * p)
+    var bRe: Array<Double> = .() * (p * p)
+    var bIm: Array<Double> = .() * (p * p)
+    fin base = cascade * p * p * 4
+    for row: Int in 0..<p {
+        for column: Int in 0..<p {
+            fin kx = ((column - p / 2) as Double) * dk
+            fin kz = ((row - p / 2) as Double) * dk
+            fin k = sqrt(kx * kx + kz * kz)
+            fin at = row * p + column
+            fin h = base + at * 4
+            fin phase = waveFrequency(k, waves.depth) * time
+            fin c = cos(phase)
+            fin s = sin(phase)
+            // ĥ = h0 e^{iωt} + conj(h0(-k)) e^{-iωt}.
+            fin hRe = waves.amplitudes[h] * c - waves.amplitudes[h + 1] * s + waves.amplitudes[h + 2] * c + waves.amplitudes[h + 3] * s
+            fin hIm = waves.amplitudes[h] * s + waves.amplitudes[h + 1] * c - waves.amplitudes[h + 2] * s + waves.amplitudes[h + 3] * c
+            fin ux = if k > 0.000001 then kx / k else 0.0
+            fin uz = if k > 0.000001 then kz / k else 0.0
+            // shift = -i k/|k| ĥ λ: (hIm, -hRe) * u λ.
+            fin xRe = hIm * ux * waves.choppiness
+            fin xIm = -hRe * ux * waves.choppiness
+            fin zRe = hIm * uz * waves.choppiness
+            fin zIm = -hRe * uz * waves.choppiness
+            // height + i·shiftX: (hRe - xIm) + i (hIm + xRe).
+            aRe[at] = hRe - xIm
+            aIm[at] = hIm + xRe
+            bRe[at] = zRe
+            bIm[at] = zIm
+        }
+    }
+    waveInverse2d(aRe, aIm, p)
+    waveInverse2d(bRe, bIm, p)
+    var grid: CpuWaveGrid = .(p, length, .() * (p * p), .() * (p * p), .() * (p * p))
+    for row: Int in 0..<p {
+        for column: Int in 0..<p {
+            fin at = row * p + column
+            // The centred spectrum leaves a sign (-1)^(row + column).
+            fin sign = if (row + column) % 2 == 0 then 1.0 else -1.0
+            grid.height[at] = aRe[at] * sign
+            grid.shiftX[at] = aIm[at] * sign
+            grid.shiftZ[at] = bRe[at] * sign
+        }
+    }
+    return take grid
+}
+
+/** Brings [waves] to [time]: the two evaluated moments bracket it. */
+func advanceCpuWaves(waves: CpuWaves!, time: Double) {
+    fin interval = 1.0 / waveClamp(waves.rate, 1.0, 240.0)
+    if waves.earlier >= 0.0 && time >= waves.earlier && time <= waves.later then return
+    fin start = (floor(time / interval) as Double) * interval
+    if waves.later >= 0.0 && absValue(waves.later - start) < 0.000001 {
+        // The later moment becomes the earlier one: one new evaluation.
+        waves.before = waves.after.clone()
+    } else {
+        waves.before.clear()
+        for cascade: Int in 0..<waves.lengths.size then waves.before.add(cpuWaveGrid(waves, cascade, start))
+    }
+    waves.after = []
+    for cascade: Int in 0..<waves.lengths.size then waves.after.add(cpuWaveGrid(waves, cascade, start + interval))
+    waves.earlier = start
+    waves.later = start + interval
+}
+
+/** [values] of an [n]² grid over a tile [length] metres wide at local position (x, z), bilinear, wrapping. */
+func sampleWaveField(values: Array<Double>&, n: Int, length: Double, x: Double, z: Double): Double {
+    fin u = x / length * (n as Double)
+    fin v = z / length * (n as Double)
+    fin u0 = floor(u)
+    fin v0 = floor(v)
+    fin fu = u - (u0 as Double)
+    fin fv = v - (v0 as Double)
+    fin a = ((u0 % n) + n) % n
+    fin b = (a + 1) % n
+    fin c = ((v0 % n) + n) % n
+    fin d = (c + 1) % n
+    fin top = values[c * n + a] * (1.0 - fu) + values[c * n + b] * fu
+    fin bottom = values[d * n + a] * (1.0 - fu) + values[d * n + b] * fu
+    return top * (1.0 - fv) + bottom * fv
+}
+
+/** [grid]'s height and shifts at local tile position (x, z) metres, as (shift X, height, shift Z). */
+func sampleWaveGrid(grid: CpuWaveGrid&, x: Double, z: Double): Vec3 = .(
+    sampleWaveField(grid.shiftX, grid.size, grid.length, x, z)
+    sampleWaveField(grid.height, grid.size, grid.length, x, z)
+    sampleWaveField(grid.shiftZ, grid.size, grid.length, x, z)
+)
+
+/**
+ * How a cascade's tile is laid on the world so that it never shows as a
+ * repeating pattern: each cascade turned its own way ([cascadeTurn]), and a
+ * second reading of it - turned further and moved half a tile - blended in
+ * where a slow, never-repeating weight ([tileBlend]) says. Both readings are
+ * the same moving sea, so the blend is too. The GPU (engine.water.oceanshader)
+ * lays the tiles the same way.
+ */
+func cascadeTurn(cascade: Int): Double = when cascade {
+    1 -> 0.83
+    2 -> 2.17
+    else -> 0.31
+}
+
+/** How much further the second reading of a cascade is turned, in radians. */
+inline fin secondReadingTurn: Double = 2.4
+
+/** Where the second reading of a cascade is moved, as shares of its tile. */
+inline fin secondReadingX: Double = 0.37
+inline fin secondReadingZ: Double = 0.61
+
+/** The share of the second reading at world (x, z) for [cascade]: a smooth weight that wanders over a kilometre or so, never repeating. */
+func tileBlend(cascade: Int, x: Double, z: Double): Double {
+    fin px = x + (cascade as Double) * 1731.0
+    fin pz = z - (cascade as Double) * 977.0
+    fin w = 0.5 + 0.35 * sin(0.0061 * px + 1.7 * sin(0.0043 * pz + 0.6)) + 0.3 * sin(0.0057 * pz + 1.3 * sin(0.0037 * px + 2.1))
+    return waveClamp(w, 0.0, 1.0)
+}
+
+/** [grid]'s displacement (shift X, height, shift Z) at world (x, z), its tile turned by [turn] and moved by ([moveX], [moveZ]) tiles. */
+func turnedWaveGrid(grid: CpuWaveGrid&, x: Double, z: Double, turn: Double, moveX: Double, moveZ: Double): Vec3 {
+    fin c = cos(turn)
+    fin s = sin(turn)
+    fin local = sampleWaveGrid(grid, c * x + s * z + moveX * grid.length, -s * x + c * z + moveZ * grid.length)
+    // The shift back from the tile's axes to the world's.
+    return .(c * local.x - s * local.z, local.y, s * local.x + c * local.z)
+}
+
+/** [grid] at world (x, z) as cascade [cascade] is laid there: its two readings blended. */
+func laidWaveGrid(grid: CpuWaveGrid&, cascade: Int, x: Double, z: Double): Vec3 {
+    fin turn = cascadeTurn(cascade)
+    fin first = turnedWaveGrid(grid, x, z, turn, 0.0, 0.0)
+    fin second = turnedWaveGrid(grid, x, z, turn + secondReadingTurn, secondReadingX, secondReadingZ)
+    fin w = tileBlend(cascade, x, z)
+    // Two unrelated readings blended keep the sea's height when divided by the weights' length.
+    fin keep = 1.0 / sqrt((1.0 - w) * (1.0 - w) + w * w)
+    return .((first.x + (second.x - first.x) * w) * keep, (first.y + (second.y - first.y) * w) * keep, (first.z + (second.z - first.z) * w) * keep)
+}
+
+/** The surface's displacement (x, y, z) of the undisturbed point (x, z) at the moment [waves] was advanced to, [blend] between its two. */
+func waveDisplacement(waves: CpuWaves&, x: Double, z: Double, blend: Double): Vec3 {
+    var dx: Double = 0.0
+    var dy: Double = 0.0
+    var dz: Double = 0.0
+    for cascade: Int in 0..<waves.before.size {
+        // Read unturned until the GPU surface lays its tiles with [laidWaveGrid] too: what floats rides what is drawn.
+        fin a = sampleWaveGrid(waves.before[cascade], x, z)
+        fin b = sampleWaveGrid(waves.after[cascade], x, z)
+        dx += a.x + (b.x - a.x) * blend
+        dy += a.y + (b.y - a.y) * blend
+        dz += a.z + (b.z - a.z) * blend
+    }
+    return .(dx, dy, dz)
+}
+
+/**
+ * The height of the sea above its level at world (x, z) at [time]: the
+ * undisturbed point whose displaced position lands at (x, z) is found by a
+ * few fixed-point steps (the crests lean, so the point below is not the
+ * point that rose).
+ */
+func waveHeightAt(waves: CpuWaves!, x: Double, z: Double, time: Double): Double {
+    advanceCpuWaves(waves, time)
+    fin blend = waveClamp((time - waves.earlier) / (waves.later - waves.earlier), 0.0, 1.0)
+    var px = x
+    var pz = z
+    for i: Int in 0..<4 {
+        fin shift = waveDisplacement(waves, px, pz, blend)
+        px = x - shift.x
+        pz = z - shift.z
+    }
+    return waveDisplacement(waves, px, pz, blend).y
+}
+
+/** The surface's normal at world (x, z) at [time], from heights [spacing] metres apart. */
+func waveNormalAt(waves: CpuWaves!, x: Double, z: Double, time: Double, spacing: Double = 0.5): Vec3 {
+    fin hx = waveHeightAt(waves, x + spacing, z, time) - waveHeightAt(waves, x - spacing, z, time)
+    fin hz = waveHeightAt(waves, x, z + spacing, time) - waveHeightAt(waves, x, z - spacing, time)
+    fin nx = -hx / (2.0 * spacing)
+    fin nz = -hz / (2.0 * spacing)
+    fin length = sqrt(nx * nx + 1.0 + nz * nz)
+    return .(nx / length, 1.0 / length, nz / length)
+}

@@ -274,59 +274,12 @@ impl App {
             gpu.meshPipeline = active
         }
 
-        azCopy(gpu.scratch, gpu.viewProj, 64)
-        pokeMat4(gpu.scratch, 64, model)
-        azPokeF32(gpu.scratch, 128, r)
-        azPokeF32(gpu.scratch, 132, g)
-        azPokeF32(gpu.scratch, 136, b)
-        azPokeF32(gpu.scratch, 140, 1.0)
-        azPokeF32(gpu.scratch, 144, gpu.lightX)
-        azPokeF32(gpu.scratch, 148, gpu.lightY)
-        azPokeF32(gpu.scratch, 152, gpu.lightZ)
-        azPokeF32(gpu.scratch, 156, gpu.ambient)
         if pipeline != 0 then gpu.fusion.bindTextures(gpu.enc, pipeline)
-        azCopy(gpu.scratch + 160, gpu.viewProj + 64, 12)
-        fin flags: Double = (if gpu.flatMaterials then 1.0 else 0.0) +
-            (if gpu.indirectLighting && lighting then 2.0 else 0.0) +
-            (if !gpu.virtualShadows && lighting then 4.0 else 0.0) +
-            (if gpu.detailReady && gpu.shadowsActive && lighting && !gpu.flatMaterials then 8.0 else 0.0)
-        azPokeF32(gpu.scratch, 172, flags)
-        azCopy(gpu.scratch + 176, gpu.viewProj + 80, 16)
-        if !lighting || gpu.flatMaterials then azPokeF32(gpu.scratch, 188, 0.0)
-        azCopy(gpu.scratch+192,gpu.viewProj+96,12)
-        if !lighting || gpu.flatMaterials {
-            azPokeF32(gpu.scratch,192,1.0)
-            azPokeF32(gpu.scratch,196,1.0)
-            azPokeF32(gpu.scratch,200,1.0)
-        }
-        // Texture footprint: a half-resolution scene pass samples as finely as a full one.
-        azPokeF32(gpu.scratch,204,gpu.passScale)
-        azCopy(gpu.scratch+208,gpu.viewProj+112,16)
-        // extra: x is the surface's own light (StandardMaterial.emission).
-        azPokeF32(gpu.scratch,224,emission)
-        azPokeF32(gpu.scratch,228,0.0)
-        azPokeF32(gpu.scratch,232,0.0)
-        azPokeF32(gpu.scratch,236,0.0)
-        fin size: Long = 240
+        self.writeSceneUniforms(gpu.scratch, model, r, g, b, lighting, emission)
         send3(gpu.enc, sel("setVertexBuffer:offset:atIndex:"), mesh.buffer, 0, 0)
-        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, size, 1)
-        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, size, 1)
-        azPokeF32(gpu.scratch, 224, 0.0)
-        if lighting && !gpu.flatMaterials && gpu.photonBuffer != 0 && (gpu.shadowsActive || gpu.indirectLighting) {
-            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.photonBuffer, 0, 2)
-        } else {
-            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch + 224, 4, 2)
-        }
-        if lighting && !gpu.flatMaterials && gpu.shadowsActive && gpu.staticShadowBuffer != 0 {
-            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.staticShadowBuffer, 0, 3)
-        } else {
-            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch + 224, 4, 3)
-        }
-        if gpu.detailLight != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.detailLight, 80, 4)
-        if gpu.detailMap != 0 then send2(gpu.enc, sel("setFragmentTexture:atIndex:"), gpu.detailMap, 30)
-        if gpu.localLights != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.localLights, 528, 5)
-        if gpu.environment != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.environment, 64, 6)
-        send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if gpu.cloudShadow != 0 then gpu.cloudShadow else gpu.whiteTexture, 31)
+        send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), gpu.scratch, sceneUniformBytes, 1)
+        send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, sceneUniformBytes, 1)
+        self.bindSceneLighting(lighting)
         // A mesh in the upscaler's scene pass leaves what its motion needs; the
         // terrain's indexed chunks do not move, so the camera's motion covers them.
         if gpu.scenePass.active && indices == 0 && gpu.motionCurrent != 0 && gpu.motionCount < motionCapacity {
@@ -342,6 +295,78 @@ impl App {
         } else {
             send3(gpu.enc, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, mesh.count as Long)
         }
+    }
+
+    /**
+     * Writes the scene uniforms every lit 3D shader starts with (the standard
+     * shader's `U3`, [sceneUniformBytes]) into [into]: the view, [model], the
+     * colour, the light, the eye and the lighting switches, the haze, the
+     * sun's colour, the fog's shape and the surface's own light ([emission]).
+     * A pipeline of a package's own (water, plants) reads the same block and
+     * lights itself as the scene does.
+     */
+    func &.writeSceneUniforms(into: Long, model: Mat4&, r: Double, g: Double, b: Double, lighting: Bool = true, emission: Double = 0.0) {
+        let gpu: AzGpu& = self.gpu
+        azCopy(into, gpu.viewProj, 64)
+        pokeMat4(into, 64, model)
+        azPokeF32(into, 128, r)
+        azPokeF32(into, 132, g)
+        azPokeF32(into, 136, b)
+        azPokeF32(into, 140, 1.0)
+        azPokeF32(into, 144, gpu.lightX)
+        azPokeF32(into, 148, gpu.lightY)
+        azPokeF32(into, 152, gpu.lightZ)
+        azPokeF32(into, 156, gpu.ambient)
+        azCopy(into + 160, gpu.viewProj + 64, 12)
+        fin flags: Double = (if gpu.flatMaterials then 1.0 else 0.0) +
+            (if gpu.indirectLighting && lighting then 2.0 else 0.0) +
+            (if !gpu.virtualShadows && lighting then 4.0 else 0.0) +
+            (if gpu.detailReady && gpu.shadowsActive && lighting && !gpu.flatMaterials then 8.0 else 0.0)
+        azPokeF32(into, 172, flags)
+        azCopy(into + 176, gpu.viewProj + 80, 16)
+        if !lighting || gpu.flatMaterials then azPokeF32(into, 188, 0.0)
+        azCopy(into + 192, gpu.viewProj + 96, 12)
+        if !lighting || gpu.flatMaterials {
+            azPokeF32(into, 192, 1.0)
+            azPokeF32(into, 196, 1.0)
+            azPokeF32(into, 200, 1.0)
+        }
+        // Texture footprint: a half-resolution scene pass samples as finely as a full one.
+        azPokeF32(into, 204, gpu.passScale)
+        azCopy(into + 208, gpu.viewProj + 112, 16)
+        // extra: x is the surface's own light (StandardMaterial.emission).
+        azPokeF32(into, 224, emission)
+        azPokeF32(into, 228, 0.0)
+        azPokeF32(into, 232, 0.0)
+        azPokeF32(into, 236, 0.0)
+    }
+
+    /**
+     * Binds what the scene's lighting reads in the fragment stage, for the
+     * draws that follow: the Photon Field (buffer 2), its baked shadows (3),
+     * the sun's sharp cascade (4, texture 30), the local lights (5), the
+     * weather (6) and the clouds' shadow (texture 31). Without [lighting]
+     * (or with flat materials) the field and baked shadows are left out.
+     */
+    func &.bindSceneLighting(lighting: Bool = true) {
+        let gpu: AzGpu& = self.gpu
+        azPokeF32(gpu.scratch, sceneUniformBytes, 0.0)
+        fin empty = gpu.scratch + sceneUniformBytes
+        if lighting && !gpu.flatMaterials && gpu.photonBuffer != 0 && (gpu.shadowsActive || gpu.indirectLighting) {
+            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.photonBuffer, 0, 2)
+        } else {
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), empty, 4, 2)
+        }
+        if lighting && !gpu.flatMaterials && gpu.shadowsActive && gpu.staticShadowBuffer != 0 {
+            send3(gpu.enc, sel("setFragmentBuffer:offset:atIndex:"), gpu.staticShadowBuffer, 0, 3)
+        } else {
+            send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), empty, 4, 3)
+        }
+        if gpu.detailLight != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.detailLight, 80, 4)
+        if gpu.detailMap != 0 then send2(gpu.enc, sel("setFragmentTexture:atIndex:"), gpu.detailMap, 30)
+        if gpu.localLights != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.localLights, 528, 5)
+        if gpu.environment != 0 then send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.environment, 64, 6)
+        send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if gpu.cloudShadow != 0 then gpu.cloudShadow else gpu.whiteTexture, 31)
     }
 
     func &.setMaterialEye(eye: Vec3&) {
@@ -889,6 +914,9 @@ func pokeVert2d(p: Long, off: Long, x: Double, y: Double, u: Double, v: Double, 
 }
 
 /** The system interface font (San Francisco on macOS). */
+/** The bytes of the scene uniforms ([App.writeSceneUniforms]): the standard shader's `U3`. */
+inline fin sceneUniformBytes: Long = 240
+
 inline fin uiFontRegular = ".AppleSystemUIFont"
 
 /** The system interface font's semibold weight, for headings and emphasis. */

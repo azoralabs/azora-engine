@@ -1,0 +1,155 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.seas
+ *
+ * Seas as systems: a water body's [WaterWaves] and the [Wind] over it, joined
+ * in a query, keep its [Sea] - the wind the sea has built up to (it follows
+ * a change of wind over [WaterWaves.development] seconds, it does not jump),
+ * the cascades' amplitudes made from it a few rows a frame, and the CPU sea
+ * floating bodies feel. The GPU surface and the renderer read the same Sea.
+ */
+module engine.water.seas
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.weather.wind
+import engine.water.components
+import engine.water.spectrum
+
+/** Samples of new amplitudes a sea makes a frame while its wind changes (a fresh sea makes all at once). */
+inline fin seaSamplesPerFrame: Int = 12288
+
+/** A change of wind smaller than this (m/s, and radians of bearing) does not make the sea again. */
+inline fin seaWindStep: Double = 0.2
+inline fin seaBearingStep: Double = 0.03
+
+/**
+ * The sea of a water body with [WaterWaves], kept by its systems: never saved.
+ * [revision] counts the amplitudes it has had, so the GPU knows when to take
+ * the new [tiles].
+ */
+@Component
+pack Sea {
+    /** The wind the sea has built up to: m/s, and the unit direction it blows toward. Negative before the first frame. */
+    var windSpeed: Double = -1.0
+    var towardX: Double = 1.0
+    var towardZ: Double = 0.0
+    var state: SeaState = .()
+    var key: Long = 0
+    var tiles: Array<WaveTile> = []
+    var revision: Int = 0
+    var build: SeaBuild = .()
+    var cpu: CpuWaves = .()
+    /** What it sends toward a shore, made with its tiles. */
+    var surf: SurfSource = .()
+}
+
+/** [entity]'s water goes still: its sea is dropped (its maps on the GPU follow, see `dropSeaMaps`). */
+func stillSea(world: World!, entity: Entity) {
+    storageRemove<Sea>(ensureStorage(world), entity)
+}
+
+/**
+ * The sea on [entity] one frame on ([time]) under [wind]: its wind eases
+ * toward the Wind's steady speed and bearing over [WaterWaves.development]
+ * seconds (gusts move the air, not a sea already raised) - in an editor's
+ * viewport it takes them at once, as the author sets them - and when it has
+ * moved enough the amplitudes are made again, a few rows a frame. Waves
+ * switched off leave still water.
+ */
+func tendSea(world: World!, entity: Entity, waves: WaterWaves&, wind: Wind&, time: Time&) {
+    if !waves.enabled {
+        stillSea(world, entity)
+        return
+    }
+    let seas = ensureStorage<Sea>(world)
+    if !storageHas<Sea>(seas, entity) then storageInsert<Sea>(seas, entity, .())
+    fin at = storageIndexOf<Sea>(seas, entity)
+    fin speed = if wind.enabled then wind.speed else 0.0
+    fin toward = towardFromBearing(wind.direction)
+    fin swell = storageGetOrDefault<WaterSwell>(ensureStorage(world), entity, .(enabled: false))
+    let sea: Sea! = seas.values[at]
+    if sea.windSpeed < 0.0 || time.editing || waves.development <= 0.0 {
+        sea.windSpeed = speed
+        sea.towardX = toward.x
+        sea.towardZ = toward.z
+    } else {
+        fin share = 1.0 - exp(-time.deltaSecs / waves.development)
+        sea.windSpeed += (speed - sea.windSpeed) * share
+        // The bearing turns the short way round.
+        fin from = atan2(sea.towardZ, sea.towardX)
+        var turn = atan2(toward.z, toward.x) - from
+        while turn > 3.141592653589793 then turn -= 6.283185307179586
+        while turn < -3.141592653589793 then turn += 6.283185307179586
+        fin heading = from + turn * share
+        sea.towardX = cos(heading)
+        sea.towardZ = sin(heading)
+    }
+    // The wind the sea is made for: stepped, so a slow change makes a new sea now and then, not every frame.
+    fin stepped = (round(sea.windSpeed / seaWindStep) as Double) * seaWindStep
+    fin bearing = (round(atan2(sea.towardZ, sea.towardX) / seaBearingStep) as Double) * seaBearingStep
+    fin state = seaStateOf(waves, stepped, cos(bearing), sin(bearing), swell)
+    fin key = seaStateKey(state)
+    if key != sea.key && (!sea.build.active || sea.build.key != key) then startSeaBuild(sea.build, state, key)
+    if sea.build.active {
+        // A sea that has none yet is made at once; a changing one a few rows a frame.
+        fin done = stepSeaBuild(sea.build, if sea.tiles.size == 0 then 1000000000 else seaSamplesPerFrame)
+        if done {
+            sea.state = sea.build.state.clone()
+            sea.key = sea.build.key
+            sea.tiles = sea.build.tiles.clone()
+            sea.cpu = cpuWaves(sea.state, sea.tiles)
+            sea.surf = surfSource(sea.state, sea.tiles)
+            sea.revision++
+        }
+    }
+}
+
+/** A water body raised by the Wind on its own entity. */
+@System(phase: .PreUpdate, editor: true)
+func raiseWindSeas(world: World!, time: Time&, seas: @query [WaterWaves&, Wind&]) {
+    var bodies: Array<Entity> = []
+    while seas.hasNext() then bodies.add(seas.nextEntity())
+    for entity in bodies {
+        fin waves = storageGet<WaterWaves>(ensureStorage(world), entity).clone()
+        fin wind = storageGet<Wind>(ensureStorage(world), entity).clone()
+        tendSea(world, entity, waves, wind, time)
+    }
+}
+
+/** A water body without a Wind of its own, raised by the scene's (still water without one). */
+@System(phase: .PreUpdate, editor: true)
+func raiseSceneSeas(world: World!, time: Time&, seas: @query [WaterWaves&] without Wind) {
+    fin windy = sceneWindEntity(world)
+    fin wind: Wind = if world.isAlive(windy) then storageGet<Wind>(ensureStorage(world), windy).clone() else .(enabled: false)
+    var bodies: Array<Entity> = []
+    while seas.hasNext() then bodies.add(seas.nextEntity())
+    for entity in bodies then tendSea(world, entity, storageGet<WaterWaves>(ensureStorage(world), entity).clone(), wind, time)
+}
+
+/** A water body whose Water Waves were taken off goes still: nothing is left of its sea. */
+@System(phase: .PreUpdate, editor: true)
+func stillSeas(world: World!, seas: @query [Sea&] without WaterWaves) {
+    var bodies: Array<Entity> = []
+    while seas.hasNext() then bodies.add(seas.nextEntity())
+    for entity in bodies then stillSea(world, entity)
+}
