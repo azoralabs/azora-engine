@@ -21,7 +21,10 @@
  * spectrum to time t and inverse-transform it (Tessendorf), and the surface
  * drawn in rings around the eye, lit as the scene is (the standard `U3`
  * block, the Photon Field, the sun's cascade, cloud shadows, local lights,
- * haze).
+ * haze). Each cascade is laid turned its own way and read twice, blended by
+ * a slow weight, so no tile shows as a pattern (the CPU sea, `laidWaveGrid`,
+ * lays them the same way); near a shore the surf of engine.water.shore comes
+ * in, and the opaque scene shows through the water as deep as light gets.
  */
 module engine.water.oceanshader
 
@@ -135,23 +138,22 @@ kernel void wave_finalize(texture2d<float, access::read> a [[texture(0)]],
 "
 
 /** The sea's surface: `ocean_vertex` (rings around the eye, displaced) and `ocean_fragment`. */
-func oceanRenderSource(): String = "#include <metal_stdlib>
-using namespace metal;
-" + photonMetalSource() + localLightMetalSource() + sceneEnvironmentMetalSource() + heightFogShader() + "
-struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; float4 eye; float4 fog; float4 direct; float4 fogShape; float4 extra; };
-
-// tiles: the three cascades' tile lengths and the sea's level. weights: their weight in geometry
-// at the finest cell and the eye's height over the water. scatter/absorb: the water's colour.
+/**
+ * The Metal shared by the sea's surface and its underwater view: the
+ * ocean's block, the cascades laid without repeating, the shore maps and
+ * the surf on them, and the sea's displacement and height at a point.
+ */
+func oceanCommonSource(): String = "
+// tiles: the three cascades' tile lengths and the sea's level. weights: the sea resolution,
+// the eye's height over the water, whether opaque scene reflections are available and whether
+// the opaque scene behind the water is. scatter/absorb: the water's colour.
 // look: clarity, subsurface, roughness, reflection. foam: colour and shore band.
-// shore: the depth map's centre x/z, one over its side and whether one is bound.
-// extra: shore depth reach, foam strength, time, 0.
-struct OceanU { float4 tiles; float4 weights; float4 scatter; float4 absorb; float4 look; float4 foam; float4 shore; float4 extra; };
-
-// ring: centre x/z (snapped), cell size, cells across; hole: first cell x/z of the finer ring inside (or -1e6), morph start/width in cells.
-struct RingU { float4 ring; float4 hole; };
-
-struct SeaPoint { float4 position [[position]]; float3 world; float2 plane; float lift; };
-
+// shore/far: a shore map's centre x/z, one over its side and whether it is ready (engine.water.shore).
+// extra: shore depth reach, foam strength, time (wrapped hourly), the surf's white water (WaterFoam.surf).
+// surf: deep height, deep wavelength, run-up, 0. phases: both trains' ω and phases now.
+// texels: each map's texel in metres, the foam's opacity, 0. shallow: the shallow water's colour and the depth it turns deep over.
+struct OceanU { float4 tiles; float4 weights; float4 scatter; float4 absorb; float4 look; float4 foam; float4 shore; float4 extra;
+                float4 far; float4 surf; float4 phases; float4 texels; float4 shallow; };
 constexpr sampler waveSampler(coord::normalized, address::repeat, filter::linear, mip_filter::linear);
 constexpr sampler shoreSampler(coord::normalized, address::clamp_to_edge, filter::linear);
 
@@ -160,17 +162,314 @@ float cascadeWeight(float tile, float cell) {
     return 1.0 - smoothstep(tile / 48.0, tile / 12.0, cell);
 }
 
-float shoreDepth(float2 p, constant OceanU& o, texture2d<float> shore) {
-    if (o.shore.w < 0.5) return 1.0e4;
-    float2 uv = (p - o.shore.xy) * o.shore.z + 0.5;
-    if (any(uv < 0.0) || any(uv > 1.0)) return 1.0e4;
-    return shore.sample(shoreSampler, uv).r;
+// ── Cascades laid without repeating (engine.water.spectrum: cascadeTurn, tileBlend, laidWaveGrid) ──
+
+constant float cascadeTurns[3] = { 0.31, 0.83, 2.17 };
+constant float secondTurn = 2.4;
+constant float2 secondMove = float2(0.37, 0.61);
+
+float tileBlend(int cascade, float2 p) {
+    float px = p.x + float(cascade) * 1731.0;
+    float pz = p.y - float(cascade) * 977.0;
+    float w = 0.5 + 0.35 * sin(0.0061 * px + 1.7 * sin(0.0043 * pz + 0.6)) + 0.3 * sin(0.0057 * pz + 1.3 * sin(0.0037 * px + 2.1));
+    return saturate(w);
 }
+
+float2 turnInto(float2 p, float a) { float c = cos(a), s = sin(a); return float2(c * p.x + s * p.y, -s * p.x + c * p.y); }
+float2 turnBack(float2 v, float a) { float c = cos(a), s = sin(a); return float2(c * v.x - s * v.y, s * v.x + c * v.y); }
+
+// Where a cascade's two readings sample its tile at world p, and how they blend.
+struct Laid { float2 first; float2 second; float w; float keep; float a; float b; };
+
+Laid laidAt(int cascade, float2 p, float tile) {
+    Laid l;
+    l.a = cascadeTurns[cascade];
+    l.b = l.a + secondTurn;
+    l.first = turnInto(p, l.a) / tile;
+    l.second = turnInto(p, l.b) / tile + secondMove;
+    l.w = tileBlend(cascade, p);
+    l.keep = rsqrt((1.0 - l.w) * (1.0 - l.w) + l.w * l.w);
+    return l;
+}
+
+float3 laidDisplacement(texture2d<float> map, Laid l) {
+    float3 one = float3(0.0), two = float3(0.0);
+    if (l.w < 0.999) { one = map.sample(waveSampler, l.first, level(0.0)).xyz; one.xz = turnBack(one.xz, l.a); }
+    if (l.w > 0.001) { two = map.sample(waveSampler, l.second, level(0.0)).xyz; two.xz = turnBack(two.xz, l.b); }
+    return mix(one, two, l.w) * l.keep;
+}
+
+// Slopes (dη/dx, dη/dz) turned back into the world, and the stretch of the surface (mean of dDx/dx and dDz/dz).
+float3 laidSlopes(texture2d<float> map, Laid l) {
+    float4 one = map.sample(waveSampler, l.first);
+    float4 two = map.sample(waveSampler, l.second);
+    float2 slope = mix(turnBack(one.xy, l.a), turnBack(two.xy, l.b), l.w) * l.keep;
+    float stretch = mix(one.z + one.w, two.z + two.w, l.w) * 0.5 * l.keep;
+    return float3(slope, stretch);
+}
+
+float laidFoam(texture2d<float> map, Laid l) {
+    return mix(map.sample(waveSampler, l.first).r, map.sample(waveSampler, l.second).r, l.w);
+}
+
+// ── The shore and its surf (engine.water.shore) ──
+
+// The ground at a point; the travel time's gradient (the waves' heading) is found only where the surf needs it.
+struct Shore { bool found; float depth; float travel; float2 gradient; float2 uv; float texel; bool far; float blend; };
+
+float4 shoreMapAt(texture2d<float> map, float2 uv) { return map.sample(shoreSampler, uv, level(0.0)); }
+
+Shore shoreIn(texture2d<float> map, float4 where, float texel, float2 p) {
+    Shore s;
+    s.uv = (p - where.xy) * where.z + 0.5;
+    float4 here = shoreMapAt(map, s.uv);
+    s.found = true;
+    s.depth = here.x;
+    s.travel = here.z;
+    s.gradient = float2(0.0);
+    s.texel = texel;
+    s.far = false;
+    s.blend = 0.0;
+    return s;
+}
+
+float2 travelGradient(texture2d<float> map, float2 uv, float texel) {
+    float texelUv = 1.0 / 256.0;
+    float east = shoreMapAt(map, uv + float2(texelUv, 0.0)).z, west = shoreMapAt(map, uv - float2(texelUv, 0.0)).z;
+    float south = shoreMapAt(map, uv + float2(0.0, texelUv)).z, north = shoreMapAt(map, uv - float2(0.0, texelUv)).z;
+    return float2(east - west, south - north) / (2.0 * texel);
+}
+
+// Fills in [s]'s gradient from the map(s) it was read from.
+Shore withGradient(Shore s, float2 p, constant OceanU& o, texture2d<float> nearMap, texture2d<float> farMap) {
+    if (!s.found) return s;
+    if (s.far) {
+        s.gradient = travelGradient(farMap, s.uv, s.texel);
+        return s;
+    }
+    s.gradient = travelGradient(nearMap, s.uv, s.texel);
+    if (s.blend > 0.0) {
+        float2 uvFar = (p - o.far.xy) * o.far.z + 0.5;
+        s.gradient = mix(s.gradient, travelGradient(farMap, uvFar, o.texels.y), s.blend);
+    }
+    return s;
+}
+
+bool insideShore(float4 where, float2 p) {
+    float2 uv = (p - where.xy) * where.z + 0.5;
+    return where.w > 0.5 && all(uv > 0.0) && all(uv < 1.0);
+}
+
+// The fine map where it reaches (fading into the far one toward its edge), else the far one, else open sea.
+Shore shoreAt(float2 p, constant OceanU& o, texture2d<float> nearMap, texture2d<float> farMap) {
+    Shore open;
+    open.found = false;
+    open.depth = 1.0e4;
+    open.travel = 0.0;
+    open.gradient = float2(0.0);
+    open.uv = float2(0.0);
+    open.texel = 1.0;
+    open.far = false;
+    open.blend = 0.0;
+    bool inNear = insideShore(o.shore, p), inFar = insideShore(o.far, p);
+    if (!inNear) {
+        if (!inFar) return open;
+        Shore wide = shoreIn(farMap, o.far, o.texels.y, p);
+        wide.far = true;
+        return wide;
+    }
+    Shore fine = shoreIn(nearMap, o.shore, o.texels.x, p);
+    float2 uv = abs((p - o.shore.xy) * o.shore.z);
+    float toFar = smoothstep(0.42, 0.49, max(uv.x, uv.y));
+    if (toFar <= 0.0 || !inFar) return fine;
+    Shore wide = shoreIn(farMap, o.far, o.texels.y, p);
+    fine.depth = mix(fine.depth, wide.depth, toFar);
+    fine.travel = mix(fine.travel, wide.travel, toFar);
+    fine.blend = toFar;
+    return fine;
+}
+
+float smoothShore(float x) { float t = saturate(x); return t * t * (3.0 - 2.0 * t); }
+
+// Value noise for the lace of white water (coordinates kept small so the hash keeps its fraction).
+float foamHash(float2 q) {
+    uint2 v = uint2(int2(q) + int2(65536));
+    uint h = v.x * 1597334677u ^ v.y * 3812015801u;
+    h = (h ^ (h >> 16)) * 2246822519u;
+    h ^= h >> 13;
+    return float(h & 0xffffffu) / 16777215.0;
+}
+
+float foamNoise(float2 q) {
+    float2 i = floor(q), f = fract(q);
+    float2 w = f * f * (3.0 - 2.0 * f);
+    return mix(mix(foamHash(i), foamHash(i + float2(1.0, 0.0)), w.x), mix(foamHash(i + float2(0.0, 1.0)), foamHash(i + float2(1.0, 1.0)), w.x), w.y);
+}
+
+float foamFbm(float2 q) {
+    return 0.5 * foamNoise(q) + 0.3 * foamNoise(q * 2.3 + 17.0) + 0.2 * foamNoise(q * 5.1 - 9.0);
+}
+
+// How much of a patch is white when [cover] of it should be: the lace where the noise falls under the
+// cover. The lace rides the water's [flow] (m/s): two readings, half a cycle apart, each carried along the
+// flow from where it last started and faded out before it restarts elsewhere, so it moves and changes
+// without ever stretching or repeating (a flow map).
+float foamLace(float2 p, float cover, float time, float2 flow) {
+    const float cycle = 1.6;
+    const float scale = 0.42;
+    float c = saturate(cover);
+    if (c <= 0.0) return 0.0;
+    float n = 0.0;
+    for (int reading = 0; reading < 2; ++reading) {
+        float shifted = time / cycle + float(reading) * 0.5;
+        float age = fract(shifted);
+        float start = floor(shifted);
+        float2 q = (p - flow * age * cycle) * scale + float2(start * 7.31 + float(reading) * 3.7, start * 3.17);
+        n += foamFbm(q) * (1.0 - abs(2.0 * age - 1.0));
+    }
+    // Two faded readings sum to a narrower spread: stretch back about the middle.
+    n = 0.5 + (n - 0.5) * 1.45;
+    return smoothstep(1.0 - c - 0.1, 1.0 - c + 0.1, n) * saturate(c * 1.8);
+}
+
+// A train's shape at phase theta (crest at 0): (value, d/dθ, share of the period since the crest).
+// Round while it swells, a bore's sawtooth (slow fall, steep front) once broken.
+float3 surfShape(float theta, float breaking) {
+    const float tau = 6.283185307;
+    const float front = 0.14;
+    float u = fract(theta / tau);
+    float rise = 1.0 - front;
+    float t = saturate((u - rise) / front);
+    float saw = u < rise ? 1.0 - 2.0 * u / rise : -1.0 + 2.0 * t * t * (3.0 - 2.0 * t);
+    float slope = u < rise ? -2.0 / rise / tau : 12.0 * t * (1.0 - t) / front / tau;
+    return float3(cos(theta) * (1.0 - breaking) + saw * breaking, -sin(theta) * (1.0 - breaking) + slope * breaking, u);
+}
+
+// A train's (height, breaking) in water depth deep: shoaled, then held at what the depth carries.
+float2 surfTrain(float deep, float length, float depth) {
+    if (depth <= 0.0 || deep <= 0.0) return float2(0.0);
+    float deepGroup = 0.5 * sqrt(9.81 * length / 6.283185307);
+    float group = sqrt(9.81 * max(depth, 0.3));
+    float grown = deep * clamp(sqrt(deepGroup / group), 0.9, 2.5);
+    float breaking = smoothShore((grown / (0.78 * depth) - 0.7) / 0.3);
+    float kept = 0.62 * depth + 0.16 * depth * (1.0 - breaking);
+    return float2(min(grown, kept), breaking);
+}
+
+float surfPresence(float depth, float length) { return 1.0 - smoothShore((depth - 0.3 * length) / (0.2 * length)); }
+
+float surfWander(float2 p, float t) {
+    return 0.9 * sin(0.0213 * p.x + 1.3 * sin(0.0171 * p.y + 0.7 * t) + 2.1 * t) + 0.6 * sin(0.0147 * p.y - 1.1 * sin(0.0193 * p.x + 1.9 * t));
+}
+
+float surfStrength(float2 p, float t) {
+    return 0.8 + 0.2 * sin(0.0087 * p.x + 0.0063 * p.y + 1.7 * t + 0.9 * sin(0.011 * p.y - 0.4 * t));
+}
+
+// The surf at p: its elevation, its slope, how much of it is breaking white water, the
+// horizontal lean of unbroken crests and the swash's reach over the beach.
+struct Surf { float height; float2 slope; float foam; float2 lean; float swash; float presence; float2 flow; };
+
+Surf surfAt(float2 p, Shore s, constant OceanU& o, texture2d<float> nearMap, texture2d<float> farMap) {
+    Surf f;
+    f.height = 0.0;
+    f.slope = float2(0.0);
+    f.foam = 0.0;
+    f.lean = float2(0.0);
+    f.swash = 0.0;
+    f.presence = 0.0;
+    f.flow = float2(0.0);
+    if (!s.found || o.surf.x <= 0.0) return f;
+    float presence = surfPresence(s.depth, o.surf.y);
+    f.presence = presence;
+    if (presence <= 0.0) return f;
+    s = withGradient(s, p, o, nearMap, farMap);
+    float glen = length(s.gradient);
+    float2 toward = glen > 1e-6 ? -s.gradient / glen : float2(0.0);
+    for (int train = 0; train < 2; ++train) {
+        float t = float(train);
+        float omega = train == 0 ? o.phases.x : o.phases.y;
+        float theta = (train == 0 ? o.phases.z : o.phases.w) + omega * s.travel + surfWander(p, t);
+        float2 wave = surfTrain(o.surf.x * (train == 0 ? 0.75 : 0.45) * surfStrength(p, t), o.surf.y, s.depth);
+        float3 shape = surfShape(theta, wave.y);
+        float amplitude = wave.x * 0.5 * presence;
+        f.height += amplitude * shape.x;
+        f.slope += amplitude * shape.y * omega * s.gradient;
+        // Unbroken crests sharpen (Gerstner); broken ones are bores.
+        f.lean += toward * amplitude * 0.6 * (1.0 - wave.y) * sin(theta);
+        // The water under the wave sways with it (smoothly in space, so the foam it carries never tears).
+        f.flow += toward * min(amplitude, 1.0) * cos(theta) * 0.8;
+        // White water on the bore's face, and the foam it leaves trailing behind its crest.
+        float white = max(smoothstep(0.82, 0.97, shape.z), exp(-shape.z * 3.2));
+        f.foam = max(f.foam, wave.y * presence * white * (train == 0 ? 1.0 : 0.75));
+    }
+    // The swash runs up the beach with each bore and slides back.
+    float theta = o.phases.z + o.phases.x * s.travel + surfWander(p, 0.0);
+    float3 up = surfShape(theta, 1.0);
+    float reach = s.depth <= 0.0 ? 1.0 : 1.0 - smoothShore(s.depth / (o.surf.z * 3.0 + 0.05));
+    f.height += o.surf.z * (0.5 + 0.5 * up.x) * reach;
+    f.slope += o.surf.z * 0.5 * up.y * o.phases.x * s.gradient * reach;
+    f.swash = reach;
+    // The surf zone's foam drifts shoreward; the swash's moves up the sand and back with it.
+    f.flow += toward * (0.7 * presence + 1.2 * reach * sin(theta) * step(0.001, o.surf.z));
+    return f;
+}
+
+// The sea's displacement at undisplaced point [plane]: the cascades (each faded where a grid of
+// [cell] metres cannot show it; 0 shows all), calmed in the shallows, plus the surf.
+float3 seaShift(float2 plane, float cell, constant OceanU& o, texture2d<float> d0, texture2d<float> d1, texture2d<float> d2,
+                texture2d<float> nearMap, texture2d<float> farMap) {
+    Shore s = shoreAt(plane, o, nearMap, farMap);
+    Surf surf = surfAt(plane, s, o, nearMap, farMap);
+    // Shallow water calms the open sea's waves; where the surf comes in, it takes the swell's place.
+    float calm = saturate(s.depth / max(o.extra.x * 0.25, 0.5));
+    float w0 = cascadeWeight(o.tiles.x, cell) * calm * (1.0 - 0.8 * surf.presence);
+    float w1 = cascadeWeight(o.tiles.y, cell) * calm, w2 = cascadeWeight(o.tiles.z, cell) * calm;
+    float3 shift = float3(0.0);
+    if (w0 > 0.0) shift += laidDisplacement(d0, laidAt(0, plane, o.tiles.x)) * w0;
+    if (w1 > 0.0) shift += laidDisplacement(d1, laidAt(1, plane, o.tiles.y)) * w1;
+    if (w2 > 0.0) shift += laidDisplacement(d2, laidAt(2, plane, o.tiles.z)) * w2;
+    return shift + float3(surf.lean.x, surf.height, surf.lean.y);
+}
+
+// The sea's surface height near [p] in one step (the lean corrected once): cheaper, a few centimetres off on steep crests.
+float seaHeightQuick(float2 p, constant OceanU& o, texture2d<float> d0, texture2d<float> d1, texture2d<float> d2,
+                     texture2d<float> nearMap, texture2d<float> farMap) {
+    float3 shift = seaShift(p, 0.0, o, d0, d1, d2, nearMap, farMap);
+    return o.tiles.w + seaShift(p - shift.xz, 0.0, o, d0, d1, d2, nearMap, farMap).y;
+}
+
+// The sea's surface height over world (x, z) = [p]: the undisplaced point whose crest leans onto p
+// is found by a few steps (as `waveHeightAt` on the CPU).
+float seaHeightAt(float2 p, constant OceanU& o, texture2d<float> d0, texture2d<float> d1, texture2d<float> d2,
+                  texture2d<float> nearMap, texture2d<float> farMap) {
+    float2 q = p;
+    float3 shift = float3(0.0);
+    for (int i = 0; i < 3; ++i) {
+        shift = seaShift(q, 0.0, o, d0, d1, d2, nearMap, farMap);
+        q = p - shift.xz;
+    }
+    return o.tiles.w + seaShift(q, 0.0, o, d0, d1, d2, nearMap, farMap).y;
+}
+
+"
+
+func oceanRenderSource(): String = "#include <metal_stdlib>
+using namespace metal;
+" + photonMetalSource() + localLightMetalSource() + sceneEnvironmentMetalSource() + heightFogShader() + "
+struct U3 { float4x4 viewProj; float4x4 model; float4 color; float4 light; float4 eye; float4 fog; float4 direct; float4 fogShape; float4 extra; };
+" + oceanCommonSource() + "
+struct ReflectionU { float4x4 inverse; float4 bounds; };
+
+// ring: centre x/z (snapped), cell size, cells across; hole: first cell x/z of the finer ring inside (or -1e6), morph start/width in cells.
+struct RingU { float4 ring; float4 hole; };
+
+struct SeaPoint { float4 position [[position]]; float3 world; float2 plane; float lift; };
 
 vertex SeaPoint ocean_vertex(uint vid [[vertex_id]], constant U3& u [[buffer(1)]], constant OceanU& o [[buffer(7)]],
                              constant RingU& r [[buffer(8)]],
                              texture2d<float> d0 [[texture(0)]], texture2d<float> d1 [[texture(1)]], texture2d<float> d2 [[texture(2)]],
-                             texture2d<float> shore [[texture(9)]]) {
+                             texture2d<float> shore [[texture(9)]], texture2d<float> farShore [[texture(12)]]) {
     const int2 corners[6] = { int2(0,0), int2(1,0), int2(1,1), int2(0,0), int2(1,1), int2(0,1) };
     int cells = int(r.ring.w);
     int quad = int(vid) / 6;
@@ -194,16 +493,8 @@ vertex SeaPoint ocean_vertex(uint vid [[vertex_id]], constant U3& u [[buffer(1)]
     float morph = saturate((edge - r.hole.z) / max(r.hole.w, 1.0));
     float2 g = float2(grid);
     float2 plane = r.ring.xy + (g - fract(g * 0.5) * 2.0 * morph - float(cells) * 0.5) * size;
-    float3 shift = float3(0.0);
     float seaLevel = o.tiles.w;
-    float depth = shoreDepth(plane, o, shore);
-    // Shallow water calms the waves (and the shore stays dry).
-    float calm = saturate(depth / max(o.extra.x * 0.25, 0.5));
-    float w0 = cascadeWeight(o.tiles.x, size), w1 = cascadeWeight(o.tiles.y, size), w2 = cascadeWeight(o.tiles.z, size);
-    if (w0 > 0.0) shift += d0.sample(waveSampler, plane / o.tiles.x, level(0.0)).xyz * w0;
-    if (w1 > 0.0) shift += d1.sample(waveSampler, plane / o.tiles.y, level(0.0)).xyz * w1;
-    if (w2 > 0.0) shift += d2.sample(waveSampler, plane / o.tiles.z, level(0.0)).xyz * w2;
-    shift *= calm;
+    float3 shift = seaShift(plane, size, o, d0, d1, d2, shore, farShore);
     float3 world = float3(plane.x + shift.x, seaLevel + shift.y, plane.y + shift.z);
     result.position = u.viewProj * float4(world, 1.0);
     result.world = world;
@@ -218,25 +509,98 @@ float ggx(float nh, float roughness) {
     return a * a / (3.14159265 * d * d + 1e-6);
 }
 
+float3 reflectionProjection(float3 world, constant U3& u) {
+    float4 clip = u.viewProj * float4(world, 1.0);
+    if (clip.w <= 0.0) return float3(-1.0);
+    float3 ndc = clip.xyz / clip.w;
+    return float3(ndc.xy * float2(0.5, -0.5) + 0.5, ndc.z);
+}
+
+// The world point of the opaque scene at screen uv (reversed depth: 0 is the sky, far away).
+float3 sceneBehind(float2 uv, float depth, constant ReflectionU& reflection) {
+    float4 surface = reflection.inverse * float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), max(depth, 1.0e-7), 1.0);
+    return surface.xyz / surface.w;
+}
+
+// March the reflected ray through the opaque scene's reversed depth. Refine the
+// first crossing and reject depth discontinuities that the ray did not reach.
+float4 oceanReflection(float3 origin, float3 direction, constant U3& u, constant ReflectionU& reflection,
+                       texture2d<float> opaqueColor, depth2d<float> opaqueDepth) {
+    constexpr sampler depthSampler(filter::nearest, address::clamp_to_edge);
+    constexpr sampler colorSampler(filter::linear, address::clamp_to_edge);
+    float previous = 0.0;
+    float stride = clamp(length(origin - u.eye.xyz) * 0.012, 0.45, 9.0);
+    float distance = stride;
+    bool wasInFront = true;
+    for (int step = 0; step < 24 && distance < 700.0; ++step) {
+        float3 projected = reflectionProjection(origin + direction * distance, u);
+        if (projected.z <= 0.0 || any(projected.xy <= reflection.bounds.xy) || any(projected.xy >= reflection.bounds.zw)) break;
+        float sceneDepth = opaqueDepth.sample(depthSampler, projected.xy);
+        bool inFront = sceneDepth <= projected.z;
+        if (!inFront && wasInFront) {
+            float nearHit = previous, farHit = distance;
+            for (int refine = 0; refine < 5; ++refine) {
+                float mid = (nearHit + farHit) * 0.5;
+                float3 samplePoint = reflectionProjection(origin + direction * mid, u);
+                float seen = opaqueDepth.sample(depthSampler, samplePoint.xy);
+                if (seen <= samplePoint.z) nearHit = mid;
+                else farHit = mid;
+            }
+            float3 rayPoint = origin + direction * farHit;
+            float3 hit = reflectionProjection(rayPoint, u);
+            sceneDepth = opaqueDepth.sample(depthSampler, hit.xy);
+            float3 world = sceneBehind(hit.xy, sceneDepth, reflection);
+            float tolerance = 0.35 + length(rayPoint - u.eye.xyz) * 0.018;
+            if (world.y >= origin.y - 0.8 && length(world - rayPoint) < tolerance) {
+                float2 local = (hit.xy - reflection.bounds.xy) / (reflection.bounds.zw - reflection.bounds.xy);
+                float edge = min(min(local.x, local.y), min(1.0 - local.x, 1.0 - local.y));
+                float confidence = smoothstep(0.015, 0.16, edge) * (1.0 - smoothstep(470.0, 700.0, farHit));
+                return float4(opaqueColor.sample(colorSampler, hit.xy).rgb, confidence);
+            }
+        }
+        previous = distance;
+        wasInFront = inFront;
+        stride *= 1.24;
+        distance += stride;
+    }
+    return float4(0.0);
+}
+
 fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer(1)]], constant OceanU& o [[buffer(7)]],
                                const device float* photons [[buffer(2)]], const device float* baked [[buffer(3)]],
                                constant float4* detailLight [[buffer(4)]], constant float4* spots [[buffer(5)]], constant float4* env [[buffer(6)]],
                                texture2d<float> s0 [[texture(3)]], texture2d<float> s1 [[texture(4)]], texture2d<float> s2 [[texture(5)]],
                                texture2d<float> f0 [[texture(6)]], texture2d<float> f1 [[texture(7)]], texture2d<float> f2 [[texture(8)]],
-                               texture2d<float> shore [[texture(9)]],
+                               constant ReflectionU& reflection [[buffer(9)]], texture2d<float> shore [[texture(9)]],
+                               texture2d<float> opaqueColor [[texture(10)]], depth2d<float> opaqueDepth [[texture(11)]],
+                               texture2d<float> farShore [[texture(12)]], constant float4* cuts [[buffer(10)]],
+                               bool front [[front_facing]],
                                depth2d<float> detail [[texture(30)]], texture2d<float> clouds [[texture(31)]]) {
+    constexpr sampler depthSampler(filter::nearest, address::clamp_to_edge);
+    constexpr sampler colorSampler(filter::linear, address::clamp_to_edge);
+    // No water inside a Water Exclusion box (a boat's cockpit, a dry dock).
+    int cutCount = int(cuts[0].x);
+    for (int k = 0; k < cutCount; ++k) {
+        float3 d = in.world - cuts[1 + k * 4].xyz;
+        float4 ax = cuts[2 + k * 4], ay = cuts[3 + k * 4], az = cuts[4 + k * 4];
+        if (abs(dot(d, ax.xyz)) < ax.w && abs(dot(d, ay.xyz)) < ay.w && abs(dot(d, az.xyz)) < az.w) discard_fragment();
+    }
     float2 p = in.plane;
-    float depth = shoreDepth(p, o, shore);
+    Shore here = shoreAt(p, o, shore, farShore);
+    float depth = here.found ? here.depth : 1.0e4;
+    Surf surf = surfAt(p, here, o, shore, farShore);
     float calm = saturate(depth / max(o.extra.x * 0.25, 0.5));
-    float4 a = s0.sample(waveSampler, p / o.tiles.x);
-    float4 b = s1.sample(waveSampler, p / o.tiles.y);
-    float4 c = s2.sample(waveSampler, p / o.tiles.z);
-    float2 slope = (a.xy + b.xy + c.xy) * calm;
-    float2 stretch = 1.0 + (a.zw + b.zw + c.zw) * calm;
-    float3 n = normalize(float3(-slope.x / max(stretch.x, 0.2), 1.0, -slope.y / max(stretch.y, 0.2)));
+    Laid l0 = laidAt(0, p, o.tiles.x), l1 = laidAt(1, p, o.tiles.y), l2 = laidAt(2, p, o.tiles.z);
+    float3 a = laidSlopes(s0, l0) * (1.0 - 0.8 * surf.presence);
+    float3 b = laidSlopes(s1, l1);
+    float3 c = laidSlopes(s2, l2);
+    float2 slope = (a.xy + b.xy + c.xy) * calm + surf.slope;
+    float stretch = 1.0 + (a.z + b.z + c.z) * calm;
+    float3 n = normalize(float3(-slope.x / max(stretch, 0.2), 1.0, -slope.y / max(stretch, 0.2)));
     float3 v = normalize(u.eye.xyz - in.world);
     float3 l = normalize(u.light.xyz);
-    if (o.weights.y < 0.0) {
+    // Seen from below (the grid's triangles face up: from beneath they face away), whatever the eye's height.
+    if (!front) {
         // Water to air: the refracted sky is visible through Snell's window.
         // Outside the window the underside reflects the surrounding water.
         float3 inside = -n;
@@ -263,38 +627,79 @@ fragment float4 ocean_fragment(SeaPoint in [[stage_in]], constant U3& u [[buffer
     float3 sky = mix(horizon, zenith, pow(saturate(r.y), 0.6)) * (0.35 + 0.65 * saturate(l.y * 3.0 + 0.3)) + sceneFlash(env, n);
     float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(n, v)), 5.0);
     fresnel *= o.look.w;
+    if (o.weights.z > 0.5 && fresnel > 0.012 && r.y > 0.005 && o.look.z < 0.75) {
+        float4 seen = oceanReflection(in.world + n * 0.15, r, u, reflection, opaqueColor, opaqueDepth);
+        sky = mix(sky, seen.rgb, seen.a * (1.0 - smoothstep(0.22, 0.75, o.look.z)));
+    }
     // Light scattered back from deep water, and through thin crests when the sun is behind them.
     float3 scatter = o.scatter.rgb * (ambient * 1.6 + sunColor * (0.35 + 0.65 * saturate(l.y)));
     float behind = pow(saturate(dot(v, -l) * 0.5 + 0.5), 4.0);
     scatter += o.scatter.rgb * float3(0.6, 1.4, 1.2) * o.look.y * behind * saturate(in.lift * 0.6 + 0.2) * sunColor * 1.8;
-    // Shallow water shows a sandy bed through it, dimmed by depth colour by colour.
-    float3 transmit = exp(-o.absorb.rgb * max(depth, 0.0));
-    float3 bed = float3(0.62, 0.55, 0.4) * (ambient + sunColor * saturate(l.y)) * 0.6;
-    float3 body = mix(scatter, bed, transmit * o.look.x);
+    // How fast light dies in it: clarity 1 is the water's own absorption, 0 several times it.
+    float3 absorb = o.absorb.rgb * mix(8.0, 0.6, o.look.x);
+    float3 body;
+    float through = 1.0e4;
+    float above = 1.0e4;
+    float3 seenBehind = float3(0.0);
+    if (o.weights.w > 0.5) {
+        // The real ground behind the water, taken before the water was drawn: bent a little by the
+        // surface, dimmed colour by colour along the light's way down to it and back up to the eye.
+        float2 size = float2(opaqueColor.get_width(), opaqueColor.get_height());
+        float2 screen = in.position.xy / size;
+        float3 ground = sceneBehind(screen, opaqueDepth.sample(depthSampler, screen), reflection);
+        through = length(ground - in.world);
+        above = in.world.y - ground.y;
+        float2 bent = screen + n.xz * 0.035 * saturate(through / 4.0);
+        float3 bentGround = sceneBehind(bent, opaqueDepth.sample(depthSampler, bent), reflection);
+        if (bentGround.y > in.world.y) bent = screen;
+        else ground = bentGround;
+        seenBehind = opaqueColor.sample(colorSampler, screen).rgb;
+        float3 bed = opaqueColor.sample(colorSampler, bent).rgb;
+        float path = min(length(ground - in.world) + max(in.world.y - ground.y, 0.0), 200.0);
+        float3 transmit = exp(-absorb * path);
+        // Shallow water glows its own colour over the bed, turning into the deep colour with depth.
+        float3 glow = o.shallow.rgb * (ambient * 0.9 + sunColor * saturate(l.y) * 0.55);
+        float3 inscatter = mix(glow, scatter, smoothstep(0.0, o.shallow.w, max(in.world.y - ground.y, 0.0)));
+        body = bed * transmit + inscatter * (1.0 - transmit);
+    } else {
+        // Without the scene behind, a sandy bed as deep as the shore map says.
+        float3 transmit = exp(-absorb * max(depth, 0.0) * 2.0);
+        float3 bed = float3(0.62, 0.55, 0.4) * (ambient + sunColor * saturate(l.y)) * 0.6;
+        float3 glow = o.shallow.rgb * (ambient * 0.9 + sunColor * saturate(l.y) * 0.55);
+        body = bed * transmit + mix(glow, scatter, smoothstep(0.0, o.shallow.w, max(depth, 0.0))) * (1.0 - transmit);
+    }
     float3 color = mix(body, sky, fresnel);
     // The sun's glitter.
     float3 h = normalize(l + v);
     float rough = clamp(o.look.z + length(fwidth(slope)) * 0.2, 0.02, 0.7);
     color += sunColor * ggx(saturate(dot(n, h)), rough) * fresnel * 0.25 * step(0.0, l.y);
-    // Foam: breaking crests and the wash along the shore.
-    float foam = max(max(f0.sample(waveSampler, p / o.tiles.x).r, f1.sample(waveSampler, p / o.tiles.y).r), f2.sample(waveSampler, p / o.tiles.z).r);
-    foam *= o.extra.y;
-    // Breaking wavelets leave moving patches over the wet sand.
+    // Foam: breaking crests at sea, the surf's white water, and the swash's edge on the sand.
+    float noise = surf.presence > 0.0 ? laidFoam(f2, laidAt(2, p * 0.37, o.tiles.z)) : 0.0;
+    float foam = max(max(laidFoam(f0, l0), laidFoam(f1, l1)), laidFoam(f2, l2)) * calm;
+    float breakup = smoothstep(0.1, 0.65, 0.35 + noise + abs(c.x + c.y) * 0.4);
+    // The surf's white water as lace: as much of it white as the breaking says.
+    float time = o.extra.z;
+    float surfWhite = o.extra.w;
+    foam = max(foam, foamLace(p, surf.foam * surfWhite, time, surf.flow) * mix(0.75, 1.0, breakup));
     float band = o.foam.w;
-    if (band > 0.0 && depth < band) {
-        float shallow = 1.0 - saturate(depth / band);
-        float variation = sin(p.x * 0.103 + p.y * 0.077) * sin(p.y * 0.136 - p.x * 0.043);
-        float surge = 0.5 + 0.5 * sin(depth * 9.0 - o.extra.z * 1.7 + variation * 2.2);
-        float lines = smoothstep(0.55, 0.95, surge) * shallow * shallow;
-        float breakup = smoothstep(0.12, 0.68, variation + f2.sample(waveSampler, p / o.tiles.z * 0.37).r
-            + abs(c.x + c.y) * 0.4);
-        foam = max(foam, lines * breakup * smoothstep(0.005, 0.09, depth) * 0.43);
+    if (band > 0.0 && surf.presence > 0.0) {
+        // White water lingers over the shallowest band of the surf zone.
+        foam = max(foam, foamLace(p * 1.7 + 31.0, (1.0 - saturate(depth / band)) * surf.presence * 0.45 * surfWhite, time, surf.flow * 1.7));
+        // The swash's leading edge: a thin, white lace where the sheet runs out over the sand.
+        if (above < 1.0e3) {
+            float edge = (1.0 - smoothstep(0.0, 0.05, above)) * smoothstep(0.0, 0.012, above);
+            foam = max(foam, foamLace(p * 2.6 + 7.0, surf.swash * edge * 0.45 * surfWhite, time, surf.flow * 2.6));
+        }
     }
-    foam = saturate(foam);
-    float3 foamLit = o.foam.rgb * (ambient + sunColor * saturate(dot(n, l) * 0.6 + 0.4));
-    color = mix(color, foamLit, foam);
+    foam = saturate(foam * o.extra.y);
+    // Foam is lit as a rough white surface (it is not brighter than the sand beside it) and lets some water through.
+    float3 foamLit = o.foam.rgb * (ambient * 0.85 + sunColor * saturate(dot(n, l) * 0.5 + 0.35));
+    color = mix(color, foamLit, foam * o.texels.z);
     color += localLights(spots, in.world, n, v, o.scatter.rgb, float3(0.02));
     float haze = heightFog(u.eye.xyz, in.world, u.fog.w, u.fogShape);
-    return float4(mix(color, u.fog.xyz, haze), 1.0);
+    color = mix(color, u.fog.xyz, haze);
+    // At the water's edge the sheet thins to nothing: the ground behind shows through it, so no seam is drawn.
+    if (o.weights.w > 0.5) color = mix(seenBehind, color, max(smoothstep(0.0, 0.2, through), foam));
+    return float4(color, 1.0);
 }
 "

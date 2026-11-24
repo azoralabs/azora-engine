@@ -344,3 +344,94 @@ func fusionRelativePath(path: String): Bool {
     }
     return true
 }
+
+// ── What a surface is made of at a point (CPU) ─────────────────────────
+
+/** The node of [document] with id [id], or -1. */
+func fusionNodeAt(document: FusionGraph&, id: Int): Int {
+    for i: Int in 0..<document.nodes.size then if document.nodes[i].id == id then return i
+    return -1
+}
+
+func fusionSmooth(low: Double, high: Double, x: Double): Double {
+    fin t = fusionClamp((x - low) / (if high - low > 0.001 then high - low else 0.001), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+}
+
+/**
+ * A mask node's value at world [point] with surface [normal], as the shader
+ * evaluates it but without its noise (variation): altitude and slope bands,
+ * constants. Patterns drawn in the surface's own space count as their mean.
+ */
+func fusionMaskAt(document: FusionGraph&, id: Int, point: Vec3&, normal: Vec3&): Double {
+    fin at = fusionNodeAt(document, id)
+    if at < 0 then return 0.5
+    fin node = document.nodes[at].&
+    return when node.kind {
+        "altitude" -> fusionSmooth(node.low, node.high, point.y) * (1.0 + (fusionSmooth(0.48, 0.79, normal.y) - 1.0) * node.value)
+        "slope" -> fusionSmooth(node.low, node.high, 1.0 - fusionClamp(normal.y, 0.0, 1.0))
+        "scalar" -> node.value
+        else -> 0.5
+    }
+}
+
+/** How much of each texture or slab shows at a point: node ids and their shares, summing to 1. */
+pack FusionWeights derives Clone {
+    var ids: Array<Int> = []
+    var shares: Array<Double> = []
+}
+
+func FusionWeights!.add(id: Int, share: Double) {
+    for i: Int in 0..<self.ids.size {
+        if self.ids[i] == id {
+            self.shares[i] += share
+            return
+        }
+    }
+    self.ids.add(id)
+    self.shares.add(share)
+}
+
+/**
+ * How much each texture or slab of [document] shows at world [point] with
+ * surface [normal] (mixes and layers followed down from the output): what
+ * a surface is made of there - for footsteps, decals, dust kicked up.
+ */
+func fusionWeightsAt(document: FusionGraph&, point: Vec3&, normal: Vec3&): FusionWeights {
+    var weights: FusionWeights = .()
+    var output = -1
+    for i: Int in 0..<document.nodes.size then if document.nodes[i].kind == "output" then output = document.nodes[i].a
+    if output > 0 then addFusionWeights(document, output, 1.0, point, normal, weights, 0)
+    return take weights
+}
+
+func addFusionWeights(document: FusionGraph&, id: Int, share: Double, point: Vec3&, normal: Vec3&, weights: FusionWeights!, depth: Int) {
+    fin at = fusionNodeAt(document, id)
+    if at < 0 || share <= 0.0 || depth > 64 then return
+    fin node = document.nodes[at].clone()
+    if node.kind == "mix" || node.kind == "layer" {
+        fin mask = fusionClamp(if node.mask > 0 then fusionMaskAt(document, node.mask, point, normal) else node.value, 0.0, 1.0)
+        addFusionWeights(document, node.a, share * (1.0 - mask), point, normal, weights, depth + 1)
+        addFusionWeights(document, node.b, share * mask, point, normal, weights, depth + 1)
+        return
+    }
+    if node.kind == "scatter" {
+        addFusionWeights(document, node.a, share, point, normal, weights, depth + 1)
+        return
+    }
+    weights.add(id, share)
+}
+
+/** The node (index into [FusionGraph.nodes]) of the texture or slab showing most at world [point] with surface [normal], or -1. */
+func fusionDominantAt(document: FusionGraph&, point: Vec3&, normal: Vec3&): Int {
+    fin weights = fusionWeightsAt(document, point, normal)
+    var best = -1
+    var most: Double = 0.0
+    for i: Int in 0..<weights.ids.size {
+        if weights.shares[i] > most {
+            most = weights.shares[i]
+            best = weights.ids[i]
+        }
+    }
+    return fusionNodeAt(document, best)
+}

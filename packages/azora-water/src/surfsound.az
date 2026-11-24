@@ -1,0 +1,266 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.surfsound
+ *
+ * The sound of the surf, made from the surf itself. An ocean with a
+ * [SurfSound] listens around the camera: each time a breaking crest passes
+ * points of its shore maps near the listener, a crash is heard - as loud as
+ * that wave is high and broken, as bright as it breaks hard, from the side
+ * it breaks on, fading with distance - so sets of bigger waves come in
+ * louder, small spilling ones softer. Beneath them the wash of the broken
+ * water on the sand and its backwash hiss, as much as the surf near the
+ * listener carries.
+ */
+module engine.water.surfsound
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.audio.dsp
+import engine.audio.output
+import engine.atmosphere.view
+import engine.scene
+import engine.water.components
+import engine.water.spectrum
+import engine.water.seas
+import engine.water.shore
+
+/** Makes an ocean's surf heard: crashes of its breaking waves and the wash on the beach near the listener. */
+@Component
+@Inspectable(title: "Surf Sound", serializedName: "SurfSound", icon: "volume-2", category: "Water", order: 20)
+pack SurfSound derives Clone {
+    var enabled: Bool = true
+    @Range(min: 0.0, max: 4.0, step: 0.01)
+    var volume: Double = 1.0
+    /** How far from the listener breaking waves are heard, in metres. */
+    @Range(min: 10.0, max: 1000.0, step: 1.0)
+    var reach: Double = 160.0
+}
+
+/** How many crashes sound at once (a newer, louder one takes the quietest's place). */
+inline fin surfVoiceCount: Int = 6
+
+/** Directions and distances around the listener the surf is watched at. */
+inline fin surfBearings: Int = 16
+inline fin surfRanges: Int = 5
+
+/** One crash being heard: its noise, its filters, its envelope and where it comes from. */
+pack SurfVoice derives Clone {
+    var active: Bool = false
+    var level: Double = 0.0
+    var age: Double = 0.0
+    var attack: Double = 0.2
+    var decay: Double = 2.0
+    /** 0 left .. 1 right. */
+    var pan: Double = 0.5
+    var noise: Noise = noise(1)
+    var rumble: PinkNoise = pinkNoise(3)
+    var body: Biquad = .()
+    var hiss: Biquad = .()
+    var tone: Double = 0.5
+}
+
+/** An ocean's surf as heard, kept by [hearSurf] (never saved). */
+@Component
+pack SurfHearing {
+    var voices: Array<SurfVoice> = []
+    /** Each watched point's phase of each train at the last block (-1 unknown). */
+    var phases: Array<Double> = []
+    var wash: PinkNoise = pinkNoise(71)
+    var washFilter: Biquad = .()
+    var drain: Noise = noise(83)
+    var drainFilter: Biquad = .()
+    var washLevel: Double = 0.0
+    var drainLevel: Double = 0.0
+    var washPan: Double = 0.5
+    var seed: Long = 97
+}
+
+/** A crash's sound settings for a wave of [strength] (metres of broken height, distance-weighted) and [hardness] 0..1. */
+func startSurfVoice(voice: SurfVoice!, strength: Double, hardness: Double, pan: Double, seed: Long, rate: Double) {
+    voice.active = true
+    voice.age = 0.0
+    voice.level = sqrt(strength) * 0.22
+    // Hard plunging breakers strike fast and bright; soft spilling ones swell in, darker, and last.
+    voice.attack = 0.06 + 0.3 * (1.0 - hardness)
+    voice.decay = 1.2 + 1.4 * waveClamp(strength, 0.0, 2.0)
+    voice.pan = pan
+    voice.tone = hardness
+    voice.noise = noise(seed)
+    voice.rumble = pinkNoise(seed + 7)
+    voice.body.lowpass(260.0 + 260.0 * hardness, 0.7, rate)
+    voice.hiss.bandpass(1400.0 + 1600.0 * hardness, 0.6, rate)
+}
+
+/** One sample of [voice] (left, right) [dt] seconds on. */
+func surfVoiceSample(voice: SurfVoice!, dt: Double): Vec3 {
+    if !voice.active then return .(0.0, 0.0, 0.0)
+    voice.age += dt
+    fin rise = waveClamp(voice.age / voice.attack, 0.0, 1.0)
+    fin envelope = rise * rise * exp(-waveClamp(voice.age - voice.attack, 0.0, 100.0) / voice.decay * 2.3)
+    if voice.age > voice.attack + voice.decay * 3.0 {
+        voice.active = false
+        return .(0.0, 0.0, 0.0)
+    }
+    // The roar: low body of pink noise, a hiss of broken water over it, brighter while it is young.
+    fin body = voice.body.process(voice.rumble.next()) * 1.6
+    fin hiss = voice.hiss.process(voice.noise.white()) * (0.25 + 0.55 * voice.tone) * exp(-voice.age * 1.2)
+    fin s = (body + hiss) * envelope * voice.level
+    return .(s * sqrt(1.0 - voice.pan), 0.0, s * sqrt(voice.pan))
+}
+
+/**
+ * Listens to [sea]'s surf over [shore] from [eye] (its right [right]) at
+ * [time]: a crash for every breaking crest that passed a watched point since
+ * the last block, then the block of [frames] mixed into [mix].
+ */
+func hearSurf(hearing: SurfHearing!, sound: SurfSound&, surf: SurfState&, shore: OceanShore&, eye: Vec3&, right: Vec3&,
+              mix: Long, frames: Int, rate: Double) {
+    fin points = surfBearings * surfRanges
+    if hearing.voices.size != surfVoiceCount {
+        hearing.voices.clear()
+        for i: Int in 0..<surfVoiceCount then hearing.voices.add(SurfVoice())
+    }
+    if hearing.phases.size != points * 2 {
+        hearing.phases.clear()
+        for i: Int in 0..<(points * 2) then hearing.phases.add(-1.0)
+    }
+    // Every crest that passed a watched point: summed by side, as one crash this block.
+    var left: Double = 0.0
+    var rightSide: Double = 0.0
+    var hardest: Double = 0.0
+    var washing: Double = 0.0
+    var draining: Double = 0.0
+    var washLeft: Double = 0.0
+    fin reach = waveClamp(sound.reach, 10.0, 1000.0)
+    for bearing: Int in 0..<surfBearings {
+        fin angle = (bearing as Double) / (surfBearings as Double) * waterTau
+        fin dx = cos(angle)
+        fin dz = sin(angle)
+        fin side = dx * right.x + dz * right.z
+        for range: Int in 0..<surfRanges {
+            fin distance = reach * (0.06 + 0.94 * powr(((range as Double) + 0.5) / (surfRanges as Double), 1.6))
+            fin x = eye.x + dx * distance
+            fin z = eye.z + dz * distance
+            fin at = (bearing * surfRanges + range) * 2
+            fin point = shorePointAt(shore, x, z)
+            if !point.found || point.depth <= -1.0 || surf.height <= 0.0 {
+                hearing.phases[at] = -1.0
+                hearing.phases[at + 1] = -1.0
+                continue
+            }
+            fin presence = surfPresence(point.depth, surf.length)
+            fin near = 1.0 / (1.0 + distance / 18.0)
+            // The swash and backwash: on and just off the sand.
+            if point.depth < surf.runup * 3.0 + 0.3 {
+                fin up = surfShape(surf.firstPhase + surf.firstOmega * point.travel + surfWander(x, z, 0), 1.0)
+                fin weight = near * surf.runup
+                if up.y > 0.0 then washing += weight else draining += weight
+                washLeft += weight * (1.0 - side) * 0.5
+            }
+            if presence <= 0.0 || point.depth <= 0.0 then continue
+            for train: Int in 0..<2 {
+                fin share = if train == 0 then surfFirstShare else surfSecondShare
+                fin omega = if train == 0 then surf.firstOmega else surf.secondOmega
+                fin theta = (if train == 0 then surf.firstPhase else surf.secondPhase) + omega * point.travel + surfWander(x, z, train)
+                fin u = theta / waterTau - floor(theta / waterTau)
+                fin before = hearing.phases[at + train]
+                hearing.phases[at + train] = u
+                // The crest arrives as the phase wraps; only a broken one crashes.
+                if before < 0.0 || !(before > 0.7 && u < 0.3) then continue
+                fin wave = surfTrain(surf.height * share * surfStrength(x, z, train), surf.length, point.depth)
+                if wave.breaking < 0.25 then continue
+                fin strength = wave.height * wave.breaking * presence * near
+                left += strength * (1.0 - side) * 0.5
+                rightSide += strength * (1.0 + side) * 0.5
+                fin hardness = waveClamp(wave.breaking * wave.height / (breakerIndex * point.depth + 0.2), 0.0, 1.0)
+                if hardness > hardest then hardest = hardness
+            }
+        }
+    }
+    fin heard = left + rightSide
+    if heard > 0.004 {
+        // The quietest (or a finished) voice takes the new crash.
+        var slot = 0
+        var quietest: Double = 1.0e9
+        for i: Int in 0..<surfVoiceCount {
+            let candidate: SurfVoice& = hearing.voices[i]
+            fin loudness = if candidate.active then candidate.level * exp(-candidate.age / candidate.decay) else -1.0
+            if loudness < quietest {
+                quietest = loudness
+                slot = i
+            }
+        }
+        hearing.seed = (hearing.seed * 48271) % 2147483647
+        let voice: SurfVoice! = hearing.voices[slot]
+        startSurfVoice(voice, heard * 6.0, hardest, waveClamp(rightSide / heard, 0.0, 1.0), hearing.seed, rate)
+    }
+    // The wash eases toward what the surf near the listener carries.
+    fin total = washing + draining
+    fin targetWash = waveClamp(washing * 0.5, 0.0, 0.5)
+    fin targetDrain = waveClamp(draining * 0.35, 0.0, 0.4)
+    hearing.washPan = if total > 0.0 then 1.0 - waveClamp(washLeft / total, 0.0, 1.0) else 0.5
+    hearing.washFilter.lowpass(700.0, 0.7, rate)
+    hearing.drainFilter.highpass(2600.0, 0.6, rate)
+    fin dt = 1.0 / rate
+    fin glide = 1.0 - exp(-dt / 0.4)
+    fin volume = waveClamp(sound.volume, 0.0, 4.0)
+    for i: Int in 0..<frames {
+        hearing.washLevel += (targetWash - hearing.washLevel) * glide
+        hearing.drainLevel += (targetDrain - hearing.drainLevel) * glide
+        var l: Double = 0.0
+        var r: Double = 0.0
+        for v: Int in 0..<surfVoiceCount {
+            let voice: SurfVoice! = hearing.voices[v]
+            if !voice.active then continue
+            fin s = surfVoiceSample(voice, dt)
+            l += s.x
+            r += s.z
+        }
+        fin wash = hearing.washFilter.process(hearing.wash.next()) * hearing.washLevel * 0.5
+        fin drain = hearing.drainFilter.process(hearing.drain.white()) * hearing.drainLevel * 0.12
+        fin washed = wash + drain
+        l += washed * sqrt(1.0 - hearing.washPan)
+        r += washed * sqrt(hearing.washPan)
+        addSample(mix, i * 2, l * volume)
+        addSample(mix, i * 2 + 1, r * volume)
+    }
+}
+
+/** Every ocean with a Surf Sound heard from the camera (in play). */
+@System(phase: .Audio)
+func soundSurf(audio: AudioOutput!, view: SceneView&, world: World!, oceans: @query [Ocean&, SurfSound&]) {
+    if audio.frames <= 0 then return
+    var bodies: Array<Entity> = []
+    while oceans.hasNext() then bodies.add(oceans.nextEntity())
+    for entity in bodies {
+        fin sound = storageGet<SurfSound>(ensureStorage(world), entity).clone()
+        if !sound.enabled || !storageGet<Ocean>(ensureStorage(world), entity).enabled then continue
+        fin seaAt = storageIndexOf<Sea>(ensureStorage<Sea>(world), entity)
+        let shores = ensureStorage<OceanShore>(world)
+        fin shoreAt = storageIndexOf<OceanShore>(shores, entity)
+        if seaAt < 0 || shoreAt < 0 then continue
+        fin surf = surfStateOf(storageValueAt<Sea>(ensureStorage(world), seaAt).surf, view.time)
+        let hearings = ensureStorage<SurfHearing>(world)
+        if !storageHas<SurfHearing>(hearings, entity) then storageInsert<SurfHearing>(hearings, entity, .())
+        let hearing: SurfHearing! = hearings.values[storageIndexOf<SurfHearing>(hearings, entity)]
+        hearSurf(hearing, sound, surf, shores.values[shoreAt], .(view.eyeX, view.eyeY, view.eyeZ), .(view.rightX, view.rightY, view.rightZ),
+            audio.mix, audio.frames, audio.rate as Double)
+    }
+}

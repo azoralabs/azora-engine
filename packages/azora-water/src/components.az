@@ -129,7 +129,11 @@ pack WaterSwell derives Clone {
 pack WaterOptics derives Clone {
     /** The colour deep water scatters back: blue for open sea, green for a lake, brown for a muddy river. */
     var scatter: Rgba = .(0.012, 0.075, 0.12, 1.0)
-    /** How fast each colour dies with depth, per metre: red goes first. */
+    /** The colour shallow water glows with over a light bed - turquoise for a sandy sea - and how deep it turns into [scatter], in metres. */
+    var shallow: Rgba = .(0.05, 0.42, 0.42, 1.0)
+    @Range(min: 0.1, max: 100.0, step: 0.1)
+    var shallowDepth: Double = 5.0
+    /** How fast each colour dies with depth, per metre: red goes first in sea water (make red the slowest for red water). */
     var absorption: Rgba = .(0.42, 0.075, 0.045, 1.0)
     /** How clearly the ground shows through shallow water: 0 opaque, 1 glass clear. */
     @Range(min: 0.0, max: 1.0, step: 0.01)
@@ -159,6 +163,12 @@ pack WaterFoam derives Clone {
     /** The band along the shore where waves wash white, in metres of depth. */
     @Range(min: 0.0, max: 10.0, step: 0.05)
     var shoreBand: Double = 0.8
+    /** How much white water the surf throws where waves break on a shore, and the swash leaves on the sand: 0 none, 1 as the breaking says, 2 twice. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var surf: Double = 1.0
+    /** How much of the water foam hides: 1 solid white, lower lets the water show through it. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var opacity: Double = 0.9
     var color: Rgba = .(0.9, 0.94, 0.95, 1.0)
 }
 

@@ -114,7 +114,16 @@ the same systems on the edited scene: those marked `@System(editor: true)`.
 - [ ] W6 Lakes: `Lake` (level, shore from the landscape: flooded area found
   from the level), calm small waves, shore foam.
 - [ ] W7 `Buoyancy` (pontoons, density, drag) + system on `FixedUpdate`;
-  `WaterVolume` for underwater fog/tint and swimming queries.
+  `WaterVolume` for underwater fog/tint and swimming queries. Boats done as
+  `Hull` + `HullControl` (engine.water.hull, see the log); generic `Buoyancy`
+  bodies still to do.
+- [x] W9 Shore: surf that shoals and breaks, swash and backwash, foam that
+  flows, shallow water seen through to the real bed, no water inside a
+  `WaterExclusion` box, surf sound per breaking wave (`SurfSound`).
+- [x] W10 The ocean without visible tiling (cascades turned and read twice,
+  GPU and CPU alike).
+- [x] W11 Underwater view per pixel (waterline from the drawn waves, meniscus,
+  blur and horizontal waver); the sky no longer breaks at sea level.
 - [ ] W8 Studio: Add Ocean / River / Lake, River point placement, Trace River.
 
 ## Roads (R) — `azora-roads`, module `engine.roads.*`
@@ -251,3 +260,71 @@ Test project and a look in Studio/game before it is ticked.
 - Not mine, seen at 03:47: packages/azora-physics-3d/src/d3.az does not parse
   (line 176 `.(` on its own line) - world-driving fails to build until it does.
 
+
+### 2026-11-24, morning (session "Valuri spre țărm și ocean fără repetare")
+
+Start here for the shore/surf/boat work. Test project: `AZORA_TEST_SCENE=<file>` opens
+another scene (coastShore, coastSurf, coastAerial, coastDip, coastBoatView), and
+`AZORA_TEST_CAMERA=scene` keeps a scene's active Camera3d even with Sam
+(`src/sceneCamera.az`); captures with `AZORA_CAPTURE=frame:path`, sound with
+`AZORA_AUDIO_CAPTURE=path.wav`.
+
+- Shore maps (engine.water.shore, baked by the system `mapOceanShores`, PostUpdate,
+  editor): two RGBA32F 256² maps around the eye (fine 1.2-12 km, far 8x),
+  per texel depth, signed distance to the shoreline (chamfer sweeps) and the
+  waves' travel time to the shore (weighted chamfer, speed √(g h) capped at
+  deep water: its level lines are the crests, so waves refract toward the
+  beach). The first map is made at once on load; a map waits for loaded
+  terrain meshes and is made again when more load.
+- Surf (`SurfSource` -> `SurfState`, shader and CPU alike): two trains of the
+  peak period and 1.13x (sets), Green's-law shoaling, breaking at H = 0.78 h,
+  bores held at 0.62 h with a sawtooth front, Gerstner lean before breaking,
+  swash run-up 0.043 √(H₀ L₀) (Stockdon); the open sea's largest cascade calms
+  where the surf takes over. `waterSurfaceAt` / `waterLevelAt` include it.
+- Foam: lace from value noise carried by a two-phase flow map along the water's
+  motion (no static texture, no tearing); `WaterFoam.surf` (amount) and
+  `WaterFoam.opacity` (0.9) are properties. `WaterOptics.shallow` +
+  `shallowDepth`: the shallow water's own colour (any colour: red/green water).
+- Transparency: the opaque scene captured before the water is drawn shows
+  through it, bent by the normal, absorbed along the light's path; the edge
+  fades into the ground (no seam).
+- No repetition: `cascadeTurn` + a second reading turned 2.4 rad and moved
+  (0.37, 0.61) tiles, blended by `tileBlend`, in the shader and in
+  `waveDisplacement` (CPU).
+- Systems: `simulateSeas` (GPU FFT) and `mapOceanShores` are PostUpdate systems;
+  `drawOceans` only draws. `renderUnderwater` (RenderVolumes, editor) replaces the
+  Test project's own call.
+- Boats: `Hull` (waterline length/beam, keel, sides, fullness, bow, mass,
+  centre height, propeller position/thrust/reverse, top speed, turn rate,
+  planing, slamming, density) + `HullControl` (throttle, rudder);
+  `floatHulls` (FixedUpdate) floats 5x3 bottom points (Archimedes + damping
+  against the water's own vertical speed + slamming ½ρCv²), the propeller
+  below the centre of mass lifts the bow under acceleration, planing lift;
+  `presentHulls` (Update) interpolates by `fixedAccumulator / fixedTimestep`.
+  The Test boat uses it; camera jolt and a thump sound on slams.
+  `WaterExclusion` boxes (up to 8) keep the sea out of the cockpit.
+- Underwater: per pixel, the near-plane point against `seaHeightAt` (same waves
+  as the surface); a ray that enters the water before what it strikes (crest
+  ahead of the lens, surface closer than the near plane) counts as under water;
+  meniscus; blur by distance; horizontal waver. The ocean's underside is chosen
+  per fragment (`front_facing`).
+- Atmosphere fix: the sky's camera radius never reaches the ground sphere
+  (`writeAetherView` clamps altitude to >= 2 m); at sea level the sky showed bands.
+- Material Fusion: `fusionWeightsAt` / `fusionDominantAt` evaluate a material's
+  masks on the CPU (no noise variation) - what a surface is made of at a point.
+  Test project footsteps (`src/footsteps.az`): wet/dry sand, grass, rock,
+  shallows, wading, from the terrain's material and the water depth.
+- Surf sound (`SurfSound` on the ocean, `soundSurf`, Audio): 80 points around the
+  listener; a crash per breaking crest passing, loudness from height x breaking,
+  hardness from H / h, panned, plus wash and backwash. 39 s capture: crashes every
+  4-8 s, RMS 0.03-0.09.
+- Checks (Test project, PASS): shore maps (depth, distance, travel time = the
+  integral of dx/√(gh)), shoaling and breaking, swash within its run-up, cascades
+  not repeating over a tile, hull floats at its displacement draft / lifts its
+  bow / reaches top speed / slams, footsteps ground.
+- Cost: at 2560x1440 native the water's fragment shader is ~2.5 ms and its vertex
+  ~0.3 ms (coastSurf view, water on the whole screen: 14.2 ms GPU, 7.6 without
+  the ocean); the rest is the FFT simulation and the scene copy.
+- Open: seagull calls from the owner's two YouTube references (audio cannot be
+  taken from YouTube; needs a recording the owner provides or a CC one);
+  generic `Buoyancy` bodies; rivers/lakes (W5-W6) are another session's.

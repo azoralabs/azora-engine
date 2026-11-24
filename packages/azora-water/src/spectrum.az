@@ -521,11 +521,16 @@ pack CpuWaveGrid derives Clone {
     var shiftZ: Array<Double> = []
 }
 
+pack CpuWaveMoment derives Clone {
+    var time: Double = 0.0
+    var grids: Array<CpuWaveGrid> = []
+}
+
+inline fin cpuWaveMomentCount: Int = 4
+
 /**
  * The sea floating bodies feel: per cascade the [CpuWaves.size]² lowest
- * frequencies of the GPU's h0, evaluated at two moments [times] apart, so a
- * question between them is answered by linear blend (it is made again only
- * [CpuWaves.rate] times a second, whatever the frame or step rate).
+ * frequencies of the GPU's h0, evaluated at fixed moments and blended between them.
  */
 pack CpuWaves derives Clone {
     var key: Long = 0
@@ -535,11 +540,12 @@ pack CpuWaves derives Clone {
     /** Per cascade: h0 and the conjugate mirror (4 numbers a sample), and its tile length. */
     var amplitudes: Array<Double> = []
     var lengths: Array<Double> = []
-    /** The two moments evaluated, and their grids (cascade after cascade). */
+    /** Four moments cover both brackets when callers alternate between now and a short lookahead. */
+    var moments: Array<CpuWaveMoment> = []
     var earlier: Double = -1.0
     var later: Double = -1.0
-    var before: Array<CpuWaveGrid> = []
-    var after: Array<CpuWaveGrid> = []
+    var earlierSlot: Int = 0
+    var laterSlot: Int = 0
     /** Moments a second the sea is evaluated at. */
     var rate: Double = 20.0
 }
@@ -618,22 +624,29 @@ func cpuWaveGrid(waves: CpuWaves&, cascade: Int, time: Double): CpuWaveGrid {
     return take grid
 }
 
-/** Brings [waves] to [time]: the two evaluated moments bracket it. */
+/** Gets the cached cascade grids at one sampling tick, rebuilding the slot when it changes. */
+func cpuWaveMoment(waves: CpuWaves!, tick: Long, interval: Double): Int {
+    fin count = cpuWaveMomentCount as Long
+    fin slot = ((tick % count + count) % count) as Int
+    fin time = (tick as Double) * interval
+    if waves.moments[slot].time == time && waves.moments[slot].grids.size == waves.lengths.size then return slot
+    var grids: Array<CpuWaveGrid> = []
+    for cascade: Int in 0..<waves.lengths.size then grids.add(cpuWaveGrid(waves, cascade, time))
+    waves.moments[slot] = .(time, take grids)
+    return slot
+}
+
+/** Selects the two evaluated moments that bracket [time]. */
 func advanceCpuWaves(waves: CpuWaves!, time: Double) {
     fin interval = 1.0 / waveClamp(waves.rate, 1.0, 240.0)
-    if waves.earlier >= 0.0 && time >= waves.earlier && time <= waves.later then return
-    fin start = (floor(time / interval) as Double) * interval
-    if waves.later >= 0.0 && absValue(waves.later - start) < 0.000001 {
-        // The later moment becomes the earlier one: one new evaluation.
-        waves.before = waves.after.clone()
-    } else {
-        waves.before.clear()
-        for cascade: Int in 0..<waves.lengths.size then waves.before.add(cpuWaveGrid(waves, cascade, start))
+    if waves.moments.size == 0 {
+        for slot: Int in 0..<cpuWaveMomentCount then waves.moments.add(CpuWaveMoment())
     }
-    waves.after = []
-    for cascade: Int in 0..<waves.lengths.size then waves.after.add(cpuWaveGrid(waves, cascade, start + interval))
-    waves.earlier = start
-    waves.later = start + interval
+    fin tick = floor(time / interval) as Long
+    waves.earlierSlot = cpuWaveMoment(waves, tick, interval)
+    waves.laterSlot = cpuWaveMoment(waves, tick + 1, interval)
+    waves.earlier = waves.moments[waves.earlierSlot].time
+    waves.later = waves.moments[waves.laterSlot].time
 }
 
 /** [values] of an [n]² grid over a tile [length] metres wide at local position (x, z), bilinear, wrapping. */
@@ -709,18 +722,26 @@ func laidWaveGrid(grid: CpuWaveGrid&, cascade: Int, x: Double, z: Double): Vec3 
     return .((first.x + (second.x - first.x) * w) * keep, (first.y + (second.y - first.y) * w) * keep, (first.z + (second.z - first.z) * w) * keep)
 }
 
-/** The surface's displacement (x, y, z) of the undisturbed point (x, z) at the moment [waves] was advanced to, [blend] between its two. */
-func waveDisplacement(waves: CpuWaves&, x: Double, z: Double, blend: Double): Vec3 {
+/**
+ * The surface's displacement (x, y, z) of the undisturbed point (x, z) at the
+ * moment [waves] was advanced to, [blend] between its two, each cascade laid
+ * as the GPU lays it ([laidWaveGrid]); the largest scaled by [large] and the
+ * others by [rest] (the shallows calm them, see engine.water.shore).
+ */
+func waveDisplacement(waves: CpuWaves&, x: Double, z: Double, blend: Double, large: Double = 1.0, rest: Double = 1.0): Vec3 {
+    if waves.moments.size == 0 then return .(0.0, 0.0, 0.0)
+    let before: Array<CpuWaveGrid>& = waves.moments[waves.earlierSlot].grids
+    let after: Array<CpuWaveGrid>& = waves.moments[waves.laterSlot].grids
     var dx: Double = 0.0
     var dy: Double = 0.0
     var dz: Double = 0.0
-    for cascade: Int in 0..<waves.before.size {
-        // Read unturned until the GPU surface lays its tiles with [laidWaveGrid] too: what floats rides what is drawn.
-        fin a = sampleWaveGrid(waves.before[cascade], x, z)
-        fin b = sampleWaveGrid(waves.after[cascade], x, z)
-        dx += a.x + (b.x - a.x) * blend
-        dy += a.y + (b.y - a.y) * blend
-        dz += a.z + (b.z - a.z) * blend
+    for cascade: Int in 0..<before.size {
+        fin a = laidWaveGrid(before[cascade], cascade, x, z)
+        fin b = laidWaveGrid(after[cascade], cascade, x, z)
+        fin scale = if cascade == 0 then large else rest
+        dx += (a.x + (b.x - a.x) * blend) * scale
+        dy += (a.y + (b.y - a.y) * blend) * scale
+        dz += (a.z + (b.z - a.z) * blend) * scale
     }
     return .(dx, dy, dz)
 }
@@ -729,19 +750,19 @@ func waveDisplacement(waves: CpuWaves&, x: Double, z: Double, blend: Double): Ve
  * The height of the sea above its level at world (x, z) at [time]: the
  * undisturbed point whose displaced position lands at (x, z) is found by a
  * few fixed-point steps (the crests lean, so the point below is not the
- * point that rose).
+ * point that rose). [large] and [rest] scale the cascades as in [waveDisplacement].
  */
-func waveHeightAt(waves: CpuWaves!, x: Double, z: Double, time: Double): Double {
+func waveHeightAt(waves: CpuWaves!, x: Double, z: Double, time: Double, large: Double = 1.0, rest: Double = 1.0): Double {
     advanceCpuWaves(waves, time)
     fin blend = waveClamp((time - waves.earlier) / (waves.later - waves.earlier), 0.0, 1.0)
     var px = x
     var pz = z
     for i: Int in 0..<4 {
-        fin shift = waveDisplacement(waves, px, pz, blend)
+        fin shift = waveDisplacement(waves, px, pz, blend, large, rest)
         px = x - shift.x
         pz = z - shift.z
     }
-    return waveDisplacement(waves, px, pz, blend).y
+    return waveDisplacement(waves, px, pz, blend, large, rest).y
 }
 
 /** The surface's normal at world (x, z) at [time], from heights [spacing] metres apart. */

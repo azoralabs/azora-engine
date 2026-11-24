@@ -21,9 +21,11 @@
  * and rings around it, each ring's cells twice as wide (a clipmap), snapped
  * so the grid never swims; toward its outer edge a ring folds onto the
  * coarser one so they meet without cracks. Its [Sea] moves the vertices and
- * shades the pixels; a depth map of the ground under it near the eye
- * ([OceanShore], baked a few rows a frame from the loaded terrain) calms the
- * shallows, tints them and washes the shore white.
+ * shades the pixels; maps of the ground under it around the eye
+ * ([OceanShore], baked a few rows a frame from the loaded terrain) calm the
+ * open sea's waves in the shallows and raise the surf instead
+ * (engine.water.shore), and the opaque scene taken before the water is drawn
+ * shows through it as deep as the light gets.
  */
 module engine.water.ocean
 
@@ -48,37 +50,8 @@ import engine.water.query
 import engine.water.spectrum
 import engine.water.seas
 import engine.water.waves
-
-/** Texels across an ocean's shore depth map, and how many rows it bakes a frame. */
-inline fin shoreTexels: Int = 256
-inline fin shoreRowsPerFrame: Int = 16
-
-/** The ground under an ocean near the eye, as depths below its level (never saved). */
-@Component
-pack OceanShore {
-    var texture: Long = 0
-    /** The square it covers: centre X/Z and side, in metres. */
-    var centerX: Double = 0.0
-    var centerZ: Double = 0.0
-    var size: Double = 0.0
-    var ready: Bool = false
-    /** The bake under way: its square, the rows done, the depths so far (32-bit floats). */
-    var baking: Bool = false
-    var nextX: Double = 0.0
-    var nextZ: Double = 0.0
-    var nextSize: Double = 0.0
-    var row: Int = 0
-    var depths: Long = 0
-    /** What the ground was when the bake started: the terrains' storage revision. */
-    var ground: Long = -1
-}
-
-impl OceanShore {
-    dtor .() {
-        if self.texture != 0 then send0(self.texture, sel("release"))
-        if self.depths != 0 then azFree(self.depths)
-    }
-}
+import engine.water.shore
+import engine.water.hull
 
 /** The loaded terrain mesh of [entity]'s [surface] in [gpu], or -1 while it is not drawn yet. */
 func loadedTerrain(gpu: AzGpu&, entity: Entity, surface: HeightfieldTerrain&): Int {
@@ -134,60 +107,88 @@ func groundUnder(gpu: AzGpu&, grounds: Array<ShoreGround>&, x: Double, z: Double
 }
 
 /**
- * Keeps [shore] covering the ground around [eye] under an ocean at [level],
- * [reach] metres deep at most: when the eye has moved a quarter of the way
- * out, or the terrain changed, a new map is baked [shoreRowsPerFrame] rows a
- * frame while the old one still shows.
+ * Keeps [shore]'s two maps covering the ground around [eye] under an ocean
+ * at [level] for waves [length] metres long (deep water): the fine one wide
+ * enough for the shallows the eye can tell apart (wider from higher up), the
+ * far one [shoreFarScale] times wider. A map is baked again when the eye has
+ * moved a quarter of the way out, the terrain changed or more of it was
+ * loaded - its ground
+ * [shoreRowsPerFrame] rows a frame, then its transforms a sweep a frame -
+ * while the old one still shows; its travel times alone when the sea's
+ * wavelength moved by more than a sixth.
  */
-func tendShore(gpu: AzGpu&, world: World!, shore: OceanShore!, level: Double, reach: Double, eye: Vec3&) {
-    fin ground = ensureStorage<HeightfieldTerrain>(world).revision as Long
+func tendShore(gpu: AzGpu&, world: World!, shore: OceanShore!, level: Double, reach: Double, eye: Vec3&, length: Double) {
     if storageLength<HeightfieldTerrain>(ensureStorage(world)) == 0 then return
-    // The map is wide enough for the shallows the eye can tell apart: wider from higher up.
+    fin ground = ensureStorage<HeightfieldTerrain>(world).revision as Long
     fin size = waveClamp(absValue(eye.y - level) * 24.0 + 1200.0, 1200.0, 12000.0)
-    fin snap = size / 8.0
-    if !shore.baking {
-        fin moved = !shore.ready || absValue(eye.x - shore.centerX) > shore.size * 0.25 || absValue(eye.z - shore.centerZ) > shore.size * 0.25 ||
-            shore.ground != ground || absValue(size - shore.size) > shore.size * 0.5
-        if !moved then return
-        shore.baking = true
-        shore.nextX = (round(eye.x / snap) as Double) * snap
-        shore.nextZ = (round(eye.z / snap) as Double) * snap
-        shore.nextSize = size
-        shore.row = 0
-        shore.ground = ground
-        if shore.depths == 0 then shore.depths = azAlloc((shoreTexels * shoreTexels * 4) as Long)
-    }
-    fin texel = shore.nextSize / (shoreTexels as Double)
-    fin last = if shore.row + shoreRowsPerFrame < shoreTexels then shore.row + shoreRowsPerFrame else shoreTexels
+    tendShoreLevel(gpu, world, shore.near, level, reach, eye, size, length, ground)
+    tendShoreLevel(gpu, world, shore.far, level, reach, eye, size * shoreFarScale, length, ground)
+}
+
+/** One of an ocean's shore maps kept over the square of [size] around [eye] (see [tendShore]). */
+func tendShoreLevel(gpu: AzGpu&, world: World!, tier: ShoreLevel!, level: Double, reach: Double, eye: Vec3&, size: Double, length: Double, ground: Long) {
+    // Terrain meshes load after the scene: a map waits for the first, and is made again when more come in.
     fin grounds = shoreGrounds(gpu, world)
-    for row: Int in shore.row..<last {
-        fin z = shore.nextZ - shore.nextSize * 0.5 + ((row as Double) + 0.5) * texel
-        for column: Int in 0..<shoreTexels {
-            fin x = shore.nextX - shore.nextSize * 0.5 + ((column as Double) + 0.5) * texel
-            fin under = groundUnder(gpu, grounds, x, z)
-            fin depth = if under.found then level - under.height else reach
-            azPokeF32(shore.depths, ((row * shoreTexels + column) * 4) as Long, waveClamp(depth, -50.0, reach))
+    if grounds.size == 0 then return
+    if !tier.baking {
+        fin moved = !tier.ready || absValue(eye.x - tier.centerX) > tier.size * 0.25 || absValue(eye.z - tier.centerZ) > tier.size * 0.25 ||
+            tier.ground != ground || tier.meshes != grounds.size || absValue(size - tier.size) > tier.size * 0.5
+        if moved {
+            fin snap = size / 8.0
+            startShoreBake(tier, (round(eye.x / snap) as Double) * snap, (round(eye.z / snap) as Double) * snap, size, length)
+            tier.ground = ground
+            tier.meshes = grounds.size
+        } else if absValue(length - tier.length) > tier.length / 6.0 {
+            restartShoreTravel(tier, length)
+        } else {
+            return
         }
     }
-    shore.row = last
-    if shore.row < shoreTexels then return
-    if shore.texture == 0 {
-        fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
-            55, shoreTexels as Long, shoreTexels as Long, 0)
-        shore.texture = send1(gpu.device, sel("newTextureWithDescriptor:"), descriptor)
+    // The first map is made at once (the scene is loading): until it is there the open sea would run over the beaches.
+    fin first = !tier.ready
+    if tier.row < shoreTexels {
+        fin last = if first then shoreTexels else if tier.row + shoreRowsPerFrame < shoreTexels then tier.row + shoreRowsPerFrame else shoreTexels
+        for row: Int in tier.row..<last {
+            fin z = shoreTexelCenter(tier.nextZ, tier.nextSize, row)
+            for column: Int in 0..<shoreTexels {
+                fin under = groundUnder(gpu, grounds, shoreTexelCenter(tier.nextX, tier.nextSize, column), z)
+                // Where no terrain is loaded the sea is open: deep enough for every wave.
+                tier.nextDepth[row * shoreTexels + column] = if under.found then waveClamp(level - under.height, -200.0, 2000.0) else 2000.0
+            }
+        }
+        tier.row = last
+        if !first then return
     }
-    azSendRegion(shore.texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, shoreTexels as Long, shoreTexels as Long, 1, 0,
-        shore.depths, (shoreTexels * 4) as Long)
-    shore.centerX = shore.nextX
-    shore.centerZ = shore.nextZ
-    shore.size = shore.nextSize
-    shore.ready = true
-    shore.baking = false
+    while tier.baking {
+        if stepShoreBake(tier) then writeShoreTexture(gpu, tier)
+        if !first then return
+    }
+}
+
+/** Writes [tier]'s finished data into its texture (made the first time): depth, distance, travel time, 0 per texel. */
+func writeShoreTexture(gpu: AzGpu&, tier: ShoreLevel!) {
+    fin n = shoreTexels
+    if tier.texture == 0 {
+        fin descriptor = send4(cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+            125, n as Long, n as Long, 0)
+        tier.texture = send1(gpu.device, sel("newTextureWithDescriptor:"), descriptor)
+    }
+    fin bytes = azAlloc((n * n * 16) as Long)
+    defer { azFree(bytes) }
+    for at: Int in 0..<(n * n) {
+        azPokeF32(bytes, (at * 16) as Long, tier.depth[at])
+        azPokeF32(bytes, (at * 16 + 4) as Long, tier.distance[at])
+        azPokeF32(bytes, (at * 16 + 8) as Long, tier.travel[at])
+        azPokeF32(bytes, (at * 16 + 12) as Long, 0.0)
+    }
+    azSendRegion(tier.texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), 0, 0, 0, n as Long, n as Long, 1, 0, bytes, (n * 16) as Long)
+    tier.fresh = false
 }
 
 /** The bytes of the ocean's own block (OceanU) and of a ring's (RingU). */
-inline fin oceanUniformBytes: Long = 128
+inline fin oceanUniformBytes: Long = 208
 inline fin ringUniformBytes: Long = 32
+inline fin reflectionUniformBytes: Long = 80
 
 /** Writes four numbers at [offset] of [block]. */
 func pokeFour(block: Long, offset: Long, a: Double, b: Double, c: Double, d: Double) {
@@ -197,51 +198,141 @@ func pokeFour(block: Long, offset: Long, a: Double, b: Double, c: Double, d: Dou
     azPokeF32(block, offset + 12, d)
 }
 
-/** The ocean's block: its sea's tiles and level, its look, its foam and its shore map. */
+/** Where [tier] lies for the shader: centre X/Z, one over its side, and whether it is ready. */
+func pokeShoreLevel(block: Long, offset: Long, tier: ShoreLevel&) =
+    pokeFour(block, offset, tier.centerX, tier.centerZ, if tier.size > 0.0 then 1.0 / tier.size else 0.0, if tier.ready && tier.texture != 0 then 1.0 else 0.0)
+
+/** The ocean's block: its sea's tiles and level, its look, its foam, its shore maps and the surf on them. */
 func pokeOcean(block: Long, ocean: Ocean&, level: Double, sea: SeaState&, optics: WaterOptics&, foam: WaterFoam&, shore: OceanShore&,
-               eyeHeight: Double, time: Double) {
+               surf: SurfState&, eyeHeight: Double, time: Double) {
     pokeFour(block, 0, sea.tiles[0], sea.tiles[1], sea.tiles[2], level)
     pokeFour(block, 16, sea.resolution as Double, eyeHeight, 0.0, 0.0)
     pokeFour(block, 32, optics.scatter.r, optics.scatter.g, optics.scatter.b, 1.0)
     pokeFour(block, 48, optics.absorption.r, optics.absorption.g, optics.absorption.b, 1.0)
     pokeFour(block, 64, waveClamp(optics.clarity, 0.0, 1.0), optics.subsurface, optics.roughness, optics.reflection)
     pokeFour(block, 80, foam.color.r, foam.color.g, foam.color.b, if foam.enabled then foam.shoreBand else 0.0)
-    pokeFour(block, 96, shore.centerX, shore.centerZ, if shore.size > 0.0 then 1.0 / shore.size else 0.0, if shore.ready then 1.0 else 0.0)
-    pokeFour(block, 112, ocean.shoreDepth, if foam.enabled then 1.0 else 0.0, time, 0.0)
+    pokeShoreLevel(block, 96, shore.near)
+    // The time wraps every hour (the shader's floats keep their fraction); the surf's phases come in whole.
+    pokeFour(block, 112, ocean.shoreDepth, if foam.enabled then 1.0 else 0.0, time - floor(time / 3600.0) * 3600.0,
+        if foam.enabled then waveClamp(foam.surf, 0.0, 2.0) else 0.0)
+    pokeShoreLevel(block, 128, shore.far)
+    pokeFour(block, 144, surf.height, surf.length, surf.runup, 0.0)
+    pokeFour(block, 160, surf.firstOmega, surf.secondOmega, surf.firstPhase, surf.secondPhase)
+    pokeFour(block, 176, shore.near.size / (shoreTexels as Double), shore.far.size / (shoreTexels as Double), waveClamp(foam.opacity, 0.0, 1.0), 0.0)
+    pokeFour(block, 192, optics.shallow.r, optics.shallow.g, optics.shallow.b, waveClamp(optics.shallowDepth, 0.1, 100.0))
+}
+
+/**
+ * Writes [entity]'s ocean block at [block] as its surface is drawn now
+ * ([time]): its sea, look, foam, shore maps and surf. Answers whether its
+ * sea is simulated (its maps hold waves).
+ */
+func pokeOceanBody(block: Long, world: World!, entity: Entity, time: Double, eyeHeight: Double): Bool {
+    fin ocean = storageGetOrDefault<Ocean>(ensureStorage(world), entity, .())
+    fin optics = storageGetOrDefault<WaterOptics>(ensureStorage(world), entity, .())
+    fin foam = storageGetOrDefault<WaterFoam>(ensureStorage(world), entity, .(enabled: false))
+    var sea: SeaState = .()
+    var surf: SurfState = .()
+    var hasSea = false
+    let seas = ensureStorage<Sea>(world)
+    let sims = ensureStorage<SeaGpu>(world)
+    fin seaAt = storageIndexOf<Sea>(seas, entity)
+    fin simAt = storageIndexOf<SeaGpu>(sims, entity)
+    if seaAt >= 0 && simAt >= 0 && seas.values[seaAt].tiles.size == waveCascades && sims.values[simAt].ready {
+        sea = seas.values[seaAt].state.clone()
+        surf = surfStateOf(seas.values[seaAt].surf, time)
+        hasSea = true
+    }
+    let shores = ensureStorage<OceanShore>(world)
+    if !storageHas<OceanShore>(shores, entity) then storageInsert<OceanShore>(shores, entity, .())
+    let shore: OceanShore& = shores.values[storageIndexOf<OceanShore>(shores, entity)]
+    pokeOcean(block, ocean, worldPosition(world, entity).y, sea, optics, foam, shore, surf, eyeHeight, time)
+    return hasSea
+}
+
+/** The most water exclusions one ocean honours. */
+inline fin waterExclusionLimit: Int = 8
+
+/**
+ * Writes the shown [WaterExclusion] boxes of [world] at [block] for the
+ * shader: their count, then per box its centre and its three axes, each
+ * with its half size (scale included). Answers the count.
+ */
+func pokeWaterExclusions(block: Long, world: World!): Int {
+    let cuts = ensureStorage<WaterExclusion>(world)
+    var count = 0
+    for row: Int in 0..<storageLength<WaterExclusion>(cuts) {
+        if count >= waterExclusionLimit then break
+        fin entity = storageEntityAt<WaterExclusion>(cuts, row)
+        fin cut = cuts.values[row].clone()
+        if !cut.enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+        fin m = worldMatrix(world, entity)
+        fin base = (16 + count * 64) as Long
+        pokeFour(block, base, m.m00 * cut.offset.x + m.m01 * cut.offset.y + m.m02 * cut.offset.z + m.m03,
+            m.m10 * cut.offset.x + m.m11 * cut.offset.y + m.m12 * cut.offset.z + m.m13,
+            m.m20 * cut.offset.x + m.m21 * cut.offset.y + m.m22 * cut.offset.z + m.m23, 0.0)
+        fin lx = sqrt(m.m00 * m.m00 + m.m10 * m.m10 + m.m20 * m.m20)
+        fin ly = sqrt(m.m01 * m.m01 + m.m11 * m.m11 + m.m21 * m.m21)
+        fin lz = sqrt(m.m02 * m.m02 + m.m12 * m.m12 + m.m22 * m.m22)
+        if lx <= 0.0 || ly <= 0.0 || lz <= 0.0 then continue
+        pokeFour(block, base + 16, m.m00 / lx, m.m10 / lx, m.m20 / lx, absValue(cut.size.x) * 0.5 * lx)
+        pokeFour(block, base + 32, m.m01 / ly, m.m11 / ly, m.m21 / ly, absValue(cut.size.y) * 0.5 * ly)
+        pokeFour(block, base + 48, m.m02 / lz, m.m12 / lz, m.m22 / lz, absValue(cut.size.z) * 0.5 * lz)
+        count++
+    }
+    pokeFour(block, 0, count as Double, 0.0, 0.0, 0.0)
+    return count
+}
+
+/** Captures the opaque scene once, before any ocean writes to its color and depth. */
+func captureOceanReflection(app: App!, programs: WaterGpu!): Bool {
+    let gpu: AzGpu! = app.gpu
+    if !gpu.scenePass.active || !gpu.scenePass.viewed || gpu.sceneSuspended then return false
+    if programs.reflectionFrame == gpu.scenePass.frame then return true
+    fin width = gpu.scenePass.width
+    fin height = gpu.scenePass.height
+    if programs.reflectionWidth != width || programs.reflectionHeight != height ||
+        programs.reflectionColor == 0 || programs.reflectionDepth == 0 {
+        if programs.reflectionColor != 0 then send0(programs.reflectionColor, sel("release"))
+        if programs.reflectionDepth != 0 then send0(programs.reflectionDepth, sel("release"))
+        programs.reflectionColor = sceneTexture(gpu.device, 80, width, height)
+        programs.reflectionDepth = sceneTexture(gpu.device, 252, width, height)
+        programs.reflectionWidth = width
+        programs.reflectionHeight = height
+    }
+    if programs.reflectionColor == 0 || programs.reflectionDepth == 0 then return false
+    app.suspendScenePass()
+    fin blit = send0(gpu.cmd, sel("blitCommandEncoder"))
+    send2(blit, sel("copyFromTexture:toTexture:"), gpu.scenePass.color, programs.reflectionColor)
+    send2(blit, sel("copyFromTexture:toTexture:"), gpu.scenePass.depth, programs.reflectionDepth)
+    send0(blit, sel("endEncoding"))
+    app.resumeScenePass()
+    app.setScissor(gpu.scenePass.rectX, gpu.scenePass.rectY, gpu.scenePass.rectWidth, gpu.scenePass.rectHeight)
+    programs.reflectionFrame = gpu.scenePass.frame
+    return true
 }
 
 /**
  * Draws [entity]'s ocean: its sea simulated for this frame, then the finest
- * square and its rings around the eye, the shallows from its shore map.
+ * square and its rings around the eye, the shallows and the surf from its shore maps.
  */
 func drawOcean(app: App!, world: World!, view: SceneView&, entity: Entity, ocean: Ocean&) {
     let gpu: AzGpu! = app.gpu
     if !gpu.hasEncoder || gpu.casting then return
     // The row first: making the programs adds to the storage the reference is taken from.
     fin programRow = waterGpuRow(world, gpu.device)
-    fin programs = ensureStorage<WaterGpu>(world).values[programRow].&
+    let programs: WaterGpu! = ensureStorage<WaterGpu>(world).values[programRow]
     if programs.ocean == 0 then return
     fin level = worldPosition(world, entity).y
     fin eye: Vec3 = .(view.eyeX, view.eyeY, view.eyeZ)
     fin optics = storageGetOrDefault<WaterOptics>(ensureStorage(world), entity, .())
-    fin foam = storageGetOrDefault<WaterFoam>(ensureStorage(world), entity, .(enabled: false))
-    // The sea this frame: simulated once, or still water without one.
-    var sea: SeaState = .()
-    var hasSea = false
-    let seas = ensureStorage<Sea>(world)
-    fin seaAt = storageIndexOf<Sea>(seas, entity)
-    if seaAt >= 0 && seas.values[seaAt].tiles.size == waveCascades {
-        let sims = ensureStorage<SeaGpu>(world)
-        if !storageHas<SeaGpu>(sims, entity) then storageInsert<SeaGpu>(sims, entity, .())
-        let sim: SeaGpu! = sims.values[storageIndexOf<SeaGpu>(sims, entity)]
-        simulateSeaGpu(app, programs, seas.values[seaAt], sim, foam, view.time)
-        sea = seas.values[seaAt].state.clone()
-        hasSea = sim.ready
-    }
     let shores = ensureStorage<OceanShore>(world)
     if !storageHas<OceanShore>(shores, entity) then storageInsert<OceanShore>(shores, entity, .())
-    let shore: OceanShore! = shores.values[storageIndexOf<OceanShore>(shores, entity)]
-    tendShore(gpu, world, shore, level, waveClamp(ocean.shoreDepth, 1.0, 500.0), eye)
+    let shore: OceanShore& = shores.values[storageIndexOf<OceanShore>(shores, entity)]
+    fin surface = waterSurfaceAt(world, eye.x, eye.z, view.time)
+    // From above, the opaque scene is taken before the water covers it: seen through the shallows and mirrored in the sea.
+    fin behind = eye.y > surface.height && captureOceanReflection(app, programs)
+    fin reflecting = behind && gpu.reflectWater && optics.reflection > 0.0
 
     send1(gpu.enc, sel("setRenderPipelineState:"), programs.ocean)
     send1(gpu.enc, sel("setDepthStencilState:"), gpu.depthOn)
@@ -250,10 +341,27 @@ func drawOcean(app: App!, world: World!, view: SceneView&, entity: Entity, ocean
     send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), gpu.scratch, sceneUniformBytes, 1)
     app.bindSceneLighting()
     fin block = gpu.scratch + 256
-    fin surface = waterSurfaceAt(world, eye.x, eye.z, view.time)
-    pokeOcean(block, ocean, level, sea, optics, foam, shore, eye.y - surface.height, view.time)
+    // The sea this frame (simulated by `simulateSeas`), or still water without one; the ground from `mapOceanShores`.
+    fin hasSea = pokeOceanBody(block, world, entity, view.time, eye.y - surface.height)
+    azPokeF32(block, 24, if reflecting then 1.0 else 0.0)
+    azPokeF32(block, 28, if behind then 1.0 else 0.0)
     send3(gpu.enc, sel("setVertexBytes:length:atIndex:"), block, oceanUniformBytes, 7)
     send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), block, oceanUniformBytes, 7)
+    fin reflection = gpu.scratch + 576
+    if behind {
+        pokeMat4(reflection, 0, mat4Inverse(gpu.scenePass.jittered))
+        fin width = (gpu.scenePass.fullWidth as Double) / gpu.scale
+        fin height = (gpu.scenePass.fullHeight as Double) / gpu.scale
+        pokeFour(reflection, 64, gpu.scenePass.rectX / width, gpu.scenePass.rectY / height,
+            (gpu.scenePass.rectX + gpu.scenePass.rectWidth) / width,
+            (gpu.scenePass.rectY + gpu.scenePass.rectHeight) / height)
+    }
+    send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), reflection, reflectionUniformBytes, 9)
+    fin cuts = gpu.scratch + 1024
+    fin cutCount = pokeWaterExclusions(cuts, world)
+    send3(gpu.enc, sel("setFragmentBytes:length:atIndex:"), cuts, (16 + (if cutCount > 0 then cutCount else 1) * 64) as Long, 10)
+    send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if behind then programs.reflectionColor else programs.still, 10)
+    send2(gpu.enc, sel("setFragmentTexture:atIndex:"), if behind then programs.reflectionDepth else gpu.detailMap, 11)
     let sims = ensureStorage<SeaGpu>(world)
     fin simAt = storageIndexOf<SeaGpu>(sims, entity)
     for c: Int in 0..<waveCascades {
@@ -264,9 +372,12 @@ func drawOcean(app: App!, world: World!, view: SceneView&, entity: Entity, ocean
         send2(gpu.enc, sel("setFragmentTexture:atIndex:"), slopes, (3 + c) as Long)
         send2(gpu.enc, sel("setFragmentTexture:atIndex:"), foamMap, (6 + c) as Long)
     }
-    fin shoreMap = if shore.ready then shore.texture else programs.still
-    send2(gpu.enc, sel("setVertexTexture:atIndex:"), shoreMap, 9)
-    send2(gpu.enc, sel("setFragmentTexture:atIndex:"), shoreMap, 9)
+    fin nearMap = if shore.near.texture != 0 then shore.near.texture else programs.still
+    fin farMap = if shore.far.texture != 0 then shore.far.texture else programs.still
+    send2(gpu.enc, sel("setVertexTexture:atIndex:"), nearMap, 9)
+    send2(gpu.enc, sel("setFragmentTexture:atIndex:"), nearMap, 9)
+    send2(gpu.enc, sel("setVertexTexture:atIndex:"), farMap, 12)
+    send2(gpu.enc, sel("setFragmentTexture:atIndex:"), farMap, 12)
     // The finest cell grows with the eye's height over the water, in powers of two: rings stay a few pixels a cell.
     fin cells = ((waveClamp(ocean.cells as Double, 16.0, 256.0) as Int) / 4) * 4
     fin height = absValue(eye.y - level)
@@ -306,6 +417,30 @@ func drawOceans(app: App!, view: SceneView&, world: World!, oceans: @query [Ocea
     for entity in bodies {
         fin ocean = storageGet<Ocean>(ensureStorage(world), entity).clone()
         if ocean.enabled && world.isAlive(entity) && visibleInWorld(world, entity) then drawOcean(app, world, view, entity, ocean)
+    }
+}
+
+/**
+ * Every enabled, shown Ocean keeps the maps of the ground around the eye
+ * that calm its shallows and raise its surf, baked a little each frame -
+ * in the game and in the editor. The eye is the view's (last frame's in the
+ * game: the shore moves slower than that).
+ */
+@System(phase: .PostUpdate, editor: true)
+func mapOceanShores(app: App!, view: SceneView&, world: World!, oceans: @query [Ocean&]) {
+    if app.gpu.device == 0 || view.frame == 0 then return
+    var bodies: Array<Entity> = []
+    while oceans.hasNext() then bodies.add(oceans.nextEntity())
+    for entity in bodies {
+        fin ocean = storageGet<Ocean>(ensureStorage(world), entity).clone()
+        if !ocean.enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+        fin seaAt = storageIndexOf<Sea>(ensureStorage<Sea>(world), entity)
+        fin length = if seaAt >= 0 then storageValueAt<Sea>(ensureStorage(world), seaAt).surf.length else 100.0
+        let shores = ensureStorage<OceanShore>(world)
+        if !storageHas<OceanShore>(shores, entity) then storageInsert<OceanShore>(shores, entity, .())
+        let shore: OceanShore! = shores.values[storageIndexOf<OceanShore>(shores, entity)]
+        tendShore(app.gpu, world, shore, worldPosition(world, entity).y, waveClamp(ocean.shoreDepth, 1.0, 500.0),
+            .(view.eyeX, view.eyeY, view.eyeZ), length)
     }
 }
 

@@ -1,0 +1,447 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.shore
+ *
+ * The ground under an ocean near the eye and the surf it raises. An
+ * [OceanShore] keeps two maps of the ground around the eye - a fine one and
+ * one eight times wider - each holding, per texel, the depth below the sea's
+ * level, the distance to the shoreline (negative on land) and the time a wave
+ * takes from there to the shore. That time is the shortest path for a wave of
+ * the sea's peak, slower where the water is shallow (√(g h)): its level lines
+ * are the crests, so waves turn toward the beach as real ones refract.
+ *
+ * The surf is made from the sea's [SurfSource] and these maps: two trains of
+ * the sea's peak period (and a slightly longer one, so they come in sets)
+ * grow as the water shoals, steepen into a sawtooth and break once they are
+ * about as high as the water is deep, then run up the beach as swash and slide
+ * back. [surfElevationAt] is what the ocean's shader draws (engine.water.
+ * oceanshader mirrors it) and what `waterSurfaceAt` answers near a shore.
+ */
+module engine.water.shore
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.io
+import engine.objc
+import engine.water.spectrum
+
+/** Texels across each shore map, the rows of ground sampled a frame, and how much wider the far map is. */
+inline fin shoreTexels: Int = 256
+inline fin shoreRowsPerFrame: Int = 16
+inline fin shoreFarScale: Double = 8.0
+
+/** What a map says where it has no ground: open water this deep, this far from any shore. */
+inline fin shoreOpenDepth: Double = 10000.0
+inline fin shoreOpenDistance: Double = 100000.0
+
+/** The shallowest depth a wave's speed is taken at, metres (a wave over a dry bed has no speed). */
+inline fin shoreSpeedDepth: Double = 0.3
+
+/** Wave height over depth at which a wave breaks, and the height the broken bore keeps in the inner surf. */
+inline fin breakerIndex: Double = 0.78
+inline fin boreIndex: Double = 0.62
+
+/** The share of the second, longer train's period over the first, and their share of the sea's height. */
+inline fin surfSetRatio: Double = 1.13
+inline fin surfFirstShare: Double = 0.75
+inline fin surfSecondShare: Double = 0.45
+
+/** The share of a wave's period its steep front takes once broken. */
+inline fin boreFront: Double = 0.14
+
+/**
+ * One map of the ground under an ocean: the square it covers, its data
+ * (depth, distance to shore, travel time, per texel, row by row) and the
+ * bake that replaces it a few rows a frame.
+ */
+pack ShoreLevel derives Clone {
+    /** Its GPU texture (RGBA32F: depth, distance, travel time, 0); the owner releases it. */
+    var texture: Long = 0
+    var centerX: Double = 0.0
+    var centerZ: Double = 0.0
+    var size: Double = 0.0
+    var ready: Bool = false
+    var depth: Array<Double> = []
+    var distance: Array<Double> = []
+    var travel: Array<Double> = []
+    /** The deep-water wavelength its travel times were made for. */
+    var length: Double = 0.0
+    /** The bake under way: its square, its stage (rows of ground, then the transforms), its data so far. */
+    var baking: Bool = false
+    var nextX: Double = 0.0
+    var nextZ: Double = 0.0
+    var nextSize: Double = 0.0
+    var nextLength: Double = 0.0
+    var row: Int = 0
+    var stage: Int = 0
+    var nextDepth: Array<Double> = []
+    var nextDistance: Array<Double> = []
+    var nextTravel: Array<Double> = []
+    /** A finished bake waiting for its texture to be written. */
+    var fresh: Bool = false
+    /** What the ground was when the bake started: the terrains' storage revision and how many terrain meshes were loaded. */
+    var ground: Long = -1
+    var meshes: Int = 0
+}
+
+/** The ground under an ocean near the eye, as two [ShoreLevel]s (never saved). */
+@Component
+pack OceanShore {
+    var near: ShoreLevel = .()
+    var far: ShoreLevel = .()
+}
+
+impl OceanShore {
+    dtor .() {
+        if self.near.texture != 0 then send0(self.near.texture, sel("release"))
+        if self.far.texture != 0 then send0(self.far.texture, sel("release"))
+    }
+}
+
+// ── Baking ─────────────────────────────────────────────────────────────
+
+/** Starts baking [level] over the square of [size] metres about ([x], [z]) for waves [length] metres long. */
+func startShoreBake(level: ShoreLevel!, x: Double, z: Double, size: Double, length: Double) {
+    fin count = shoreTexels * shoreTexels
+    level.baking = true
+    level.nextX = x
+    level.nextZ = z
+    level.nextSize = size
+    level.nextLength = length
+    level.row = 0
+    level.stage = 0
+    if level.nextDepth.size != count {
+        level.nextDepth = .() * count
+        level.nextDistance = .() * count
+        level.nextTravel = .() * count
+    }
+}
+
+/** Makes [level]'s travel times again for waves [length] metres long, over the ground it already has. */
+func restartShoreTravel(level: ShoreLevel!, length: Double) {
+    if !level.ready || level.baking then return
+    startShoreBake(level, level.centerX, level.centerZ, level.size, length)
+    level.nextDepth = level.depth.clone()
+    level.nextDistance = level.distance.clone()
+    level.row = shoreTexels
+    level.stage = 2
+}
+
+/** The world X (or Z) of texel [index]'s centre along a side of a map of [size] about [center]. */
+func shoreTexelCenter(center: Double, size: Double, index: Int): Double = center - size * 0.5 + ((index as Double) + 0.5) * size / (shoreTexels as Double)
+
+/** The phase speed of the sea's peak in water [depth] deep: √(g h), never faster than in deep water. */
+func shoreWaveSpeed(depth: Double, length: Double): Double {
+    fin deep = sqrt(waterGravity * length / waterTau)
+    fin shallow = sqrt(waterGravity * waveClamp(depth, shoreSpeedDepth, 100000.0))
+    return if shallow < deep then shallow else deep
+}
+
+/**
+ * One chamfer sweep of the distance to the shoreline over [level]'s next map:
+ * forward ([forward]) from the top-left, or back from the bottom-right. Water
+ * texels keep the distance to the nearest land, land texels to the nearest
+ * water, both as positive numbers in [distance] until they are signed.
+ */
+func sweepShoreDistance(level: ShoreLevel!, forward: Bool) {
+    fin n = shoreTexels
+    fin texel = level.nextSize / (n as Double)
+    fin diagonal = texel * 1.4142135623730951
+    for i: Int in 0..<n {
+        fin row = if forward then i else n - 1 - i
+        for j: Int in 0..<n {
+            fin column = if forward then j else n - 1 - j
+            fin at = row * n + column
+            fin wet = level.nextDepth[at] > 0.0
+            var best = level.nextDistance[at]
+            fin dr = if forward then -1 else 1
+            // The neighbours already swept: behind on this row, and the row before.
+            for k: Int in 0..<4 {
+                fin r = if k == 0 then row else row + dr
+                fin c = when k {
+                    0 -> column + dr
+                    1 -> column - 1
+                    2 -> column
+                    else -> column + 1
+                }
+                if r < 0 || r >= n || c < 0 || c >= n then continue
+                fin other = r * n + c
+                fin step = if k == 1 || k == 3 then diagonal else texel
+                // Across the shoreline a texel is half a texel from it; on the same side, the neighbour's distance on.
+                fin across = (level.nextDepth[other] > 0.0) != wet
+                fin candidate = if across then step * 0.5 else level.nextDistance[other] + step
+                if candidate < best then best = candidate
+            }
+            level.nextDistance[at] = best
+        }
+    }
+}
+
+/**
+ * One sweep of the waves' travel time to the shore over [level]'s next map:
+ * the shortest time from each water texel to the land, each step taking its
+ * length over the mean of the two texels' speeds. Land texels are behind the
+ * shoreline: their time is their distance at the swash's own speed, negative.
+ */
+func sweepShoreTravel(level: ShoreLevel!, forward: Bool) {
+    fin n = shoreTexels
+    fin texel = level.nextSize / (n as Double)
+    fin diagonal = texel * 1.4142135623730951
+    for i: Int in 0..<n {
+        fin row = if forward then i else n - 1 - i
+        for j: Int in 0..<n {
+            fin column = if forward then j else n - 1 - j
+            fin at = row * n + column
+            if level.nextDepth[at] <= 0.0 then continue
+            fin slowness = 1.0 / shoreWaveSpeed(level.nextDepth[at], level.nextLength)
+            var best = level.nextTravel[at]
+            fin dr = if forward then -1 else 1
+            for k: Int in 0..<4 {
+                fin r = if k == 0 then row else row + dr
+                fin c = when k {
+                    0 -> column + dr
+                    1 -> column - 1
+                    2 -> column
+                    else -> column + 1
+                }
+                if r < 0 || r >= n || c < 0 || c >= n then continue
+                fin other = r * n + c
+                fin step = if k == 1 || k == 3 then diagonal else texel
+                fin candidate = if level.nextDepth[other] <= 0.0 then step * 0.5 * slowness
+                    else level.nextTravel[other] + step * 0.5 * (slowness + 1.0 / shoreWaveSpeed(level.nextDepth[other], level.nextLength))
+                if candidate < best then best = candidate
+            }
+            level.nextTravel[at] = best
+        }
+    }
+}
+
+/**
+ * Moves [level]'s bake on by one stage once its ground rows are all
+ * sampled (the caller samples them: it has the terrain): stages 0-1 the
+ * distance sweeps, 2-5 the travel-time sweeps, 6 the finished map shown. Answers whether a new map was just finished (its texture is due).
+ */
+func stepShoreBake(level: ShoreLevel!): Bool {
+    if !level.baking || level.row < shoreTexels then return false
+    fin n = shoreTexels * shoreTexels
+    fin stage = level.stage
+    level.stage++
+    if stage == 0 {
+        // No texel knows its distance yet: each looks for the other side.
+        for at: Int in 0..<n {
+            level.nextDistance[at] = shoreOpenDistance
+        }
+        sweepShoreDistance(level, true)
+    } else if stage == 1 {
+        sweepShoreDistance(level, false)
+        // Signed: positive over water, negative on land.
+        for at: Int in 0..<n {
+            if level.nextDepth[at] <= 0.0 then level.nextDistance[at] = -level.nextDistance[at]
+        }
+    } else if stage == 2 {
+        for at: Int in 0..<n {
+            level.nextTravel[at] = if level.nextDepth[at] > 0.0 then 1000000.0 else 0.0
+        }
+        sweepShoreTravel(level, true)
+    } else if stage < 6 {
+        sweepShoreTravel(level, stage % 2 == 0)
+    } else {
+        fin swash = shoreSwashSpeed(level.nextLength)
+        for at: Int in 0..<n {
+            if level.nextDepth[at] <= 0.0 {
+                level.nextTravel[at] = level.nextDistance[at] / swash
+            } else if level.nextTravel[at] > 100000.0 {
+                level.nextTravel[at] = 100000.0
+            }
+        }
+        level.depth = level.nextDepth.clone()
+        level.distance = level.nextDistance.clone()
+        level.travel = level.nextTravel.clone()
+        level.centerX = level.nextX
+        level.centerZ = level.nextZ
+        level.size = level.nextSize
+        level.length = level.nextLength
+        level.ready = true
+        level.baking = false
+        level.fresh = true
+        return true
+    }
+    return false
+}
+
+/** How fast the swash climbs a beach for a sea of peak wavelength [length], m/s (√(g H) of a bore a metre or so high). */
+func shoreSwashSpeed(length: Double): Double = waveClamp(sqrt(waterGravity * length / waterTau) * 0.25, 1.0, 6.0)
+
+// ── Reading the maps ───────────────────────────────────────────────────
+
+/** The ground at a point as the maps see it: depth below the sea's level, distance to the shoreline, travel time to it. */
+pack ShorePoint derives Clone {
+    var found: Bool = false
+    var depth: Double = 10000.0
+    var distance: Double = 100000.0
+    var travel: Double = 0.0
+}
+
+/** [values] of a map at world (x, z), bilinear, clamped to its edge. */
+func shoreField(level: ShoreLevel&, values: Array<Double>&, x: Double, z: Double): Double {
+    fin n = shoreTexels
+    fin u = waveClamp((x - level.centerX) / level.size * (n as Double) + (n as Double) * 0.5 - 0.5, 0.0, (n - 1) as Double)
+    fin v = waveClamp((z - level.centerZ) / level.size * (n as Double) + (n as Double) * 0.5 - 0.5, 0.0, (n - 1) as Double)
+    fin c0 = floor(u) as Int
+    fin r0 = floor(v) as Int
+    fin c1 = if c0 + 1 < n then c0 + 1 else c0
+    fin r1 = if r0 + 1 < n then r0 + 1 else r0
+    fin fu = u - (c0 as Double)
+    fin fv = v - (r0 as Double)
+    fin top = values[r0 * n + c0] * (1.0 - fu) + values[r0 * n + c1] * fu
+    fin bottom = values[r1 * n + c0] * (1.0 - fu) + values[r1 * n + c1] * fu
+    return top * (1.0 - fv) + bottom * fv
+}
+
+/** Whether world (x, z) lies inside [level]'s square. */
+func insideShore(level: ShoreLevel&, x: Double, z: Double): Bool =
+    level.ready && absValue(x - level.centerX) < level.size * 0.5 && absValue(z - level.centerZ) < level.size * 0.5
+
+/** The ground at world (x, z): from the fine map where it reaches, else the far one, else open water. */
+func shorePointAt(shore: OceanShore&, x: Double, z: Double): ShorePoint {
+    if insideShore(shore.near, x, z) then return shorePointIn(shore.near, x, z)
+    if insideShore(shore.far, x, z) then return shorePointIn(shore.far, x, z)
+    return .()
+}
+
+/** The ground at world (x, z) as [level] has it. */
+func shorePointIn(level: ShoreLevel&, x: Double, z: Double): ShorePoint =
+    .(true, shoreField(level, level.depth, x, z), shoreField(level, level.distance, x, z), shoreField(level, level.travel, x, z))
+
+// ── Surf ───────────────────────────────────────────────────────────────
+
+/**
+ * The surf a sea sends to its shores at one moment: its two trains' deep
+ * heights, frequencies and phases (their phases kept in double precision, so
+ * hours of play do not wear them down), its deep wavelength and how high the
+ * swash runs up.
+ */
+pack SurfState derives Clone {
+    var height: Double = 0.0
+    var length: Double = 100.0
+    var firstOmega: Double = 0.0
+    var secondOmega: Double = 0.0
+    var firstPhase: Double = 0.0
+    var secondPhase: Double = 0.0
+    var runup: Double = 0.0
+}
+
+/**
+ * The surf of [source] at [time]: its trains' periods from the peak's deep
+ * wavelength (T = √(2π L / g)), the first of them, the second a set's worth
+ * longer; the swash's run-up from Stockdon's dissipative-beach fit,
+ * 0.043 √(H₀ L₀).
+ */
+func surfStateOf(source: SurfSource&, time: Double): SurfState {
+    fin height = sqrt(source.wind * source.wind + source.swell * source.swell)
+    fin length = waveClamp(source.length, 8.0, 600.0)
+    fin omega = sqrt(waterGravity * waterTau / length)
+    fin second = omega / surfSetRatio
+    fin first = omega * time - floor(omega * time / waterTau) * waterTau
+    fin later = second * time - floor(second * time / waterTau) * waterTau
+    return .(height, length, omega, second, first, later, 0.043 * sqrt(height * length))
+}
+
+/**
+ * The shape of a train at phase [theta] (crest at 0), as (value, derivative
+ * by theta, share of the period since the crest): a round swell (cos θ) that turns into a bore's sawtooth as it
+ * breaks ([breaking] 0..1) - a slow fall behind the crest, a steep front.
+ */
+func surfShape(theta: Double, breaking: Double): Vec3 {
+    fin u = theta / waterTau - floor(theta / waterTau)
+    fin rise = 1.0 - boreFront
+    fin saw = if u < rise then 1.0 - 2.0 * u / rise else -1.0 + 2.0 * smoothShore((u - rise) / boreFront)
+    fin slope = if u < rise then -2.0 / rise / waterTau else 2.0 * smoothShoreSlope((u - rise) / boreFront) / boreFront / waterTau
+    return .(cos(theta) * (1.0 - breaking) + saw * breaking, -sin(theta) * (1.0 - breaking) + slope * breaking, u)
+}
+
+func smoothShore(x: Double): Double {
+    fin t = waveClamp(x, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+}
+
+func smoothShoreSlope(x: Double): Double {
+    fin t = waveClamp(x, 0.0, 1.0)
+    return 6.0 * t * (1.0 - t)
+}
+
+/** A train's height in water [depth] deep: shoaled (Green's law about the group speed), then held at what the depth can carry. */
+pack SurfTrain derives Clone {
+    var height: Double = 0.0
+    var breaking: Double = 0.0
+}
+
+func surfTrain(deepHeight: Double, length: Double, depth: Double): SurfTrain {
+    if depth <= 0.0 || deepHeight <= 0.0 then return .()
+    // Shoaling: Ks = √(Cg₀ / Cg), Cg₀ = g T / 4π in deep water, √(g h) in shallow.
+    fin deepGroup = 0.5 * sqrt(waterGravity * length / waterTau)
+    fin group = sqrt(waterGravity * waveClamp(depth, shoreSpeedDepth, 100000.0))
+    fin shoaling = waveClamp(sqrt(deepGroup / group), 0.9, 2.5)
+    fin grown = deepHeight * shoaling
+    fin carried = breakerIndex * depth
+    fin breaking = smoothShore((grown / carried - 0.7) / 0.3)
+    // Once broken, the bore keeps the height the inner surf carries.
+    fin kept = boreIndex * depth + (breakerIndex - boreIndex) * depth * (1.0 - breaking)
+    return .(if grown < kept then grown else kept, breaking)
+}
+
+/** How much of the surf shows at [depth]: none in water deeper than half the deep wavelength, all of it from a third. */
+func surfPresence(depth: Double, length: Double): Double = 1.0 - smoothShore((depth - 0.3 * length) / (0.2 * length))
+
+/** A slow wander along the shore, so crests are not ruled lines: radians at world (x, z) for train [train]. */
+func surfWander(x: Double, z: Double, train: Int): Double {
+    fin t = train as Double
+    return 0.9 * sin(0.0213 * x + 1.3 * sin(0.0171 * z + 0.7 * t) + 2.1 * t) + 0.6 * sin(0.0147 * z - 1.1 * sin(0.0193 * x + 1.9 * t))
+}
+
+/** The height a set of waves keeps along the shore: 0.6..1.0 of each train's, wandering. */
+func surfStrength(x: Double, z: Double, train: Int): Double {
+    fin t = train as Double
+    return 0.8 + 0.2 * sin(0.0087 * x + 0.0063 * z + 1.7 * t + 0.9 * sin(0.011 * z - 0.4 * t))
+}
+
+/**
+ * The surf's elevation over the sea's level at a point of the shore maps
+ * ([point]) and world (x, z): each train shoaled and breaking, its phase
+ * the moment plus its travel time (crests move toward the shore), and over
+ * the beach the swash running up as high as [SurfState.runup] and sliding
+ * back. Zero offshore, where the surf has not begun.
+ */
+func surfElevationAt(surf: SurfState&, point: ShorePoint&, x: Double, z: Double): Double {
+    if !point.found || surf.height <= 0.0 then return 0.0
+    fin presence = surfPresence(point.depth, surf.length)
+    if presence <= 0.0 then return 0.0
+    var elevation: Double = 0.0
+    for train: Int in 0..<2 {
+        fin share = if train == 0 then surfFirstShare else surfSecondShare
+        fin omega = if train == 0 then surf.firstOmega else surf.secondOmega
+        fin phase = (if train == 0 then surf.firstPhase else surf.secondPhase) + omega * point.travel + surfWander(x, z, train)
+        fin wave = surfTrain(surf.height * share * surfStrength(x, z, train), surf.length, point.depth)
+        elevation += wave.height * 0.5 * surfShape(phase, wave.breaking).x * presence
+    }
+    // The swash: up the beach with each bore of the first train, back down the slope.
+    fin up = 0.5 + 0.5 * surfShape(surf.firstPhase + surf.firstOmega * point.travel + surfWander(x, z, 0), 1.0).x
+    fin reach = if point.depth <= 0.0 then 1.0 else 1.0 - smoothShore(point.depth / (surf.runup * 3.0 + 0.05))
+    return elevation + surf.runup * up * reach
+}

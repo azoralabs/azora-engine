@@ -445,9 +445,13 @@ impl App {
         return measured
     }
 
-    /** Seconds between refreshes of the screen the window is on; 0 when unknown. */
+    /** Seconds between refreshes of the screen showing this app; 0 when unknown. */
     func &.refreshInterval(): Double {
-        // Played inside an editor there is no window: the main screen's beat.
+        if self.embed.link.region != 0 {
+            fin interval = azPeekF64(self.embed.link.region, embedAtRefreshInterval)
+            if interval > 0.001 && interval <= 1.0 then return interval
+        }
+        // An older editor may leave the interval unset.
         fin screen = if self.win.handle == 0 then send0(cls("NSScreen"), sel("mainScreen")) else send0(self.win.handle, sel("screen"))
         if screen == 0 || !responds(screen, "maximumFramesPerSecond") then return 0.0
         fin rate = send0(screen, sel("maximumFramesPerSecond"))
@@ -1057,9 +1061,12 @@ func gpuEndEmbeddedFrame(app: App!) {
     fin interval = app.refreshInterval()
     if interval > 0.0 {
         fin now = CACurrentMediaTime()
-        if app.embed.due < now - interval then app.embed.due = now
         app.embed.due += interval
-        if app.embed.due > now then azSendF1(cls("NSThread"), sel("sleepForTimeInterval:"), app.embed.due - now)
+        if app.embed.due > now {
+            azSendF1(cls("NSThread"), sel("sleepForTimeInterval:"), app.embed.due - now)
+        } else {
+            app.embed.due = now
+        }
     }
 }
 

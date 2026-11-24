@@ -45,7 +45,7 @@ pack GameConfig {
      * physics with interpolation). AZORA_PHYSICS_RATE (Studio's Preferences,
      * "Physics steps per second") sets it for a run.
      */
-    fin physicsRate: Int = 120
+    fin physicsRate: Int = 60
     fin maxFrameSeconds: Double = 0.08
 }
 
@@ -350,13 +350,14 @@ react func drawGameScene(frame: Game!, plan: SystemPlan&, meshes: PrimitiveMeshe
 }
 
 /** A scene without an atmosphere only pays for render stages supplied by the game. */
-func customGameRenderStage(plan: SystemPlan&, phase: SystemPhase): Bool {
-    for scheduled in plan.systems {
-        if scheduled.phase == phase && scheduled.enabled && scheduled.name != "simulateAetherPrecipitation" &&
-            scheduled.name != "drawAetherPrecipitation" && scheduled.name != "drawAetherBolts" then return true
-    }
-    return false
-}
+func customGameRenderStage(plan: SystemPlan&, phase: SystemPhase): Bool
+scope return for scheduled in plan.systems {
+    if scheduled.phase == phase &&
+        scheduled.enabled &&
+        scheduled.name != "simulateAetherPrecipitation" &&
+        scheduled.name != "drawAetherPrecipitation" &&
+        scheduled.name != "drawAetherBolts" then break true
+} else false
 
 /** Physics steps per second for this run: AZORA_PHYSICS_RATE when it names one (10 to 1000), else the game's. */
 func physicsRateOf(config: GameConfig&): Int {

@@ -210,7 +210,8 @@ func pokeVector(block: Long, offset: Long, x: Double, y: Double, z: Double, w: D
 
 /** Writes the camera's part of the block: where it is, how it looks, and the scene's size. */
 func writeAetherView(block: Long, view: SceneView&, sky: AetherSky&) {
-    fin radius = groundRadius + atmosphereClamp(sky.altitude + view.eyeY, 0.0, 90000.0) / 1000.0
+    // Never on the ground sphere itself: an eye at (or under) sea level would see the sky's tables at their edge, in bands.
+    fin radius = groundRadius + atmosphereClamp(sky.altitude + view.eyeY, 2.0, 90000.0) / 1000.0
     pokeVector(block, 32, view.eyeX, view.eyeY, view.eyeZ, radius)
     pokeVector(block, 64, view.tangent * view.aspect, view.tangent, skyExposure * sky.exposure, sky.stars)
     pokeVector(block, 80, view.forwardX, view.forwardY, view.forwardZ, 0.0)

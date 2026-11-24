@@ -1,0 +1,350 @@
+/*
+ * Copyright 2026 AzoraLabs
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file engine.water.hull
+ *
+ * Boats as rigid bodies on the water. A [Hull] says how a boat is built - its
+ * waterline length and beam, its keel, its mass, its propeller - and a
+ * [HullControl] how it is driven (throttle and rudder, written by whoever
+ * steers it). System [floatHulls] moves every hull on the fixed physics step:
+ * a grid of points over its bottom each pushed up by the water above it
+ * (Archimedes), damped against the water's own motion, struck hard when it
+ * falls into a wave fast (slamming), the propeller pushing from below the
+ * centre of mass - so the bow lifts as the boat accelerates - and the hull
+ * planing at speed. [presentHulls] places the boat between the last two
+ * physics steps, so it moves smoothly at any frame rate.
+ *
+ * A [WaterExclusion] keeps the water surface out of a box: the inside of a
+ * boat, a dry dock, a cave above the sea.
+ */
+module engine.water.hull
+
+import std.math
+import engine.core
+import engine.ecs
+import engine.math
+import engine.scene
+import engine.scene.transforms
+import engine.water.components
+import engine.water.spectrum
+import engine.water.query
+
+/** How a boat's hull is built and how it is pushed: everything its physics reads. */
+@Component
+@Inspectable(title: "Boat Hull", serializedName: "Hull", icon: "anchor", category: "Water", order: 18)
+pack Hull derives Clone {
+    var enabled: Bool = true
+    /** The hull at its waterline: length (along -Z, the bow) and beam (across X), in metres. */
+    @Range(min: 0.5, max: 400.0, step: 0.05)
+    var length: Double = 5.4
+    @Range(min: 0.3, max: 80.0, step: 0.05)
+    var beam: Double = 2.0
+    /** The keel's height in the boat's own space, and how high the sides rise above it (the most it can sink). */
+    @Range(min: -20.0, max: 20.0, step: 0.01)
+    var keel: Double = -0.55
+    @Range(min: 0.1, max: 40.0, step: 0.01)
+    var sides: Double = 1.1
+    /** The share of the length-by-beam box under the waterline the hull fills (a box 1, a V hull about 0.5). */
+    @Range(min: 0.1, max: 1.0, step: 0.01)
+    var fullness: Double = 0.55
+    /** How narrow the bow is against the beam: 0 a point, 1 as wide as the rest. */
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var bow: Double = 0.35
+    @Range(min: 1.0, max: 10000000.0, step: 1.0)
+    var mass: Double = 950.0
+    /** The centre of mass's height in the boat's own space. */
+    @Range(min: -20.0, max: 20.0, step: 0.01)
+    var centerHeight: Double = -0.1
+    /** The propeller's push at full throttle (newtons), the share of it astern, and where it is in the boat's own space. */
+    @Range(min: 0.0, max: 10000000.0, step: 10.0)
+    var thrust: Double = 9000.0
+    @Range(min: 0.0, max: 1.0, step: 0.01)
+    var reverse: Double = 0.35
+    var propeller: Vec3 = .(0.0, -0.75, 2.6)
+    /** The speed full throttle reaches on calm water, m/s: the hull's drag follows from it. */
+    @Range(min: 0.5, max: 60.0, step: 0.1)
+    var topSpeed: Double = 17.0
+    /** How fast the rudder turns it at speed, degrees a second. */
+    @Range(min: 0.0, max: 180.0, step: 1.0)
+    var turnRate: Double = 38.0
+    /** How hard the water lifts the hull's bottom at speed (planing): 0 a displacement hull. */
+    @Range(min: 0.0, max: 2.0, step: 0.01)
+    var planing: Double = 0.5
+    /** How hard a bow falling into a wave is struck back: 0 never. */
+    @Range(min: 0.0, max: 4.0, step: 0.01)
+    var slamming: Double = 1.0
+    /** Water density, kg/m³ (fresh 1000, sea 1025). */
+    @Range(min: 500.0, max: 1500.0, step: 1.0)
+    var density: Double = 1025.0
+}
+
+/** How a boat is driven this moment: throttle -1 (astern) .. 1 and rudder -1 (port) .. 1 (starboard). */
+@Component
+pack HullControl derives Clone {
+    var throttle: Double = 0.0
+    var rudder: Double = 0.0
+}
+
+/** Points along and across a hull's bottom that feel the water. */
+inline fin hullRows: Int = 5
+inline fin hullColumns: Int = 3
+
+/**
+ * A hull's motion, kept by [floatHulls] (never saved): where it is and how it
+ * moves, its pose at the step before (to place it between the two), and what
+ * the water last did to it.
+ */
+@Component
+pack HullMotion derives Clone {
+    var position: Vec3 = .(0.0, 0.0, 0.0)
+    var velocity: Vec3 = .(0.0, 0.0, 0.0)
+    /** Yaw, pitch (bow up) and roll (starboard up), radians, and how fast each turns. */
+    var yaw: Double = 0.0
+    var pitch: Double = 0.0
+    var roll: Double = 0.0
+    var yawRate: Double = 0.0
+    var pitchRate: Double = 0.0
+    var rollRate: Double = 0.0
+    var previousPosition: Vec3 = .(0.0, 0.0, 0.0)
+    var previousYaw: Double = 0.0
+    var previousPitch: Double = 0.0
+    var previousRoll: Double = 0.0
+    /** Speed along the bow, m/s, and the share of the hull's bottom under water. */
+    var forwardSpeed: Double = 0.0
+    var wet: Double = 0.0
+    /** The hardest slam of the last moments (0 none, about 1 a hard one), fading over half a second. */
+    var slam: Double = 0.0
+    /** The water's height over each point at the step before (its vertical speed). */
+    var waterBefore: Array<Double> = []
+    var started: Bool = false
+}
+
+/** A box ([size] across, centred at [offset] in its entity's space) the water's surface is not drawn in. */
+@Component
+@Inspectable(title: "Water Exclusion", serializedName: "WaterExclusion", icon: "square-dashed", category: "Water", order: 19)
+pack WaterExclusion derives Clone {
+    var enabled: Bool = true
+    var offset: Vec3 = .(0.0, 0.0, 0.0)
+    var size: Vec3 = .(1.0, 1.0, 1.0)
+}
+
+/** [local] (the boat's own space) turned by roll (Z), pitch (X) and yaw (Y), as a Transform's rotation turns it. */
+func hullTurn(local: Vec3&, yaw: Double, pitch: Double, roll: Double): Vec3 {
+    fin cr = cos(roll)
+    fin sr = sin(roll)
+    fin x1 = local.x * cr - local.y * sr
+    fin y1 = local.x * sr + local.y * cr
+    fin z1 = local.z
+    fin cp = cos(pitch)
+    fin sp = sin(pitch)
+    fin y2 = y1 * cp - z1 * sp
+    fin z2 = y1 * sp + z1 * cp
+    fin cy = cos(yaw)
+    fin sy = sin(yaw)
+    return .(x1 * cy + z2 * sy, y2, -x1 * sy + z2 * cy)
+}
+
+func hullCross(a: Vec3&, b: Vec3&): Vec3 = .(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+
+func hullDot(a: Vec3&, b: Vec3&): Double = a.x * b.x + a.y * b.y + a.z * b.z
+
+/** Where bottom point ([row], [column]) of [hull] lies in the boat's own space: rows from the bow, the bow's narrower. */
+func hullPoint(hull: Hull&, row: Int, column: Int): Vec3 {
+    fin along = ((row as Double) + 0.5) / (hullRows as Double) - 0.5
+    fin across = ((column as Double) / ((hullColumns - 1) as Double) - 0.5) * 0.8
+    // The bow is the -Z end: its rows narrow toward [Hull.bow].
+    fin narrowing = if along < -0.1 then 1.0 + (hull.bow - 1.0) * (-0.1 - along) / 0.4 else 1.0
+    return .(across * hull.beam * narrowing, hull.keel, along * hull.length)
+}
+
+/** A hull's motion starting from where its entity stands. */
+func startHull(world: World!, entity: Entity): HullMotion {
+    fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+    fin turn = place.rotation.clone()
+    fin degrees = 0.017453292519943295
+    fin position = worldPosition(world, entity)
+    return .(position: position.clone(), yaw: turn.y * degrees, pitch: turn.x * degrees, roll: turn.z * degrees,
+        previousPosition: position.clone(), previousYaw: turn.y * degrees, previousPitch: turn.x * degrees, previousRoll: turn.z * degrees,
+        started: true)
+}
+
+/**
+ * One physics step of [dt] seconds of [motion] for [hull] driven by
+ * [control] at [time]: the water's push on each bottom point, the
+ * propeller, drag, the rudder, then the motion integrated.
+ */
+func stepHull(world: World!, hull: Hull&, control: HullControl&, motion: HullMotion!, time: Double, dt: Double) {
+    if dt <= 0.0 then return
+    motion.previousPosition = motion.position.clone()
+    motion.previousYaw = motion.yaw
+    motion.previousPitch = motion.pitch
+    motion.previousRoll = motion.roll
+    fin gravity = 9.81
+    fin count = hullRows * hullColumns
+    if motion.waterBefore.size != count {
+        motion.waterBefore = .() * count
+        for at: Int in 0..<count {
+            motion.waterBefore[at] = -1.0e9
+        }
+    }
+    fin share = hull.length * hull.beam * hull.fullness / (count as Double)
+    fin centre: Vec3 = .(0.0, hull.centerHeight, 0.0)
+    fin mass = waveClamp(hull.mass, 1.0, 1.0e9)
+    fin forward = hullTurn(.(0.0, 0.0, -1.0), motion.yaw, motion.pitch, motion.roll)
+    fin right = hullTurn(.(1.0, 0.0, 0.0), motion.yaw, motion.pitch, motion.roll)
+    fin omega = hullTurn(.(motion.pitchRate, motion.yawRate, motion.rollRate), 0.0, 0.0, 0.0)
+    // The turn rates as a world vector: pitch about the boat's right, roll about its stern-ward axis, yaw about up.
+    fin spin: Vec3 = .(right.x * omega.x - forward.x * omega.z, omega.y, right.z * omega.x - forward.z * omega.z)
+    var force: Vec3 = .(0.0, -mass * gravity, 0.0)
+    var torque: Vec3 = .(0.0, 0.0, 0.0)
+    var wet: Double = 0.0
+    var slam: Double = 0.0
+    for row: Int in 0..<hullRows {
+        for column: Int in 0..<hullColumns {
+            fin at = row * hullColumns + column
+            fin arm = hullTurn(hullPoint(hull, row, column).subtract(centre), motion.yaw, motion.pitch, motion.roll)
+            fin point = motion.position.add(hullTurn(centre, motion.yaw, motion.pitch, motion.roll)).add(arm)
+            fin water = waterLevelAt(world, point.x, point.z, time)
+            // The water's own rise and fall (none known at the first step, nor across a jump of the water under it).
+            fin known = motion.waterBefore[at] > -1.0e8
+            fin rising = if known then waveClamp((water - motion.waterBefore[at]) / dt, -8.0, 8.0) else 0.0
+            motion.waterBefore[at] = water
+            fin depth = waveClamp(water - point.y, 0.0, hull.sides)
+            if depth <= 0.0 then continue
+            wet += 1.0
+            // The point's speed against the water's own rise and fall.
+            fin moving = motion.velocity.add(hullCross(spin, arm))
+            fin against = moving.y - rising
+            var push = hull.density * gravity * share * depth
+            // Damping: the water resists the hull moving through it (about half of critical for heave).
+            push -= hull.density * share * 1.1 * against
+            // Slamming: a bottom falling into the water fast is struck back, harder the faster (½ ρ C v²).
+            if against < -1.2 && hull.slamming > 0.0 {
+                fin into = waveClamp(-against - 1.2, 0.0, 8.0)
+                fin strike = 0.5 * hull.density * share * 2.2 * into * into * hull.slamming
+                push += strike
+                fin felt = strike / (mass * gravity * 0.5)
+                if felt > slam then slam = felt
+            }
+            fin up: Vec3 = .(0.0, push, 0.0)
+            force = force.add(up)
+            torque = torque.add(hullCross(arm, up))
+        }
+    }
+    motion.wet = wet / (count as Double)
+    fin level: Vec3 = .(forward.x, 0.0, forward.z)
+    fin levelLength = sqrt(level.x * level.x + level.z * level.z)
+    fin ahead: Vec3 = if levelLength > 0.0001 then level.scale(1.0 / levelLength) else Vec3(0.0, 0.0, -1.0)
+    fin side: Vec3 = .(-ahead.z, 0.0, ahead.x)
+    fin speed = hullDot(motion.velocity, ahead)
+    fin slip = hullDot(motion.velocity, side)
+    motion.forwardSpeed = speed
+    // The propeller pushes only while it is in the water, from below the centre of mass: the bow lifts as it pulls.
+    fin propeller = motion.position.add(hullTurn(hull.propeller, motion.yaw, motion.pitch, motion.roll))
+    fin propellerWet = propeller.y < waterLevelAt(world, propeller.x, propeller.z, time) + 0.1
+    fin throttle = waveClamp(control.throttle, -1.0, 1.0)
+    fin pull = if propellerWet then throttle * hull.thrust * (if throttle < 0.0 then hull.reverse else 1.0) else 0.0
+    if pull != 0.0 {
+        fin thrust = forward.scale(pull)
+        force = force.add(thrust)
+        torque = torque.add(hullCross(hullTurn(hull.propeller.subtract(centre), motion.yaw, motion.pitch, motion.roll), thrust))
+    }
+    if motion.wet > 0.0 {
+        // Drag: the full thrust balances it at top speed; sideways the keel resists twenty times as hard.
+        fin drag = hull.thrust / (hull.topSpeed * hull.topSpeed)
+        fin wetDrag = drag * (0.35 + 0.65 * motion.wet)
+        force = force.add(ahead.scale(-wetDrag * speed * absValue(speed) - mass * 0.15 * speed))
+        force = force.add(side.scale(-wetDrag * 20.0 * slip * absValue(slip) - mass * 1.5 * slip))
+        // Planing: the bottom lifts at speed, a little ahead of the centre - the bow rides up, the hull runs higher.
+        if hull.planing > 0.0 && speed > 0.5 {
+            fin lift: Vec3 = .(0.0, 0.5 * hull.density * hull.length * hull.beam * 0.02 * hull.planing * speed * speed * motion.wet, 0.0)
+            force = force.add(lift)
+            torque = torque.add(hullCross(forward.scale(hull.length * 0.12), lift))
+        }
+    }
+    // Linear motion.
+    motion.velocity = motion.velocity.add(force.scale(dt / mass))
+    motion.position = motion.position.add(motion.velocity.scale(dt))
+    // Pitch and roll from the torques about the boat's right and stern-ward axes; inertia of a box of the hull's size.
+    fin pitchInertia = mass * (hull.length * hull.length + hull.sides * hull.sides) / 12.0
+    fin rollInertia = mass * (hull.beam * hull.beam + hull.sides * hull.sides) / 12.0
+    motion.pitchRate += hullDot(torque, right) / pitchInertia * dt
+    motion.rollRate += -hullDot(torque, forward) / rollInertia * dt
+    // Out of the water nothing damps them but the air; in it, the water's drag on the hull's turning.
+    fin damping = 1.0 - exp(-(0.3 + 2.2 * motion.wet) * dt)
+    motion.pitchRate -= motion.pitchRate * damping
+    motion.rollRate -= motion.rollRate * damping
+    // The rudder: it turns the boat only as fast as the water flows past it; the boat leans into the turn.
+    fin rudder = waveClamp(control.rudder, -1.0, 1.0)
+    fin bite = waveClamp(speed / 4.0, -1.0, 1.0) * (if motion.wet > 0.0 then 1.0 else 0.0)
+    fin turning = -rudder * hull.turnRate * 0.017453292519943295 * bite
+    motion.yawRate += (turning - motion.yawRate) * (1.0 - exp(-3.0 * dt))
+    motion.rollRate += -rudder * absValue(bite) * 0.9 * dt
+    motion.yaw += motion.yawRate * dt
+    motion.pitch = waveClamp(motion.pitch + motion.pitchRate * dt, -1.2, 1.2)
+    motion.roll = waveClamp(motion.roll + motion.rollRate * dt, -1.2, 1.2)
+    motion.slam = if slam > motion.slam then waveClamp(slam, 0.0, 3.0) else motion.slam * exp(-dt / 0.5)
+    motion.started = true
+}
+
+/** Every hull on the water moved one fixed physics step (in play only). */
+@System(phase: .FixedUpdate)
+func floatHulls(world: World!, time: Time&, hulls: @query [Hull&]) {
+    var bodies: Array<Entity> = []
+    while hulls.hasNext() then bodies.add(hulls.nextEntity())
+    fin dt = if time.fixedDeltaSecs > 0.0 then time.fixedDeltaSecs else world.fixedTimestep
+    for entity in bodies {
+        fin hull = storageGet<Hull>(ensureStorage(world), entity).clone()
+        if !hull.enabled then continue
+        let motions = ensureStorage<HullMotion>(world)
+        if !storageHas<HullMotion>(motions, entity) then storageInsert<HullMotion>(motions, entity, startHull(world, entity))
+        fin control = storageGetOrDefault<HullControl>(ensureStorage(world), entity, .())
+        let motion: HullMotion! = motions.values[storageIndexOf<HullMotion>(motions, entity)]
+        stepHull(world, hull, control, motion, time.elapsedSecs, dt)
+    }
+}
+
+/** Every moving hull placed between its last two physics steps, by the time left over. */
+@System(phase: .Update)
+func presentHulls(world: World!, hulls: @query [Hull&, HullMotion&]) {
+    var bodies: Array<Entity> = []
+    while hulls.hasNext() then bodies.add(hulls.nextEntity())
+    fin share = if world.fixedTimestep > 0.0 then waveClamp(world.fixedAccumulator / world.fixedTimestep, 0.0, 1.0) else 1.0
+    fin degrees = 57.29577951308232
+    for entity in bodies {
+        fin motion = storageGet<HullMotion>(ensureStorage(world), entity).clone()
+        fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+        fin position: Vec3 = .(
+            motion.previousPosition.x + (motion.position.x - motion.previousPosition.x) * share
+            motion.previousPosition.y + (motion.position.y - motion.previousPosition.y) * share
+            motion.previousPosition.z + (motion.position.z - motion.previousPosition.z) * share
+        )
+        fin turn: Vec3 = .(
+            (motion.previousPitch + (motion.pitch - motion.previousPitch) * share) * degrees
+            (motion.previousYaw + (motion.yaw - motion.previousYaw) * share) * degrees
+            (motion.previousRoll + (motion.roll - motion.previousRoll) * share) * degrees
+        )
+        storageInsert<Transform>(ensureStorage(world), entity, .(position, turn, place.scale.clone()))
+    }
+}
+
+/** Puts [entity]'s hull at [position] facing [yaw] degrees, at rest: its motion starts again from there. */
+func placeHull(world: World!, entity: Entity, position: Vec3&, yaw: Double) {
+    fin place = storageGetOrDefault<Transform>(ensureStorage(world), entity, .())
+    storageInsert<Transform>(ensureStorage(world), entity, .(position.clone(), Vec3(0.0, yaw, 0.0), place.scale.clone()))
+    storageRemove<HullMotion>(ensureStorage(world), entity)
+}

@@ -32,6 +32,7 @@ import engine.scene.transforms
 import engine.water.components
 import engine.water.spectrum
 import engine.water.seas
+import engine.water.shore
 
 /** The water at one point: whether there is any, its surface height and normal, its flow, and the body it belongs to. */
 pack WaterSample derives Clone {
@@ -45,12 +46,14 @@ pack WaterSample derives Clone {
 /**
  * The water surface over world (x, z) at [time] seconds: the highest enabled,
  * shown body there. An ocean is everywhere at its entity's height, moved by
- * its [Sea] when it has one.
+ * its [Sea] when it has one - calmed in the shallows and raised by the surf
+ * near a shore its [OceanShore] maps, as the GPU draws it.
  */
 func waterSurfaceAt(world: World!, x: Double, z: Double, time: Double): WaterSample {
     var sample: WaterSample = .()
     fin oceans = ensureStorage<Ocean>(world)
     let seas = ensureStorage<Sea>(world)
+    let shores = ensureStorage<OceanShore>(world)
     for row: Int in 0..<storageLength<Ocean>(oceans) {
         fin entity = storageEntityAt<Ocean>(oceans, row)
         if !oceans.values[row].enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
@@ -59,10 +62,74 @@ func waterSurfaceAt(world: World!, x: Double, z: Double, time: Double): WaterSam
         var height = level
         var normal: Vec3 = .(0.0, 1.0, 0.0)
         if at >= 0 && seas.values[at].cpu.lengths.size > 0 {
-            height += waveHeightAt(seas.values[at].cpu, x, z, time)
-            normal = waveNormalAt(seas.values[at].cpu, x, z, time)
+            fin shoreAt = storageIndexOf<OceanShore>(shores, entity)
+            if shoreAt >= 0 && (shores.values[shoreAt].near.ready || shores.values[shoreAt].far.ready) {
+                fin reach = waveClamp(oceans.values[row].shoreDepth, 1.0, 500.0)
+                fin surf = surfStateOf(seas.values[at].surf, time)
+                height += shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surf, reach, x, z, time)
+                // Near a shore the surface is more than the open sea: its normal from the heights around.
+                fin spacing = 0.5
+                fin hx = shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surf, reach, x + spacing, z, time) -
+                    shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surf, reach, x - spacing, z, time)
+                fin hz = shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surf, reach, x, z + spacing, time) -
+                    shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surf, reach, x, z - spacing, time)
+                fin nx = -hx / (2.0 * spacing)
+                fin nz = -hz / (2.0 * spacing)
+                fin length = sqrt(nx * nx + 1.0 + nz * nz)
+                normal = .(nx / length, 1.0 / length, nz / length)
+            } else {
+                height += waveHeightAt(seas.values[at].cpu, x, z, time)
+                normal = waveNormalAt(seas.values[at].cpu, x, z, time)
+            }
         }
         if !sample.found || height > sample.height then sample = .(true, height, normal, .(0.0, 0.0, 0.0), entity)
     }
     return take sample
+}
+
+/**
+ * The height of the water surface over world (x, z) at [time]: what
+ * [waterSurfaceAt] answers, without the normal (cheaper: floating hulls ask
+ * it at many points every physics step). -1e9 where there is no water.
+ */
+func waterLevelAt(world: World!, x: Double, z: Double, time: Double): Double {
+    var found = false
+    var best: Double = -1.0e9
+    fin oceans = ensureStorage<Ocean>(world)
+    let seas = ensureStorage<Sea>(world)
+    let shores = ensureStorage<OceanShore>(world)
+    for row: Int in 0..<storageLength<Ocean>(oceans) {
+        fin entity = storageEntityAt<Ocean>(oceans, row)
+        if !oceans.values[row].enabled || !world.isAlive(entity) || !visibleInWorld(world, entity) then continue
+        var height = worldPosition(world, entity).y
+        fin at = storageIndexOf<Sea>(seas, entity)
+        if at >= 0 && seas.values[at].cpu.lengths.size > 0 {
+            fin shoreAt = storageIndexOf<OceanShore>(shores, entity)
+            if shoreAt >= 0 && (shores.values[shoreAt].near.ready || shores.values[shoreAt].far.ready) {
+                height += shoreSeaHeight(seas.values[at].cpu, shores.values[shoreAt], surfStateOf(seas.values[at].surf, time),
+                    waveClamp(oceans.values[row].shoreDepth, 1.0, 500.0), x, z, time)
+            } else {
+                height += waveHeightAt(seas.values[at].cpu, x, z, time)
+            }
+        }
+        if !found || height > best {
+            best = height
+            found = true
+        }
+    }
+    return best
+}
+
+/**
+ * The sea's height over its level at world (x, z) near a shore: the open
+ * sea's waves calmed where the ground under it is within a quarter of
+ * [reach] of the surface (the largest cascade further where the surf takes
+ * its place), plus the surf.
+ */
+func shoreSeaHeight(waves: CpuWaves!, shore: OceanShore&, surf: SurfState&, reach: Double, x: Double, z: Double, time: Double): Double {
+    fin point = shorePointAt(shore, x, z)
+    fin calm = waveClamp(point.depth / (if reach * 0.25 > 0.5 then reach * 0.25 else 0.5), 0.0, 1.0)
+    fin presence = if point.found then surfPresence(point.depth, surf.length) else 0.0
+    fin sea = if calm > 0.0 then waveHeightAt(waves, x, z, time, calm * (1.0 - 0.8 * presence), calm) else 0.0
+    return sea + surfElevationAt(surf, point, x, z)
 }

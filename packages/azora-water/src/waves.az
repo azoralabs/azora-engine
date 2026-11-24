@@ -54,6 +54,11 @@ pack WaterGpu {
     var ocean: Long = 0
     /** A 1×1 map of zeros: what a surface without a sea samples. */
     var still: Long = 0
+    var reflectionColor: Long = 0
+    var reflectionDepth: Long = 0
+    var reflectionWidth: Long = 0
+    var reflectionHeight: Long = 0
+    var reflectionFrame: Int = -1
 }
 
 impl WaterGpu {
@@ -63,6 +68,8 @@ impl WaterGpu {
         if self.finalize != 0 then send0(self.finalize, sel("release"))
         if self.ocean != 0 then send0(self.ocean, sel("release"))
         if self.still != 0 then send0(self.still, sel("release"))
+        if self.reflectionColor != 0 then send0(self.reflectionColor, sel("release"))
+        if self.reflectionDepth != 0 then send0(self.reflectionDepth, sel("release"))
     }
 }
 
@@ -329,6 +336,29 @@ func simulateSeaGpu(app: App!, programs: WaterGpu&, sea: Sea&, sim: SeaGpu!, foa
     if gpu.timing {
         send0(commands, sel("waitUntilCompleted"))
         gpu.gpuSeconds += azSendD0(commands, sel("GPUEndTime")) - azSendD0(commands, sel("GPUStartTime"))
+    }
+}
+
+/**
+ * Every sea moved on the GPU to this frame's time, once a frame - in the game
+ * and in the editor - before anything draws it.
+ */
+@System(phase: .PostUpdate, editor: true)
+func simulateSeas(app: App!, time: Time&, world: World!, seas: @query [Sea&]) {
+    if app.gpu.device == 0 then return
+    var bodies: Array<Entity> = []
+    while seas.hasNext() then bodies.add(seas.nextEntity())
+    if bodies.size == 0 then return
+    // The row first: making the programs adds to the storage the references are taken from.
+    fin programRow = waterGpuRow(world, app.gpu.device)
+    for entity in bodies {
+        fin foam = storageGetOrDefault<WaterFoam>(ensureStorage(world), entity, .(enabled: false))
+        let sims = ensureStorage<SeaGpu>(world)
+        if !storageHas<SeaGpu>(sims, entity) then storageInsert<SeaGpu>(sims, entity, .())
+        let programs: WaterGpu& = ensureStorage<WaterGpu>(world).values[programRow]
+        let sea: Sea& = ensureStorage<Sea>(world).values[storageIndexOf<Sea>(ensureStorage<Sea>(world), entity)]
+        let sim: SeaGpu! = sims.values[storageIndexOf<SeaGpu>(sims, entity)]
+        simulateSeaGpu(app, programs, sea, sim, foam, time.elapsedSecs)
     }
 }
 
