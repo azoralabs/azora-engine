@@ -24,7 +24,16 @@
 # resolved from the .azon package manifests by tools/azpm.py — there is no
 # hard-coded dependency graph or framework list here.
 #
-# Usage: build.sh <project_dir> [build|run]
+# Usage: build.sh <project_dir> [build|run|release|check|inspect]
+#
+# `build` and `run` compile the program as parts and keep each part's object
+# file, so an edit recompiles only the parts it changed (see "Parts" below).
+# With a compiler that supports it, the Engine packages' code is compiled once
+# into a package interface (.azora-build/interface) and reused: an edit then
+# compiles only the project's own code and what depends on the whole program.
+# `release` compiles it as one module, every function inlinable into every
+# other, for the executable that ships; it is slower to build and a little
+# faster to run.
 #
 # Layout expectations (a workspace checkout or an installed bundle):
 #   <lib>/workspace.azon
@@ -41,8 +50,8 @@ if [ -n "${3:-}" ]; then
     export AZORA_COMPILER_BIN="$3"
 fi
 case "$ACTION" in
-    build|run|check|inspect) ;;
-    *) echo "error: action must be build, run or check" >&2; exit 2 ;;
+    build|run|release|check|inspect) ;;
+    *) echo "error: action must be build, run, release, check or inspect" >&2; exit 2 ;;
 esac
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
@@ -112,6 +121,8 @@ RESOLVE="$("$PYTHON_BIN" "$LIB_DIR/tools/azpm.py" resolve "$PROJECT_DIR")"
 NATIVE_FLAGS=""
 ENTRYPOINT=""
 ENTRY_FILE="main.az"
+# The staged package directories: what a package interface precompiles.
+PACKAGE_DIRS=""
 while IFS=$'\t' read -r kind a b; do
     case "$kind" in
         ENTRY) ENTRY_FILE="$a" ;;
@@ -119,6 +130,7 @@ while IFS=$'\t' read -r kind a b; do
         STAGE)
             mkdir -p "$SRC_DIR/$b"
             cp "$a/"*.az "$SRC_DIR/$b/" 2>/dev/null || true
+            PACKAGE_DIRS="${PACKAGE_DIRS:+$PACKAGE_DIRS,}$b"
             ;;
         SOURCE)
             mkdir -p "$SRC_DIR/$b"
@@ -153,9 +165,36 @@ APP_NAME="$(basename "$PROJECT_DIR" | tr -cd '[:alnum:]_-')"
 
 COMPILER_ARGS=(compile llvm "$ENTRY_SOURCE")
 OUTPUT_FILE="$BUILD_DIR/$APP_NAME.ll"
+# A development build's program comes as parts: AZORA_BUILD_PARTS function
+# parts (16 unless set) and the program's variables, in .azora-build/parts.
+PARTS_DIR="$BUILD_DIR/parts"
+OBJECTS_DIR="$BUILD_DIR/objects"
+PARTS="${AZORA_BUILD_PARTS:-16}"
+SPLIT=0
+INTERFACE=0
+INTERFACE_DIR="$BUILD_DIR/interface"
 if [ "$ACTION" = "check" ]; then
     COMPILER_ARGS=(check "$ENTRY_SOURCE")
     OUTPUT_FILE="$BUILD_DIR/$APP_NAME.check.txt"
+elif [ "$ACTION" != "release" ]; then
+    # Parts need a compiler that writes them; with one that predates
+    # `--parts` (or the legacy JVM bootstrap) the program is one module, as before.
+    COMPILER_HELP=""
+    [ -z "${AZORA_COMPILER_BIN:-}" ] || COMPILER_HELP="$("$AZORA_COMPILER_BIN" help 2>/dev/null || true)"
+    if [[ "$COMPILER_HELP" == *--parts=* ]]; then
+        SPLIT=1
+        COMPILER_ARGS+=(--parts="$PARTS" -o "$PARTS_DIR")
+        OUTPUT_FILE="$BUILD_DIR/$APP_NAME.compile.txt"
+        # The packages' interface: their code compiled once and kept in
+        # .azora-build/interface, so an edit compiles the project's own code
+        # (and what depends on all of it) rather than the Engine again.
+        # AZORA_PACKAGE_INTERFACE=0 builds the whole program every time.
+        if [[ "$COMPILER_HELP" == *--interface=* && -n "$PACKAGE_DIRS" && "${AZORA_PACKAGE_INTERFACE:-1}" != 0 ]]; then
+            INTERFACE=1
+        fi
+    else
+        echo "azora-engine: this compiler does not write program parts; building one module"
+    fi
 fi
 
 echo "azora-engine: $ACTION ($APP_NAME)"
@@ -182,7 +221,7 @@ else
     COMPILER_IDENTITY="bundled $(stat -f '%N %m %z' "$LIB_DIR/tools/azorac/lib/"*.jar 2>/dev/null | shasum | cut -d' ' -f1)"
 fi
 FINGERPRINT="$("$PYTHON_BIN" - "$SRC_DIR" "${AZORA_STDLIB:-}" "$COMPILER_IDENTITY" "$CLANG_BIN" \
-    "${AZORA_OPTIMIZE:--O2}" "$NATIVE_FLAGS" "$ACTION" <<'PYTHON'
+    "${AZORA_OPTIMIZE:--O2}" "$NATIVE_FLAGS" "$ACTION" "$PARTS" "interface=$INTERFACE" <<'PYTHON'
 import hashlib
 import os
 import sys
@@ -214,6 +253,16 @@ if [ "$ACTION" != "check" ] && [ -x "$BUILD_DIR/$APP_NAME" ] && [ -s "$STAMP" ] 
 fi
 # A build that is not up to date replaces the executable: until it succeeds, no stamp vouches for it.
 [ "$UP_TO_DATE" = 1 ] || rm -f "$STAMP"
+# The compiler writes this build's parts afresh; the kept objects stay.
+if [ "$UP_TO_DATE" = 0 ] && [ "$SPLIT" = 1 ]; then
+    rm -rf "$PARTS_DIR"
+    rm -f "$BUILD_DIR/$APP_NAME.ll"
+fi
+
+# Keyed by everything its code follows from, the compiler included.
+if [ "$INTERFACE" = 1 ]; then
+    COMPILER_ARGS+=(--interface="$INTERFACE_DIR" --interface-sources="$PACKAGE_DIRS" --interface-compiler="$COMPILER_IDENTITY")
+fi
 
 if [ "$UP_TO_DATE" = 1 ]; then
     :
@@ -254,8 +303,13 @@ if [ "$ACTION" = "check" ]; then
     exit 0
 fi
 
-if [ "$UP_TO_DATE" = 0 ] && [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
+if [ "$UP_TO_DATE" = 0 ] && [ "$SPLIT" = 0 ] && [ ! -s "$BUILD_DIR/$APP_NAME.ll" ]; then
     echo "error: Azora compilation produced no output (see errors above)." >&2
+    exit 1
+fi
+if [ "$UP_TO_DATE" = 0 ] && [ "$SPLIT" = 1 ] && [ ! -s "$PARTS_DIR/globals.ll" ]; then
+    echo "error: the compiler wrote no program parts to $PARTS_DIR: it must support 'compile llvm --parts=N -o <dir>' (or build with 'release')." >&2
+    cat "$OUTPUT_FILE" 2>/dev/null | head -5 >&2
     exit 1
 fi
 
@@ -283,8 +337,8 @@ if [ ! -d "$NATIVE_DIR" ]; then
     fi
 fi
 
-if [ "$UP_TO_DATE" = 0 ]; then
-    echo "azora-engine: linking"
+if [ "$UP_TO_DATE" = 0 ] && [ "$SPLIT" = 0 ]; then
+    echo "azora-engine: linking (one module)"
     # A game is linked optimized: unoptimized IR made every frame's CPU work about
     # 40% slower. AZORA_OPTIMIZE=-O0 links a debuggable build instead.
     "$CLANG_BIN" ${AZORA_OPTIMIZE:--O2} "$BUILD_DIR/$APP_NAME.ll" \
@@ -293,6 +347,80 @@ if [ "$UP_TO_DATE" = 0 ]; then
         $NATIVE_FLAGS \
         -Wno-override-module \
         -o "$BUILD_DIR/$APP_NAME"
+    printf '%s\n' "$FINGERPRINT" > "$STAMP"
+fi
+
+# ── Parts ────────────────────────────────────────────────────────────────
+# Each part is compiled to an object kept in .azora-build/objects under the
+# hash of its text and of what compiles it (clang and AZORA_OPTIMIZE). A
+# part's text depends only on the functions in it, so after an edit the
+# Engine's parts come back as they were and their objects are reused: only
+# the parts holding what changed are compiled again, in parallel.
+if [ "$UP_TO_DATE" = 0 ] && [ "$SPLIT" = 1 ]; then
+    mkdir -p "$OBJECTS_DIR"
+    OPTIMIZE="${AZORA_OPTIMIZE:--O2}"
+    # The program's parts, then - when it was built on its packages' interface -
+    # the interface's parts it links, and those the compiler made for the
+    # builds after this one (compiled now, linked later).
+    KEYS="$("$PYTHON_BIN" - "$PARTS_DIR" "$CLANG_BIN" "$("$CLANG_BIN" --version 2>/dev/null | head -1)" "$OPTIMIZE" <<'PYTHON'
+import hashlib
+import os
+import sys
+
+settings = "\0".join(sys.argv[2:]).encode()
+def key(path):
+    with open(path, "rb") as part:
+        return hashlib.sha256(settings + b"\0" + part.read()).hexdigest()
+for name in sorted(os.listdir(sys.argv[1])):
+    if name.endswith(".ll"):
+        path = os.path.join(sys.argv[1], name)
+        print("link", key(path), path)
+manifest = os.path.join(sys.argv[1], "link.txt")
+if os.path.exists(manifest):
+    for line in open(manifest):
+        kind, _, path = line.rstrip("\n").partition(" ")
+        if kind in ("link", "prepare") and path:
+            print(kind, key(path), path)
+PYTHON
+)"
+    OBJECTS=()
+    PREPARED=()
+    MISSING=()
+    PROGRAM_PARTS=0
+    INTERFACE_PARTS=0
+    while read -r kind key part; do
+        [ -n "$part" ] || continue
+        case "$part" in
+            "$PARTS_DIR"/*) PROGRAM_PARTS=$((PROGRAM_PARTS + 1)) ;;
+            *) if [ "$kind" = link ]; then INTERFACE_PARTS=$((INTERFACE_PARTS + 1)); fi ;;
+        esac
+        if [ "$kind" = link ]; then OBJECTS+=("$OBJECTS_DIR/$key.o"); else PREPARED+=("$OBJECTS_DIR/$key.o"); fi
+        [ -f "$OBJECTS_DIR/$key.o" ] || MISSING+=("$part" "$OBJECTS_DIR/$key.o")
+    done <<< "$KEYS"
+    SUMMARY="$PROGRAM_PARTS the program's"
+    [ "$INTERFACE_PARTS" = 0 ] || SUMMARY="$SUMMARY, $INTERFACE_PARTS the package interface's"
+    [ "${#PREPARED[@]}" = 0 ] || SUMMARY="$SUMMARY, ${#PREPARED[@]} the package interface's for later builds"
+    echo "azora-engine: compiling $((${#MISSING[@]} / 2)) of $((${#OBJECTS[@]} + ${#PREPARED[@]})) parts ($SUMMARY)"
+    if [ "${#MISSING[@]}" -gt 0 ]; then
+        # An object is written beside its name and renamed when complete, so
+        # an interrupted build never leaves a broken one to be reused.
+        if ! printf '%s\0' "${MISSING[@]}" | xargs -0 -n 2 -P "$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+            sh -c '"$0" $1 -c -Wno-override-module "$2" -o "$3.$$" && mv "$3.$$" "$3"' "$CLANG_BIN" "$OPTIMIZE"; then
+            echo "error: a program part failed to compile (see above)." >&2
+            exit 1
+        fi
+    fi
+    echo "azora-engine: linking"
+    "$CLANG_BIN" "${OBJECTS[@]}" \
+        -L "$NATIVE_DIR" -lazora_runtime \
+        -Wl,-rpath,"$NATIVE_DIR" \
+        $NATIVE_FLAGS \
+        -o "$BUILD_DIR/$APP_NAME"
+    # Objects this build did not name were made for earlier states of the program.
+    KEEP=" ${OBJECTS[*]} ${PREPARED[*]:-} "
+    for object in "$OBJECTS_DIR"/*.o; do
+        case "$KEEP" in *" $object "*) ;; *) rm -f "$object" ;; esac
+    done
     printf '%s\n' "$FINGERPRINT" > "$STAMP"
 fi
 

@@ -404,3 +404,40 @@ incremental compile: the Engine compiled on every run).
   render-stages fails to build ("LLVM cannot assign member '.log' of WindSway"),
   scene-game expects a 120 Hz physics default that is now 60.
 
+
+
+### 2026-11-24, evening (session "Incremental compilation")
+
+Owner's request: an edit to a game must not recompile the Engine on every Run.
+Design note and numbers: `azora-lang/ROADMAPs/INCREMENTAL_COMPILATION_2026_11_24.md`.
+
+- Compiler (azora-lang), same output byte for byte:
+  - `LlvmCodegen.referencesSymbol` searched the whole module once per bridge (a
+    third of the compile).
+  - `IrOptimizer` reachability spelled out types × types × operators names each round.
+  - `DecoratorMetadata` collected every site of the program per reflection query.
+  - `SymbolTable` tail lookups read every function name per miss.
+  - `TypeResolver` closure borrows were a list, and function lookups rebuilt the
+    function list.
+  - Native Test compile: 22.9 s → 4.0 s. The native CLI also starts the collector at
+    1 GB (`AZORA_COMPILER_MIN_HEAP_MB`, `0` = default): 5.5 s → 4.0 s, 1.35 GB peak.
+- `azora compile llvm --parts=N -o <dir>` writes the program as N parts plus
+  `globals.ll`. A part's text depends only on its functions: names numbered over the
+  program are copied and renumbered per part.
+- `tools/build.sh`:
+  - `build` and `run` compile only the parts whose text changed. Objects are kept in
+    `.azora-build/objects/<sha256>.o` and compiled in parallel.
+  - `release` is the old single module with full inlining. That is the shipping
+    build: the owner accepts the ~7% CPU cost of the split in development.
+  - A compiler without `--parts` still builds one module.
+- Test project: an edit was 31.7 s, now 6.1-6.3 s (1-4 of 17 parts recompiled).
+  dolomites-drive: 24.9 s → 4.8 s; its `release` build 24.9 s → 13.0 s. Checks PASS,
+  the same frame from both builds.
+  Unchanged Run: 0.4 s (as before).
+- Open:
+  - ThinLTO over the parts linked from cache in 0.15 s, but broke a water check.
+    Cause: enum values are name strings compared by address, and ThinLTO gave an
+    imported copy of "PreUpdate" its own address. The plain split relies on the
+    linker merging identical literals. Fix described in the note's §6.1.
+  - The JVM-hosted and native compilers order systems differently in `dispatchGame`.
+  - A module interface (Engine analysed once) is the next step. See the note's §3.
